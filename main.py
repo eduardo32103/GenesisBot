@@ -19,7 +19,7 @@ def preguntar_ia(texto, img_b64=None):
         res = requests.post(url, json=payload, timeout=30).json()
         return res['candidates'][0]['content']['parts'][0]['text']
     except:
-        return "⚠️ Error de conexión con Google."
+        return "⚠️ GÉNESIS: Error de conexión con la IA."
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -34,7 +34,7 @@ def handle_photo(message):
         res = preguntar_ia("Analiza esta gráfica de trading.", img_b64)
         bot.reply_to(message, f"🎯 **GÉNESIS:**\n\n{res}")
     except:
-        bot.reply_to(message, "Error al procesar la imagen.")
+        bot.reply_to(message, "Error al procesar imagen.")
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
@@ -43,10 +43,12 @@ def handle_text(message):
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return '', 200
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return '', 403
 
 @app.route('/')
 def index():
