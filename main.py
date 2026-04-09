@@ -9,19 +9,25 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- SISTEMA DE INTELIGENCIA ---
-def cerebro_genesis(texto, img_b64=None):
+# --- EL CEREBRO DE GÉNESIS (TODO EN UNO) ---
+def cerebro_genesis(texto_usuario=None, img_b64=None):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     
-    # Prompt maestro enfocado en el radar y el 10% mensual
+    # Este es el comando maestro que le da las órdenes a la IA
     system_prompt = (
-        "Eres GÉNESIS, un radar de señales de alta precisión. Tu objetivo es ayudar al usuario a ganar un 10% mensual. "
-        "Analizas movimientos institucionales (SMC), geopolítica y técnico. "
-        "Si detectas una oportunidad, di: '⚠️ SEÑAL DETECTADA' y calcula el % de subida probable."
+        "Eres GÉNESIS, un radar de trading de élite. Tu meta es un 10% mensual. "
+        "Combinas: 1. Smart Money Concepts (SMC) para ver ballenas. "
+        "2. Geopolítica actual para predecir impactos. "
+        "3. Análisis Técnico avanzado. "
+        "Siempre que detectes una oportunidad basada en noticias o gráficas, "
+        "da una 'ALERTA DE SEÑAL' con el % de subida estimado."
     )
     
-    contenido = [{"type": "text", "text": texto}]
+    contenido = []
+    if texto_usuario:
+        contenido.append({"type": "text", "text": f"Analiza esto y busca señales: {texto_usuario}"})
     if img_b64:
+        contenido.append({"type": "text", "text": "Analiza esta gráfica buscando huella institucional y proyecciones."})
         contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}})
 
     payload = {
@@ -30,49 +36,52 @@ def cerebro_genesis(texto, img_b64=None):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": contenido}
         ],
-        "max_tokens": 700
+        "max_tokens": 1000
     }
     
-    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=15)
+    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
     data = r.json()
-    return data['choices'][0]['message']['content'] if 'choices' in data else "📡 Radar fuera de línea. Revisa conexión."
+    return data['choices'][0]['message']['content'] if 'choices' in data else "🚨 Error en el Radar Total."
 
-# --- BOT INTERFAZ ---
+# --- MENÚ DE COMANDOS ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add(KeyboardButton('📡 Activar Radar de Señales'), KeyboardButton('🌍 Geopolítica / Macro'))
-    markup.add(KeyboardButton('📊 Análisis de Gráfica'), KeyboardButton('🐋 Huella Institucional'))
+    markup.add(KeyboardButton('🌍 SCANNER DE NOTICIAS'), KeyboardButton('🐋 RADAR DE BALLENAS'))
+    markup.add(KeyboardButton('📊 ANÁLISIS TÉCNICO'), KeyboardButton('🎯 MI META 10%'))
     
     bot.send_message(
         message.chat.id, 
-        "🦅 **GÉNESIS RADAR ACTIVADO**\n\nBuscando el **10% mensual**. \n¿Qué quieres monitorear hoy?", 
+        "🦅 **GÉNESIS: CENTRO DE INTELIGENCIA**\n\nTodo el sistema está activo. ¿Qué quieres que rastree el radar?", 
         reply_markup=markup, 
         parse_mode="Markdown"
     )
 
+# --- MANEJADOR DE FOTOS (Lo que ya funcionaba) ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    status_msg = bot.reply_to(message, "🦅 Escaneando gráfica en el Radar...")
+    status_msg = bot.reply_to(message, "🦅 GÉNESIS escaneando imagen... Buscando señales de alta probabilidad.")
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         img_data = bot.download_file(file_info.file_path)
         img_b64 = base64.b64encode(img_data).decode('utf-8')
         
-        # Le pedimos que busque la señal directamente en la imagen
-        respuesta = cerebro_genesis("Busca señales institucionales o geopolíticas. ¿Ves el 10% aquí?", img_b64)
-        bot.edit_message_text(f"📡 **REPORTE DEL RADAR:**\n\n{respuesta}", message.chat.id, status_msg.message_id)
+        # Analiza la foto con todo el contexto de radar
+        respuesta = cerebro_genesis(img_b64=img_b64)
+        bot.edit_message_text(f"📡 **REPORTE DE RADAR:**\n\n{respuesta}", message.chat.id, status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ Error: {str(e)}", message.chat.id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Error en scanner: {str(e)}", message.chat.id, status_msg.message_id)
 
+# --- MANEJADOR DE TEXTO (Noticias y Consultas) ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
-    if message.text == '📡 Activar Radar de Señales':
-        bot.reply_to(message, "Radar en espera... Pásame el nombre de una acción o una gráfica para buscar entradas de alto impacto.")
+    if message.text == '🌍 SCANNER DE NOTICIAS':
+        bot.reply_to(message, "📡 Modo Escáner Activo. Escribe el nombre de una acción, país o noticia para ver el impacto.")
+    elif message.text == '🎯 MI META 10%':
+        bot.reply_to(message, "📈 Analizando el mercado para encontrar el 10% mensual con el menor riesgo posible.")
     else:
-        # Aquí permitimos que el usuario pregunte cosas de texto (noticias, activos)
-        status_msg = bot.reply_to(message, "🔍 GÉNESIS procesando datos del mercado...")
-        respuesta = cerebro_genesis(f"Contexto: {message.text}. ¿Cómo afecta esto a nuestra meta del 10%? ¿Hay señales claras?")
+        status_msg = bot.reply_to(message, "🔍 GÉNESIS rastreando datos geopolíticos y financieros...")
+        respuesta = cerebro_genesis(texto_usuario=message.text)
         bot.edit_message_text(f"🦅 **GÉNESIS INFORMA:**\n\n{respuesta}", message.chat.id, status_msg.message_id)
 
 @app.route('/webhook', methods=['POST'])
@@ -82,4 +91,4 @@ def webhook():
     return '', 200
 
 @app.route('/')
-def index(): return "RADAR GÉNESIS ONLINE", 200
+def index(): return "GÉNESIS TOTAL ONLINE", 200
