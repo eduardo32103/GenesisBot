@@ -4,7 +4,7 @@ import telebot
 
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 # Clave directa para evitar errores de pegado en Vercel
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
