@@ -9,75 +9,71 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# Diccionario para recordar qué quiere el usuario
-user_modes = {}
-
-def llamar_openai(img_b64, prompt):
+# --- SISTEMA DE INTELIGENCIA ---
+def cerebro_genesis(texto, img_b64=None):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    
+    # Prompt maestro enfocado en el radar y el 10% mensual
+    system_prompt = (
+        "Eres GÉNESIS, un radar de señales de alta precisión. Tu objetivo es ayudar al usuario a ganar un 10% mensual. "
+        "Analizas movimientos institucionales (SMC), geopolítica y técnico. "
+        "Si detectas una oportunidad, di: '⚠️ SEÑAL DETECTADA' y calcula el % de subida probable."
+    )
+    
+    contenido = [{"type": "text", "text": texto}]
+    if img_b64:
+        contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}})
+
     payload = {
         "model": "gpt-4o-mini",
         "messages": [
-            {"role": "system", "content": "Eres GÉNESIS, un estratega de trading de élite enfocado en rentabilidad del 10% mensual."},
-            {"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}}
-            ]}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": contenido}
         ],
-        "max_tokens": 800
+        "max_tokens": 700
     }
+    
     r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=15)
     data = r.json()
-    return data['choices'][0]['message']['content'] if 'choices' in data else "🚨 Error en conexión con el cerebro IA."
+    return data['choices'][0]['message']['content'] if 'choices' in data else "📡 Radar fuera de línea. Revisa conexión."
 
+# --- BOT INTERFAZ ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = KeyboardButton('🐋 Radar Institucional (SMC)')
-    btn2 = KeyboardButton('🌍 Geopolítica y Proyecciones %')
-    btn3 = KeyboardButton('📊 Análisis Técnico Rápido')
-    markup.add(btn1, btn2, btn3)
+    markup.add(KeyboardButton('📡 Activar Radar de Señales'), KeyboardButton('🌍 Geopolítica / Macro'))
+    markup.add(KeyboardButton('📊 Análisis de Gráfica'), KeyboardButton('🐋 Huella Institucional'))
     
     bot.send_message(
         message.chat.id, 
-        "🦅 **GÉNESIS ESTRATEGA ACTIVO**\n\nMeta establecida: **10% Mensual**.\nSelecciona tu herramienta de análisis:", 
+        "🦅 **GÉNESIS RADAR ACTIVADO**\n\nBuscando el **10% mensual**. \n¿Qué quieres monitorear hoy?", 
         reply_markup=markup, 
         parse_mode="Markdown"
     )
 
-@bot.message_handler(func=lambda message: True)
-def handle_menu_clicks(message):
-    if message.text == '🐋 Radar Institucional (SMC)':
-        user_modes[message.chat.id] = "SMC"
-        bot.reply_to(message, "📡 MODO BALLENA: Envía la gráfica para detectar manipulación institucional.")
-    elif message.text == '🌍 Geopolítica y Proyecciones %':
-        user_modes[message.chat.id] = "GEO"
-        bot.reply_to(message, "⚖️ MODO MACRO: Envía la gráfica y dime en el pie de foto qué noticia geopolítica quieres evaluar.")
-    elif message.text == '📊 Análisis Técnico Rápido':
-        user_modes[message.chat.id] = "TEC"
-        bot.reply_to(message, "📉 MODO TÉCNICO: Envía la gráfica para ver tendencia y niveles clave.")
-
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    modo = user_modes.get(message.chat.id, "TEC") # Por defecto técnico
-    status_msg = bot.reply_to(message, f"🦅 GÉNESIS trabajando en modo: {modo}...")
-    
+    status_msg = bot.reply_to(message, "🦅 Escaneando gráfica en el Radar...")
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         img_data = bot.download_file(file_info.file_path)
         img_b64 = base64.b64encode(img_data).decode('utf-8')
         
-        if modo == "SMC":
-            prompt = "Detecta Order Blocks, FVG y barridos de liquidez. Confirma si hay entrada institucional clara."
-        elif modo == "GEO":
-            prompt = "Analiza esta gráfica considerando el contexto geopolítico actual. Calcula la probabilidad de subir un % específico y dime si es viable para nuestra meta del 10% mensual."
-        else:
-            prompt = "Analiza tendencia, soportes y resistencias de forma rápida."
-
-        resultado = llamar_openai(img_b64, prompt)
-        bot.edit_message_text(f"🦅 **INFORME GÉNESIS ({modo}):**\n\n{resultado}", message.chat.id, status_msg.message_id)
-        
+        # Le pedimos que busque la señal directamente en la imagen
+        respuesta = cerebro_genesis("Busca señales institucionales o geopolíticas. ¿Ves el 10% aquí?", img_b64)
+        bot.edit_message_text(f"📡 **REPORTE DEL RADAR:**\n\n{respuesta}", message.chat.id, status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ Error en sistema: {str(e)}", message.chat.id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Error: {str(e)}", message.chat.id, status_msg.message_id)
+
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    if message.text == '📡 Activar Radar de Señales':
+        bot.reply_to(message, "Radar en espera... Pásame el nombre de una acción o una gráfica para buscar entradas de alto impacto.")
+    else:
+        # Aquí permitimos que el usuario pregunte cosas de texto (noticias, activos)
+        status_msg = bot.reply_to(message, "🔍 GÉNESIS procesando datos del mercado...")
+        respuesta = cerebro_genesis(f"Contexto: {message.text}. ¿Cómo afecta esto a nuestra meta del 10%? ¿Hay señales claras?")
+        bot.edit_message_text(f"🦅 **GÉNESIS INFORMA:**\n\n{respuesta}", message.chat.id, status_msg.message_id)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -86,4 +82,4 @@ def webhook():
     return '', 200
 
 @app.route('/')
-def index(): return "GÉNESIS ESTRATEGA ONLINE", 200
+def index(): return "RADAR GÉNESIS ONLINE", 200
