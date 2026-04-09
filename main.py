@@ -2,15 +2,15 @@ import os, io, requests, base64
 from flask import Flask, request
 import telebot
 
-# --- CONFIGURACIÓN TOTAL ---
+# --- CONFIGURACIÓN ---
 TOKEN_TELEGRAM = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
-# Usando tu API Key de OpenAI
-OPENAI_API_KEY = "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"
+# He insertado tu nueva clave aquí abajo:
+OPENAI_API_KEY = "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"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=False)
 app = Flask(__name__)
 
-def analizar_con_gpt4_mini(img_b64):
+def analizar_con_gpt(img_b64):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENAI_API_KEY}"
@@ -24,7 +24,7 @@ def analizar_con_gpt4_mini(img_b64):
                 "content": [
                     {
                         "type": "text", 
-                        "text": "Eres GÉNESIS, un trader experto en Smart Money Concepts y Price Action. Analiza esta gráfica de trading detalladamente: identifica tendencia, zonas de oferta/demanda (Order Blocks), liquidez y posibles puntos de entrada. Sé muy técnico y profesional."
+                        "text": "Eres GÉNESIS, un trader experto en Smart Money Concepts y Price Action. Analiza esta gráfica de trading: identifica tendencia, zonas de oferta/demanda (Order Blocks) y posibles puntos de entrada. Sé muy técnico."
                     },
                     {
                         "type": "image_url", 
@@ -33,7 +33,7 @@ def analizar_con_gpt4_mini(img_b64):
                 ]
             }
         ],
-        "max_tokens": 1200
+        "max_tokens": 1000
     }
     
     try:
@@ -43,10 +43,10 @@ def analizar_con_gpt4_mini(img_b64):
         if 'choices' in res_json:
             return res_json['choices'][0]['message']['content']
         else:
-            error_detail = res_json.get('error', {}).get('message', 'Error desconocido')
-            return f"⚠️ Nota de OpenAI: {error_detail}"
+            error_msg = res_json.get('error', {}).get('message', 'Error desconocido')
+            return f"⚠️ OpenAI dice: {error_msg}"
     except Exception as e:
-        return f"⚠️ Error crítico: {str(e)}"
+        return f"⚠️ Error técnico: {str(e)}"
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -56,14 +56,14 @@ def handle_photo(message):
         img_b64 = base64.b64encode(downloaded_file).decode('utf-8')
         
         bot.send_chat_action(message.chat.id, 'typing')
-        res = analizar_con_gpt4_mini(img_b64)
-        bot.reply_to(message, f"🦅 **GÉNESIS PRO (GPT-4o-mini):**\n\n{res}")
+        res = analizar_con_gpt(img_b64)
+        bot.reply_to(message, f"🦅 **GÉNESIS PRO:**\n\n{res}")
     except:
-        bot.reply_to(message, "❌ Error al procesar la imagen en el servidor.")
+        bot.reply_to(message, "❌ Error al procesar la imagen.")
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
-    bot.reply_to(message, "¡GÉNESIS PRO está activo! Envíame una captura de pantalla de tu gráfica para un análisis institucional.")
+    bot.reply_to(message, "¡GÉNESIS PRO Online! Envíame una captura de tu gráfica para analizarla.")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -76,4 +76,4 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "GÉNESIS PRO V15 ONLINE", 200
+    return "GÉNESIS PRO V16 ONLINE", 200
