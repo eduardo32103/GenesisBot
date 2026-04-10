@@ -11,37 +11,33 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 
-# --- MOTOR DE DATOS EN VIVO (CON MÁSCARA) ---
-def obtener_precio_vivo(ticker):
+# --- MOTOR DUAL DE PRECIOS (ANTI-BLOQUEO) ---
+def obtener_precio_v51(ticker):
     try:
         t = ticker.upper().strip()
         if t in ["BTC", "ETH", "SOL"]: t = f"{t}-USD"
         
-        # Engañamos al servidor para que nos dé los datos
-        session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0'})
+        # MÉTODO 1: Ticker Fast Info
+        asset = yf.Ticker(t)
+        precio = asset.fast_info.get('last_price')
         
-        asset = yf.Ticker(t, session=session)
-        # Intentamos obtener el precio más reciente
-        data = asset.history(period="1d", interval="1m")
-        
-        if not data.empty:
-            precio = data['Close'].iloc[-1]
+        if precio:
             return round(float(precio), 2)
+        
+        # MÉTODO 2: Descarga de emergencia (1 día)
+        data = yf.download(t, period="1d", interval="1m", progress=False, timeout=10)
+        if not data.empty:
+            return round(float(data['Close'].iloc[-1]), 2)
+            
         return None
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return None
 
-# --- CEREBRO GÉNESIS (SMC + GEO + BALLENAS) ---
+# --- NÚCLEO GÉNESIS (SMC + GEO + BALLENAS) ---
 def cerebro_genesis(query, img_b64=None):
-    if not OPENAI_API_KEY: return "🚨 ERROR: Falta API KEY en Railway."
+    if not OPENAI_API_KEY: return "🚨 ERROR: Variable OPENAI_API_KEY no configurada."
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    
-    system_msg = (
-        "Eres GÉNESIS V50. Experto en Smart Money Concepts, Geopolítica y Ballenas. "
-        "Das niveles exactos y análisis de impacto económico. Sé breve."
-    )
+    system_msg = "Eres GÉNESIS V51. Analista experto en SMC, Geopolítica y Ballenas. Sé técnico y breve."
     
     payload = {
         "model": "gpt-4o",
@@ -54,7 +50,7 @@ def cerebro_genesis(query, img_b64=None):
     
     if img_b64:
         payload["messages"][1]["content"] = [
-            {"type": "text", "text": "ANALIZA SMC: BOS, OB y FVG."},
+            {"type": "text", "text": "ANALIZA SMC: BOS, OB, FVG y liquidez."},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
         ]
 
@@ -62,47 +58,47 @@ def cerebro_genesis(query, img_b64=None):
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
         return r.json()['choices'][0]['message']['content']
     except:
-        return "🚨 IA ocupada. Reintenta."
+        return "🚨 IA ocupada. Intenta de nuevo."
 
-# --- BOTONES ---
+# --- INTERFAZ ---
 @bot.message_handler(commands=['start'])
 def start(message):
     m = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     m.add("📊 Precio Real", "🌍 Geopolítica", "🐋 Radar Ballenas", "⚠️ Alertas")
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V50: SISTEMA DE DATOS FORZADOS**", reply_markup=m)
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V51: SISTEMA DUAL ACTIVO**", reply_markup=m)
 
 @bot.message_handler(func=lambda m: m.text == "🌍 Geopolítica")
 def btn_geo(message):
-    status = bot.reply_to(message, "🌍 Consultando fuentes geopolíticas...")
-    res = cerebro_genesis("Reporte geopolítico de hoy e impacto en Oro/DXY.")
+    status = bot.reply_to(message, "🌍 Analizando tensiones globales...")
+    res = cerebro_genesis("Reporte geopolítico actual e impacto en Oro y DXY.")
     bot.edit_message_text(f"🌍 **GEOPOLÍTICA:**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda m: m.text == "🐋 Radar Ballenas")
 def btn_ballenas(message):
-    status = bot.reply_to(message, "🐋 Rastreando huella institucional...")
-    res = cerebro_genesis("Movimientos de ballenas más importantes de las últimas 24h.")
+    status = bot.reply_to(message, "🐋 Rastreando flujos de capital...")
+    res = cerebro_genesis("Reporte de movimientos de ballenas de las últimas 12 horas.")
     bot.edit_message_text(f"🐋 **RADAR:**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda m: m.text == "📊 Precio Real")
-def btn_precio(message):
-    bot.send_message(message.chat.id, "Escribe el ticker (ej: BTC, TSLA, NVDA):")
+def btn_pre(message):
+    bot.send_message(message.chat.id, "Escribe el ticker (ej: BTC, TSLA, AAPL):")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     f_info = bot.get_file(message.photo[-1].file_id)
     img_b64 = base64.b64encode(bot.download_file(f_info.file_path)).decode('utf-8')
-    status = bot.reply_to(message, "🎯 Escaneando gráfica...")
+    status = bot.reply_to(message, "🎯 Analizando estructura...")
     res = cerebro_genesis(None, img_b64)
     bot.edit_message_text(f"🎯 **REPORTE SMC:**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda m: True)
-def text_handler(message):
+def text_input(message):
     if len(message.text) <= 6:
-        p = obtener_precio_vivo(message.text)
+        p = obtener_precio_v51(message.text)
         if p:
-            bot.reply_to(message, f"📈 Precio REAL de {message.text.upper()}: **${p}**")
+            bot.reply_to(message, f"📈 Precio de {message.text.upper()}: **${p}**")
         else:
-            bot.reply_to(message, "❌ No hay acceso a datos en vivo para este ticker. Intenta con otro.")
+            bot.reply_to(message, "❌ Yahoo Finance bloqueó la conexión. Intenta más tarde o con otro ticker.")
 
 if __name__ == "__main__":
     bot.infinity_polling()
