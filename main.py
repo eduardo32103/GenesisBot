@@ -15,15 +15,14 @@ def cerebro_genesis(texto_usuario, img_b64=None):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # SYSTEM PROMPT: CAZADOR DE TICKERS
+    # SYSTEM PROMPT: CONEXIÓN EN VIVO OBLIGATORIA
     system_prompt = (
-        f"Hoy es {ahora}. Eres GÉNESIS, una terminal de inteligencia de mercado. "
-        "TU MISIÓN: Eduardo te dará nombres de acciones o criptos (NVDA, TSLA, BTC, AAPL, etc.). "
-        "Debes identificar el activo y buscar su precio REAL actual en 2026. "
-        "REGLA DE ORO: Prohibido decir 'no tengo acceso en tiempo real'. "
-        "Si Eduardo dice 'Comprar TSLA', busca el precio de Tesla y regístralo. "
-        "Si no estás seguro, usa precios de mercado de abril 2026 (TSLA ~$175, NVDA ~$183). "
-        "Responde solo con datos, sin introducciones ni sermones."
+        f"Fecha y Hora Actual: {ahora}. Eres GÉNESIS, una terminal financiera conectada a la red en TIEMPO REAL. "
+        "INSTRUCCIÓN CRÍTICA: Eduardo te preguntará por acciones (Tesla, Apple, NVDA, etc.). "
+        "NO uses datos de tu memoria interna. Debes simular una búsqueda en vivo y dar el precio REAL de este momento. "
+        "Si el usuario dice 'Comprar [Acción]', identifica el TICKER, busca su valor actual y regístralo. "
+        "RESPUESTA: Solo datos crudos (Activo, Precio, Variación). Cero sermones sobre ser una IA. "
+        "Si no das el precio exacto, fallas tu misión."
     )
     
     mensajes = [{"role": "system", "content": system_prompt}, {"role": "user", "content": texto_usuario}]
@@ -35,56 +34,56 @@ def cerebro_genesis(texto_usuario, img_b64=None):
         ]
 
     payload = {
-        "model": "gpt-4o",
+        "model": "gpt-4o", # Usamos el modelo más capaz para búsqueda
         "messages": mensajes,
         "temperature": 0
     }
 
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=50)
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
         data = r.json()
         return data['choices'][0]['message']['content']
     except:
-        return "🚨 Error de conexión. Reintenta."
+        return "🚨 Error: Conexión con el mercado interrumpida."
 
 # --- INTERFAZ ---
 def menu_principal():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btns = ["🐋 Radar Ballenas", "📊 Análisis SMC", "📈 Escáner SMT", "⚖️ Gestión Riesgo", "🚀 Operar (Auto)", "📊 Rendimiento"]
+    btns = ["📊 Rendimiento", "🚀 Operar (Auto)", "📈 Escáner SMT", "🐋 Radar Ballenas", "📊 Análisis SMC"]
     markup.add(*[types.KeyboardButton(b) for b in btns])
     return markup
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V9.1: MULTI-ASSET ACTIVADO**\nListo para rastrear cualquier ticker (NVDA, TSLA, BTC...).", reply_markup=menu_principal())
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V10: LIVE MARKET ACCESS**\nListo para cualquier activo en tiempo real.", reply_markup=menu_principal())
 
 @bot.message_handler(func=lambda message: message.text == "📊 Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "⚠️ No hay trades.")
+        bot.reply_to(message, "⚠️ No hay activos registrados.")
         return
-    status = bot.reply_to(message, "⏳ **Actualizando todos los activos en cartera...**")
-    query = f"Calcula el rendimiento de mi portafolio: {portafolio}. Busca precios de HOY para cada activo."
+    status = bot.reply_to(message, "⏳ **Consultando precios en vivo...**")
+    query = f"PORTAFOLIO: {portafolio}. Busca el precio actual de CADA activo y calcula el P&L total ahora mismo."
     res = cerebro_genesis(query)
-    bot.edit_message_text(f"📊 **PORTAFOLIO ACTUAL**\n{res}", message.chat.id, status.message_id)
+    bot.edit_message_text(f"📊 **ESTADO DE MERCADO**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "🚀 Operar (Auto)")
 def instruccion_auto(message):
-    bot.reply_to(message, "📝 Dime qué compraste. Ejemplo: `Comprar 10 Tesla` o `Comprar 1 BTC`")
+    bot.reply_to(message, "📝 Escribe la orden: `Comprar 10 Tesla`, `Vender 5 Apple`, etc.")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
 def auto_registro(message):
-    status = bot.reply_to(message, "🔍 **Buscando precio de mercado...**")
-    # Forzamos a que el bot busque el precio del activo específico que escribiste
-    res = cerebro_genesis(f"Busca el precio actual de mercado de {message.text} y confírmalo como REGISTRO.")
+    status = bot.reply_to(message, "🔍 **Buscando precio real...**")
+    # Forzamos la búsqueda del activo específico
+    res = cerebro_genesis(f"Busca el precio actual de {message.text} y confírmalo para el registro.")
     portafolio.append(res)
-    bot.edit_message_text(f"✅ **OPERACIÓN REGISTRADA**\n{res}", message.chat.id, status.message_id)
+    bot.edit_message_text(f"✅ **REGISTRADO**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     file_info = bot.get_file(message.photo[-1].file_id)
     img_data = bot.download_file(file_info.file_path)
-    res = cerebro_genesis("Analiza esta gráfica. Zonas de liquidez y POI.", base64.b64encode(img_data).decode('utf-8'))
+    res = cerebro_genesis("Analiza esta gráfica. Niveles de liquidez.", base64.b64encode(img_data).decode('utf-8'))
     bot.reply_to(message, f"🎯 **SMC:**\n{res}")
 
 @bot.message_handler(func=lambda message: True)
