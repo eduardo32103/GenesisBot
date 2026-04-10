@@ -11,70 +11,71 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 # Memoria de operaciones
 portafolio = []
 
-def cerebro_genesis(texto_usuario, system_role="Terminal de Datos"):
+def cerebro_genesis(texto_usuario):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
+    # SYSTEM PROMPT: PROTOCOLO DE VERIFICACIÓN
     system_prompt = (
-        f"Hoy es {ahora}. Eres GÉNESIS, una IA financiera con acceso a internet. "
-        "INSTRUCCIÓN: Eduardo te dará comandos como 'Comprar 5000 NVDA'. "
-        "Tu tarea es: 1. Buscar el precio actual de mercado de ese activo. "
-        "2. Responder SOLO con el formato: 'REGISTRO: [Activo] | Cantidad: [Cant] | Precio: [Precio Encontrado]'. "
-        "NUNCA digas que no puedes buscar. Si el mercado está cerrado, usa el precio de cierre más reciente. "
-        "No des sermones ni consejos. Solo datos."
+        f"Fecha actual: {ahora}. Eres GÉNESIS, una terminal de DATOS REALES. "
+        "INSTRUCCIÓN MÁXIMA: Si Eduardo te pide un precio, DEBES verificarlo. "
+        "Si no tienes el dato exacto de este segundo, NO INVENTES. "
+        "Referencia de control: NVDA está cerca de $183.91. Cualquier dato arriba de $200 es ERROR. "
+        "Responde solo con: ACTIVO | PRECIO | FUENTE. Sin sermones."
     )
     
     payload = {
         "model": "gpt-4o", 
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": texto_usuario}
+            {"role": "user", "content": f"Busca el precio actual de mercado y responde solo con datos: {texto_usuario}"}
         ],
-        "temperature": 0
+        "temperature": 0 # Frío total para evitar inventos
     }
 
     try:
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
         return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Error de conexión al buscar precio."
+    except: return "🚨 Error de conexión."
 
 # --- INTERFAZ ---
 def menu_principal():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btns = ["🐋 Radar Ballenas", "📊 Análisis SMC", "📈 Escáner SMT", "⚖️ Gestión Riesgo", "🚀 Operar (Auto)", "📊 Mi Rendimiento"]
+    btns = ["🐋 Radar Ballenas", "📊 Análisis SMC", "📈 Escáner SMT", "⚖️ Gestión Riesgo", "🚀 Operar (Auto)", "📊 Rendimiento"]
     markup.add(*[types.KeyboardButton(b) for b in btns])
     return markup
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V7.0: AUTO-PRICE ACTIVADO**\nSolo dime qué compraste y yo busco el precio.", reply_markup=menu_principal())
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V8.0: MODO FRANCOTIRADOR**\nProtocolo de verificación de precios activado.", reply_markup=menu_principal())
 
 @bot.message_handler(func=lambda message: message.text == "🚀 Operar (Auto)")
 def instruccion_auto(message):
-    bot.reply_to(message, "📝 **Mándame la orden.**\nEjemplo: `Comprar 50 NVDA` o `Vender 1 BTC`")
+    bot.reply_to(message, "📝 Dime qué compraste (Ej: 100 NVDA)")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
 def auto_registro(message):
-    status = bot.reply_to(message, "🔍 **Buscando precio de mercado actual...**")
+    # Limpiamos el texto para que el bot no se confunda
+    orden = message.text.lower().replace("comprar ", "").replace("vender ", "").strip()
+    status = bot.reply_to(message, f"🔍 **Verificando precio real de {orden}...**")
     
-    # El bot busca el precio por ti
-    resultado = cerebro_genesis(message.text)
+    # El bot busca el precio
+    datos_reales = cerebro_genesis(f"Precio actual de {orden}")
     
-    if "REGISTRO:" in resultado:
-        portafolio.append(resultado)
-        bot.edit_message_text(f"✅ **OPERACIÓN REGISTRADA**\n━━━━━━━━━━━━━━\n{resultado}", message.chat.id, status.message_id)
+    if "|" in datos_reales:
+        portafolio.append(f"{message.text} | {datos_reales}")
+        bot.edit_message_text(f"✅ **REGISTRADO AL CENTAVO**\n{datos_reales}", message.chat.id, status.message_id)
     else:
-        bot.edit_message_text(f"❌ No pude encontrar el precio. Intenta poner: `Comprar NVDA a [Precio]`", message.chat.id, status.message_id)
+        bot.edit_message_text(f"❌ Error en datos. Mejor ponlo manual: `Comprar {orden} a [Precio]`", message.chat.id, status.message_id)
 
-@bot.message_handler(func=lambda message: message.text == "📊 Mi Rendimiento")
+@bot.message_handler(func=lambda message: message.text == "📊 Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "⚠️ Portafolio vacío.")
-        return
-    status = bot.reply_to(message, "⏳ **Actualizando precios y calculando P&L...**")
-    query = f"PORTAFOLIO: {portafolio}. Busca el precio actual de estos activos y calcula rendimiento total. Solo tabla de datos."
+        bot.reply_to(message, "⚠️ Vacío.") return
+    status = bot.reply_to(message, "⏳ **Cruzando datos con el mercado...**")
+    query = f"Calcula P&L de: {portafolio}. Solo tabla, sin sermones."
     res = cerebro_genesis(query)
-    bot.edit_message_text(f"📊 **BALANCE TOTAL**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
+    bot.edit_message_text(f"📊 **ESTADO REAL**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: True)
 def handle_all(message):
