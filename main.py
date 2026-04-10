@@ -10,7 +10,7 @@ from flask import Flask
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # ¡CAMBIA ESTE NÚMERO por el que te dio @userinfobot!
-TU_CHAT_ID = "PON_AQUI_TU_ID_DE_TELEGRAM" 
+TU_CHAT_ID = "5426620320" 
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
@@ -18,7 +18,7 @@ app = Flask(__name__)
 # --- CEREBRO GÉNESIS (ANÁLISIS GENERAL) ---
 def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Analista Pro"):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-   system_prompt = (
+    system_prompt = (
         "Eres GÉNESIS, un analista financiero de ÉLITE con acceso a datos en tiempo real. "
         "Tu meta es el 10% mensual. NO des consejos genéricos ni educativos. "
         "Cuando el usuario te pregunte por un escaneo o ballenas, DEBES: "
@@ -27,7 +27,6 @@ def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Analista Pro"
         "3. Dar nombres de activos específicos (ej. BTC, NVDA, Tesla) y por qué hay que vigilarlos. "
         "Si no ves nada claro, di: 'Mercado lateral, sin huella de ballenas', pero nunca des teoría de soportes y resistencias."
     )
-    
     
     contenido = []
     if texto_usuario:
@@ -48,12 +47,9 @@ def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Analista Pro"
         "max_tokens": 1000
     }
     
-    try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-        data = r.json()
-        return data['choices'][0]['message']['content']
-    except Exception as e:
-        return f"🚨 Error en el cerebro: {e}"
+    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+    data = r.json()
+    return data['choices'][0]['message']['content'] if 'choices' in data else "🚨 Error en respuesta"
 
 # --- RADAR EN VIVO (PATRULLAJE 24/7) ---
 def monitor_activo():
