@@ -5,7 +5,7 @@ from telebot import types
 # --- CONFIGURACIÓN ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TU_CHAT_ID = "TU_ID_AQUI" # Pon tu ID real aquí
+TU_CHAT_ID = "5426620320" # Pon tu ID real aquí
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
