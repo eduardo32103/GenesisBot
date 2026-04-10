@@ -1,112 +1,94 @@
-import os, base64, requests, telebot, datetime, time, threading
-import yfinance as yf
+import os, base64, requests, telebot, yfinance as yf
 from telebot import types
 
 # --- CONFIGURACIÓN ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-MI_CHAT_ID = "6348873730" 
-bot = telebot.TeleBot(TOKEN, threaded=True)
+bot = telebot.TeleBot(TOKEN, threaded=False)
 
-# Lista de activos para el motor de vigilancia
-WATCHLIST = ["BTC-USD", "GC=F", "DX-Y.NYB", "NVDA"]
-
-# --- MOTOR DE PRECIOS LIMPIO ---
+# --- MOTOR DE PRECIOS (SIN FALLAS) ---
 def obtener_precio(ticker):
     try:
         t = ticker.upper().strip()
         if t in ["BTC", "ETH", "SOL"]: t = f"{t}-USD"
         asset = yf.Ticker(t)
-        # Pedimos solo el último cierre para no saturar
+        # Obtenemos el precio actual de la forma más directa
         data = asset.history(period="1d", interval="1m")
-        return round(float(data['Close'].iloc[-1]), 2) if not data.empty else None
+        if not data.empty:
+            return round(float(data['Close'].iloc[-1]), 2)
+        return None
     except: return None
 
-# --- CEREBRO GÉNESIS (SISTEMA DE DATOS CRUDOS) ---
+# --- CEREBRO GÉNESIS (ANTI-SERMONES) ---
 def cerebro_genesis(query, mode="general", img_b64=None):
-    if not OPENAI_API_KEY: return "🚨 ERROR: API KEY"
+    if not OPENAI_API_KEY: return "🚨 ERROR: API KEY NO CONFIGURADA"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     
-    # Instrucciones cortas para evitar sermones
+    # Instrucciones agresivas para que no te dé sermones
     prompts = {
-        "alarma": "Radar de crisis. Analiza noticias. Si hay impacto >2%, suelta ALERTA ROJA y el hecho. Si no, di CALMA. Cero sermones.",
-        "smc": "Analista SMC. Solo niveles: BOS, CHoCH, OB, FVG y Coordenadas. Prohibido texto de relleno.",
-        "general": "Terminal Financiera. Solo hechos, cifras y datos técnicos directos."
+        "ballenas": "Actúa como Whale Alert. Lista movimientos >$10M USD de las últimas horas (Wallet -> Exchange). Solo datos crudos.",
+        "geo": "Analista Geopolítico. Reporta hechos críticos que muevan el mercado >2%. Impacto en Oro/DXY. Solo hechos.",
+        "smc": "Analista SMC Pro. Identifica BOS, CHoCH, OB y FVG. Da precios exactos de entrada y liquidez. Sin sermones.",
+        "general": "Terminal GÉNESIS. Solo responde con datos técnicos, cifras y hechos. Prohibido el relleno."
     }
 
     payload = {
         "model": "gpt-4o",
         "messages": [
             {"role": "system", "content": prompts.get(mode, prompts["general"])},
-            {"role": "user", "content": query}
+            {"role": "user", "content": query if query else "Analiza."}
         ],
-        "temperature": 0 # Para que no invente historias
+        "temperature": 0
     }
 
     if img_b64:
         payload["messages"][1]["content"] = [
-            {"type": "text", "text": "MAP SMC LEVELS: BOS, OB, FVG. PRICE TARGETS ONLY."},
+            {"type": "text", "text": "SMC LEVELS: Identify structure and Order Blocks."},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
         ]
 
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=40)
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
         return r.json()['choices'][0]['message']['content']
-    except: return "🚨 ERROR CONEXIÓN IA"
-
-# --- VIGILANTE 24/7 ---
-def vigilante_activo():
-    while True:
-        try:
-            # Busca noticias de impacto real cada 10 min
-            res = cerebro_genesis("Busca eventos geopolíticos de impacto >2% en Oro/BTC.", mode="alarma")
-            if "ALERTA" in res.upper():
-                bot.send_message(MI_CHAT_ID, f"⚠️ **VIGILANCIA 24/7:**\n{res}")
-        except: pass
-        time.sleep(600)
-
-threading.Thread(target=vigilante_activo, daemon=True).start()
+    except: return "🚨 ERROR DE CONEXIÓN CON IA"
 
 # --- INTERFAZ ---
 @bot.message_handler(commands=['start'])
 def start(message):
     m = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    m.add("📊 Precio Real", "🌍 Geopolítica", "🐋 Radar Ballenas", "📋 Watchlist")
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V57: SISTEMA REESTABLECIDO**\nSin sermones. Solo datos.", reply_markup=m)
+    m.add("📊 Precio Real", "🌍 Geopolítica", "🐋 Radar Ballenas", "🎯 Análisis SMC")
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V58: ONLINE**\nTerminal de datos lista.", reply_markup=m)
 
 @bot.message_handler(func=lambda m: m.text == "🌍 Geopolítica")
 def btn_geo(message):
-    status = bot.reply_to(message, "🌍 Escaneando impacto real...")
-    res = cerebro_genesis("Hechos geopolíticos hoy e impacto >2%.", mode="general")
-    bot.edit_message_text(f"🌍 **IMPACTO:**\n{res}", message.chat.id, status.message_id)
+    status = bot.reply_to(message, "🌍 Escaneando impacto geopolítico...")
+    res = cerebro_genesis("Eventos actuales con impacto >2%.", mode="geo")
+    bot.edit_message_text(f"🌍 **INFORME:**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda m: m.text == "🐋 Radar Ballenas")
 def btn_ballenas(message):
-    status = bot.reply_to(message, "🐋 Rastreando Ledger...")
-    res = cerebro_genesis("Lista movimientos ballenas >$10M últimas 12h.", mode="general")
-    bot.edit_message_text(f"🐋 **RADAR:**\n{res}", message.chat.id, status.message_id)
+    status = bot.reply_to(message, "🐋 Rastreando movimientos institucionales...")
+    res = cerebro_genesis("Lista movimientos grandes recientes.", mode="ballenas")
+    bot.edit_message_text(f"🐋 **WHALE ALERT:**\n{res}", message.chat.id, status.message_id)
 
-@bot.message_handler(func=lambda m: m.text == "📋 Watchlist")
-def btn_watch(message):
-    res = "📋 **VIGILANCIA EN VIVO:**\n"
-    for t in WATCHLIST:
-        p = obtener_precio(t)
-        res += f"• {t}: **${p if p else 'N/A'}**\n"
-    bot.send_message(message.chat.id, res)
+@bot.message_handler(func=lambda m: m.text == "🎯 Análisis SMC")
+def btn_smc_inst(message):
+    bot.send_message(message.chat.id, "Mándame la captura de la gráfica para analizar niveles.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     f_info = bot.get_file(message.photo[-1].file_id)
     img_b64 = base64.b64encode(bot.download_file(f_info.file_path)).decode('utf-8')
-    status = bot.reply_to(message, "🎯 Escaneando SMC...")
+    status = bot.reply_to(message, "🎯 Mapeando niveles institucionales...")
     res = cerebro_genesis(None, mode="smc", img_b64=img_b64)
-    bot.edit_message_text(f"🎯 **NIVELES:**\n{res}", message.chat.id, status.message_id)
+    bot.edit_message_text(f"🎯 **REPORTE TÉCNICO:**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda m: True)
-def default(message):
+def ticker_handler(message):
     if len(message.text) <= 6:
         p = obtener_precio(message.text)
         if p: bot.reply_to(message, f"📈 {message.text.upper()}: **${p}**")
+        else: bot.reply_to(message, "❌ No pude jalar datos reales.")
 
 if __name__ == "__main__":
     bot.infinity_polling()
