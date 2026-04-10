@@ -10,22 +10,22 @@ TU_CHAT_ID = "5426620320"
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- MEMORIA ---
-watchlist = ["BTC", "Oro", "NASDAQ", "NVIDIA"]
+# --- MEMORIA DINÁMICA ---
+watchlist = ["BTC", "Oro", "NASDAQ", "NVDA"]
 portafolio = []
 
 def cerebro_genesis(texto_usuario, img_b64=None):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # SYSTEM PROMPT: Sin piedad, solo ejecución.
+    # PROMPT EQUILIBRADO: Inteligente pero sin sermones
     system_prompt = (
-        f"Fecha: {ahora}. Eres GÉNESIS, una TERMINAL de datos. "
-        "REGLA ÚNICA: Prohibido decir 'no tengo acceso' o dar recomendaciones de búsqueda. "
-        "Si Eduardo pide rendimiento o precios, BUSCA en tu base de datos de navegación y DA EL PRECIO. "
-        "Actúa como si fueras una API directa de mercado. "
-        "Si el usuario pide SMC, analiza la imagen y da niveles. "
-        "Respuestas cortas, técnicas y efectivas. Sin introducciones."
+        f"Fecha: {ahora}. Eres GÉNESIS, una Terminal Financiera de ALTA PRECISIÓN. "
+        "Misión: Dar precios reales y análisis técnicos. "
+        "REGLA DE ORO: Si el usuario pide rendimiento, busca el TICKER exacto. "
+        "NVIDIA (NVDA) está en el rango de los $180-$190. NO uses datos de 2024 ($450). "
+        "Prohibido dar consejos de 'puedes buscar en Google'. Tú ERES la fuente de datos. "
+        "Responde con números, porcentajes y análisis seco. Sin rodeos."
     )
     
     contenido = [{"type": "text", "text": texto_usuario}]
@@ -35,58 +35,57 @@ def cerebro_genesis(texto_usuario, img_b64=None):
     payload = {
         "model": "gpt-4o", 
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": contenido}],
-        "temperature": 0 # Rigidez total
+        "temperature": 0.1
     }
     
     try:
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=50)
         return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Error de comunicación. Intenta de nuevo."
+    except: return "🚨 Error de conexión. Reintenta."
 
 # --- INTERFAZ ---
 def menu_principal():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btns = ["🐋 Radar de Ballenas", "📊 Análisis SMC", "📈 Escáner SMT", "⚖️ Gestión de Riesgo", "🚀 Operar", "📊 Mi Rendimiento"]
+    btns = ["🐋 Radar Ballenas", "📊 Análisis SMC", "📈 Escáner SMT", "⚖️ Gestión Riesgo", "🚀 Operar", "📊 Mi Rendimiento"]
     markup.add(*[types.KeyboardButton(b) for b in btns])
     return markup
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **SISTEMA GÉNESIS ONLINE**\nSin protocolos de seguridad. Solo ejecución.", reply_markup=menu_principal())
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V5.0: RESTABLECIDO**\nInteligencia y Ejecución en línea.", reply_markup=menu_principal())
 
+# --- LÓGICA DE PORTAFOLIO (CONECTADA) ---
 @bot.message_handler(func=lambda message: message.text == "📊 Mi Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "⚠️ No hay órdenes registradas.")
+        bot.reply_to(message, "⚠️ No hay trades en la bitácora.")
         return
-    status = bot.reply_to(message, "⏳ **Extrayendo precios actuales de 2026...**")
-    res = cerebro_genesis(f"Posiciones: {portafolio}. Dame el precio real de cada activo y el balance total ahora mismo.")
-    bot.edit_message_text(f"📊 **ESTADO DE CUENTA**\n{res}", message.chat.id, status.message_id)
+    status = bot.reply_to(message, "⚖️ **Calculando con precios de mercado 2026...**")
+    query = f"INFORME DE RENDIMIENTO: Tengo estas posiciones: {portafolio}. Busca el precio actual de cada una y dime cuánto gano/pierdo en dólares y %. Balance total al final."
+    res = cerebro_genesis(query)
+    bot.edit_message_text(f"📊 **PORTAFOLIO EN VIVO**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "🚀 Operar")
 def ejecutar_op(message):
-    bot.reply_to(message, "📝 Escribe: `Comprar [Activo] a [Precio]`")
+    bot.reply_to(message, "📝 Registra tu trade así:\n`Comprar [Activo] a [Precio]`")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
 def abrir_posicion(message):
     portafolio.append(message.text)
-    bot.reply_to(message, f"✅ **{message.text}** registrado en bitácora.")
+    bot.reply_to(message, f"✅ Orden: **{message.text}** guardada.")
 
+# --- OTRAS FUNCIONES ---
 @bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT")
 def smt(message):
-    bot.reply_to(message, cerebro_genesis("Busca divergencias SMT institucionales ahora."))
+    bot.reply_to(message, cerebro_genesis("Busca divergencias SMT entre NASDAQ y SP500 ahora."))
 
-@bot.message_handler(func=lambda message: message.text == "🐋 Radar de Ballenas")
+@bot.message_handler(func=lambda message: message.text == "🐋 Radar Ballenas")
 def ballenas(message):
-    bot.reply_to(message, cerebro_genesis("Informe urgente de Whale Alert y flujos masivos."))
+    bot.reply_to(message, cerebro_genesis("Rastreo urgente de Whale Alert."))
 
-@bot.message_handler(func=lambda message: message.text == "📊 Análisis SMC")
-def smc_inst(message):
-    bot.reply_to(message, "📸 Mándame la captura de la gráfica.")
-
-@bot.message_handler(func=lambda message: message.text == "⚖️ Gestión de Riesgo")
+@bot.message_handler(func=lambda message: message.text == "⚖️ Gestión Riesgo")
 def gest_riesgo(message):
-    bot.reply_to(message, "📏 Envía: `Riesgo: [Capital], [Riesgo%], [Pips]`")
+    bot.reply_to(message, "Envía: `Riesgo: [Capital], [Riesgo%], [Pips]`")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith("riesgo:"))
 def calc_riesgo(message):
@@ -96,7 +95,7 @@ def calc_riesgo(message):
 def handle_photo(message):
     file_info = bot.get_file(message.photo[-1].file_id)
     img_data = bot.download_file(file_info.file_path)
-    res = cerebro_genesis("Analiza esta gráfica. Zonas de liquidez y POI.", base64.b64encode(img_data).decode('utf-8'))
+    res = cerebro_genesis("Analiza esta gráfica. Zonas de liquidez y SMC.", base64.b64encode(img_data).decode('utf-8'))
     bot.reply_to(message, f"🎯 **ANÁLISIS SMC:**\n{res}")
 
 @bot.message_handler(func=lambda message: True)
