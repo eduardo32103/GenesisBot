@@ -1,17 +1,9 @@
 import os
-import sys
-import base64
-import requests
 import telebot
-import datetime
+import yfinance as yf
+import requests
+import base64
 from telebot import types
-
-# --- CARGA DE LIBRERÍAS CON PREVENCIÓN DE ERRORES ---
-try:
-    import yfinance as yf
-except ImportError:
-    os.system('pip install yfinance')
-    import yfinance as yf
 
 # --- CONFIGURACIÓN ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
@@ -20,96 +12,89 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 bot = telebot.TeleBot(TOKEN, threaded=False)
 portafolio = []
 
-# --- MOTOR DE PRECIOS (VERIFICADO) ---
-def obtener_precio_real(ticker):
+# --- MOTOR DE PRECIOS ---
+def obtener_precio(ticker):
     try:
         t = ticker.upper().strip()
         if t in ["BTC", "ETH", "SOL"]: t = f"{t}-USD"
         stock = yf.Ticker(t)
-        # Intentamos obtener el último precio de cierre para mayor estabilidad
-        data = stock.history(period="1d")
-        if not data.empty:
-            return round(float(data['Close'].iloc[-1]), 2)
-        return None
-    except Exception as e:
-        print(f"Error en precio: {e}")
+        precio = stock.fast_info['last_price']
+        return round(float(precio), 2)
+    except:
         return None
 
-# --- CEREBRO DE INTELIGENCIA ---
-def cerebro_genesis(query, img_b64=None):
-    if not OPENAI_API_KEY: return "🚨 Falta API KEY en variables de Railway."
-    
+# --- CEREBRO INTELIGENTE ---
+def analizar_con_ia(query, img_b64=None):
+    if not OPENAI_API_KEY: return "🚨 ERROR: Configura OPENAI_API_KEY en Railway."
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    system_prompt = (
-        "Eres GÉNESIS V24. Analista institucional. "
-        "Tu misión es identificar niveles de SMC (BOS, CHoCH, OB, FVG) en gráficas. "
-        "No des definiciones. No des consejos. Solo niveles y sesgo de mercado."
-    )
+    
+    msg_content = [{"type": "text", "text": query}]
+    if img_b64:
+        msg_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
 
     payload = {
         "model": "gpt-4o",
-        "messages": [{"role": "system", "content": system_prompt}],
+        "messages": [
+            {"role": "system", "content": "Eres GÉNESIS. Analista SMC. Solo das niveles técnicos y precios. Sin sermones."},
+            {"role": "user", "content": msg_content}
+        ],
         "temperature": 0
     }
-
-    if img_b64:
-        payload["messages"].append({"role": "user", "content": [
-            {"type": "text", "text": "Analiza esta gráfica. Dame niveles de liquidez y estructura técnica."},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-        ]})
-    else:
-        payload["messages"].append({"role": "user", "content": query})
-
+    
     try:
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
         return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Error de respuesta de IA."
+    except:
+        return "🚨 Error en el cerebro de IA."
 
-# --- HANDLERS DE COMANDOS ---
+# --- HANDLERS ---
 @bot.message_handler(commands=['start'])
-def inicio(message):
+def start(message):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add("📊 Rendimiento", "🚀 Operar", "📈 Escáner SMT", "🐋 Radar Ballenas")
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V24: SISTEMA ESTABILIZADO**\nLibrerías verificadas. Operativo.", reply_markup=markup)
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V25: SISTEMA ONLINE**", reply_markup=markup)
 
-@bot.message_handler(func=lambda m: m.text == "🐋 Radar Ballenas")
-def ballenas(message):
-    status = bot.reply_to(message, "📡 Escaneando flujos de liquidez...")
-    res = cerebro_genesis("Reporta movimientos de ballenas en las últimas 6 horas.")
-    bot.edit_message_text(f"🐋 **RADAR:**\n{res}", message.chat.id, status.message_id)
-
-@bot.message_handler(func=lambda m: m.text == "📊 Rendimiento")
-def rend(message):
-    if not portafolio:
-        bot.reply_to(message, "⚠️ No hay activos.")
-        return
-    status = bot.reply_to(message, "⏳ Consultando precios...")
-    res = "📊 **REPORTE DE MERCADO:**\n"
-    for o in portafolio:
-        p = obtener_precio_real(o['t'])
-        res += f"🔹 {o['t']}: ${p if p else 'N/A'}\n"
-    bot.edit_message_text(res, message.chat.id, status.message_id)
+@bot.message_handler(func=lambda m: m.text == "🚀 Operar")
+def operar(message):
+    bot.reply_to(message, "Escribe: `Comprar 10 TSLA` o `Vender 2 BTC`")
 
 @bot.message_handler(func=lambda m: m.text.lower().startswith("comprar "))
-def comprar(message):
+def registrar(message):
     try:
-        partes = message.text.split()
-        cant, ticker = float(partes[1]), partes[2].upper()
-        precio = obtener_precio_real(ticker)
-        if precio:
-            portafolio.append({"t": ticker, "c": cant, "p": precio})
-            bot.reply_to(message, f"✅ Registrado: {ticker} a ${precio}")
-        else: bot.reply_to(message, "❌ Ticker no encontrado.")
-    except: bot.reply_to(message, "Usa: Comprar 10 TSLA")
+        p = message.text.split()
+        cant, ticker = float(p[1]), p[2].upper()
+        px = obtener_precio(ticker)
+        if px:
+            portafolio.append({"t": ticker, "c": cant, "p": px})
+            bot.reply_to(message, f"✅ Registrado: {ticker} a ${px}")
+        else:
+            bot.reply_to(message, "❌ Ticker no encontrado.")
+    except:
+        bot.reply_to(message, "❌ Error. Ejemplo: Comprar 10 NVDA")
+
+@bot.message_handler(func=lambda m: m.text == "📊 Rendimiento")
+def rendimiento(message):
+    if not portafolio:
+        bot.reply_to(message, "⚠️ Vacío.")
+        return
+    res = "📊 **PORTAFOLIO:**\n"
+    for o in portafolio:
+        act = obtener_precio(o['t'])
+        res += f"🔹 {o['t']}: ${act if act else 'N/A'}\n"
+    bot.reply_to(message, res)
+
+@bot.message_handler(func=lambda m: m.text == "🐋 Radar Ballenas")
+def radar(message):
+    bot.reply_to(message, analizar_con_ia("Busca movimientos de ballenas recientes."))
 
 @bot.message_handler(content_types=['photo'])
 def imagen(message):
-    file_info = bot.get_file(message.photo[-1].file_id)
-    downloaded = bot.download_file(file_info.file_path)
+    f_info = bot.get_file(message.photo[-1].file_id)
+    downloaded = bot.download_file(f_info.file_path)
     img_b64 = base64.b64encode(downloaded).decode('utf-8')
-    status = bot.reply_to(message, "🎯 Analizando gráfica institucional...")
-    res = cerebro_genesis(None, img_b64)
-    bot.edit_message_text(f"🎯 **ANÁLISIS SMC:**\n{res}", message.chat.id, status.message_id)
+    bot.reply_to(message, "🎯 Analizando niveles SMC...")
+    res = analizar_con_ia("Analiza niveles de BOS y FVG en esta imagen.", img_b64)
+    bot.reply_to(message, res)
 
 if __name__ == "__main__":
     bot.infinity_polling()
