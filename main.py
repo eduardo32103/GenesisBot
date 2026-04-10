@@ -1,119 +1,101 @@
-import os
-import requests
-import base64
-import time
-import threading
-import telebot
+import os, requests, base64, time, threading, telebot
 from flask import Flask
 
-# --- CONFIGURACIÓN CRÍTICA ---
+# --- CONFIGURACIÓN ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# ¡CAMBIA ESTE NÚMERO por el que te dio @userinfobot!
-TU_CHAT_ID = "5426620320" 
+TU_CHAT_ID = "5426620320" # Pon tu ID real
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- CEREBRO GÉNESIS (ANÁLISIS GENERAL) ---
+# MEMORIA PARA NO REPETIR NOTICIAS
+noticias_enviadas = []
+
 def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Analista Pro"):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     system_prompt = (
-        "Eres GÉNESIS, un analista financiero de ÉLITE con acceso a datos en tiempo real. "
-        "Tu meta es el 10% mensual. NO des consejos genéricos ni educativos. "
-        "Cuando el usuario te pregunte por un escaneo o ballenas, DEBES: "
-        "1. Buscar noticias de última hora en portales financieros (Bloomberg, Reuters, Whale Alert). "
-        "2. Identificar movimientos institucionales reales (Smart Money). "
-        "3. Dar nombres de activos específicos (ej. BTC, NVDA, Tesla) y por qué hay que vigilarlos. "
-        "Si no ves nada claro, di: 'Mercado lateral, sin huella de ballenas', pero nunca des teoría de soportes y resistencias."
+        "Eres GÉNESIS, una terminal de inteligencia financiera de ÉLITE. "
+        "Tu meta: 10% mensual. REGLAS: 1. Sé estético y usa emojis. 2. NO te contradigas; si los datos son inciertos, di que el mercado está en espera. "
+        "3. Analiza flujos de dinero real (Smart Money). 4. Solo reporta movimientos de ALTO IMPACTO (>2%)."
     )
     
     contenido = []
-    if texto_usuario:
-        contenido.append({"type": "text", "text": texto_usuario})
+    if texto_usuario: contenido.append({"type": "text", "text": texto_usuario})
     if img_b64:
-        contenido.append({"type": "text", "text": "Analiza esta gráfica detalladamente."})
-        contenido.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}
-        })
+        contenido.append({"type": "text", "text": "Analiza esta gráfica. Busca Order Blocks y Liquidez."})
+        contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}})
 
     payload = {
         "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": contenido}
-        ],
-        "max_tokens": 1000
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": contenido}],
+        "max_tokens": 800,
+        "temperature": 0.3
     }
     
-    r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-    data = r.json()
-    return data['choices'][0]['message']['content'] if 'choices' in data else "🚨 Error en respuesta"
+    try:
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=25)
+        return r.json()['choices'][0]['message']['content']
+    except: return "🚨 Error de conexión."
 
-# --- RADAR EN VIVO (PATRULLAJE 24/7) ---
+# --- RADAR CON MEMORIA Y ESTÉTICA ---
 def monitor_activo():
-    """Busca noticias cada 60 segundos y filtra impacto > 2%"""
-    print("🦅 Radar de GÉNESIS iniciando patrullaje...")
+    global noticias_enviadas
     while True:
         try:
-            query = (
-                "Busca noticias financieras y geopolíticas de ÚLTIMA HORA (últimos minutos). "
-                "Reporta ÚNICAMENTE si la noticia puede mover el mercado, una acción o cripto más de un 2%. "
-                "Si encuentras algo, inicia con '⚡ ALERTA DE ALTO IMPACTO'."
-            )
+            # Pedimos un resumen de lo más importante del minuto
+            query = "Busca la noticia financiera MÁS importante de este minuto. Reporta SOLO si es impacto >2% y NO repitas temas generales."
+            res = cerebro_genesis(query, system_role="Radar Anti-Spam")
             
-            alerta = cerebro_genesis(query, system_role="Radar Geopolítico de Alta Velocidad")
+            # FILTRO DE REPETICIÓN: Extraemos las primeras 30 letras para comparar
+            huella = res[:30] 
+            if huella not in noticias_enviadas:
+                # Si es una alerta real, le damos formato estético
+                if "⚡" in res or "ALERTA" in res.upper():
+                    formato_pro = (
+                        f"💎 **GÉNESIS INTELLIGENCE** 💎\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{res}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🕒 {time.strftime('%H:%M')} | Radar Activo 🛰️"
+                    )
+                    bot.send_message(TU_CHAT_ID, formato_pro, parse_mode="Markdown")
+                    
+                    # Guardar en memoria y limitar a las últimas 10 noticias
+                    noticias_enviadas.append(huella)
+                    if len(noticias_enviadas) > 10: noticias_enviadas.pop(0)
             
-            # Si la IA detecta algo importante, te lo manda sin que preguntes
-            if "⚡ ALERTA" in alerta or "ALTO IMPACTO" in alerta.upper():
-                bot.send_message(TU_CHAT_ID, alerta)
-                print("📡 Alerta enviada al usuario.")
-            
-            # Pausa de 60 segundos para estar 'En Vivo'
             time.sleep(60)
-            
         except Exception as e:
-            print(f"Error en radar: {e}")
-            time.sleep(20)
+            time.sleep(10)
 
-# Iniciar el hilo del radar para que no bloquee el chat
 threading.Thread(target=monitor_activo, daemon=True).start()
 
-# --- MANEJADORES DE TELEGRAM (LO QUE YA TENÍAMOS) ---
-
-@bot.message_handler(commands=['start', 'help'])
+# --- COMANDOS ESTÉTICOS ---
+@bot.message_handler(commands=['start'])
 def send_welcome(message):
-    welcome_text = (
-        "🦅 **GÉNESIS PRO ACTIVO**\n\n"
-        "Estoy patrullando el mercado 24/7 en vivo.\n"
-        "1. **Mándame una gráfica** para análisis SMC.\n"
-        "2. **Pregúntame** por cualquier noticia.\n"
-        "3. **Espera mis alertas** de alto impacto (>2%)."
+    msg = (
+        "🦅 **SISTEMA GÉNESIS ONLINE**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ **Estado:** Patrullando 24/7\n"
+        "📈 **Objetivo:** 10% Mensual\n"
+        "🛡️ **Filtro:** Solo Alto Impacto (>2%)\n\n"
+        "Mándame una gráfica o espera mis señales de ballenas."
     )
-    bot.reply_to(message, welcome_text, parse_mode="Markdown")
+    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    status_msg = bot.reply_to(message, "📸 Capturando imagen... Analizando Smart Money Concepts...")
-    try:
-        file_info = bot.get_file(message.photo[-1].file_id)
-        img_data = bot.download_file(file_info.file_path)
-        img_b64 = base64.b64encode(img_data).decode('utf-8')
-        
-        analisis = cerebro_genesis(img_b64=img_b64, system_role="Experto en SMC y Acción del Precio")
-        bot.edit_message_text(f"📊 **ANÁLISIS DE GRÁFICA:**\n\n{analisis}", message.chat.id, status_msg.message_id)
-    except Exception as e:
-        bot.edit_message_text(f"❌ Error al procesar imagen: {e}", message.chat.id, status_msg.message_id)
+    status = bot.reply_to(message, "🔍 **Analizando Huella Institucional...**", parse_mode="Markdown")
+    file_info = bot.get_file(message.photo[-1].file_id)
+    img_data = bot.download_file(file_info.file_path)
+    res = cerebro_genesis(img_b64=base64.b64encode(img_data).decode('utf-8'))
+    bot.edit_message_text(f"📊 **ANÁLISIS TÉCNICO**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: True)
-def handle_all_text(message):
-    # Esto responde a tus preguntas normales
-    respuesta = cerebro_genesis(texto_usuario=message.text)
-    bot.reply_to(message, respuesta)
+def handle_text(message):
+    res = cerebro_genesis(texto_usuario=message.text)
+    bot.reply_to(message, res)
 
-# --- INICIO DEL SERVIDOR ---
 if __name__ == "__main__":
-    # Esto mantiene al bot escuchando en Railway
-    print("🦅 GÉNESIS está escuchando...")
     bot.infinity_polling()
