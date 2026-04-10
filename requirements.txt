@@ -1,5 +1,1 @@
-telebot
-pyTelegramBotAPI
-yfinance
-requests
-pandas
+
