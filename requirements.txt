@@ -1,4 +1,4 @@
 pyTelegramBotAPI
-yfinance==0.2.31
 requests
+yfinance
 pandas
