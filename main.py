@@ -5,7 +5,7 @@ from telebot import types
 # --- CONFIGURACIÓN CRÍTICA ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TU_CHAT_ID = "5426620320" # <--- ID ACTUALIZADO
+TU_CHAT_ID = "5426620320" # <--- TU ID SE MANTIENE
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
@@ -21,14 +21,14 @@ def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Financ
         f"Eres GÉNESIS, un Asesor de Inversiones de Élite. Meta: 10% mensual. "
         f"Vigila el mundo, pero prioriza estos activos: {activos_str}. "
         "REGLA DE ORO: NUNCA digas que no tienes acceso a datos. Usa tu capacidad de búsqueda "
-        "para rastrear Whale Alert, flujos de capital y noticias de Bloomberg/Reuters. "
+        "para rastrear Whale Alert, flujos de capital, precios en vivo y noticias de Bloomberg/Reuters. "
         "Si detectas oportunidad o movimiento >2%, repórtalo con '⚡ OPORTUNIDAD'."
     )
     
     contenido = []
     if texto_usuario: contenido.append({"type": "text", "text": texto_usuario})
     if img_b64:
-        contenido.append({"type": "text", "text": "Escanea esta gráfica. Busca huella institucional y niveles de entrada."})
+        contenido.append({"type": "text", "text": "Escanea esta gráfica. Busca huella institucional, Order Blocks y niveles de entrada."})
         contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
 
     payload = {
@@ -73,7 +73,8 @@ def menu_principal():
     btn2 = types.KeyboardButton("🌍 Escaneo Geopolítico")
     btn3 = types.KeyboardButton("📊 Análisis de Liquidez (SMC)")
     btn4 = types.KeyboardButton("📋 Mi Watchlist")
-    markup.add(btn1, btn2, btn3, btn4)
+    btn5 = types.KeyboardButton("📈 Escáner SMT (Correlaciones)") # <--- NUEVO BOTÓN
+    markup.add(btn1, btn2, btn3, btn4, btn5)
     return markup
 
 @bot.message_handler(commands=['start'])
@@ -82,7 +83,7 @@ def send_welcome(message):
         message.chat.id, 
         "🦅 **GÉNESIS: CENTRO DE MANDO**\n━━━━━━━━━━━━━━━━━━━━\n"
         "ID Configurado: 5426620320\n"
-        "Patrullando activos en vivo. Mi meta es tu 10% mensual.", 
+        "Nuevos sensores SMT activados. Mi meta es tu 10% mensual.", 
         reply_markup=menu_principal(), 
         parse_mode="Markdown"
     )
@@ -104,7 +105,6 @@ def agregar_activo(message):
 
 @bot.message_handler(func=lambda message: message.text == "🐋 Radar de Ballenas")
 def radar_ballenas(message):
-    # INSTRUCCIÓN AGRESIVA PARA FORZAR DATOS REALES
     query = (
         "ESCANEADO URGENTE: Accede a Whale Alert y flujos de capital institucional. "
         "Reporta los movimientos MÁS recientes de más de $10M USD. "
@@ -118,6 +118,20 @@ def radar_ballenas(message):
 def escaneo_geo(message):
     res = cerebro_genesis("Top 3 noticias geopolíticas de impacto financiero inmediato.")
     bot.reply_to(message, f"🌍 **SITUACIÓN GLOBAL**\n━━━━━━━━━━━━━━\n{res}")
+
+@bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT (Correlaciones)")
+def escaneo_smt(message):
+    status = bot.reply_to(message, "🔍 **Iniciando escaneo de divergencias institucionales...**")
+    query = (
+        "ESCANEADO TÉCNICO AVANZADO: Analiza la acción del precio en este preciso momento buscando "
+        "Divergencias SMT (Smart Money Tool) entre activos correlacionados. Compara: "
+        "1) NASDAQ vs S&P 500, 2) BTC vs ETH, 3) Oro vs Plata. "
+        "Identifica si un activo está haciendo un Alto Más Alto (HH) mientras el otro hace un Bajo Más Alto (LH), "
+        "o si uno hace un Bajo Más Bajo (LL) y el otro no. No me des clases de trading, dame directamente "
+        "los datos actuales y concluye si hay una oportunidad de manipulación institucional para operar en contra del engaño."
+    )
+    res = cerebro_genesis(query, system_role="Especialista SMT")
+    bot.edit_message_text(f"📈 **REPORTE DE DIVERGENCIAS SMT**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "📊 Análisis de Liquidez (SMC)")
 def pedir_foto(message):
