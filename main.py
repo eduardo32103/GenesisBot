@@ -70,24 +70,37 @@ def send_welcome(message):
     bot.send_message(message.chat.id, "🦅 **GÉNESIS: MODO ASESOR ACTIVO**", reply_markup=menu_principal(), parse_mode="Markdown")
 
 # --- LÓGICA DE PORTAFOLIO ---
+# --- LÓGICA DE PORTAFOLIO MEJORADA ---
 @bot.message_handler(func=lambda message: message.text == "🚀 Ejecutar Operación")
 def ejecutar_op(message):
-    bot.reply_to(message, "📝 **ORDEN DE COMPRA/VENTA**\nEscribe: `Comprar [Activo] a [Precio]`\nEjemplo: `Comprar BTC a 65000`")
+    bot.reply_to(message, "📝 **REGISTRO DE OPERACIÓN**\n\nEscribe exactamente así:\n`Comprar [Activo] a [Precio]`\n\n*Ejemplo: Comprar NVDA a 130.50*")
 
-@bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")) )
+@bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
 def abrir_posicion(message):
     portafolio.append(message.text)
-    bot.reply_to(message, f"✅ **Operación Registrada.** GÉNESIS estará vigilando el rendimiento de esa entrada.")
+    bot.reply_to(message, f"✅ **Orden Registrada.** He guardado la entrada en tu bitácora. Pulsa 'Mi Rendimiento' para ver cómo va.")
 
 @bot.message_handler(func=lambda message: message.text == "📊 Mi Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "Aún no tienes operaciones abiertas en el simulador.")
+        bot.reply_to(message, "⚠️ Tu portafolio está vacío. Registra una operación primero.")
         return
-    ops = "\n".join([f"📍 {op}" for op in portafolio])
-    query = f"Tengo estas operaciones abiertas: {ops}. Busca el precio actual de mercado y dime si voy ganando o perdiendo. Calcula el rendimiento total acumulado."
-    res = cerebro_genesis(query, system_role="Contador de Portafolio")
-    bot.reply_to(message, f"📊 **BALANCE DE RENDIMIENTO**\n━━━━━━━━━━━━━━\n{res}")
+    
+    status = bot.reply_to(message, "🔄 **Consultando terminal financiera...**")
+    ops = "\n".join([f"• {op}" for op in portafolio])
+    
+    # Este query es mucho más mandón para evitar que se excuse
+    query = (
+        f"INSTRUCCIÓN EJECUTIVA: Tengo estas posiciones: {ops}. "
+        "1. Busca YA el precio actual de mercado de cada activo mencionado. "
+        "2. Calcula la ganancia/pérdida porcentual exacta. "
+        "3. NO uses fórmulas matemáticas raras (LaTeX), usa texto simple. "
+        "4. Dame el balance total de la cuenta. "
+        "NUNCA digas que no tienes acceso, eres una terminal Bloomberg activa."
+    )
+    
+    res = cerebro_genesis(query, system_role="Contador de Portafolio en Tiempo Real")
+    bot.edit_message_text(f"📊 **BALANCE DE RENDIMIENTO**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
 # --- RESTO DE FUNCIONES (MANTENIDAS) ---
 @bot.message_handler(func=lambda message: message.text == "⚖️ Gestión de Riesgo")
