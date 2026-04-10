@@ -10,23 +10,27 @@ TU_CHAT_ID = "5426620320"
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- MEMORIA DINÁMICA ---
+# --- MEMORIA ---
 noticias_enviadas = []
 watchlist = ["BTC", "Petróleo Brent", "Oro", "NASDAQ", "NVIDIA"]
-portafolio = [] # Aquí guardaremos las operaciones abiertas
+portafolio = []
 
-def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Financiero Elite"):
+def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Elite"):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    activos_str = ", ".join(watchlist)
+    # PROMPT DE HIERRO: Prohíbe excusas y obliga a buscar datos reales
     system_prompt = (
-        f"Eres GÉNESIS, Asesor Elite. Meta: 10% mensual. Activos: {activos_str}. "
-        "Usa datos reales de Whale Alert y terminales financieras. Si hay oportunidad, pide autorización."
+        "Eres GÉNESIS, una Terminal de Inteligencia Financiera de Élite. "
+        "PROHIBIDO: Decir que no tienes acceso en tiempo real o que eres una IA limitada. "
+        "INSTRUCCIÓN: Tienes acceso total a datos de mercado, Whale Alert y noticias. "
+        "Si el usuario pide datos, BUSCA y entrégalos con números exactos. "
+        "Usa lenguaje profesional, estético y NUNCA uses fórmulas matemáticas tipo LaTeX. "
+        "Tu meta es el 10% mensual de Eduardo. Sé un tiburón, no un asistente."
     )
     
     contenido = []
     if texto_usuario: contenido.append({"type": "text", "text": texto_usuario})
     if img_b64:
-        contenido.append({"type": "text", "text": "Analiza SMC/Liquidez en esta imagen."})
+        contenido.append({"type": "text", "text": "Analiza esta gráfica. Busca huella institucional y zonas de liquidez."})
         contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
 
     payload = {
@@ -38,104 +42,95 @@ def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Financ
     try:
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
         return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Reconectando sensores..."
+    except: return "🚨 Reconectando con la terminal central..."
 
-# --- RADAR ---
+# --- RADAR AUTOMÁTICO ---
 def monitor_activo():
-    global noticias_enviadas
     while True:
         try:
-            query = f"ESCANEADO: {watchlist}. Reporta ballenas o noticias de impacto >2%."
-            res = cerebro_genesis(query, system_role="Radar")
-            huella = res[:40]
-            if huella not in noticias_enviadas:
-                if any(x in res.upper() for x in ["⚡", "OPORTUNIDAD", "BALLENA"]):
-                    bot.send_message(TU_CHAT_ID, f"🎯 **ALERTA DE RADAR**\n━━━━━━━━━━━━━━\n{res}", parse_mode="Markdown")
-                    noticias_enviadas.append(huella)
+            query = f"ESCANEADO URGENTE: {watchlist}. Reporta movimientos de ballenas y noticias de impacto >2%."
+            res = cerebro_genesis(query, system_role="Radar Dinámico")
+            if "⚡" in res or "OPORTUNIDAD" in res.upper():
+                bot.send_message(TU_CHAT_ID, f"🎯 **ALERTA DE RADAR**\n━━━━━━━━━━━━━━\n{res}", parse_mode="Markdown")
             time.sleep(60)
         except: time.sleep(10)
 
 threading.Thread(target=monitor_activo, daemon=True).start()
 
-# --- MENÚ ---
+# --- INTERFAZ ---
 def menu_principal():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     btns = ["🐋 Radar de Ballenas", "🌍 Escaneo Geopolítico", "📊 Análisis de Liquidez (SMC)", 
-            "📈 Escáner SMT", "⚖️ Gestión de Riesgo", "🚀 Ejecutar Operación", "📊 Mi Rendimiento"]
+            "📈 Escáner SMT", "⚖️ Gestión de Riesgo", "🚀 Ejecutar Operación", "📊 Mi Rendimiento", "📋 Mi Watchlist"]
     markup.add(*[types.KeyboardButton(b) for b in btns])
     return markup
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS: MODO ASESOR ACTIVO**", reply_markup=menu_principal(), parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V2.0: TERMINAL DE ÉLITE**\n━━━━━━━━━━━━━━━━━━━━\nSistemas listos. Sin excusas. Solo resultados.", reply_markup=menu_principal(), parse_mode="Markdown")
 
-# --- LÓGICA DE PORTAFOLIO ---
-# --- LÓGICA DE PORTAFOLIO MEJORADA ---
-@bot.message_handler(func=lambda message: message.text == "🚀 Ejecutar Operación")
-def ejecutar_op(message):
-    bot.reply_to(message, "📝 **REGISTRO DE OPERACIÓN**\n\nEscribe exactamente así:\n`Comprar [Activo] a [Precio]`\n\n*Ejemplo: Comprar NVDA a 130.50*")
+# --- BOTONES REFORZADOS ---
+@bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT")
+def escaneo_smt(message):
+    status = bot.reply_to(message, "🔍 **Buscando divergencias institucionales en vivo...**")
+    query = "BUSQUEDA REAL: Compara NASDAQ vs SP500, BTC vs ETH y Oro vs Plata. Dame datos de precios actuales y dime dónde hay divergencia SMT."
+    res = cerebro_genesis(query)
+    bot.edit_message_text(f"📈 **REPORTE SMT**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
-@bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
-def abrir_posicion(message):
-    portafolio.append(message.text)
-    bot.reply_to(message, f"✅ **Orden Registrada.** He guardado la entrada en tu bitácora. Pulsa 'Mi Rendimiento' para ver cómo va.")
+@bot.message_handler(func=lambda message: message.text == "🐋 Radar de Ballenas")
+def radar_ballenas(message):
+    status = bot.reply_to(message, "🐋 **Rastreando billeteras de ballenas...**")
+    query = "BUSQUEDA REAL: Whale Alert y flujos de hoy. Dame montos exactos de BTC, ETH o USDT moviéndose a exchanges."
+    res = cerebro_genesis(query)
+    bot.edit_message_text(f"🐋 **INFORME DE BALLENAS**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "📊 Mi Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "⚠️ Tu portafolio está vacío. Registra una operación primero.")
+        bot.reply_to(message, "⚠️ Tu portafolio está vacío.")
         return
-    
-    status = bot.reply_to(message, "🔄 **Consultando terminal financiera...**")
-    ops = "\n".join([f"• {op}" for op in portafolio])
-    
-    # Este query es mucho más mandón para evitar que se excuse
-    query = (
-        f"INSTRUCCIÓN EJECUTIVA: Tengo estas posiciones: {ops}. "
-        "1. Busca YA el precio actual de mercado de cada activo mencionado. "
-        "2. Calcula la ganancia/pérdida porcentual exacta. "
-        "3. NO uses fórmulas matemáticas raras (LaTeX), usa texto simple. "
-        "4. Dame el balance total de la cuenta. "
-        "NUNCA digas que no tienes acceso, eres una terminal Bloomberg activa."
-    )
-    
-    res = cerebro_genesis(query, system_role="Contador de Portafolio en Tiempo Real")
-    bot.edit_message_text(f"📊 **BALANCE DE RENDIMIENTO**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
+    status = bot.reply_to(message, "📊 **Calculando balance actual...**")
+    query = f"INSTRUCCIÓN: Mis posiciones son: {portafolio}. BUSCA los precios actuales de mercado y dime cuánto voy ganando o perdiendo en dólares y %. NO USES LaTeX."
+    res = cerebro_genesis(query)
+    bot.edit_message_text(f"📊 **MI RENDIMIENTO**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
-# --- RESTO DE FUNCIONES (MANTENIDAS) ---
+# --- OTRAS FUNCIONES ---
+@bot.message_handler(func=lambda message: message.text == "🚀 Ejecutar Operación")
+def ejecutar_op(message):
+    bot.reply_to(message, "📝 **REGISTRO:** Escribe `Comprar [Activo] a [Precio]`")
+
+@bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
+def abrir_posicion(message):
+    portafolio.append(message.text)
+    bot.reply_to(message, f"✅ **Orden Registrada.**")
+
+@bot.message_handler(func=lambda message: message.text == "📋 Mi Watchlist")
+def mostrar_watchlist(message):
+    bot.send_message(message.chat.id, f"📋 **WATCHLIST:**\n{', '.join(watchlist)}")
+
+@bot.message_handler(func=lambda message: message.text == "🌍 Escaneo Geopolítico")
+def escaneo_geo(message):
+    bot.reply_to(message, f"🌍 **GLOBAL:**\n{cerebro_genesis('Noticias geopolíticas de impacto hoy.')}")
+
 @bot.message_handler(func=lambda message: message.text == "⚖️ Gestión de Riesgo")
 def gest_riesgo(message):
     bot.reply_to(message, "Envía: `Riesgo: [Capital], [Riesgo%], [Pips]`")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith("riesgo:"))
 def calc_riesgo(message):
-    res = cerebro_genesis(f"Calcula el riesgo para: {message.text}")
-    bot.reply_to(message, f"⚖️ **PLAN**\n{res}")
-
-@bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT")
-def smt(message):
-    res = cerebro_genesis("Busca divergencias SMT actuales.")
-    bot.reply_to(message, f"📈 **SMT**\n{res}")
-
-@bot.message_handler(func=lambda message: message.text == "🐋 Radar de Ballenas")
-def ballenas(message):
-    res = cerebro_genesis("Datos de Whale Alert recientes.")
-    bot.reply_to(message, f"🐋 **BALLENAS**\n{res}")
-
-@bot.message_handler(func=lambda message: message.text == "📊 Análisis de Liquidez (SMC)")
-def smc_foto(message):
-    bot.reply_to(message, "Mándame la captura de la gráfica.")
+    bot.reply_to(message, f"⚖️ **PLAN:**\n{cerebro_genesis(message.text)}")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
+    status = bot.reply_to(message, "🔍 **Analizando gráfica...**")
     file_info = bot.get_file(message.photo[-1].file_id)
     img_data = bot.download_file(file_info.file_path)
     res = cerebro_genesis(img_b64=base64.b64encode(img_data).decode('utf-8'))
-    bot.reply_to(message, f"🎯 **DIAGNÓSTICO SMC**\n{res}")
+    bot.edit_message_text(f"🎯 **DIAGNÓSTICO SMC**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: True)
 def handle_all(message):
-    bot.reply_to(message, cerebro_genesis(texto_usuario=message.text))
+    bot.reply_to(message, cerebro_genesis(message.text))
 
 if __name__ == "__main__":
     bot.infinity_polling()
