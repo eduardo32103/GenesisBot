@@ -5,7 +5,7 @@ from telebot import types
 # --- CONFIGURACIÓN CRÍTICA ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TU_CHAT_ID = "5426620320" # <--- TU ID SE MANTIENE
+TU_CHAT_ID = "5426620320"
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
@@ -48,13 +48,8 @@ def monitor_activo():
     while True:
         try:
             activos = ", ".join(watchlist)
-            query = (
-                f"ESCANEADO GLOBAL: Enfócate en {activos}. "
-                "Busca movimientos de ballenas recientes (>10M USD) y noticias de impacto inmediato. "
-                "No des teoría. Si hay algo real, repórtalo."
-            )
+            query = f"ESCANEADO GLOBAL: Enfócate en {activos}. Busca movimientos de ballenas recientes (>10M USD) y noticias de impacto."
             res = cerebro_genesis(query, system_role="Radar Dinámico")
-            
             huella = res[:40]
             if huella not in noticias_enviadas:
                 if "⚡" in res or "OPORTUNIDAD" in res.upper() or "BALLENA" in res.upper():
@@ -72,70 +67,65 @@ def menu_principal():
     btn1 = types.KeyboardButton("🐋 Radar de Ballenas")
     btn2 = types.KeyboardButton("🌍 Escaneo Geopolítico")
     btn3 = types.KeyboardButton("📊 Análisis de Liquidez (SMC)")
-    btn4 = types.KeyboardButton("📋 Mi Watchlist")
-    btn5 = types.KeyboardButton("📈 Escáner SMT (Correlaciones)") # <--- NUEVO BOTÓN
-    markup.add(btn1, btn2, btn3, btn4, btn5)
+    btn4 = types.KeyboardButton("📈 Escáner SMT (Correlaciones)")
+    btn5 = types.KeyboardButton("📋 Mi Watchlist")
+    btn6 = types.KeyboardButton("⚖️ Gestión de Riesgo") # <--- NUEVO
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
     return markup
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(
-        message.chat.id, 
-        "🦅 **GÉNESIS: CENTRO DE MANDO**\n━━━━━━━━━━━━━━━━━━━━\n"
-        "ID Configurado: 5426620320\n"
-        "Nuevos sensores SMT activados. Mi meta es tu 10% mensual.", 
-        reply_markup=menu_principal(), 
-        parse_mode="Markdown"
-    )
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS: CENTRO DE MANDO**\n━━━━━━━━━━━━━━━━━━━━\nSistemas de gestión de riesgo y SMT activos.", reply_markup=menu_principal(), parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📋 Mi Watchlist")
 def mostrar_watchlist(message):
     lista = "\n".join([f"🔹 {a}" for a in watchlist])
-    reporte = (f"📋 **LISTA DE VIGILANCIA**\n━━━━━━━━━━━━━━━━━━━━\n{lista}")
-    bot.send_message(message.chat.id, reporte, parse_mode="Markdown")
+    bot.send_message(message.chat.id, f"📋 **LISTA DE VIGILANCIA**\n━━━━━━━━━━━━━━━━━━━━\n{lista}", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "⚖️ Gestión de Riesgo")
+def gestion_riesgo(message):
+    instrucciones = (
+        "⚖️ **CALCULADORA DE RIESGO INSTITUCIONAL**\n━━━━━━━━━━━━━━━━━━━━\n"
+        "Para calcular tu lotaje, envíame un mensaje con este formato:\n\n"
+        "**Riesgo: [Capital], [Riesgo%], [Pips de Stop Loss]**\n\n"
+        "Ejemplo: `Riesgo: 1000, 1, 25` \n"
+        "*(Capital $1000, arriesgando 1%, con 25 pips de SL)*"
+    )
+    bot.reply_to(message, instrucciones, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text.lower().startswith("riesgo:"))
+def calcular_lote(message):
+    query = f"Actúa como calculadora de riesgo. El usuario dice: {message.text}. Calcula el lotaje para Forex (pips) y Cripto (%). Dime cuánto dinero perderá si toca SL y cuánto ganará en un ratio 1:3."
+    res = cerebro_genesis(query, system_role="Calculadora de Riesgo")
+    bot.reply_to(message, f"⚖️ **PLAN DE TRADING**\n━━━━━━━━━━━━━━\n{res}")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith("vigila "))
 def agregar_activo(message):
     nuevo = message.text.replace("vigila ", "").replace("Vigila ", "").strip()
-    if nuevo not in watchlist:
-        watchlist.append(nuevo)
-        bot.reply_to(message, f"✅ **{nuevo}** añadido al radar. 🦅")
-    else:
-        bot.reply_to(message, "Ese activo ya está en el radar.")
+    watchlist.append(nuevo)
+    bot.reply_to(message, f"✅ **{nuevo}** añadido al radar. 🦅")
 
 @bot.message_handler(func=lambda message: message.text == "🐋 Radar de Ballenas")
 def radar_ballenas(message):
-    query = (
-        "ESCANEADO URGENTE: Accede a Whale Alert y flujos de capital institucional. "
-        "Reporta los movimientos MÁS recientes de más de $10M USD. "
-        "No des teoría, dame activos, montos y hacia dónde se movieron (Exchanges o Wallets). "
-        "Si no ves nada en el último minuto, busca en los últimos 30 minutos."
-    )
-    res = cerebro_genesis(query, system_role="Terminal de Datos de Ballenas")
+    query = "ESCANEADO URGENTE: Whale Alert y flujos masivos (>10M USD). No teoría, solo datos de flujos."
+    res = cerebro_genesis(query, system_role="Terminal de Ballenas")
     bot.reply_to(message, f"🐋 **INFORME DE BALLENAS**\n━━━━━━━━━━━━━━\n{res}")
 
 @bot.message_handler(func=lambda message: message.text == "🌍 Escaneo Geopolítico")
 def escaneo_geo(message):
-    res = cerebro_genesis("Top 3 noticias geopolíticas de impacto financiero inmediato.")
+    res = cerebro_genesis("Top 3 noticias geopolíticas de impacto financiero.")
     bot.reply_to(message, f"🌍 **SITUACIÓN GLOBAL**\n━━━━━━━━━━━━━━\n{res}")
 
 @bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT (Correlaciones)")
 def escaneo_smt(message):
-    status = bot.reply_to(message, "🔍 **Iniciando escaneo de divergencias institucionales...**")
-    query = (
-        "ESCANEADO TÉCNICO AVANZADO: Analiza la acción del precio en este preciso momento buscando "
-        "Divergencias SMT (Smart Money Tool) entre activos correlacionados. Compara: "
-        "1) NASDAQ vs S&P 500, 2) BTC vs ETH, 3) Oro vs Plata. "
-        "Identifica si un activo está haciendo un Alto Más Alto (HH) mientras el otro hace un Bajo Más Alto (LH), "
-        "o si uno hace un Bajo Más Bajo (LL) y el otro no. No me des clases de trading, dame directamente "
-        "los datos actuales y concluye si hay una oportunidad de manipulación institucional para operar en contra del engaño."
-    )
+    status = bot.reply_to(message, "🔍 **Buscando divergencias...**")
+    query = "Analiza NASDAQ vs SP500, BTC vs ETH y Oro vs Plata buscando Divergencias SMT actuales."
     res = cerebro_genesis(query, system_role="Especialista SMT")
-    bot.edit_message_text(f"📈 **REPORTE DE DIVERGENCIAS SMT**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
+    bot.edit_message_text(f"📈 **DIVERGENCIAS SMT**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "📊 Análisis de Liquidez (SMC)")
 def pedir_foto(message):
-    bot.reply_to(message, "📸 **Mándame la captura de la gráfica** para buscar la huella institucional.")
+    bot.reply_to(message, "📸 **Mándame la gráfica** para buscar la huella institucional.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
