@@ -15,28 +15,33 @@ def cerebro_genesis(texto_usuario):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # SYSTEM PROMPT: PROTOCOLO DE VERIFICACIÓN
     system_prompt = (
-        f"Fecha actual: {ahora}. Eres GÉNESIS, una terminal de DATOS REALES. "
-        "INSTRUCCIÓN MÁXIMA: Si Eduardo te pide un precio, DEBES verificarlo. "
-        "Si no tienes el dato exacto de este segundo, NO INVENTES. "
-        "Referencia de control: NVDA está cerca de $183.91. Cualquier dato arriba de $200 es ERROR. "
-        "Responde solo con: ACTIVO | PRECIO | FUENTE. Sin sermones."
+        f"Fecha: {ahora}. Eres GÉNESIS, una terminal de datos. "
+        "Misión: Dar el precio actual de activos. NVDA está en $183.91 aprox. "
+        "Responde corto: ACTIVO | PRECIO. Sin sermones."
     )
     
     payload = {
         "model": "gpt-4o", 
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Busca el precio actual de mercado y responde solo con datos: {texto_usuario}"}
+            {"role": "user", "content": texto_usuario}
         ],
-        "temperature": 0 # Frío total para evitar inventos
+        "temperature": 0
     }
 
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
-        return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Error de conexión."
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=40)
+        r.raise_for_status() # Verifica si hubo error de red
+        data = r.json()
+        
+        # Validación de seguridad para evitar el crash
+        if 'choices' in data and len(data['choices']) > 0:
+            return data['choices'][0]['message']['content']
+        else:
+            return "🚨 OpenAI no devolvió datos válidos."
+    except Exception as e:
+        return f"🚨 Error de conexión: {str(e)}"
 
 # --- INTERFAZ ---
 def menu_principal():
@@ -47,7 +52,7 @@ def menu_principal():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V8.0: MODO FRANCOTIRADOR**\nProtocolo de verificación de precios activado.", reply_markup=menu_principal())
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V8.1: ANTI-CRASH**\nSistemas estabilizados.", reply_markup=menu_principal())
 
 @bot.message_handler(func=lambda message: message.text == "🚀 Operar (Auto)")
 def instruccion_auto(message):
@@ -55,27 +60,23 @@ def instruccion_auto(message):
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
 def auto_registro(message):
-    # Limpiamos el texto para que el bot no se confunda
-    orden = message.text.lower().replace("comprar ", "").replace("vender ", "").strip()
-    status = bot.reply_to(message, f"🔍 **Verificando precio real de {orden}...**")
+    status = bot.reply_to(message, "🔍 **Buscando precio...**")
+    res = cerebro_genesis(f"Precio actual de: {message.text}")
     
-    # El bot busca el precio
-    datos_reales = cerebro_genesis(f"Precio actual de {orden}")
-    
-    if "|" in datos_reales:
-        portafolio.append(f"{message.text} | {datos_reales}")
-        bot.edit_message_text(f"✅ **REGISTRADO AL CENTAVO**\n{datos_reales}", message.chat.id, status.message_id)
+    if "🚨" not in res:
+        portafolio.append(f"{message.text} | {res}")
+        bot.edit_message_text(f"✅ **REGISTRADO**\n{res}", message.chat.id, status.message_id)
     else:
-        bot.edit_message_text(f"❌ Error en datos. Mejor ponlo manual: `Comprar {orden} a [Precio]`", message.chat.id, status.message_id)
+        bot.edit_message_text(res, message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "📊 Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "⚠️ Vacío.") return
-    status = bot.reply_to(message, "⏳ **Cruzando datos con el mercado...**")
-    query = f"Calcula P&L de: {portafolio}. Solo tabla, sin sermones."
-    res = cerebro_genesis(query)
-    bot.edit_message_text(f"📊 **ESTADO REAL**\n{res}", message.chat.id, status.message_id)
+        bot.reply_to(message, "⚠️ Vacío.")
+        return
+    status = bot.reply_to(message, "⏳ **Procesando...**")
+    res = cerebro_genesis(f"Calcula P&L de: {portafolio}. Solo datos.")
+    bot.edit_message_text(f"📊 **ESTADO**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: True)
 def handle_all(message):
