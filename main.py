@@ -1,36 +1,19 @@
 import os
-import subprocess
-import sys
 import base64
 import requests
 import datetime
-
-# --- 1. INSTALACIÓN DE LIBRERÍAS (SEGURO) ---
-def inicializar_librerias():
-    libs = ["pyTelegramBotAPI", "yfinance", "requests"]
-    for lib in libs:
-        try:
-            if lib == "pyTelegramBotAPI":
-                import telebot
-            else:
-                __import__(lib)
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
-
-inicializar_librerias()
-
-import telebot
+import telebot  # Esto funcionará SI el requirements está bien
 import yfinance as yf
 from telebot import types
 
-# --- 2. CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 portafolio = []
 
-# --- 3. MOTOR DE DATOS ---
+# --- MOTOR DE DATOS ---
 def get_live_price(ticker):
     try:
         t = ticker.upper().strip()
@@ -40,14 +23,14 @@ def get_live_price(ticker):
     except:
         return None
 
-# --- 4. CEREBRO DE INTELIGENCIA ---
+# --- CEREBRO DE INTELIGENCIA ---
 def cerebro_genesis(query, img_b64=None):
     if not OPENAI_API_KEY:
         return "🚨 ERROR: Configura OPENAI_API_KEY en Railway."
     
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     system_msg = (
-        "Eres GÉNESIS V37. Terminal de Inteligencia. "
+        "Eres GÉNESIS V38. Terminal de Inteligencia. "
         "MISIONES: 1. Analizar SMC en gráficas (BOS, OB, FVG). "
         "2. Reportar Geopolítica y Noticias. 3. Alertas técnicas."
     )
@@ -56,7 +39,7 @@ def cerebro_genesis(query, img_b64=None):
         "model": "gpt-4o",
         "messages": [
             {"role": "system", "content": system_msg},
-            {"role": "user", "content": query}
+            {"role": "user", "content": query if query else "Analiza esta imagen."}
         ],
         "temperature": 0
     }
@@ -71,9 +54,9 @@ def cerebro_genesis(query, img_b64=None):
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60)
         return r.json()['choices'][0]['message']['content']
     except:
-        return "🚨 Error de conexión con el cerebro."
+        return "🚨 Error de comunicación con el cerebro."
 
-# --- 5. MENÚ Y BOTONES ---
+# --- MENÚ Y BOTONES ---
 def main_menu():
     m = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     m.add("📊 Rendimiento", "🚀 Operar", "🌍 Geopolítica", "🐋 Radar Ballenas", "⚠️ Alertas")
@@ -81,7 +64,7 @@ def main_menu():
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V37: SISTEMA ESTABLE**", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V38: CONEXIÓN ESTABLE**", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🌍 Geopolítica")
 def geopolitica(message):
@@ -102,7 +85,7 @@ def handle_photo(message):
         downloaded = bot.download_file(f_info.file_path)
         img_b64 = base64.b64encode(downloaded).decode('utf-8')
         status = bot.reply_to(message, "🎯 Analizando niveles...")
-        res = cerebro_genesis("SMC Analysis", img_b64)
+        res = cerebro_genesis(None, img_b64)
         bot.edit_message_text(f"🎯 **REPORTE SMC:**\n{res}", message.chat.id, status.message_id)
     except Exception as e:
         bot.reply_to(message, f"🚨 Error: {str(e)}")
