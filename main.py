@@ -1,5 +1,5 @@
 import os, requests, base64, time, threading, telebot, datetime
-from flask import Flask
+from flask_cors import CORS # Opcional, pero ayuda en Railway
 from telebot import types
 
 # --- CONFIGURACIÓN ---
@@ -8,7 +8,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TU_CHAT_ID = "5426620320"
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
-app = Flask(__name__)
 
 # --- MEMORIA ---
 portafolio = []
@@ -17,34 +16,35 @@ def cerebro_genesis(texto_usuario, img_b64=None):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # PROMPT DE INYECCIÓN DE DATOS - PROHIBIDO SERMONES
+    # SYSTEM PROMPT: OBLIGACIÓN DE PRECIO
     system_prompt = (
-        f"Fecha: {ahora}. Eres GÉNESIS, una terminal de datos financieros. "
-        "INSTRUCCIÓN RADICAL: Prohibido usar frases como 'no tengo acceso', 'como IA', 'recomiendo consultar'. "
-        "Si no tienes el dato exacto, USA EL ÚLTIMO PRECIO CONOCIDO DE 2026: NVDA $183.91, BTC $95k, etc. "
-        "Tu formato de respuesta debe ser: [ACTIVO] | [PRECIO] | [CAMBIO]. "
-        "No des explicaciones. Solo entrega los números solicitados."
+        f"Hoy es {ahora}. Eres GÉNESIS. "
+        "Misión: Llenar tablas de rendimiento con PRECIOS REALES. "
+        "REGLA: La columna 'Precio Actual' NUNCA puede estar vacía. "
+        "Dato de referencia: NVDA hoy cotiza en $183.91. "
+        "Formato: ACTIVO | ENTRADA | ACTUAL | % CAMBIO. "
+        "No des sermones, solo llena la tabla con los números."
     )
     
-    contenido = [{"type": "text", "text": texto_usuario}]
-    if img_b64:
-        contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
-
     payload = {
         "model": "gpt-4o", 
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "Rendimiento de NVDA"},
-            {"role": "assistant", "content": "NVDA | Precio: $183.91 | Rendimiento: +2.4% | Estado: Bullish"},
             {"role": "user", "content": texto_usuario}
         ],
         "temperature": 0
     }
     
+    if img_b64:
+        payload["messages"][-1]["content"] = [
+            {"type": "text", "text": texto_usuario},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+        ]
+
     try:
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=50)
         return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Terminal Offline. Reintenta."
+    except: return "🚨 Error de respuesta."
 
 # --- INTERFAZ ---
 def menu_principal():
@@ -55,16 +55,17 @@ def menu_principal():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS V5.4: ABSOLUTE ZERO**\nSin sermones. Solo data.", reply_markup=menu_principal())
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS V5.5: FIX PRECIOS**", reply_markup=menu_principal())
 
 @bot.message_handler(func=lambda message: message.text == "📊 Mi Rendimiento")
 def ver_rendimiento(message):
     if not portafolio:
-        bot.reply_to(message, "⚠️ No data.")
+        bot.reply_to(message, "⚠️ No hay trades.")
         return
-    query = f"INFORME TÉCNICO: {portafolio}. Solo datos y balance final."
+    status = bot.reply_to(message, "⏳ **Extrayendo precios...**")
+    query = f"Completa la tabla de rendimiento para estas posiciones: {portafolio}. Llena todas las columnas con datos reales de mercado."
     res = cerebro_genesis(query)
-    bot.send_message(message.chat.id, f"📊 **BALANCE FINAL:**\n{res}")
+    bot.edit_message_text(f"📊 **RENDIMIENTO ACTUAL**\n{res}", message.chat.id, status.message_id)
 
 @bot.message_handler(func=lambda message: message.text == "🚀 Operar")
 def ejecutar_op(message):
@@ -73,22 +74,7 @@ def ejecutar_op(message):
 @bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")))
 def abrir_posicion(message):
     portafolio.append(message.text)
-    bot.reply_to(message, "✅ Data Ingested.")
-
-@bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT")
-def smt(message):
-    bot.reply_to(message, cerebro_genesis("SMC/SMT Divergence: NASDAQ vs SP500. Solo niveles."))
-
-@bot.message_handler(func=lambda message: message.text == "🐋 Radar Ballenas")
-def ballenas(message):
-    bot.reply_to(message, cerebro_genesis("Whale Alert: Activo/Monto/Exchange."))
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    file_info = bot.get_file(message.photo[-1].file_id)
-    img_data = bot.download_file(file_info.file_path)
-    res = cerebro_genesis("Analyze Liquidity Levels.", base64.b64encode(img_data).decode('utf-8'))
-    bot.reply_to(message, f"🎯 **DATA:**\n{res}")
+    bot.reply_to(message, f"✅ Registrado: {message.text}")
 
 @bot.message_handler(func=lambda message: True)
 def handle_all(message):
