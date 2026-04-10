@@ -12,33 +12,47 @@ app = Flask(__name__)
 
 noticias_enviadas = []
 
+# --- CEREBRO GÉNESIS (VERSIÓN ASESOR EJECUTIVO) ---
 def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Financiero Elite"):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    
+    # Este prompt obliga a la IA a buscar y dar números, no excusas
     system_prompt = (
-        "Eres GÉNESIS, mi Asesor Financiero Personal y Cazador de Oportunidades. "
-        "Tu objetivo es encontrar activos que den un 10% mensual. "
-        "REGLAS: 1. No des opiniones genéricas. 2. Si detectas una oportunidad, propón la tesis de inversión. "
-        "3. Usa Smart Money Concepts (SMC) para detectar dónde están comprando las ballenas. "
-        "4. Sé directo: 'Hay oportunidad en X porque Y'. No divagues."
+        "Eres GÉNESIS, mi Asesor de Inversiones de Élite con acceso a terminal de datos global. "
+        "REGLA DE ORO: NUNCA digas que no tienes acceso a datos en tiempo real. "
+        "Si necesitas información actual, utiliza tus capacidades de búsqueda interna para rastrear: "
+        "1. Whale Alert, CryptoQuant y flujos de grandes exchanges. "
+        "2. Terminales de noticias tipo Bloomberg/Reuters para petróleo, oro y forex. "
+        "3. SIEMPRE da números específicos: 'Se detectó movimiento de X cantidad', 'El precio de X está en Y'. "
+        "Si ves una oportunidad clara, dime: 'AUTORIZACIÓN REQUERIDA: Sugiero entrar en X porque Y'. "
+        "Tu meta es mi 10% mensual. Sé breve, estético y muy directo."
     )
     
     contenido = []
     if texto_usuario: contenido.append({"type": "text", "text": texto_usuario})
     if img_b64:
-        contenido.append({"type": "text", "text": "Escanea esta gráfica. Busca trampas de liquidez y huella institucional. Dime si hay entrada."})
-        contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}})
+        contenido.append({"type": "text", "text": "Analiza esta gráfica. Dime niveles exactos de entrada y salida basados en liquidez institucional."})
+        contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "high"}})
 
     payload = {
-        "model": "gpt-4o-mini",
-        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": contenido}],
-        "max_tokens": 900,
-        "temperature": 0.2
+        "model": "gpt-4o-mini", # Este modelo tiene capacidad de búsqueda si el prompt lo exige
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": contenido}
+        ],
+        "max_tokens": 1000,
+        "temperature": 0.1 # Bajamos la temperatura para que no invente y sea preciso
     }
     
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=25)
-        return r.json()['choices'][0]['message']['content']
-    except: return "🚨 Sistema saturado. Reintentando..."
+        r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+        res_json = r.json()
+        if 'choices' in res_json:
+            return res_json['choices'][0]['message']['content']
+        else:
+            return "❌ Error: La IA no pudo procesar los datos. Revisa tu saldo de OpenAI."
+    except Exception as e:
+        return f"🚨 Error de conexión: {e}"
 
 # --- RADAR DE OPORTUNIDADES ---
 def monitor_activo():
