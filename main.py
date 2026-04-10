@@ -2,7 +2,7 @@ import os, requests, base64, time, threading, telebot
 from flask import Flask
 from telebot import types
 
-# --- CONFIGURACIÓN CRÍTICA ---
+# --- CONFIGURACIÓN ---
 TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TU_CHAT_ID = "5426620320"
@@ -13,22 +13,20 @@ app = Flask(__name__)
 # --- MEMORIA DINÁMICA ---
 noticias_enviadas = []
 watchlist = ["BTC", "Petróleo Brent", "Oro", "NASDAQ", "NVIDIA"]
+portafolio = [] # Aquí guardaremos las operaciones abiertas
 
 def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Financiero Elite"):
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     activos_str = ", ".join(watchlist)
     system_prompt = (
-        f"Eres GÉNESIS, un Asesor de Inversiones de Élite. Meta: 10% mensual. "
-        f"Vigila el mundo, pero prioriza estos activos: {activos_str}. "
-        "REGLA DE ORO: NUNCA digas que no tienes acceso a datos. Usa tu capacidad de búsqueda "
-        "para rastrear Whale Alert, flujos de capital, precios en vivo y noticias de Bloomberg/Reuters. "
-        "Si detectas oportunidad o movimiento >2%, repórtalo con '⚡ OPORTUNIDAD'."
+        f"Eres GÉNESIS, Asesor Elite. Meta: 10% mensual. Activos: {activos_str}. "
+        "Usa datos reales de Whale Alert y terminales financieras. Si hay oportunidad, pide autorización."
     )
     
     contenido = []
     if texto_usuario: contenido.append({"type": "text", "text": texto_usuario})
     if img_b64:
-        contenido.append({"type": "text", "text": "Escanea esta gráfica. Busca huella institucional, Order Blocks y niveles de entrada."})
+        contenido.append({"type": "text", "text": "Analiza SMC/Liquidez en esta imagen."})
         contenido.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
 
     payload = {
@@ -42,103 +40,89 @@ def cerebro_genesis(texto_usuario=None, img_b64=None, system_role="Asesor Financ
         return r.json()['choices'][0]['message']['content']
     except: return "🚨 Reconectando sensores..."
 
-# --- RADAR DE VIGILANCIA ---
+# --- RADAR ---
 def monitor_activo():
     global noticias_enviadas
     while True:
         try:
-            activos = ", ".join(watchlist)
-            query = f"ESCANEADO GLOBAL: Enfócate en {activos}. Busca movimientos de ballenas recientes (>10M USD) y noticias de impacto."
-            res = cerebro_genesis(query, system_role="Radar Dinámico")
+            query = f"ESCANEADO: {watchlist}. Reporta ballenas o noticias de impacto >2%."
+            res = cerebro_genesis(query, system_role="Radar")
             huella = res[:40]
             if huella not in noticias_enviadas:
-                if "⚡" in res or "OPORTUNIDAD" in res.upper() or "BALLENA" in res.upper():
+                if any(x in res.upper() for x in ["⚡", "OPORTUNIDAD", "BALLENA"]):
                     bot.send_message(TU_CHAT_ID, f"🎯 **ALERTA DE RADAR**\n━━━━━━━━━━━━━━\n{res}", parse_mode="Markdown")
                     noticias_enviadas.append(huella)
-                    if len(noticias_enviadas) > 10: noticias_enviadas.pop(0)
             time.sleep(60)
         except: time.sleep(10)
 
 threading.Thread(target=monitor_activo, daemon=True).start()
 
-# --- INTERFAZ Y BOTONES ---
+# --- MENÚ ---
 def menu_principal():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton("🐋 Radar de Ballenas")
-    btn2 = types.KeyboardButton("🌍 Escaneo Geopolítico")
-    btn3 = types.KeyboardButton("📊 Análisis de Liquidez (SMC)")
-    btn4 = types.KeyboardButton("📈 Escáner SMT (Correlaciones)")
-    btn5 = types.KeyboardButton("📋 Mi Watchlist")
-    btn6 = types.KeyboardButton("⚖️ Gestión de Riesgo") # <--- NUEVO
-    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
+    btns = ["🐋 Radar de Ballenas", "🌍 Escaneo Geopolítico", "📊 Análisis de Liquidez (SMC)", 
+            "📈 Escáner SMT", "⚖️ Gestión de Riesgo", "🚀 Ejecutar Operación", "📊 Mi Rendimiento"]
+    markup.add(*[types.KeyboardButton(b) for b in btns])
     return markup
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "🦅 **GÉNESIS: CENTRO DE MANDO**\n━━━━━━━━━━━━━━━━━━━━\nSistemas de gestión de riesgo y SMT activos.", reply_markup=menu_principal(), parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🦅 **GÉNESIS: MODO ASESOR ACTIVO**", reply_markup=menu_principal(), parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: message.text == "📋 Mi Watchlist")
-def mostrar_watchlist(message):
-    lista = "\n".join([f"🔹 {a}" for a in watchlist])
-    bot.send_message(message.chat.id, f"📋 **LISTA DE VIGILANCIA**\n━━━━━━━━━━━━━━━━━━━━\n{lista}", parse_mode="Markdown")
+# --- LÓGICA DE PORTAFOLIO ---
+@bot.message_handler(func=lambda message: message.text == "🚀 Ejecutar Operación")
+def ejecutar_op(message):
+    bot.reply_to(message, "📝 **ORDEN DE COMPRA/VENTA**\nEscribe: `Comprar [Activo] a [Precio]`\nEjemplo: `Comprar BTC a 65000`")
 
+@bot.message_handler(func=lambda message: message.text.lower().startswith(("comprar ", "vender ")) )
+def abrir_posicion(message):
+    portafolio.append(message.text)
+    bot.reply_to(message, f"✅ **Operación Registrada.** GÉNESIS estará vigilando el rendimiento de esa entrada.")
+
+@bot.message_handler(func=lambda message: message.text == "📊 Mi Rendimiento")
+def ver_rendimiento(message):
+    if not portafolio:
+        bot.reply_to(message, "Aún no tienes operaciones abiertas en el simulador.")
+        return
+    ops = "\n".join([f"📍 {op}" for op in portafolio])
+    query = f"Tengo estas operaciones abiertas: {ops}. Busca el precio actual de mercado y dime si voy ganando o perdiendo. Calcula el rendimiento total acumulado."
+    res = cerebro_genesis(query, system_role="Contador de Portafolio")
+    bot.reply_to(message, f"📊 **BALANCE DE RENDIMIENTO**\n━━━━━━━━━━━━━━\n{res}")
+
+# --- RESTO DE FUNCIONES (MANTENIDAS) ---
 @bot.message_handler(func=lambda message: message.text == "⚖️ Gestión de Riesgo")
-def gestion_riesgo(message):
-    instrucciones = (
-        "⚖️ **CALCULADORA DE RIESGO INSTITUCIONAL**\n━━━━━━━━━━━━━━━━━━━━\n"
-        "Para calcular tu lotaje, envíame un mensaje con este formato:\n\n"
-        "**Riesgo: [Capital], [Riesgo%], [Pips de Stop Loss]**\n\n"
-        "Ejemplo: `Riesgo: 1000, 1, 25` \n"
-        "*(Capital $1000, arriesgando 1%, con 25 pips de SL)*"
-    )
-    bot.reply_to(message, instrucciones, parse_mode="Markdown")
+def gest_riesgo(message):
+    bot.reply_to(message, "Envía: `Riesgo: [Capital], [Riesgo%], [Pips]`")
 
 @bot.message_handler(func=lambda message: message.text.lower().startswith("riesgo:"))
-def calcular_lote(message):
-    query = f"Actúa como calculadora de riesgo. El usuario dice: {message.text}. Calcula el lotaje para Forex (pips) y Cripto (%). Dime cuánto dinero perderá si toca SL y cuánto ganará en un ratio 1:3."
-    res = cerebro_genesis(query, system_role="Calculadora de Riesgo")
-    bot.reply_to(message, f"⚖️ **PLAN DE TRADING**\n━━━━━━━━━━━━━━\n{res}")
+def calc_riesgo(message):
+    res = cerebro_genesis(f"Calcula el riesgo para: {message.text}")
+    bot.reply_to(message, f"⚖️ **PLAN**\n{res}")
 
-@bot.message_handler(func=lambda message: message.text.lower().startswith("vigila "))
-def agregar_activo(message):
-    nuevo = message.text.replace("vigila ", "").replace("Vigila ", "").strip()
-    watchlist.append(nuevo)
-    bot.reply_to(message, f"✅ **{nuevo}** añadido al radar. 🦅")
+@bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT")
+def smt(message):
+    res = cerebro_genesis("Busca divergencias SMT actuales.")
+    bot.reply_to(message, f"📈 **SMT**\n{res}")
 
 @bot.message_handler(func=lambda message: message.text == "🐋 Radar de Ballenas")
-def radar_ballenas(message):
-    query = "ESCANEADO URGENTE: Whale Alert y flujos masivos (>10M USD). No teoría, solo datos de flujos."
-    res = cerebro_genesis(query, system_role="Terminal de Ballenas")
-    bot.reply_to(message, f"🐋 **INFORME DE BALLENAS**\n━━━━━━━━━━━━━━\n{res}")
-
-@bot.message_handler(func=lambda message: message.text == "🌍 Escaneo Geopolítico")
-def escaneo_geo(message):
-    res = cerebro_genesis("Top 3 noticias geopolíticas de impacto financiero.")
-    bot.reply_to(message, f"🌍 **SITUACIÓN GLOBAL**\n━━━━━━━━━━━━━━\n{res}")
-
-@bot.message_handler(func=lambda message: message.text == "📈 Escáner SMT (Correlaciones)")
-def escaneo_smt(message):
-    status = bot.reply_to(message, "🔍 **Buscando divergencias...**")
-    query = "Analiza NASDAQ vs SP500, BTC vs ETH y Oro vs Plata buscando Divergencias SMT actuales."
-    res = cerebro_genesis(query, system_role="Especialista SMT")
-    bot.edit_message_text(f"📈 **DIVERGENCIAS SMT**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
+def ballenas(message):
+    res = cerebro_genesis("Datos de Whale Alert recientes.")
+    bot.reply_to(message, f"🐋 **BALLENAS**\n{res}")
 
 @bot.message_handler(func=lambda message: message.text == "📊 Análisis de Liquidez (SMC)")
-def pedir_foto(message):
-    bot.reply_to(message, "📸 **Mándame la gráfica** para buscar la huella institucional.")
+def smc_foto(message):
+    bot.reply_to(message, "Mándame la captura de la gráfica.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    status = bot.reply_to(message, "🔍 **Analizando...**")
     file_info = bot.get_file(message.photo[-1].file_id)
     img_data = bot.download_file(file_info.file_path)
     res = cerebro_genesis(img_b64=base64.b64encode(img_data).decode('utf-8'))
-    bot.edit_message_text(f"🎯 **DIAGNÓSTICO SMC**\n━━━━━━━━━━━━━━\n{res}", message.chat.id, status.message_id)
+    bot.reply_to(message, f"🎯 **DIAGNÓSTICO SMC**\n{res}")
 
 @bot.message_handler(func=lambda message: True)
 def handle_all(message):
-    res = cerebro_genesis(texto_usuario=message.text)
-    bot.reply_to(message, res)
+    bot.reply_to(message, cerebro_genesis(texto_usuario=message.text))
 
 if __name__ == "__main__":
     bot.infinity_polling()
