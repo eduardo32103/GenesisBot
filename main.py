@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- CONFIGURACIONES ESTRATÉGICAS ---
 TELEGRAM_TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 TELEGRAM_CHAT_ID = "5426620320"
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 
 # Inicialización Cliente OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -206,7 +206,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📊 [REPORTE GPT-4o VISION]\n\n{analysis_text}")
     except Exception as e:
         logging.error(f"Error procesando imagen GPT-4o: {e}")
-        await update.message.reply_text("❌ Falló el análisis de OpenAI. Comprueba los tokens o el tamaño de la subida.")
+        await update.message.reply_text("❌ Falló el análisis de OpenAI. Comprueba tu saldo de API de ChatGPT o el tamaño de la imagen.")
 
 # ----------------- TAREAS SCHEDULED (JOBQUEUE) -----------------
 
@@ -216,12 +216,12 @@ async def routine_hourly_report(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report, parse_mode="HTML")
 
 async def post_init(application: Application):
-    """Callback de arranque absoluto. Manda confirmación a tu Telegram tan pronto el servidor arranca."""
+    """Callback de arranque absoluto. Manda confirmación a tu Telegram tan pronto el servidor arranca y agenda los bots."""
     try:
         logging.info("Enviando mensaje de arranque a Telegram...")
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 <b>¡Génesis 1.0 (GPT-4o) INICIADO Y LEYENDO EL MERCADO!</b>\nMonitoreando NVDA, BNO e Irán/Energía.\n\nMándame tu foto o teclea /analisis.",
+            text="🚀 <b>¡Génesis 1.0 (GPT-4o) INICIADO Y LEYENDO EL MERCADO!</b>\nMonitoreando NVDA, BNO e Irán/Energía.\n\nPrueba mi visión mandándome tu foto o teclea /analisis.",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -235,14 +235,14 @@ async def post_init(application: Application):
 def main():
     logging.info("Construyendo sistema con ApplicationBuilder (v20+)...")
     
-    # Init de v20 con validación estricta y post_init activado para el servidor Railway.
+    # Init de v20 con validación estricta y post_init activado para arranques asíncronos en Railway.
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("analisis", cmd_analisis))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    logging.info("Polling de Telegram iniciado. Desplegado.")
+    logging.info("Polling de Telegram iniciado. Desplegado en la nube.")
     app.run_polling()
 
 if __name__ == "__main__":
