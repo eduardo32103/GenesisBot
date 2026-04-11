@@ -1,6 +1,5 @@
+python-telegram-bot[job-queue]==20.8
+openai
 yfinance
 pandas
 requests
-schedule
-openai
-python-telegram-bot
