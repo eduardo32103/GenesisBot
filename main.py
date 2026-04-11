@@ -1,15 +1,15 @@
 import logging
-import yfinance as yf
-import pandas as pd
+import base64
+import requests
 import re
 import xml.etree.ElementTree as ET
-import requests
-import base64
+import pandas as pd
+import yfinance as yf
 from openai import OpenAI
 
-# Librerías estables de python-telegram-bot v20+
+# Imports estrictos y a prueba de fallos para python-telegram-bot v20+
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, Application
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Configuración de Logging para ver errores internamente en Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,7 +49,7 @@ def check_geopolitical_news():
                 if is_high_impact:
                     news_alerts.append(title)
                     ALERTED_NEWS.add(link)
-                    if len(news_alerts) >= 1: # Restricción estricta de 1 suceso grande por ciclo
+                    if len(news_alerts) >= 1:
                         break
     except Exception as e:
         logging.error(f"Error obteniendo noticias RSS: {e}")
@@ -109,7 +109,7 @@ def fetch_and_analyze_stock(ticker):
         return None
 
 def generate_strategic_report(analysis):
-    """Genera recomendación estratégica basada en el RSI y Divergencias."""
+    """Genera recomendación estratégica."""
     if not analysis: return ""
     ticker, rsi, macd_line, macd_signal, price, div = analysis['ticker'], analysis['rsi'], analysis['macd_line'], analysis['macd_signal'], analysis['price'], analysis['bullish_divergence']
     
@@ -148,12 +148,11 @@ def build_full_report():
 # ----------------- CONTROLADORES DE TELEGRAM -----------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando de arranque forzado por el usuario"""
+    """Comando manual"""
     if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
-    await update.message.reply_text("🤖 ¡Génesis en línea! \n👁️ GPT-4o Vision Activo.\nEnvíame una FOTO de la gráfica y la analizaré con OpenAI.", parse_mode="Markdown")
+    await update.message.reply_text("🤖 ¡Génesis en línea! \n👁️ GPT-4o Vision Activo.\nEnvíame una FOTO de la gráfica y la analizaré con tu nueva Key de OpenAI.", parse_mode="Markdown")
 
 async def cmd_analisis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manejador para el comando interno de reportes"""
     if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
     await update.message.reply_text("🔍 Computando métricas RSI/MACD y Noticias...")
     report = build_full_report()
@@ -161,7 +160,7 @@ async def cmd_analisis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(report, parse_mode="HTML")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pasa fotos del Chat directamente a OpenAI Visión GPT-4o."""
+    """Pasa fotos del Chat a OpenAI Visión GPT-4o."""
     if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
         
     await update.message.reply_text("👁️ Ojo de Águila Analizando gráfica con GPT-4o...")
@@ -174,7 +173,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         prompt = (
             "Eres un Senior Trader cuantitativo. Analiza de inmediato esta gráfica y responde de forma estricta:\n"
-            "1. Tendencia general (Alcista/Bajista/Lateral).\n"
+            "1. Tendencia general.\n"
             "2. Zonas de Soportes y Resistencias críticas.\n"
             "3. Divergencias visibles.\n"
             "4. Veredicto de Riesgo/Beneficio.\n"
@@ -201,12 +200,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         analysis_text = response.choices[0].message.content
-        
-        # Eliminamos el uso de HTML de telegram si la IA manda corchetes o símbolos raros por defecto
         await update.message.reply_text(f"📊 [REPORTE GPT-4o VISION]\n\n{analysis_text}")
     except Exception as e:
         logging.error(f"Error procesando imagen GPT-4o: {e}")
-        await update.message.reply_text("❌ Falló el análisis de OpenAI. Comprueba tu saldo de API de ChatGPT o el tamaño de la imagen.")
+        await update.message.reply_text("❌ Falló el análisis de OpenAI. Comprueba tu clave API o conexión.")
 
 # ----------------- TAREAS SCHEDULED (JOBQUEUE) -----------------
 
@@ -216,12 +213,12 @@ async def routine_hourly_report(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report, parse_mode="HTML")
 
 async def post_init(application: Application):
-    """Callback de arranque absoluto. Manda confirmación a tu Telegram tan pronto el servidor arranca y agenda los bots."""
+    """Callback de arranque absoluto. Manda confirmación a Telegram con la nueva API."""
     try:
-        logging.info("Enviando mensaje de arranque a Telegram...")
+        logging.info("Bot encendiendo. Notificando a Eduardo...")
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 <b>¡Génesis 1.0 (GPT-4o) INICIADO Y LEYENDO EL MERCADO!</b>\nMonitoreando NVDA, BNO e Irán/Energía.\n\nPrueba mi visión mandándome tu foto o teclea /analisis.",
+            text="🚀 <b>¡Génesis 1.0 (GPT-4o) INICIADO Y LEYENDO EL MERCADO!</b>\nLa nueva Key de OpenAI está sincronizada.\nMonitoreando NVDA, BNO e Irán/Energía.\n\nPruébame enviando captura de tu gráfica.",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -229,20 +226,20 @@ async def post_init(application: Application):
 
     # Cola de trabajos (Ejecuta cada hora exacta - 3600 segs)
     application.job_queue.run_repeating(routine_hourly_report, interval=3600, first=10)
-    logging.info("Sistema cíclico programado de forma nativa.")
+    logging.info("Monitoreo horario engranado.")
 
-# ----------------- INICIO Y DEPLOYMENT OFICIAL -----------------
+# ----------------- INICIO -----------------
 def main():
-    logging.info("Construyendo sistema con ApplicationBuilder (v20+)...")
+    logging.info("Tirando de Application.builder() nativo a prueba de ImportErrors...")
     
-    # Init de v20 con validación estricta y post_init activado para arranques asíncronos en Railway.
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    # Init 100% oficial para v20.X sin llamadas obsoletas
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("analisis", cmd_analisis))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    logging.info("Polling de Telegram iniciado. Desplegado en la nube.")
+    logging.info("Polling iniciado en contenedor.")
     app.run_polling()
 
 if __name__ == "__main__":
