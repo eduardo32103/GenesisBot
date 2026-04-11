@@ -1,44 +1,67 @@
-import json
-import requests
-import schedule
-import time
 import logging
 import yfinance as yf
 import pandas as pd
+import re
+import xml.etree.ElementTree as ET
+import requests
+import base64
+from openai import OpenAI
 
-# Configurar logging para Railway
+# Librerías asíncronas de Telegram
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+
+# Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- CONFIGURACIONES DE TELEGRAM ---
+# --- CONFIGURACIONES ESTRATÉGICAS ---
 TELEGRAM_TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
 TELEGRAM_CHAT_ID = "5426620320"
+OPENAI_API_KEY = "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"
 
-def send_telegram_alert(message):
-    """Envía una alerta usando la API REST pura, ideal para evitar crasheos de asyncio en Railway."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
+# Inicializar Cliente OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Memoria local para evitar envíos excesivos de geopolítica
+ALERTED_NEWS = set()
+
+# ----------------- NÚCLEO DE MERCADO -----------------
+def check_geopolitical_news():
+    """Filtra noticias vitales desde el feed RSS y evita spam reportando solo las nuevas."""
+    logging.info("Monitoreando Radar Geopolítico de Alto Impacto...")
+    search_url = "https://news.google.com/rss/search?q=Iran+OR+Energy+OR+oil+geopolitics"
+    
+    HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction", "embargo", 
+                            "explosion", "guerra", "ataque", "tensión", "misil", "sanciones"]
+    news_alerts = []
     try:
-        response = requests.post(url, json=payload)
+        response = requests.get(search_url)
         if response.status_code == 200:
-            logging.info("✅ Alerta enviada a Telegram con éxito.")
-        else:
-            logging.error(f"❌ Error de Telegram: {response.text}")
+            root = ET.fromstring(response.text)
+            for item in root.findall('.//item'):
+                title = item.find('title').text
+                link = item.find('link').text
+                
+                # Ignoramos si esta URL ya fue notificada previamente
+                if link in ALERTED_NEWS:
+                    continue
+                    
+                is_high_impact = any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS)
+                
+                if is_high_impact:
+                    news_alerts.append(title)
+                    ALERTED_NEWS.add(link)
+                    # Tope preventivo: Máximo 2 alertas nuevas por ciclo para no spamearlo a Eduardo
+                    if len(news_alerts) >= 2: break
     except Exception as e:
-        logging.error(f"❌ Error de red al enviar a Telegram: {e}")
+        logging.error(f"Error obteniendo noticias RSS: {e}")
+    return news_alerts
 
 def fetch_and_analyze_stock(ticker):
-    """Descarga datos de yfinance y calcula RSI y MACD manualmente con Pandas."""
-    logging.info(f"Analizando técnico para {ticker}...")
+    """Análisis manual de pandas para RSI, MACD y Divergencias Alcistas."""
     try:
         data = yf.download(ticker, period="6mo", interval="1d", progress=False)
-        if data.empty:
-            return None
-            
-        # Compatibilidad con MultiIndex de nuevas versiones de yfinance
+        if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data = data.copy()
             data.columns = data.columns.get_level_values(0)
@@ -47,20 +70,18 @@ def fetch_and_analyze_stock(ticker):
         if isinstance(close_prices, pd.DataFrame): 
              close_prices = close_prices.iloc[:, 0]
              
-        # Cálculo de RSI (14 periodos)
+        # RSI 14
         delta = close_prices.diff()
         up = delta.clip(lower=0)
         down = -1 * delta.clip(upper=0)
-        ema_up = up.ewm(com=14-1, adjust=False).mean()
-        ema_down = down.ewm(com=14-1, adjust=False).mean()
+        ema_up = up.ewm(com=13, adjust=False).mean()
+        ema_down = down.ewm(com=13, adjust=False).mean()
         rs = ema_up / ema_down
         rsi_series = 100 - (100 / (1 + rs))
         rsi_series[ema_down == 0] = 100 
         
-        # Cálculo de MACD (12, 26, 9)
-        ema_12 = close_prices.ewm(span=12, adjust=False).mean()
-        ema_26 = close_prices.ewm(span=26, adjust=False).mean()
-        macd_line = ema_12 - ema_26
+        # MACD
+        macd_line = close_prices.ewm(span=12, adjust=False).mean() - close_prices.ewm(span=26, adjust=False).mean()
         macd_signal = macd_line.ewm(span=9, adjust=False).mean()
         
         latest_price = float(close_prices.iloc[-1])
@@ -68,67 +89,168 @@ def fetch_and_analyze_stock(ticker):
         latest_macd = float(macd_line.iloc[-1])
         latest_signal = float(macd_signal.iloc[-1])
         
+        # Driver de Divergencias
+        divergence = False
+        if len(close_prices) > 30:
+             recent_window = close_prices.iloc[-10:]
+             prev_window = close_prices.iloc[-25:-10]
+             
+             recent_low, prev_low = recent_window.min(), prev_window.min()
+             recent_rsi = float(rsi_series.loc[recent_window.idxmin()])
+             prev_rsi = float(rsi_series.loc[prev_window.idxmin()])
+             
+             if recent_low < prev_low and recent_rsi > prev_rsi:
+                 divergence = True
+                 
         return {
-            'ticker': ticker,
-            'price': latest_price,
-            'rsi': latest_rsi,
-            'macd_line': latest_macd,
-            'macd_signal': latest_signal
+            'ticker': ticker, 'price': latest_price, 'rsi': latest_rsi,
+            'macd_line': latest_macd, 'macd_signal': latest_signal, 'bullish_divergence': divergence
         }
     except Exception as e:
         logging.error(f"Error analizando {ticker}: {e}")
         return None
 
-def generate_trading_signals(analysis):
-    """Genera el reporte de estado de compra o venta en texto HTML."""
-    if not analysis:
-        return ""
-        
-    ticker = analysis['ticker']
-    rsi = analysis['rsi']
-    macd_line = analysis['macd_line']
-    macd_signal = analysis['macd_signal']
-    price = analysis['price']
+def generate_strategic_report(analysis):
+    """Formatea la lectura de datos del activo en cuestión con su recomendación."""
+    if not analysis: return ""
+    ticker, rsi, macd_line, macd_signal, price, div = analysis['ticker'], analysis['rsi'], analysis['macd_line'], analysis['macd_signal'], analysis['price'], analysis['bullish_divergence']
     
-    signal = "(MANTENER)"
-    
-    if rsi < 30 and macd_line > macd_signal:
-        signal = "🟢 ¡COMPRAR!"
+    strategy = "ESPERAR"
+    opportunity = ""
+    if div:
+        strategy = "🟢 ENTRADA POTENCIAL"
+        opportunity = "⚠️ ALERTA DE OPORTUNIDAD: ¡Divergencia Alcista Detectada!"
+    elif rsi < 30 and macd_line > macd_signal:
+        strategy = "🟢 ENTRADA POTENCIAL"
     elif rsi > 70 and macd_line < macd_signal:
-        signal = "🔴 ¡VENDER!"
-        
-    logging.info(f"[{ticker}] Precio: ${price:.2f} | RSI: {rsi:.2f} | Señal: {signal}")
-    return f"<b>{ticker}</b>: ${price:.2f} | RSI: {rsi:.2f} | Estado: {signal}"
+        strategy = "🔴 TOMAR GANANCIAS"
 
-def main_job():
-    """Flujo principal que escanea todo el mercado de la lista y te notifica de un golpe."""
-    logging.info("="*40)
-    logging.info("Iniciando escaneo del mercado (NVDA, BNO)...")
-    
-    report_lines = ["🚨 <b>Génesis 1.0 - Reporte de Mercado</b> 🚨\n"]
+    report = f"<b>{ticker}</b>: ${price:.2f} | RSI: {rsi:.2f}\nRecomendación: <b>{strategy}</b>"
+    if opportunity: report += f"\n<i>{opportunity}</i>"
+    return report
+
+def build_full_report():
+    report_lines = ["🦅 <b>Génesis 1.0 - Estado Actual de Inteligencia</b> 🦅\n"]
+    has_data = False
     
     for ticker in ["NVDA", "BNO"]:
         analysis = fetch_and_analyze_stock(ticker)
         if analysis:
-            status = generate_trading_signals(analysis)
-            report_lines.append(status)
+            report_lines.append(generate_strategic_report(analysis) + "\n")
+            has_data = True
             
-    final_message = "\n".join(report_lines)
-    send_telegram_alert(final_message)
+    news = check_geopolitical_news()
+    if news:
+        report_lines.append("🌍 <b>Riesgo Geopolítico Inminente detectado:</b>")
+        for n in news: report_lines.append(f"▪️ {n}")
+        has_data = True
+        
+    return "\n".join(report_lines) if has_data else ""
+
+# ----------------- CONTROLADORES (HANDLERS) DE TELEGRAM -----------------
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manejador inicial para confirmar que el Bot te detectó."""
+    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+    await update.message.reply_text("🤖 ¡Bienvenido Eduardo! \nEl módulo 🦅 Águila Génesis 1.0 está **EN LÍNEA**.\n\n👁️ Motor de visión **GPT-4o (OpenAI)** sincronizado de forma exitosa y listo para analizar tus gráficas.\nSi envías una foto, aplicaré mi inteligencia gráfica. Usa /analisis para conocer Soportes, RSI, Tendencia y MACD actual del portafolio.", parse_mode="Markdown")
+
+async def cmd_analisis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /analisis y devuelve el estado actual de los mercados manual."""
+    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+    await update.message.reply_text("🔍 Computando métricas RSI/MACD y Escaneo Geopolítico de Alto Impacto al instante...")
+    report = build_full_report()
+    if report:
+        await update.message.reply_text(report, parse_mode="HTML")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Procesa gráficas enviadas a Telegram usando OpenAI GPT-4o Vision."""
+    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+        
+    await update.message.reply_text("👁️ Ojo de Águila activado. Evaluando estructuras institucionales en tu gráfica con Inteligencia Artificial GPT-4o...")
+    try:
+        photo_file = update.message.photo[-1]
+        file = await context.bot.get_file(photo_file.file_id)
+        image_bytes = await file.download_as_bytearray()
+        
+        # Convertir bytes a Base64 estándar para la asimilación HTTP de OpenAI
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        prompt = (
+            "Eres un Senior Trader Institucional y analista quant sumamente experto. Acaban de enviarte la imagen de una gráfica de trading. "
+            "Analízala de forma impecable y responde de manera clara aportando estrictamente la siguiente información:\n"
+            "1. Tendencia general dominante (Ej: Alcista, Bajista o Lateral).\n"
+            "2. Zonas de Soportes y Resistencias críticas o estructurales más relevantes que la imagen demuestre.\n"
+            "3. Indicaciones de divergencias visibles entre la acción del precio y cualquier oscilador presente en la foto.\n"
+            "4. Tu recomendación profesional del nivel de Riesgo/Beneficio y un veredicto general o Score para esa entrada.\n"
+            "Sé claro, evita rellenos estériles."
+        )
+        
+        # Inyectando al Endpoint de OpenAI
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=800
+        )
+        
+        analysis_text = response.choices[0].message.content
+        await update.message.reply_text(f"📊 [REPORTE GPT-4o VISION]\n\n{analysis_text}")
+    except Exception as e:
+        logging.error(f"Error crítico procesando la imagen con GPT-4o: {e}")
+        await update.message.reply_text("❌ Hubo un fallo en la conexión directa con OpenAI intentando decodificar la foto.")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+    await update.message.reply_text("🌐 Modo Interactivo ONLINE. \n* Escribe /analisis para conocer las métricas actuales del portafolio al instante.\n* O bien, Envíame una **foto** (screenshot) de tu gráfica y la escudriñaré bloque por bloque usando el GPT-4o de OpenAI.")
+
+# ----------------- TAREAS SCHEDULED NATIVAS (CRON) -----------------
+
+async def routine_hourly_report(context: ContextTypes.DEFAULT_TYPE):
+    """Evaluación pasiva y silenciosa cada hora (mercado y geopolítica)."""
+    report = build_full_report()
+    if report:
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report, parse_mode="HTML")
+
+async def routine_interrupt_divergences(context: ContextTypes.DEFAULT_TYPE):
+    """Vigila a corto intervalo. Interrumpe ante oportunidad drástica."""
+    for ticker in ["NVDA", "BNO"]:
+        analysis = fetch_and_analyze_stock(ticker)
+        if analysis and analysis['bullish_divergence']:
+            msg = f"🦅 <b>¡ALERTA TÁCTICA! Oportunidad de Divergencia Oculta</b> 🦅\n\nEl precio de <b>{ticker}</b> busca un fondo nuevo (${analysis['price']}), pero la fortaleza del RSI reacciona en reversa ({analysis['rsi']:.2f}).\n\n<i>Prepárate para posicionarte.</i>"
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="HTML")
+
+# ----------------- INICIO Y DEPLOYMENT OFICIAL -----------------
+def main():
+    logging.info("🚀 Arquitectura Interactiva para OpenAI GPT-4o Desplegada.")
     
-    logging.info("Ciclo de análisis finalizado. Esperando la próxima hora...")
-    logging.info("="*40)
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Handlers Base
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("analisis", cmd_analisis))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    
+    # Manejadores Cronológicos
+    jq = app.job_queue
+    jq.run_repeating(routine_hourly_report, interval=3600, first=5)  # Cada 60 minutos exactos
+    jq.run_repeating(routine_interrupt_divergences, interval=1800, first=60) # Chequeo profundo en silencio a las mitades (30 mins)
+    
+    logging.info("🦅 Conexión con GPT-4o Sincronizada y Sonares activos. (Polling iniciado)")
+    app.run_polling()
 
 if __name__ == "__main__":
-    logging.info("🚀 Bot Analista Senior Iniciado.")
-    
-    # 1. IMPORTANTE: Llamada obligatoria para enviar el reporte en el segundo 1
-    main_job()
-    
-    # 2. Programamos las siguientes repeticiones
-    schedule.every(60).minutes.do(main_job)
-    
-    # 3. Bucle infinito para Railway
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    main()
