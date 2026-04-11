@@ -2,3 +2,5 @@ yfinance
 pandas
 requests
 schedule
+openai
+python-telegram-bot
