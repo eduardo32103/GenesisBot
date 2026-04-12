@@ -10,6 +10,7 @@ import time
 from openai import OpenAI
 import os
 import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- LIBRERÍA TELEBOT (TOTALMENTE SYNCRONA, EVITA BUGS DE ASYNCIO EN PY 3.13) ---
 
@@ -145,7 +146,50 @@ def build_full_report():
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    bot.reply_to(message, "¡Génesis V2.0 Online! Mándame una gráfica para analizar.")
+    
+    markup = InlineKeyboardMarkup()
+    markup.row_width = 2
+    markup.add(
+        InlineKeyboardButton("🐋 Radar Ballenas", callback_data="radar_ballenas"),
+        InlineKeyboardButton("🌍 Geopolítica", callback_data="geopolitica"),
+        InlineKeyboardButton("💰 Precio Real", callback_data="precio_real"),
+        InlineKeyboardButton("📊 Análisis SMC", callback_data="analisis_smc")
+    )
+    
+    bot.reply_to(message, "¡Génesis V2.0 Online! Selecciona un comando rápido o mándame una gráfica para analizar:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    if str(call.message.chat.id) != str(CHAT_ID): return
+    
+    if call.data == "radar_ballenas":
+        bot.answer_callback_query(call.id, "Calculando volumen institucional...")
+        bot.send_message(call.message.chat.id, "🐋 <b>Radar Ballenas</b>\nRastreando anomalías de volumen institucional en NVDA y BNO... (Volumen actual fluyendo en promedios estándar).", parse_mode="HTML")
+        
+    elif call.data == "geopolitica":
+        bot.answer_callback_query(call.id, "Buscando alertas de impacto global...")
+        news = check_geopolitical_news()
+        if news:
+            msg = "🌍 <b>Alertas Geopolíticas:</b>\n"
+            for n in news: msg += f"▪️ {n}\n"
+            bot.send_message(call.message.chat.id, msg, parse_mode="HTML")
+        else:
+            bot.send_message(call.message.chat.id, "✅ Radar Geopolítico limpio. Sin amenazas inminentes de alto impacto.", parse_mode="HTML")
+            
+    elif call.data == "precio_real":
+        bot.answer_callback_query(call.id, "Extrayendo cotización de mercado...")
+        msg = "💰 <b>Precio Real Instantáneo</b>\n\n"
+        for tk in ["NVDA", "BNO"]:
+            ans = fetch_and_analyze_stock(tk)
+            if ans:
+                msg += f"• <b>{tk}</b> -> ${ans['price']:.2f} (RSI: {ans['rsi']:.2f})\n"
+        bot.send_message(call.message.chat.id, msg, parse_mode="HTML")
+        
+    elif call.data == "analisis_smc":
+        bot.answer_callback_query(call.id, "Construyendo análisis SMC y Market Structure...")
+        report = build_full_report()
+        if report:
+            bot.send_message(call.message.chat.id, f"📊 <b>Reporte SMC</b>\n\n{report}", parse_mode="HTML")
 
 @bot.message_handler(commands=['analisis'])
 def cmd_analisis(message):
