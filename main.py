@@ -346,72 +346,107 @@ BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
 BRENT_MIN_VALID_PRICE = 50.0  # Si el precio es menor a esto, es un ERROR de Yahoo
 
 # ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
-def _try_download_price(symbol, period="1d", interval="1m"):
-    """Intenta descargar precio de un símbolo específico de Yahoo Finance"""
+def _try_ticker_history(symbol, period="1d", interval="1m"):
+    """Usa yf.Ticker().history() que NUNCA devuelve MultiIndex (evita bugs de $0.37)"""
     try:
-        data = yf.download(symbol, period=period, interval=interval, progress=False)
+        ticker_obj = yf.Ticker(symbol)
+        data = ticker_obj.history(period=period, interval=interval)
         if data.empty: return None
-        if isinstance(data.columns, pd.MultiIndex):
-            data = data.copy(); data.columns = data.columns.get_level_values(0)
 
-        close_prices = data['Close']; volumes = data['Volume']
-        if isinstance(close_prices, pd.DataFrame):
-            close_prices = close_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
+        price = float(data['Close'].iloc[-1])
+        vol = float(data['Volume'].iloc[-1])
 
-        price = float(close_prices.iloc[-1])
-        vol = float(volumes.iloc[-1])
+        if price <= 0: return None
         return {'price': price, 'vol': vol}
     except Exception as e:
-        logging.debug(f"_try_download_price({symbol}): {e}")
+        logging.debug(f"_try_ticker_history({symbol}): {e}")
         return None
 
+def _sanity_check_price(tk, new_price):
+    """Verifica que el precio no sea basura (desviación >50% vs último conocido = error de API)"""
+    if tk in LAST_KNOWN_PRICES:
+        last_price = LAST_KNOWN_PRICES[tk]['price']
+        if last_price > 0:
+            change_pct = abs(new_price - last_price) / last_price
+            if change_pct > 0.50:  # Desviación de más del 50% = imposible en un tick de 30s
+                logging.warning(f"⚠️ SANITY CHECK FALLIDO para {tk}: ${new_price:.2f} vs último ${last_price:.2f} (desviación: {change_pct*100:.1f}%). Posible error de API.")
+                return False
+    # Si el precio es absurdamente bajo para activos conocidos
+    if new_price < 0.50:
+        logging.warning(f"⚠️ SANITY CHECK: {tk} precio ${new_price:.4f} demasiado bajo. Rechazado.")
+        return False
+    return True
+
+# Sufijos de mercado para reintento cuando Yahoo falla con el ticker base
+MARKET_SUFFIX_RETRIES = {
+    "IXC": ["IXC"],       # NYSE Arca - usar sin sufijo, ya es correcto
+    "BNO": ["BNO"],       # NYSE Arca
+    "IAU": ["IAU"],       # NYSE Arca
+    "NVDA": ["NVDA"],     # NASDAQ
+}
+
 def get_safe_ticker_price(ticker, force_validation=False):
-    """Descarga precio con cadena de fallback para commodities problemáticos"""
+    """Descarga precio con validación anti-basura, reintentos y fallback para commodities"""
     tk = remap_ticker(ticker)
 
     # --- CASO ESPECIAL: BRENT (cadena de fallback BZ=F → CO=F → BNO) ---
     if tk == "BZ=F":
         for fallback_symbol in BRENT_FALLBACK_CHAIN:
-            result = _try_download_price(fallback_symbol)
+            result = _try_ticker_history(fallback_symbol)
             if result and result['price'] >= BRENT_MIN_VALID_PRICE:
                 logging.info(f"Brent OK vía {fallback_symbol}: ${result['price']:.2f}")
-                LAST_KNOWN_PRICES[tk] = result  # Cachear bajo la clave canónica BZ=F
+                LAST_KNOWN_PRICES[tk] = result
                 return result
             elif result:
                 logging.warning(f"Brent rechazado vía {fallback_symbol}: ${result['price']:.2f} (< ${BRENT_MIN_VALID_PRICE})")
 
-        # Si todos fallan, intentar con datos diarios (mercado cerrado)
         for fallback_symbol in BRENT_FALLBACK_CHAIN:
-            result = _try_download_price(fallback_symbol, period="5d", interval="1d")
+            result = _try_ticker_history(fallback_symbol, period="5d", interval="1d")
             if result and result['price'] >= BRENT_MIN_VALID_PRICE:
                 logging.info(f"Brent (cierre diario) OK vía {fallback_symbol}: ${result['price']:.2f}")
                 LAST_KNOWN_PRICES[tk] = result
                 return result
 
-        # Último recurso: devolver último precio conocido del cache
         if tk in LAST_KNOWN_PRICES:
             logging.warning(f"Brent: usando último precio conocido del cache: ${LAST_KNOWN_PRICES[tk]['price']:.2f}")
             return LAST_KNOWN_PRICES[tk]
 
-        logging.error("Brent: TODAS las fuentes fallaron. Sin precio disponible.")
+        logging.error("Brent: TODAS las fuentes fallaron.")
         return None
 
     # --- CASO GENERAL: cualquier otro ticker ---
-    result = _try_download_price(tk)
-    if result:
+    # Intento 1: Ticker.history() con intervalo 1m
+    result = _try_ticker_history(tk)
+    if result and _sanity_check_price(tk, result['price']):
+        LAST_KNOWN_PRICES[tk] = result
+        return result
+    elif result:
+        logging.warning(f"{tk}: precio 1m falló sanity check (${result['price']:.4f}).")
+
+    # Intento 2: datos diarios (más estables, mercado cerrado)
+    result = _try_ticker_history(tk, period="5d", interval="1d")
+    if result and _sanity_check_price(tk, result['price']):
         LAST_KNOWN_PRICES[tk] = result
         return result
 
-    # Intentar con datos diarios si minuto falla (mercado cerrado)
-    result = _try_download_price(tk, period="5d", interval="1d")
-    if result:
-        LAST_KNOWN_PRICES[tk] = result
-        return result
+    # Intento 3: reintentar con sufijos de mercado alternativos
+    for alt_sym in MARKET_SUFFIX_RETRIES.get(tk, []):
+        if alt_sym != tk:
+            result = _try_ticker_history(alt_sym, period="5d", interval="1d")
+            if result and _sanity_check_price(tk, result['price']):
+                logging.info(f"{tk}: precio corregido vía {alt_sym}: ${result['price']:.2f}")
+                LAST_KNOWN_PRICES[tk] = result
+                return result
 
-    # Devolver cache si existe
+    # Devolver cache si existe (precio conocido y confiable)
     if tk in LAST_KNOWN_PRICES:
         logging.warning(f"{tk}: usando último precio conocido: ${LAST_KNOWN_PRICES[tk]['price']:.2f}")
         return LAST_KNOWN_PRICES[tk]
+
+    # Primera carga: aceptar el resultado si pasó > $0.50
+    if result and result['price'] > 0.50:
+        LAST_KNOWN_PRICES[tk] = result
+        return result
 
     return None
 
@@ -455,14 +490,12 @@ def fetch_intraday_data(ticker):
         safe_check = get_safe_ticker_price(tk)
         if not safe_check: return None
 
-        data = yf.download(tk, period="5d", interval="5m", progress=False)
+        # Usar Ticker.history() para evitar bugs de MultiIndex
+        ticker_obj = yf.Ticker(tk)
+        data = ticker_obj.history(period="5d", interval="5m")
         if data.empty: return None
-        if isinstance(data.columns, pd.MultiIndex):
-            data = data.copy(); data.columns = data.columns.get_level_values(0)
 
         close_prices = data['Close']; open_prices = data['Open']; volumes = data['Volume']
-        if isinstance(close_prices, pd.DataFrame):
-             close_prices = close_prices.iloc[:, 0]; open_prices = open_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
 
         vol_type = "Compra 🟢" if float(close_prices.iloc[-1]) >= float(open_prices.iloc[-1]) else "Venta 🔴"
         return {'ticker': tk, 'latest_vol': float(volumes.iloc[-1]), 'avg_vol': float(volumes.mean()), 'vol_type': vol_type, 'latest_price': safe_check['price']}
@@ -474,14 +507,12 @@ def fetch_and_analyze_stock(ticker):
         safe_check = get_safe_ticker_price(tk)
         if not safe_check: return None
 
-        data = yf.download(tk, period="6mo", interval="1d", progress=False)
+        # Usar Ticker.history() para evitar bugs de MultiIndex con yf.download()
+        ticker_obj = yf.Ticker(tk)
+        data = ticker_obj.history(period="6mo", interval="1d")
         if data.empty: return None
-        if isinstance(data.columns, pd.MultiIndex):
-            data = data.copy(); data.columns = data.columns.get_level_values(0)
 
         close_prices = data['Close']; volume = data['Volume']
-        if isinstance(close_prices, pd.DataFrame):
-             close_prices = close_prices.iloc[:, 0]; volume = volume.iloc[:, 0]
 
         delta = close_prices.diff()
         up = delta.clip(lower=0); down = -1 * delta.clip(upper=0)
@@ -853,12 +884,20 @@ def background_loop_proactivo():
                 cur_price = intra['latest_price']
                 display_name = get_display_name(tk)
 
-                # Rupturas Doble Verificadas (YFinance 1 Minuto)
+                # === GUARDIA DE COHERENCIA: bloquear alertas si el precio es ilógico ===
+                price_is_reliable = True
+                if tk in LAST_KNOWN_PRICES:
+                    last_p = LAST_KNOWN_PRICES[tk]['price']
+                    if last_p > 0 and abs(cur_price - last_p) / last_p > 0.50:
+                        logging.warning(f"🚫 ALERTA BLOQUEADA para {tk}: ${cur_price:.2f} vs último ${last_p:.2f} (>50% de desviación). Error de API probable.")
+                        price_is_reliable = False
+
+                # Rupturas Doble Verificadas (YFinance 1 Minuto) — SOLO si el precio es confiable
                 topol = SMC_LEVELS_MEMORY.get(tk)
-                if topol:
+                if topol and price_is_reliable:
                     if cur_price > topol['res']:
                         rt = verify_1m_realtime_data(tk)
-                        if rt and rt['price'] > topol['res']:
+                        if rt and rt['price'] > topol['res'] and _sanity_check_price(tk, rt['price']):
                            hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                            if not check_and_add_seen_event(hash_brk):
                                adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
@@ -866,14 +905,14 @@ def background_loop_proactivo():
 
                     elif cur_price < topol['sup']:
                         rt = verify_1m_realtime_data(tk)
-                        if rt and rt['price'] < topol['sup']:
+                        if rt and rt['price'] < topol['sup'] and _sanity_check_price(tk, rt['price']):
                            hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
                            if not check_and_add_seen_event(hash_drp):
                                adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
                                bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
 
-                # Ballenas Doble Verificadas
-                if intra['avg_vol'] > 0:
+                # Ballenas Doble Verificadas — también protegidas por coherencia
+                if intra['avg_vol'] > 0 and price_is_reliable:
                     spike = intra['latest_vol'] / intra['avg_vol']
                     if spike >= 2.5:
                         rt = verify_1m_realtime_data(tk)
