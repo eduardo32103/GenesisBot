@@ -81,13 +81,21 @@ def log_base64_backup():
     except Exception as e:
         logging.error(f"Error generando encriptador Base64: {e}")
 
-# --- MAPEO DURO DE ACTIVOS DEFENSIVO ---
+# --- MAPEO DURO Y ALIAS VISUAL  ---
 def remap_ticker(ticker_input):
     tk = ticker_input.upper()
     if tk in ["LCO", "BRENT", "PETROLEO"]: return "BZ=F"
     if tk in ["ORO", "GOLD", "GC"]: return "GC=F"
     if tk in ["BTC", "BITCOIN"]: return "BTC-USD"
     return tk
+
+def get_display_name(ticker_key):
+    mapping = {
+        "BZ=F": "LCO (Petróleo Brent)",
+        "GC=F": "Oro (Gold)",
+        "BTC-USD": "BTC (Bitcoin)"
+    }
+    return mapping.get(ticker_key, ticker_key)
 
 # --- CONTROLADORES DE BASE DE DATOS ---
 def check_and_add_seen_event(event_hash):
@@ -318,7 +326,6 @@ def gpt_advanced_geopolitics(news_list, manual=False):
 def fetch_intraday_data(ticker):
     tk = remap_ticker(ticker)
     try:
-        # Validación Defensiva cruzada LCO
         safe_check = get_safe_ticker_price(tk)
         if not safe_check: return None
         
@@ -375,15 +382,17 @@ def update_smc_memory(ticker, analysis):
 
 def analyze_breakout_gpt(ticker, level_type, price):
     tk = remap_ticker(ticker)
+    display_name = get_display_name(tk)
     if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
     client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"El activo {tk} rompió su {level_type} en ${price:.2f}. Consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y por qué. ESPAÑOL ESTRICTO."
+    prompt = f"El activo {display_name} rompió su {level_type} en ${price:.2f}. Consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y por qué. ESPAÑOL ESTRICTO."
     try: return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=200).choices[0].message.content
     except: return "¿Qué hacer? Esperar al cierre del día."
 
 def perform_deep_analysis(ticker):
     tk = remap_ticker(ticker)
-    tech_info = f"Información técnica no disponible para {tk}."
+    display_name = get_display_name(tk)
+    tech_info = f"Información técnica no disponible para {display_name}."
     tech = fetch_and_analyze_stock(tk)
     if tech: tech_info = f"Precio: ${tech['price']:.2f}\nRSI: {tech['rsi']:.2f}\nSMC Trend: {tech['smc_trend']}"
         
@@ -392,8 +401,8 @@ def perform_deep_analysis(ticker):
         news_str = "\n".join([f"- {n.get('title', '')}" for n in yf.Ticker(tk).news[:3]])
     except: pass
         
-    prompt = (f"Analiza profundamente '{tk}'.\nTécnicos:\n{tech_info}\n\nNoticias:\n{news_str}\n" "Combina enfoques. Dictamina un VEREDICTO FINAL resaltado: 'COMPRAR', 'VENDER' o 'MANTENER/ESPERAR'. ESPAÑOL ESTRICTO.")
-    if not OPENAI_API_KEY: return "Error: API API KEY MISSING."
+    prompt = (f"Analiza profundamente '{display_name}'.\nTécnicos:\n{tech_info}\n\nNoticias:\n{news_str}\n" "Combina enfoques. Dictamina un VEREDICTO FINAL resaltado: 'COMPRAR', 'VENDER' o 'MANTENER/ESPERAR'. ESPAÑOL ESTRICTO.")
+    if not OPENAI_API_KEY: return "Error: API KEY INCORRECTA."
     try: return OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=600).choices[0].message.content
     except Exception as e: return f"Fallo al analizar: {e}"
 
@@ -423,7 +432,8 @@ def build_wallet_dashboard():
             total_current += curr_val
             
             sign = "+" if roi_percent >= 0 else ""
-            details.append(f"• {tk}: {sign}{roi_percent*100:.2f}%")
+            display_name = get_display_name(tk)
+            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}%")
             
     if total_invested == 0 and realized_pnl != 0:
          return (f"---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
@@ -476,7 +486,7 @@ def cmd_start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    cloud_status = "NUBE MONGO ATLAS" if MONGO_URI else "SQLITE FALLBACK + BASE64"
+    cloud_status = "NUBE MONGO ATLAS" if MONGO_URI else "SQLITE FALLBACK + CONFIG BASE64"
     bot.reply_to(message, f"¡Génesis Dashboard Patrimonial Online!\nProtección Anticolapso Activa ({cloud_status}). Botonera lista:", reply_markup=markup)
 
 @bot.message_handler(commands=['recover'])
@@ -543,7 +553,8 @@ def handle_text(message):
             bot.send_message(message.chat.id, "---\n🐋 *RADAR BALLENAS*\n---\nEl océano está quieto. Sin anomalías detectadas hoy.", parse_mode="HTML")
             return
         lines = ["---", "🐋 *ÚLTIMAS 5 BALLENAS*", "---"]
-        for w in list(WHALE_MEMORY)[::-1]: lines.append(f"• <b>{w['ticker']}</b> | Vol: {w['vol_approx']:,} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
+        for w in list(WHALE_MEMORY)[::-1]: 
+            lines.append(f"• <b>{get_display_name(w['ticker'])}</b> | Vol: {w['vol_approx']:,} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
         bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
         return
         
@@ -560,7 +571,8 @@ def handle_text(message):
             analysis = fetch_and_analyze_stock(tk)
             if analysis:
                 update_smc_memory(tk, analysis)
-                report_lines.extend([f"🏦 <b>{analysis['ticker']}</b> - ${analysis['price']:.2f}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${analysis['smc_sup']:.2f}", f"• Sell-side Liquidity: ${analysis['smc_res']:.2f}", f"• Order Block Institucional: ${analysis['order_block']:.2f}", "---"])
+                d_name = get_display_name(analysis['ticker'])
+                report_lines.extend([f"🏦 <b>{d_name}</b> - ${analysis['price']:.2f}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${analysis['smc_sup']:.2f}", f"• Sell-side Liquidity: ${analysis['smc_res']:.2f}", f"• Order Block Institucional: ${analysis['order_block']:.2f}", "---"])
         bot.send_message(message.chat.id, "\n".join(report_lines) if len(report_lines)>3 else "Tu cartera está vacía.", parse_mode="HTML")
         return
         
@@ -569,28 +581,37 @@ def handle_text(message):
         match = re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text)
         if match:
             tk = remap_ticker(match.group(1))
-            bot.reply_to(message, f"🔍 Análisis Profundo Institucional en {tk}...")
-            bot.send_message(message.chat.id, f"---\n🏦 *RESEARCH: {tk}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
+            display_name = get_display_name(tk)
+            bot.reply_to(message, f"🔍 Análisis Profundo Institucional en {display_name}...")
+            bot.send_message(message.chat.id, f"---\n🏦 *RESEARCH: {display_name}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
         return
             
     if re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text)
         if match: 
-             tk = remap_ticker(match.group(1))
+             raw_input = match.group(1)
+             tk = remap_ticker(raw_input)
+             display_name = get_display_name(tk)
              if remove_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido borrado del radar.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] ha sido borrado del radar.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
              else:
-                 bot.reply_to(message, f"⚠️ El activo {tk} no residía en tu radar.")
+                 bot.reply_to(message, f"⚠️ El activo {display_name} no residía en tu radar.")
         return
 
     if re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
         if match: 
-             tk = remap_ticker(match.group(1))
+             raw_input = match.group(1).upper()
+             tk = remap_ticker(raw_input)
+             display_name = get_display_name(tk)
+             
              if add_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] añadido al radar SMC.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] añadido al radar SMC.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
              else:
-                 bot.reply_to(message, f"⚠️ El activo {tk} ya existía en tu radar SMC.")
+                 if tk == "BZ=F" and raw_input in ["LCO", "BRENT", "PETROLEO"]:
+                     bot.reply_to(message, f"✅ LCO ( Brent ) ya está en tu radar y actualizado con el precio real de $BZ=F.")
+                 else:
+                     bot.reply_to(message, f"⚠️ El activo {display_name} ya existía en tu radar SMC.")
         return
 
     if re.search(r'(?i)\bCOMPR[EÉ]\b', text):
@@ -598,22 +619,26 @@ def handle_text(message):
         if match:
             amt = match.group(1)
             tk = remap_ticker(match.group(2))
-            bot.reply_to(message, f"💸 Consultando precio de fijación para {tk}...")
+            display_name = get_display_name(tk)
+            
+            bot.reply_to(message, f"💸 Consultando precio de fijación para {display_name}...")
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
-                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {tk}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${intra['latest_price']:.2f}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {display_name}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${intra['latest_price']:.2f}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
             else:
-                bot.reply_to(message, f"❌ No pude fijar el precio real de {tk} ahora. Mercado cerrado temporalmente.")
+                bot.reply_to(message, f"❌ No pude fijar el precio real de {display_name} ahora. Mercado cerrado temporalmente.")
         return
 
     if re.search(r'(?i)\bVEND[IÍ]\b', text):
         match = re.search(r'(?i)\bVEND[IÍ]\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Za-z0-9\-]+)', text)
         if match:
             tk = remap_ticker(match.group(1))
+            display_name = get_display_name(tk)
+            
             investments = get_investments()
             if tk in investments:
-                bot.reply_to(message, f"💸 Procesando cierre institucional para {tk}...")
+                bot.reply_to(message, f"💸 Procesando cierre institucional para {display_name}...")
                 entry = investments[tk]['entry_price']
                 amt = investments[tk]['amount_usd']
                 
@@ -631,22 +656,22 @@ def handle_text(message):
 
                     ans_str = (
                         f"---\n✅ *GESTIÓN DE CARTERA: CIERRE*\n---\n"
-                        f"✅ [ {tk} ] liquidado al precio de ${live_price:.2f}\n"
+                        f"✅ [ {display_name} ] liquidado al precio de ${live_price:.2f}\n"
                         f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
                         f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n\n"
                         f"✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie."
                     )
                     bot.send_message(message.chat.id, ans_str, parse_mode="HTML")
                 else:
-                    bot.reply_to(message, f"❌ No pude contactar al mercado para saldar la liquidación de {tk}.")
+                    bot.reply_to(message, f"❌ No pude contactar al mercado para saldar la liquidación de {display_name}.")
             else:
-                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {tk}. Usa 'Elimina {tk}' para detener rastreo.")
+                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {display_name}. Usa 'Elimina {display_name}' para detener rastreo.")
         return
 
 
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela Quirúrgico (30s) / Precisión Total / MOTOR MONGO ATLAS...")
+    logging.info("Arrancando Centinela Quirúrgico (30s) / Precisión Total / MOTOR ACTIVO...")
     load_mongo_state()
         
     for tk in get_tracked_tickers():
@@ -678,6 +703,7 @@ def background_loop_proactivo():
                 intra = fetch_intraday_data(tk)
                 if not intra: continue
                 cur_price = intra['latest_price']
+                display_name = get_display_name(tk)
                 
                 # Rupturas Doble Verificadas (YFinance 1 Minuto)
                 topol = SMC_LEVELS_MEMORY.get(tk)
@@ -688,7 +714,7 @@ def background_loop_proactivo():
                            hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                            if not check_and_add_seen_event(hash_brk):
                                adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
-                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{tk}</b> cruzó quirúrgicamente Resistencia en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Resistencia en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
                     
                     elif cur_price < topol['sup']:
                         rt = verify_1m_realtime_data(tk)
@@ -696,7 +722,7 @@ def background_loop_proactivo():
                            hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
                            if not check_and_add_seen_event(hash_drp):
                                adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
-                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{tk}</b> cruzó quirúrgicamente Soporte en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
                 
                 # Ballenas Doble Verificadas
                 if intra['avg_vol'] > 0:
@@ -709,7 +735,7 @@ def background_loop_proactivo():
                         if not check_and_add_seen_event(whale_hash_id):
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
-                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{tk}</b>: {valid_vol:,} unidades.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
+                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {valid_vol:,} unidades.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
                         
         except Exception as e:
             logging.error(f"Error HFT: {e}")
