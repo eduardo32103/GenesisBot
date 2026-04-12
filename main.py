@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import yfinance as yf
 from openai import OpenAI
+import os
 
 # Imports estrictos de python-telegram-bot v20+
 from telegram import Update
@@ -13,10 +14,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- CONFIGURACIONES ESTRATÉGICAS ---
-TELEGRAM_TOKEN = "7708446894:AAEuY_BQlrJicPubna0UHsDNU85FjBJ7_D4"
-TELEGRAM_CHAT_ID = "5426620320"
-OPENAI_API_KEY = "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"
+# --- CONFIGURACIONES ESTRATÉGICAS (VARIABLES DE ENTORNO) ---
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('CHAT_ID')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+
+if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY]):
+    logging.error("⚠️ ALERTA: Faltan variables de entorno críticas. Configura TELEGRAM_TOKEN, CHAT_ID y OPENAI_API_KEY en Railway.")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 ALERTED_NEWS = set()
