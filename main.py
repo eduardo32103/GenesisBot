@@ -8,21 +8,17 @@ import yfinance as yf
 from openai import OpenAI
 import os
 
-# Imports estrictos de python-telegram-bot v20+
+# Imports estables de python-telegram-bot v20.8
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- CONFIGURACIONES ESTRATÉGICAS (VARIABLES DE ENTORNO) ---
+# --- CONFIGURACIONES ESTRATÉGICAS (ENV VARIABLES) ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('CHAT_ID')
+CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
-if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENAI_API_KEY]):
-    logging.error("⚠️ ALERTA: Faltan variables de entorno críticas. Configura TELEGRAM_TOKEN, CHAT_ID y OPENAI_API_KEY en Railway.")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 ALERTED_NEWS = set()
 
 # ----------------- NÚCLEO DE MERCADO -----------------
@@ -143,27 +139,38 @@ def build_full_report():
 # ----------------- CONTROLADORES DE TELEGRAM -----------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando oficial de arranque /start"""
-    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+    """Comando manual de inicio"""
+    if str(update.message.chat_id) != str(CHAT_ID): return
     await update.message.reply_text("¡Génesis V2.0 Online! Mándame una gráfica para analizar.")
 
 async def cmd_analisis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+    if str(update.message.chat_id) != str(CHAT_ID): return
     await update.message.reply_text("🔍 Computando métricas globales...")
     report = build_full_report()
     if report:
         await update.message.reply_text(report, parse_mode="HTML")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.message.chat_id) != TELEGRAM_CHAT_ID: return
+    """Integración Segura de OpenAI GPT-4o con manejo de errores profundos"""
+    if str(update.message.chat_id) != str(CHAT_ID): return
         
     await update.message.reply_text("👁️ Ojo de Águila Analizando gráfica con GPT-4o...")
+    
     try:
+        # Descarga de imagen
         photo_file = update.message.photo[-1]
         file = await context.bot.get_file(photo_file.file_id)
         image_bytes = await file.download_as_bytearray()
         
+        # Codificación
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Validación Local de Entorno
+        if not OPENAI_API_KEY:
+            raise ValueError("La variable de entorno OPENAI_API_KEY no se cargó correctamente en Railway.")
+            
+        # Instanciando acá dentro para que no bloqueé el arranque general si cae
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
         prompt = (
             "Eres un Senior Trader cuantitativo. Analiza de inmediato esta gráfica y responde de forma estricta:\n"
@@ -195,52 +202,55 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         analysis_text = response.choices[0].message.content
         await update.message.reply_text(f"📊 [REPORTE GPT-4o VISION]\n\n{analysis_text}")
+        
     except Exception as e:
-        logging.error(f"Error procesando imagen GPT-4o: {e}")
-        await update.message.reply_text("❌ Falló el análisis de OpenAI. Comprueba tu API Key.")
+        # Volcar traza completa al lado del servidor Railway para investigación profunda
+        logging.error("Crash absoluto procesando imagen IA:", exc_info=True)
+        # Reflejo al usuario para saber porqué falló
+        await update.message.reply_text(f"❌ Falló el análisis de OpenAI. Motivo del servidor:\n`{str(e)}`", parse_mode="Markdown")
 
 # ----------------- TAREAS SCHEDULED Y POST_INIT -----------------
 
 async def routine_hourly_report(context: ContextTypes.DEFAULT_TYPE):
     report = build_full_report()
     if report:
-         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report, parse_mode="HTML")
+         await context.bot.send_message(chat_id=CHAT_ID, text=report, parse_mode="HTML")
 
 async def post_init(application: Application):
-    """Callback de arranque: Notifica + Envía el reporte BNO/NVDA inicial y asienta horarios."""
+    """Callback de arranque: Notifica + Envía el reporte inicial"""
     try:
         logging.info("Enviando mensaje de arranque a Telegram...")
         
-        # 1. Mensaje Base
         await application.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID, 
+            chat_id=CHAT_ID, 
             text="🚀 <b>¡Génesis V2.0 ONLINE EN SERVIDOR!</b>",
             parse_mode="HTML"
         )
         
-        # 2. Análisis Inmediato Inicial
         report = build_full_report()
         if report:
-             await application.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report, parse_mode="HTML")
+             await application.bot.send_message(chat_id=CHAT_ID, text=report, parse_mode="HTML")
              
     except Exception as e:
          logging.error(f"Error despachando mensajes de post_init: {e}")
 
-    # 3. Cola de trabajos: Sigue ejecutándose cada hora (3600 segundos) de ahí en adelante
     application.job_queue.run_repeating(routine_hourly_report, interval=3600, first=3600)
 
 # ----------------- INICIO -----------------
 def main():
-    logging.info("Arrancando proceso persistente de la App (Application.builder)")
+    logging.info("Arrancando proceso persistente (Application.builder v20.8)")
     
+    if not TELEGRAM_TOKEN:
+        logging.critical("FALTA TELEGRAM_TOKEN en tus Variables de Entorno. Apagando...")
+        return
+        
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("analisis", cmd_analisis))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    logging.info("Manteniendo bot VIVO. Ejecutando Polling infinito...")
-    # Update.ALL_TYPES previene rechazos de schedule o updates incompletos
+    logging.info("Polling infinito en Railway iniciado...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
