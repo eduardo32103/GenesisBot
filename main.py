@@ -12,7 +12,6 @@ import os
 import telebot
 import json
 import sqlite3
-import pymongo
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
@@ -23,38 +22,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+# Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
+BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo sin saturar.")
+    logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo.")
     exit()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# --- CONFIGURACIÓN DE BASE DE DATOS HÍBRIDA (NUBE MONGO / LOCAL SQLITE) ---
-MONGO_URI = os.environ.get('MONGO_URI')
+# --- BASE DE DATOS LOCAL (SQLite como cache de runtime) ---
 DATA_DIR = os.environ.get('DATA_DIR', '.')
-
-# Variables de colecciones Mongo
-mongo_client = None
-db_cloud = None
-col_portfolio = None
-col_stats = None
-col_events = None
-
-if MONGO_URI:
-    try:
-        mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        mongo_client.server_info() # Validate connection
-        db_cloud = mongo_client.genesis_db
-        col_portfolio = db_cloud.portfolio
-        col_stats = db_cloud.global_stats
-        col_events = db_cloud.seen_events
-        logging.info("✅ MONGODB ATLAS: Conectado a la Nube exitosamente.")
-    except Exception as e:
-        logging.error(f"❌ MONGODB ERROR: Falló conexión. Usando SQLite local. Error: {e}")
-        MONGO_URI = None
-
-# Fallback Local DB
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, 'genesis_data.db')
 
@@ -66,20 +44,170 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
         conn.commit()
 
-if not MONGO_URI:
-    init_db()
+init_db()
 
-def log_base64_backup():
-    """Genera una huella criptográfica a texto plano constante a prueba de Wipeos de Log"""
+# =====================================================================
+# PERSISTENCIA REAL: TELEGRAM COMO BASE DE DATOS
+# El bot guarda el estado completo de la cartera como un mensaje
+# en Telegram. Railway no puede borrar mensajes de Telegram.
+# =====================================================================
+BACKUP_PREFIX = "🔐GENESIS_BACKUP_V2🔐"
+_last_backup_msg_id = None  # Cache del message_id del último backup
+
+def _build_backup_payload():
+    """Construye el JSON completo del estado actual"""
+    portfolio = get_all_portfolio_data()
+    realized = get_realized_pnl()
+    return {
+        "portfolio": portfolio,
+        "global_stats": {"realized_pnl": realized},
+        "timestamp": datetime.now().isoformat()
+    }
+
+def save_state_to_telegram():
+    """Guarda el estado completo como mensaje en Telegram (la nube indestructible)"""
+    global _last_backup_msg_id
     try:
-        portfolio = get_all_portfolio_data()
-        stats = get_realized_pnl()
-        payload = {"portfolio": portfolio, "global_stats": {"realized_pnl": stats}}
-        json_str = json.dumps(payload)
+        payload = _build_backup_payload()
+        json_str = json.dumps(payload, ensure_ascii=False)
         b64 = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+
+        backup_text = f"{BACKUP_PREFIX}\n{b64}"
+
+        # También imprimir en logs de Railway como respaldo secundario
         logging.info(f"BACKUP_DB_LOG (SAFE BASE64): {b64}")
+
+        # Si tenemos un mensaje anterior, editarlo en vez de crear uno nuevo
+        if _last_backup_msg_id:
+            try:
+                bot.edit_message_text(
+                    backup_text,
+                    chat_id=BACKUP_CHAT_ID,
+                    message_id=_last_backup_msg_id
+                )
+                logging.info(f"✅ Backup actualizado en Telegram (msg_id: {_last_backup_msg_id})")
+                return
+            except Exception:
+                pass  # Si falla editar (msg borrado, etc), enviar uno nuevo
+
+        # Enviar mensaje nuevo con el backup
+        msg = bot.send_message(BACKUP_CHAT_ID, backup_text)
+        _last_backup_msg_id = msg.message_id
+        logging.info(f"✅ Backup enviado a Telegram (msg_id: {_last_backup_msg_id})")
+
     except Exception as e:
-        logging.error(f"Error generando encriptador Base64: {e}")
+        logging.error(f"Error guardando backup en Telegram: {e}")
+
+def restore_state_from_telegram():
+    """Intenta recuperar el estado desde mensajes recientes de Telegram"""
+    global _last_backup_msg_id
+    try:
+        # Verificar si la DB local ya tiene datos
+        existing = get_tracked_tickers()
+        if existing:
+            logging.info(f"DB local tiene {len(existing)} activos. No se necesita restaurar.")
+            return True
+
+        logging.info("DB local vacía. Buscando backup en Telegram...")
+
+        # Buscar en las últimas actualizaciones del bot
+        # Método: usar getUpdates para buscar mensajes con el prefijo
+        updates = bot.get_updates(limit=100, timeout=5)
+        for update in reversed(updates):  # Del más reciente al más antiguo
+            msg = update.message or update.edited_message
+            if msg and msg.text and msg.text.startswith(BACKUP_PREFIX):
+                b64_data = msg.text.replace(BACKUP_PREFIX, "").strip()
+                _restore_from_b64(b64_data)
+                _last_backup_msg_id = msg.message_id
+                logging.info(f"✅ RESTAURACIÓN AUTOMÁTICA EXITOSA desde Telegram (msg_id: {msg.message_id})")
+                return True
+
+        # Si no encontramos en updates, buscar con el método de Telegram
+        # Intentar leer mensajes fijados del chat
+        try:
+            chat_info = bot.get_chat(BACKUP_CHAT_ID)
+            pinned = chat_info.pinned_message
+            if pinned and pinned.text and pinned.text.startswith(BACKUP_PREFIX):
+                b64_data = pinned.text.replace(BACKUP_PREFIX, "").strip()
+                _restore_from_b64(b64_data)
+                _last_backup_msg_id = pinned.message_id
+                logging.info("✅ RESTAURACIÓN desde mensaje fijado exitosa!")
+                return True
+        except Exception:
+            pass
+
+        # Último recurso: cargar desde portfolio.json del repositorio
+        return _restore_from_repo_json()
+
+    except Exception as e:
+        logging.error(f"Error en restauración desde Telegram: {e}")
+        return _restore_from_repo_json()
+
+def _restore_from_b64(b64_data):
+    """Restaura la base de datos desde un string Base64"""
+    json_str = base64.b64decode(b64_data).decode('utf-8')
+    payload = json.loads(json_str)
+
+    portfolio = payload.get("portfolio", {})
+    stats = payload.get("global_stats", {})
+
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        for tk, info in portfolio.items():
+            c.execute('INSERT OR REPLACE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, ?, ?, ?, ?)',
+                (tk,
+                 int(info.get("is_investment", 0)),
+                 float(info.get("amount_usd", 0)),
+                 float(info.get("entry_price", 0)),
+                 info.get("timestamp", datetime.now().isoformat())))
+
+        rpnl = stats.get("realized_pnl", 0)
+        if rpnl:
+            c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", ?)', (float(rpnl),))
+        conn.commit()
+
+    logging.info(f"Restaurados {len(portfolio)} activos desde backup Base64.")
+
+def _restore_from_repo_json():
+    """Último recurso: lee portfolio.json que está en el repositorio Git"""
+    # Intentar varias rutas posibles
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    possible_paths = [
+        os.path.join(script_dir, 'portfolio.json'),
+        'portfolio.json',
+        os.path.join(DATA_DIR, 'portfolio.json')
+    ]
+
+    for json_path in possible_paths:
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r') as f:
+                    legacy = json.load(f)
+
+                with sqlite3.connect(DB_PATH) as conn:
+                    c = conn.cursor()
+                    for tk, val in legacy.items():
+                        if isinstance(val, (int, float)):
+                            # Formato antiguo: {"IXC": 927.55} donde el valor es el precio de entrada
+                            c.execute('INSERT OR IGNORE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 1, 1000.0, ?, ?)',
+                                (tk, float(val), datetime.now().isoformat()))
+                        elif isinstance(val, dict):
+                            c.execute('INSERT OR IGNORE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, ?, ?, ?, ?)',
+                                (tk,
+                                 int(val.get('is_investment', 1)),
+                                 float(val.get('amount_usd', 1000.0)),
+                                 float(val.get('entry_price', 0.0)),
+                                 datetime.now().isoformat()))
+                    conn.commit()
+
+                logging.info(f"✅ Restauración desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
+                return True
+            except Exception as e:
+                logging.error(f"Error leyendo {json_path}: {e}")
+
+    logging.warning("⚠️ No se encontró ningún respaldo. Cartera inicia vacía.")
+    return False
+
 
 # --- MAPEO DURO Y ALIAS VISUAL  ---
 def remap_ticker(ticker_input):
@@ -97,174 +225,119 @@ def get_display_name(ticker_key):
     }
     return mapping.get(ticker_key, ticker_key)
 
-# --- CONTROLADORES DE BASE DE DATOS ---
+# --- CONTROLADORES DE BASE DE DATOS (SQLite local como cache) ---
 def check_and_add_seen_event(event_hash):
-    if MONGO_URI:
-        if col_events.find_one({"_id": event_hash}): return True
-        col_events.insert_one({"_id": event_hash, "timestamp": datetime.now().isoformat()})
-        return False
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT 1 FROM seen_events WHERE hash_id = ?', (event_hash,))
-            if c.fetchone(): return True 
-            c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (?, ?)', (event_hash, datetime.now().isoformat()))
-            conn.commit()
-        return False
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM seen_events WHERE hash_id = ?', (event_hash,))
+        if c.fetchone(): return True
+        c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (?, ?)', (event_hash, datetime.now().isoformat()))
+        conn.commit()
+    return False
 
 def purge_old_events():
-    now = datetime.now()
-    cutoff_date = (now - timedelta(days=7)).isoformat()
-    if MONGO_URI:
-        col_events.delete_many({"timestamp": {"$lt": cutoff_date}})
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-             c = conn.cursor()
-             c.execute('DELETE FROM seen_events WHERE timestamp < ?', (cutoff_date,))
-             conn.commit()
+    cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM seen_events WHERE timestamp < ?', (cutoff_date,))
+        conn.commit()
 
 def get_tracked_tickers():
-    if MONGO_URI:
-        return [doc["_id"] for doc in col_portfolio.find()]
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT ticker FROM portfolio')
-            return [row[0] for row in c.fetchall()]
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT ticker FROM portfolio')
+        return [row[0] for row in c.fetchall()]
 
 def get_all_portfolio_data():
     pf = {}
-    if MONGO_URI:
-        for doc in col_portfolio.find():
-            pf[doc["_id"]] = {"is_investment": doc.get("is_investment"), "amount_usd": doc.get("amount_usd"), "entry_price": doc.get("entry_price"), "timestamp": doc.get("timestamp")}
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT * FROM portfolio')
-            for row in c.fetchall():
-                pf[row[0]] = {"is_investment": bool(row[1]), "amount_usd": row[2], "entry_price": row[3], "timestamp": row[4]}
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM portfolio')
+        for row in c.fetchall():
+            pf[row[0]] = {"is_investment": bool(row[1]), "amount_usd": row[2], "entry_price": row[3], "timestamp": row[4]}
     return pf
 
 def add_ticker(ticker):
     ticker = remap_ticker(ticker)
-    if MONGO_URI:
-        if not col_portfolio.find_one({"_id": ticker}):
-            col_portfolio.insert_one({"_id": ticker, "is_investment": False, "amount_usd": 0, "entry_price": 0, "timestamp": datetime.now().isoformat()})
-            log_base64_backup()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        if not c.fetchone():
+            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 0, 0, 0, ?)', (ticker, datetime.now().isoformat()))
+            conn.commit()
+            save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
             val = fetch_and_analyze_stock(ticker)
             if val: update_smc_memory(ticker, val)
             return True
-        return False
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
-            if not c.fetchone():
-                c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 0, 0, 0, ?)', (ticker, datetime.now().isoformat()))
-                conn.commit()
-                log_base64_backup()
-                
-                val = fetch_and_analyze_stock(ticker)
-                if val: update_smc_memory(ticker, val)
-                return True
-        return False
+    return False
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
-    if MONGO_URI:
-        res = col_portfolio.delete_one({"_id": ticker})
-        if res.deleted_count > 0:
-            log_base64_backup()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        if c.fetchone():
+            c.execute('DELETE FROM portfolio WHERE ticker = ?', (ticker,))
+            conn.commit()
+            save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
             return True
-        return False
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
-            if c.fetchone():
-                c.execute('DELETE FROM portfolio WHERE ticker = ?', (ticker,))
-                conn.commit()
-                log_base64_backup()
-                
-                if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
-                return True
-        return False
+    return False
 
 def add_investment(ticker, amount_usd, entry_price):
     ticker = remap_ticker(ticker)
     timestamp = datetime.now().isoformat()
-    if MONGO_URI:
-        col_portfolio.update_one({"_id": ticker}, {"$set": {"is_investment": True, "amount_usd": float(amount_usd), "entry_price": float(entry_price), "timestamp": timestamp}}, upsert=True)
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
-            if c.fetchone():
-                 c.execute('UPDATE portfolio SET is_investment = 1, amount_usd = ?, entry_price = ?, timestamp = ? WHERE ticker = ?', (amount_usd, entry_price, timestamp, ticker))
-            else:
-                 c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 1, ?, ?, ?)', (ticker, amount_usd, entry_price, timestamp))
-            conn.commit()
-            
-    log_base64_backup()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        if c.fetchone():
+            c.execute('UPDATE portfolio SET is_investment = 1, amount_usd = ?, entry_price = ?, timestamp = ? WHERE ticker = ?', (amount_usd, entry_price, timestamp, ticker))
+        else:
+            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 1, ?, ?, ?)', (ticker, amount_usd, entry_price, timestamp))
+        conn.commit()
+    save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
     val = fetch_and_analyze_stock(ticker)
     if val: update_smc_memory(ticker, val)
 
 def close_investment(ticker):
     ticker = remap_ticker(ticker)
-    if MONGO_URI:
-        col_portfolio.update_one({"_id": ticker}, {"$set": {"is_investment": False, "amount_usd": 0, "entry_price": 0}})
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = ?', (ticker,))
-            conn.commit()
-    log_base64_backup()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = ?', (ticker,))
+        conn.commit()
+    save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_investments():
     invs = {}
-    if MONGO_URI:
-        for doc in col_portfolio.find({"is_investment": True}):
-            invs[doc["_id"]] = {'amount_usd': doc["amount_usd"], 'entry_price': doc["entry_price"]}
-        return invs
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT ticker, amount_usd, entry_price FROM portfolio WHERE is_investment = 1')
-            for row in c.fetchall():
-                invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
-        return invs
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT ticker, amount_usd, entry_price FROM portfolio WHERE is_investment = 1')
+        for row in c.fetchall():
+            invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
+    return invs
 
 def add_realized_pnl(prof_usd):
-    if MONGO_URI:
-        col_stats.update_one({"_id": "realized_pnl"}, {"$inc": {"value": float(prof_usd)}}, upsert=True)
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
-            res = c.fetchone()
-            cur_pnl = res[0] if res else 0.0
-            new_val = cur_pnl + float(prof_usd)
-            
-            if res: c.execute('UPDATE global_stats SET value = ? WHERE key = "realized_pnl"', (new_val,))
-            else: c.execute('INSERT INTO global_stats (key, value) VALUES ("realized_pnl", ?)', (new_val,))
-            conn.commit()
-    log_base64_backup()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
+        res = c.fetchone()
+        cur_pnl = res[0] if res else 0.0
+        new_val = cur_pnl + float(prof_usd)
+        if res: c.execute('UPDATE global_stats SET value = ? WHERE key = "realized_pnl"', (new_val,))
+        else: c.execute('INSERT INTO global_stats (key, value) VALUES ("realized_pnl", ?)', (new_val,))
+        conn.commit()
+    save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
-    if MONGO_URI:
-        doc = col_stats.find_one({"_id": "realized_pnl"})
-        return doc["value"] if doc else 0.0
-    else:
-        with sqlite3.connect(DB_PATH) as conn:
-             c = conn.cursor()
-             c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
-             res = c.fetchone()
-             return res[0] if res else 0.0
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
+        res = c.fetchone()
+        return res[0] if res else 0.0
 
 
-WHALE_MEMORY = deque(maxlen=5) 
-SMC_LEVELS_MEMORY = {} 
+WHALE_MEMORY = deque(maxlen=5)
+SMC_LEVELS_MEMORY = {}
 
 # ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
 def get_safe_ticker_price(ticker, force_validation=False):
@@ -275,17 +348,17 @@ def get_safe_ticker_price(ticker, force_validation=False):
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
              data = data.copy(); data.columns = data.columns.get_level_values(0)
-             
+
         close_prices = data['Close']; volumes = data['Volume']
-        if isinstance(close_prices, pd.DataFrame): 
+        if isinstance(close_prices, pd.DataFrame):
              close_prices = close_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
-        
+
         price = float(close_prices.iloc[-1])
-        # Validación Defensiva Exigida (LCO/BZ=F nunca debajo de $70 en este contexto temporal)
+        # Validación Defensiva Exigida (LCO/BZ=F nunca debajo de $60 en este contexto temporal)
         if tk == "BZ=F" and price < 60:
              logging.warning(f"Posible error residual en Yahoo para {tk} (${price}).")
              return None
-             
+
         return {'price': price, 'vol': float(volumes.iloc[-1])}
     except: return None
 
@@ -328,18 +401,18 @@ def fetch_intraday_data(ticker):
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check: return None
-        
+
         data = yf.download(tk, period="5d", interval="5m", progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data = data.copy(); data.columns = data.columns.get_level_values(0)
-            
+
         close_prices = data['Close']; open_prices = data['Open']; volumes = data['Volume']
-        if isinstance(close_prices, pd.DataFrame): 
+        if isinstance(close_prices, pd.DataFrame):
              close_prices = close_prices.iloc[:, 0]; open_prices = open_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
-             
+
         vol_type = "Compra 🟢" if float(close_prices.iloc[-1]) >= float(open_prices.iloc[-1]) else "Venta 🔴"
-        return {'ticker': tk, 'latest_vol': float(volumes.iloc[-1]), 'avg_vol': float(volumes.mean()), 'vol_type': vol_type, 'latest_price': safe_check['price']} # Retornamos validado
+        return {'ticker': tk, 'latest_vol': float(volumes.iloc[-1]), 'avg_vol': float(volumes.mean()), 'vol_type': vol_type, 'latest_price': safe_check['price']}
     except: return None
 
 def fetch_and_analyze_stock(ticker):
@@ -347,32 +420,32 @@ def fetch_and_analyze_stock(ticker):
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check: return None
-        
+
         data = yf.download(tk, period="6mo", interval="1d", progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data = data.copy(); data.columns = data.columns.get_level_values(0)
-            
+
         close_prices = data['Close']; volume = data['Volume']
-        if isinstance(close_prices, pd.DataFrame): 
+        if isinstance(close_prices, pd.DataFrame):
              close_prices = close_prices.iloc[:, 0]; volume = volume.iloc[:, 0]
-             
+
         delta = close_prices.diff()
         up = delta.clip(lower=0); down = -1 * delta.clip(upper=0)
         ema_up = up.ewm(com=13, adjust=False).mean(); ema_down = down.ewm(com=13, adjust=False).mean()
         rs = ema_up / ema_down
-        rsi_series = 100 - (100 / (1 + rs)); rsi_series[ema_down == 0] = 100 
-        
+        rsi_series = 100 - (100 / (1 + rs)); rsi_series[ema_down == 0] = 100
+
         macd_line = close_prices.ewm(span=12, adjust=False).mean() - close_prices.ewm(span=26, adjust=False).mean()
         macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-        latest_price = safe_check['price'] 
+        latest_price = safe_check['price']
         latest_rsi = float(rsi_series.iloc[-1])
-        
+
         smc_trend = "Alcista 🟢" if latest_price > close_prices.ewm(span=20).mean().iloc[-1] else "Bajista 🔴"
         recent_month = close_prices.iloc[-22:]
         smc_sup = float(recent_month.min()); smc_res = float(recent_month.max())
         vol_month = volume.iloc[-22:]; order_block_price = float(close_prices.loc[vol_month.idxmax()])
-        
+
         return {'ticker': tk, 'price': latest_price, 'rsi': latest_rsi, 'macd_line': float(macd_line.iloc[-1]), 'macd_signal': float(macd_signal.iloc[-1]), 'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend, 'order_block': order_block_price}
     except: return None
 
@@ -395,12 +468,12 @@ def perform_deep_analysis(ticker):
     tech_info = f"Información técnica no disponible para {display_name}."
     tech = fetch_and_analyze_stock(tk)
     if tech: tech_info = f"Precio: ${tech['price']:.2f}\nRSI: {tech['rsi']:.2f}\nSMC Trend: {tech['smc_trend']}"
-        
+
     news_str = ""
     try:
         news_str = "\n".join([f"- {n.get('title', '')}" for n in yf.Ticker(tk).news[:3]])
     except: pass
-        
+
     prompt = (f"Analiza profundamente '{display_name}'.\nTécnicos:\n{tech_info}\n\nNoticias:\n{news_str}\n" "Combina enfoques. Dictamina un VEREDICTO FINAL resaltado: 'COMPRAR', 'VENDER' o 'MANTENER/ESPERAR'. ESPAÑOL ESTRICTO.")
     if not OPENAI_API_KEY: return "Error: API KEY INCORRECTA."
     try: return OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=600).choices[0].message.content
@@ -410,10 +483,10 @@ def perform_deep_analysis(ticker):
 def build_wallet_dashboard():
     investments = get_investments()
     realized_pnl = get_realized_pnl()
-    
+
     if not investments and realized_pnl == 0:
         return "---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n⚠️ Portafolio Vacío. No hay liquidez invertida."
-        
+
     total_invested = 0.0
     total_current = 0.0
     details = []
@@ -422,38 +495,42 @@ def build_wallet_dashboard():
         init_amount = dt['amount_usd']
         entry_p = dt['entry_price']
         intra = fetch_intraday_data(tk)
-        
+
+        display_name = get_display_name(tk)
+
         if intra:
             live_price = intra['latest_price']
-            roi_percent = (live_price - entry_p) / entry_p
+            roi_percent = (live_price - entry_p) / entry_p if entry_p > 0 else 0
             curr_val = init_amount * (1 + roi_percent)
-            
+
             total_invested += init_amount
             total_current += curr_val
-            
+
             sign = "+" if roi_percent >= 0 else ""
-            display_name = get_display_name(tk)
-            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}%")
-            
+            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}% (${live_price:.2f})")
+        else:
+            # Mercado cerrado - mostrar activo sin ocultar
+            total_invested += init_amount
+            total_current += init_amount
+            details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${entry_p:.2f})")
+
     if total_invested == 0 and realized_pnl != 0:
          return (f"---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
                  f"💹 <b>Capital Operativo Activo:</b> $0.00\n"
                  f"💵 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n---")
-        
-    total_roi = (total_current - total_invested) / total_invested
+
+    total_roi = (total_current - total_invested) / total_invested if total_invested > 0 else 0
     sign_roi = "+" if total_roi >= 0 else ""
     status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔴 EN PÉRDIDAS"
-    
+
     goal = 0.10
-    progress_ratio = total_roi / goal
-    if progress_ratio < 0: progress_ratio = 0
-    if progress_ratio > 1: progress_ratio = 1
-    
+    progress_ratio = max(0, min(1, total_roi / goal))
+
     filled_blocks = int(progress_ratio * 10)
     empty_blocks = 10 - filled_blocks
     bar = "▓" * filled_blocks + "░" * empty_blocks
     progress_text = f"{int(progress_ratio*100)}% completado"
-    
+
     report = []
     report.append("---")
     report.append("💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎")
@@ -466,63 +543,53 @@ def build_wallet_dashboard():
     report.append("---")
     if details:
         report.append("<i>(Detalle por activo)</i>")
-        report.extend(details) 
+        report.extend(details)
     return "\n".join(report)
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
 
-def load_mongo_state():
-    """Repoblación Automática al Iniciar"""
-    tkrs = get_tracked_tickers()
-    if tkrs:
-        logging.info(f"¡INFO DB RECUPERADA EXITOSAMENTE! Activos en radar Nube: {len(tkrs)}")
-    else:
-        logging.warning("Cartera detectada vacía al Inicio.")
-
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    load_mongo_state()
+    # Auto-restaurar estado al arrancar
+    restore_state_from_telegram()
+    tkrs = get_tracked_tickers()
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    cloud_status = "NUBE MONGO ATLAS" if MONGO_URI else "SQLITE FALLBACK + CONFIG BASE64"
-    bot.reply_to(message, f"¡Génesis Dashboard Patrimonial Online!\nProtección Anticolapso Activa ({cloud_status}). Botonera lista:", reply_markup=markup)
+    bot.reply_to(message, f"¡Génesis Dashboard Online!\n🛡️ Persistencia: TELEGRAM CLOUD\n📊 Activos en radar: {len(tkrs)}\nBotonera lista:", reply_markup=markup)
 
 @bot.message_handler(commands=['recover'])
 def cmd_recover(message):
-    """Herramienta de Carga Crítica de Respaldo por Base64 dictada en los Requerimientos"""
+    """Herramienta de Carga Crítica de Respaldo por Base64"""
     if str(message.chat.id) != str(CHAT_ID): return
     try:
         command_parts = message.text.split(' ', 1)
         if len(command_parts) < 2:
-            bot.reply_to(message, "⚠️ Has invocado la Restauración Crítica.\nUso: `/recover [STRING_BASE64_DEL_LOG]`", parse_mode="Markdown")
+            bot.reply_to(message, "⚠️ Restauración Crítica.\nUso: `/recover [STRING_BASE64_DEL_LOG]`", parse_mode="Markdown")
             return
-            
+
         b64_str = command_parts[1].strip()
-        json_str = base64.b64decode(b64_str).decode('utf-8')
-        payload = json.loads(json_str)
-        
-        portfolio = payload.get("portfolio", {})
-        stats = payload.get("global_stats", {})
-        
-        # Recuperación adaptativa (SQL o Mongo)
-        for tk, info in portfolio.items():
-            amount = info.get("amount_usd", 0)
-            if info.get("is_investment"): add_investment(tk, amount, info.get("entry_price", 0))
-            else: add_ticker(tk)
-            
-        realized = stats.get("realized_pnl", 0)
-        if realized > 0: add_realized_pnl(realized)
-            
-        bot.reply_to(message, f"✅ **¡RECUPERACIÓN CRÍTICA EXITOSA!**\nLa Nube ha sido parchada.\nSe restauraron {len(portfolio)} activos en Base de Datos y PnL histórico desde la cápsula Base64.", parse_mode="Markdown")
-        
-        for tk in portfolio.keys():
+        _restore_from_b64(b64_str)
+        save_state_to_telegram()  # Guardar inmediatamente en Telegram
+
+        tkrs = get_tracked_tickers()
+        bot.reply_to(message, f"✅ **¡RECUPERACIÓN EXITOSA!**\nSe restauraron {len(tkrs)} activos.\nEl backup ya fue guardado en Telegram.", parse_mode="Markdown")
+
+        for tk in tkrs:
             val = fetch_and_analyze_stock(tk)
             if val: update_smc_memory(tk, val)
-            
+
     except Exception as e:
-        bot.reply_to(message, f"❌ Falló la inyección de recuperación: `{e}`", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ Error en recuperación: `{e}`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['backup'])
+def cmd_backup(message):
+    """Forzar un backup manual visible"""
+    if str(message.chat.id) != str(CHAT_ID): return
+    save_state_to_telegram()
+    tkrs = get_tracked_tickers()
+    bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -540,7 +607,10 @@ def handle_photo(message):
 def handle_text(message):
     if str(message.chat.id) != str(CHAT_ID): return
     text = message.text.strip()
-    
+
+    # Ignorar mensajes de backup del bot
+    if text.startswith(BACKUP_PREFIX): return
+
     # === BOTONES MENÚ RÁPIDO ===
     if text == "💰 Mi Wallet / Estado" or "CÓMO VOY" in text.upper() or "RESUMEN" in text.upper():
         bot.reply_to(message, "💰 Extrayendo datos robustos y valuando métricas live...")
@@ -553,29 +623,40 @@ def handle_text(message):
             bot.send_message(message.chat.id, "---\n🐋 *RADAR BALLENAS*\n---\nEl océano está quieto. Sin anomalías detectadas hoy.", parse_mode="HTML")
             return
         lines = ["---", "🐋 *ÚLTIMAS 5 BALLENAS*", "---"]
-        for w in list(WHALE_MEMORY)[::-1]: 
+        for w in list(WHALE_MEMORY)[::-1]:
             lines.append(f"• <b>{get_display_name(w['ticker'])}</b> | Vol: {w['vol_approx']:,} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
         bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
         return
-        
+
     if text == "🌎 Geopolítica":
         bot.reply_to(message, "🌎 Procesando macro Geopolítica Manual...")
         ai_res = gpt_advanced_geopolitics(check_geopolitical_news(), manual=True)
         bot.send_message(message.chat.id, f"---\n🌍 *INSIGHT GLOBAL*\n---\n{ai_res}" if ai_res else "✅ Radar limpio.", parse_mode="HTML")
         return
-            
+
     if text == "📉 SMC / Mi Cartera":
-        bot.reply_to(message, "📉 Computando Mapas SMC Instritucionales...")
+        bot.reply_to(message, "📉 Ejecutando Refresh Forzado de todos los activos...")
         report_lines = ["---", "🦅 *GÉNESIS: SMC / NIVELES CRÍTICOS*", "---"]
-        for tk in get_tracked_tickers():
+        tkrs = get_tracked_tickers()
+
+        if not tkrs:
+             bot.send_message(message.chat.id, "Tu cartera está vacía.", parse_mode="HTML")
+             return
+
+        for raw_tk in tkrs:
+            tk = remap_ticker(raw_tk)
             analysis = fetch_and_analyze_stock(tk)
+            d_name = get_display_name(tk)
+
             if analysis:
                 update_smc_memory(tk, analysis)
-                d_name = get_display_name(analysis['ticker'])
                 report_lines.extend([f"🏦 <b>{d_name}</b> - ${analysis['price']:.2f}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${analysis['smc_sup']:.2f}", f"• Sell-side Liquidity: ${analysis['smc_res']:.2f}", f"• Order Block Institucional: ${analysis['order_block']:.2f}", "---"])
-        bot.send_message(message.chat.id, "\n".join(report_lines) if len(report_lines)>3 else "Tu cartera está vacía.", parse_mode="HTML")
+            else:
+                report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Calculando niveles... (Mercado cerrado o datos pendientes)", "---"])
+
+        bot.send_message(message.chat.id, "\n".join(report_lines), parse_mode="HTML")
         return
-        
+
     # === EXPRESIONES REGULARES INTELIGENTES NLP ===
     if re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text)
@@ -585,10 +666,10 @@ def handle_text(message):
             bot.reply_to(message, f"🔍 Análisis Profundo Institucional en {display_name}...")
             bot.send_message(message.chat.id, f"---\n🏦 *RESEARCH: {display_name}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
         return
-            
+
     if re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text)
-        if match: 
+        if match:
              raw_input = match.group(1)
              tk = remap_ticker(raw_input)
              display_name = get_display_name(tk)
@@ -600,16 +681,16 @@ def handle_text(message):
 
     if re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
-        if match: 
+        if match:
              raw_input = match.group(1).upper()
              tk = remap_ticker(raw_input)
              display_name = get_display_name(tk)
-             
+
              if add_ticker(tk):
                  bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] añadido al radar SMC.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
              else:
                  if tk == "BZ=F" and raw_input in ["LCO", "BRENT", "PETROLEO"]:
-                     bot.reply_to(message, f"✅ LCO ( Brent ) ya está en tu radar y actualizado con el precio real de $BZ=F.")
+                     bot.reply_to(message, f"✅ LCO (Brent) ya está en tu radar y actualizado con el precio real de $BZ=F.")
                  else:
                      bot.reply_to(message, f"⚠️ El activo {display_name} ya existía en tu radar SMC.")
         return
@@ -620,7 +701,7 @@ def handle_text(message):
             amt = match.group(1)
             tk = remap_ticker(match.group(2))
             display_name = get_display_name(tk)
-            
+
             bot.reply_to(message, f"💸 Consultando precio de fijación para {display_name}...")
             intra = fetch_intraday_data(tk)
             if intra:
@@ -635,22 +716,22 @@ def handle_text(message):
         if match:
             tk = remap_ticker(match.group(1))
             display_name = get_display_name(tk)
-            
+
             investments = get_investments()
             if tk in investments:
                 bot.reply_to(message, f"💸 Procesando cierre institucional para {display_name}...")
                 entry = investments[tk]['entry_price']
                 amt = investments[tk]['amount_usd']
-                
+
                 intra = fetch_intraday_data(tk)
                 if intra:
                     live_price = intra['latest_price']
-                    roi = (live_price - entry) / entry
+                    roi = (live_price - entry) / entry if entry > 0 else 0
                     prof = amt * roi
                     sign = "+" if prof >= 0 else ""
                     icon = "🟢" if prof >= 0 else "🔴"
                     final_usd = amt + prof
-                    
+
                     close_investment(tk)
                     add_realized_pnl(prof)
 
@@ -671,40 +752,45 @@ def handle_text(message):
 
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela Quirúrgico (30s) / Precisión Total / MOTOR ACTIVO...")
-    load_mongo_state()
-        
-    for tk in get_tracked_tickers():
+    logging.info("Arrancando Centinela Quirúrgico (30s)...")
+
+    # PASO CRÍTICO: Restaurar datos ANTES de hacer cualquier otra cosa
+    restore_state_from_telegram()
+
+    tkrs = get_tracked_tickers()
+    logging.info(f"Activos cargados en radar: {len(tkrs)} → {tkrs}")
+
+    for tk in tkrs:
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
 
 def background_loop_proactivo():
-    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM DE DISCO (TTL 7 DÍAS)"""
-    boot_smc_levels_once() 
+    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÍAS)"""
+    boot_smc_levels_once()
     while True:
         try:
             time.sleep(30)
             now = datetime.now()
-            purge_old_events() # TTL automático
-            
+            purge_old_events()
+
             raw_news = check_geopolitical_news()
             unique_news = []
             for n_title in raw_news:
                 nws_id = f"NWS_{n_title}"
-                if not check_and_add_seen_event(nws_id): 
+                if not check_and_add_seen_event(nws_id):
                     unique_news.append(n_title)
-            
+
             if unique_news:
                 ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
                 if ai_threat_evaluation:
                      bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
-                     
+
             for tk in get_tracked_tickers():
                 intra = fetch_intraday_data(tk)
                 if not intra: continue
                 cur_price = intra['latest_price']
                 display_name = get_display_name(tk)
-                
+
                 # Rupturas Doble Verificadas (YFinance 1 Minuto)
                 topol = SMC_LEVELS_MEMORY.get(tk)
                 if topol:
@@ -715,7 +801,7 @@ def background_loop_proactivo():
                            if not check_and_add_seen_event(hash_brk):
                                adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
                                bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Resistencia en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
-                    
+
                     elif cur_price < topol['sup']:
                         rt = verify_1m_realtime_data(tk)
                         if rt and rt['price'] < topol['sup']:
@@ -723,26 +809,26 @@ def background_loop_proactivo():
                            if not check_and_add_seen_event(hash_drp):
                                adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
                                bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
-                
+
                 # Ballenas Doble Verificadas
                 if intra['avg_vol'] > 0:
                     spike = intra['latest_vol'] / intra['avg_vol']
-                    if spike >= 2.5: 
+                    if spike >= 2.5:
                         rt = verify_1m_realtime_data(tk)
                         valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
-                        whale_hash_id = f"WHL_{tk}_{valid_vol}" 
-                        
+                        whale_hash_id = f"WHL_{tk}_{valid_vol}"
+
                         if not check_and_add_seen_event(whale_hash_id):
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
                             bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {valid_vol:,} unidades.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
-                        
+
         except Exception as e:
             logging.error(f"Error HFT: {e}")
 
 # ----------------- MAIN -----------------
 def main():
-    print(f"Iniciando Módulo de Alta Frecuencia (30s) / Motores de Persistencia Nube/Local listos.")
+    logging.info("Iniciando Génesis 1.0 — Persistencia: Telegram Cloud + SQLite local + Base64 logs")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
