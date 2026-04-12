@@ -157,19 +157,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👁️ Ojo de Águila Analizando gráfica con GPT-4o...")
     
     try:
-        # Descarga de imagen
         photo_file = update.message.photo[-1]
         file = await context.bot.get_file(photo_file.file_id)
         image_bytes = await file.download_as_bytearray()
         
-        # Codificación
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         
-        # Validación Local de Entorno
         if not OPENAI_API_KEY:
             raise ValueError("La variable de entorno OPENAI_API_KEY no se cargó correctamente en Railway.")
             
-        # Instanciando acá dentro para que no bloqueé el arranque general si cae
         client = OpenAI(api_key=OPENAI_API_KEY)
         
         prompt = (
@@ -204,9 +200,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📊 [REPORTE GPT-4o VISION]\n\n{analysis_text}")
         
     except Exception as e:
-        # Volcar traza completa al lado del servidor Railway para investigación profunda
         logging.error("Crash absoluto procesando imagen IA:", exc_info=True)
-        # Reflejo al usuario para saber porqué falló
         await update.message.reply_text(f"❌ Falló el análisis de OpenAI. Motivo del servidor:\n`{str(e)}`", parse_mode="Markdown")
 
 # ----------------- TAREAS SCHEDULED Y POST_INIT -----------------
@@ -238,12 +232,15 @@ async def post_init(application: Application):
 
 # ----------------- INICIO -----------------
 def main():
-    logging.info("Arrancando proceso persistente (Application.builder v20.8)")
+    print("Iniciando validación de dependencias...")
     
     if not TELEGRAM_TOKEN:
         logging.critical("FALTA TELEGRAM_TOKEN en tus Variables de Entorno. Apagando...")
         return
         
+    print(f"Token cargado en Railway: {TELEGRAM_TOKEN[:5]}...***")
+    print("Bot intentando conectar con Telegram...")
+    
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
@@ -251,7 +248,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
     logging.info("Polling infinito en Railway iniciado...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
