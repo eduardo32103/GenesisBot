@@ -31,6 +31,22 @@ CARTERA_FILE = 'cartera.json'
 WHALE_MEMORY = deque(maxlen=5) 
 SMC_LEVELS_MEMORY = {} 
 
+class Deduplicator:
+    """Escudo Inteligente de Memoria RAM: Filtra duplicados (Spam) sin comer memoria infinita."""
+    def __init__(self, max_size=200):
+        self._cache = deque(maxlen=max_size)
+    
+    def add_and_check(self, item_hash):
+        """Retorna True si el hash YA existía (Duplicado). Si es Nuevo, lo añade y retorna False."""
+        if item_hash in self._cache:
+            return True
+        self._cache.append(item_hash)
+        return False
+
+# Inicializar Escudos contra saturación HFT
+CACHE_NEWS = Deduplicator(100) 
+CACHE_WHALES = Deduplicator(100)
+
 # --- NÚCLEO DE PERSISTENCIA (JSON UNIFICADO) ---
 def get_cartera_data():
     if os.path.exists(CARTERA_FILE):
@@ -106,7 +122,6 @@ def add_realized_pnl(prof_usd):
     data = get_cartera_data()
     if "_GLOBAL_" not in data:
         data["_GLOBAL_"] = {"realized_pnl_usd": 0.0}
-    
     cur_pnl = data["_GLOBAL_"].get("realized_pnl_usd", 0.0)
     data["_GLOBAL_"]["realized_pnl_usd"] = cur_pnl + float(prof_usd)
     save_cartera_data(data)
@@ -116,14 +131,13 @@ def get_realized_pnl():
     return data.get("_GLOBAL_", {}).get("realized_pnl_usd", 0.0)
 
 
-# ----------------- NÚCLEO DE MERCADO MACRO -----------------
+# ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
 def check_geopolitical_news():
-    logging.info("Monitoreando Radar Geopolítico...")
     search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
     HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction", "embargo", "explosion", "guerra", "ataque", "tensión", "misil", "sanciones", "rates", "fed", "trump", "powell"]
     news_alerts = []
     try:
-        response = requests.get(search_url)
+        response = requests.get(search_url, timeout=5)
         if response.status_code == 200:
             root = ET.fromstring(response.text)
             for item in root.findall('.//item'):
@@ -355,7 +369,6 @@ def handle_text(message):
             bot.send_message(message.chat.id, f"---\n🏦 *RESEARCH: {tk}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
         return
             
-    # REGEX (ELIMINA / BORRA) PRIORITARIO PARA EVITAR COLLISION
     if re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text)
         if match: 
@@ -366,7 +379,6 @@ def handle_text(message):
                  bot.reply_to(message, f"⚠️ El activo {tk} no residía en tu radar.")
         return
 
-    # REGEX (AGREGA)
     if re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
         if match: 
@@ -377,7 +389,6 @@ def handle_text(message):
                  bot.reply_to(message, f"⚠️ El activo {tk} ya existía en tu radar SMC.")
         return
 
-    # REGEX (COMPRÉ / COMPRE)
     if re.search(r'(?i)\bCOMPR[EÉ]\b', text):
         match = re.search(r'(?i)\bCOMPR[EÉ]\b\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Za-z0-9\-]+)', text)
         if match:
@@ -393,7 +404,6 @@ def handle_text(message):
                 bot.reply_to(message, f"❌ No pude fijar el precio real de {tk} ahora. Mercado cerrado temporalmente.")
         return
 
-    # REGEX (VENDÍ / VENDI) 
     if re.search(r'(?i)\bVEND[IÍ]\b', text):
         match = re.search(r'(?i)\bVEND[IÍ]\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Za-z0-9\-]+)', text)
         if match:
@@ -415,12 +425,10 @@ def handle_text(message):
                     icon = "🟢" if prof >= 0 else "🔴"
                     final_usd = amt + prof
                     
-                    # Remover solo inversión manteniendo rastreo
                     data = get_cartera_data()
                     data[tk]['is_investment'] = False
                     save_cartera_data(data)
                     
-                    # Sumar PnL al histórico global mensual
                     add_realized_pnl(prof)
 
                     ans_str = (
@@ -438,58 +446,72 @@ def handle_text(message):
                  bot.reply_to(message, f"⚠️ No tienes capital invertido en {tk}. Usa 'Elimina {tk}' para detener el rastreo bot.")
         return
 
-# ----------------- BUCLE CENTINELA MAESTRO -----------------
+
+# ----------------- BUCLE CENTINELA HFT (TIEMPO REAL) -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela y cruzando persistencia 'cartera.json'...")
+    logging.info("Arrancando Centinela a Ultra-Alta Velocidad (30s) y cargando Cachés...")
     for tk in get_tracked_tickers():
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
 
 def background_loop_proactivo():
-    tick_count = 0
+    """BUCLE DE ALTA LATENCIA A 30 SEGUNDOS ESTRICTOS CON FILTRO ANTI-SPAM DE MEMORIA"""
     boot_smc_levels_once() 
     while True:
         try:
-            time.sleep(300) 
-            tick_count += 1
+            time.sleep(30) # <<< VELOCIDAD HFT (30 SEGUNDOS)
             now = datetime.now()
             
+            # --- 1. PROCESAMIENTO GEOPOLÍTICO HASHED (Para no saturar Token IA cada 30s) ---
+            raw_news = check_geopolitical_news()
+            unique_news = []
+            for n_title in raw_news:
+                # La huella es el título exacto
+                if not CACHE_NEWS.add_and_check(n_title): 
+                    unique_news.append(n_title)
+            
+            # Solo si detecta noticias no parseadas hoy
+            if unique_news:
+                ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
+                if ai_threat_evaluation:
+                     bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
+                     
+            # --- 2. RASTREO TÉCNICO VIVO POR TICKER ---
             for tk in get_tracked_tickers():
                 intra = fetch_intraday_data(tk)
                 if not intra: continue
                 cur_price = intra['latest_price']
                 
-                # NIVELES DE RUPTURA SMC
+                # Rupturas SMC (alert_res ya actúa como deduplicador estático en persistencia)
                 topol = SMC_LEVELS_MEMORY.get(tk)
                 if topol:
                     if cur_price > topol['res'] and not topol['alert_res']:
                         topol['alert_res'] = True
                         adv = analyze_breakout_gpt(tk, "Resistencia", cur_price)
-                        bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA*\n---\n<b>{tk}</b> rompió su Resistencia SMC logrando los <b>${cur_price:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                        bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{tk}</b> rompió su Resistencia SMC logrando los <b>${cur_price:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
                     elif cur_price < topol['sup'] and not topol['alert_sup']:
                         topol['alert_sup'] = True
                         adv = analyze_breakout_gpt(tk, "Soporte", cur_price)
                         bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{tk}</b> ha quebrado el Soporte SMC hundiéndose a <b>${cur_price:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
                 
-                # RASTREOS DE BALLENA 
+                # Ballenas (Hash deduplicador Dinámico por Volumen Específico)
                 if intra['avg_vol'] > 0:
                     spike = intra['latest_vol'] / intra['avg_vol']
                     if spike >= 2.5: 
                         clean_amount = int(intra['latest_vol'])
-                        WHALE_MEMORY.append({"ticker": tk, "vol_approx": clean_amount, "type": intra['vol_type'], "timestamp": now})
-                        bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA*\n---\nBloque masivo en <b>{tk}</b>: {clean_amount:,} unidades.\nPresión: {intra['vol_type']}", parse_mode="HTML")
+                        whale_hash_id = f"{tk}_{clean_amount}" # Huella digital única del bloque movido
                         
-            # MACRO GEOPOLITICA
-            if tick_count % 3 == 0:
-                ai_threat_evaluation = gpt_advanced_geopolitics(check_geopolitical_news(), manual=False)
-                if ai_threat_evaluation:
-                     bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
+                        # Si esta candela exacta de bloques no ha sido alertada aún
+                        if not CACHE_WHALES.add_and_check(whale_hash_id):
+                            WHALE_MEMORY.append({"ticker": tk, "vol_approx": clean_amount, "type": intra['vol_type'], "timestamp": now})
+                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo en <b>{tk}</b> detectado AHORA: {clean_amount:,} unidades.\nPresión Institucional: {intra['vol_type']}", parse_mode="HTML")
+                        
         except Exception as e:
             logging.error(f"Error HFT: {e}")
 
 # ----------------- MAIN -----------------
 def main():
-    print(f"Iniciando Módulo de Gestor Cuantitativo: Persistencia Garantizada en '{CARTERA_FILE}'")
+    print(f"Iniciando Módulo de Alta Frecuencia (30s) / Persistencia Garantizada en '{CARTERA_FILE}'")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
