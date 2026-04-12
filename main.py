@@ -11,6 +11,7 @@ from openai import OpenAI
 import os
 import telebot
 import json
+from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime
 
@@ -26,7 +27,10 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 PORTFOLIO_FILE = 'portfolio.json'
-ALERTED_VOLUMES = {} # Estructura: {"TICKER": datetime_last_alert}
+
+# --- NUEVO: SISTEMA DE MEMORIA INSTITUCIONAL ---
+WHALE_MEMORY = deque(maxlen=5) 
+# Estructura: {"ticker": tk, "vol_approx": qty, "type": "Compra" o "Venta", "timestamp": datetime}
 
 def get_tracked_tickers():
     if os.path.exists(PORTFOLIO_FILE):
@@ -167,27 +171,41 @@ def perform_deep_analysis(ticker):
     except Exception as e:
         return f"Fallo al analizar: {e}"
 
-def generate_whale_alert(anomaly_data):
-    """Convierte métricas volumétricas reales a un Alert de Ballenas simulado vía IA"""
-    if not OPENAI_API_KEY: 
-        return f"La ballena detectada movió volumen masivo de {anomaly_data['ticker']}."
-    
-    prompt = (
-        f"Actúa como un sistema de 'Whale Alert'. Hemos detectado un volumen masivo anormal ({anomaly_data['vol']}x promedio) en el activo {anomaly_data['ticker']}. "
-        f"Su tendencia estructural arroja: {anomaly_data['trend']}.\n"
-        "Escribe estrictamente UNA LÍNEA rellenando el siguiente formato ficticio pero altamente realista de una ballena u order block: "
-        "'La ballena [Wallet/Identificador] movió [Cantidad] de [Activo] hacia [Exchange/Wallet Destino].'\n"
-        "Asegurate de que [Cantidad] sea un número creíble de millones de USD o Acciones operadas en dark pools o block trades. "
-        "RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
-    )
+def fetch_intraday_data(ticker):
+    """Obtiene datos de 5 minutos de YF para calcular spikes en tiempo real y el tipo de presión instituncional."""
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=150)
-        return response.choices[0].message.content
-    except:
-        return f"La ballena Institucional movió fondos masivos de {anomaly_data['ticker']} en una Dark Pool."
+        data = yf.download(ticker, period="5d", interval="5m", progress=False)
+        if data.empty: return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data = data.copy()
+            data.columns = data.columns.get_level_values(0)
+            
+        close_prices = data['Close']
+        open_prices = data['Open']
+        volumes = data['Volume']
+        if isinstance(close_prices, pd.DataFrame): 
+             close_prices = close_prices.iloc[:, 0]
+             open_prices = open_prices.iloc[:, 0]
+             volumes = volumes.iloc[:, 0]
+             
+        latest_vol = float(volumes.iloc[-1])
+        avg_vol_5d = float(volumes.mean())
+        
+        c_open = float(open_prices.iloc[-1])
+        c_close = float(close_prices.iloc[-1])
+        vol_type = "Compra 🟢" if c_close >= c_open else "Venta 🔴"
+        
+        return {
+            'ticker': ticker,
+            'latest_vol': latest_vol,
+            'avg_vol': avg_vol_5d,
+            'vol_type': vol_type
+        }
+    except Exception as e:
+        return None
 
 def fetch_and_analyze_stock(ticker):
+    """Estudio Macro diario para SMC"""
     try:
         data = yf.download(ticker, period="6mo", interval="1d", progress=False)
         if data.empty: return None
@@ -201,7 +219,6 @@ def fetch_and_analyze_stock(ticker):
              close_prices = close_prices.iloc[:, 0]
              volume = volume.iloc[:, 0]
              
-        # RSI y MACD
         delta = close_prices.diff()
         up = delta.clip(lower=0)
         down = -1 * delta.clip(upper=0)
@@ -226,25 +243,20 @@ def fetch_and_analyze_stock(ticker):
              if float(recent_window.min()) < float(prev_window.min()) and float(rsi_series.loc[recent_window.idxmin()]) > float(rsi_series.loc[prev_window.idxmin()]):
                  divergence = True
                  
-        # SMC y VOLUMEN
         smc_trend = "Alcista 🟢" if latest_price > close_prices.ewm(span=20).mean().iloc[-1] else "Bajista 🔴"
         recent_month = close_prices.iloc[-22:]
         smc_sup = float(recent_month.min())
         smc_res = float(recent_month.max())
         
-        # Extracción del 'Order Block' por pico de Volumen
         vol_month = volume.iloc[-22:]
         max_vol_date = vol_month.idxmax()
         order_block_price = float(close_prices.loc[max_vol_date])
-        
-        latest_vol = float(volume.iloc[-1])
-        avg_vol = float(vol_month.mean())
         
         return {
             'ticker': ticker, 'price': latest_price, 'rsi': latest_rsi,
             'macd_line': latest_macd, 'macd_signal': latest_signal, 'bullish_divergence': divergence,
             'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend,
-            'order_block': order_block_price, 'latest_volume': latest_vol, 'avg_volume': avg_vol
+            'order_block': order_block_price
         }
     except Exception as e:
         return None
@@ -272,6 +284,14 @@ def build_full_report():
             
     return "\n".join(report_lines)
 
+
+def format_time_ago(ts):
+    """Calcula cuántos minutos pasaron"""
+    diff = int((datetime.now() - ts).total_seconds() / 60)
+    if diff == 0: return "Hace unos segundos"
+    if diff == 1: return "Hace 1 min"
+    return f"Hace {diff} mins"
+
 # ----------------- CONTROLADORES TELEBOT -----------------
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
@@ -286,43 +306,27 @@ def cmd_start(message):
     
     bot.reply_to(message, "¡Génesis Institucional! Pídeme 'Analiza NVDA', 'Agrega AAPL', 'Elimina MSFT', o usa el tablero:", reply_markup=markup)
 
+
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    
     msg = bot.reply_to(message, "👁️ Analizando estructura visual...")
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-        
-        if not OPENAI_API_KEY:
-            raise ValueError("Falta OPENAI_API_KEY")
-            
+        base64_image = base64.b64encode(bot.download_file(file_info.file_path)).decode('utf-8')
         client = OpenAI(api_key=OPENAI_API_KEY)
-        prompt = (
-            "Actúa como un analista Senior de Wall Street. Analiza esta gráfica técnica con rigor.\n"
-            "1. Identifica la estructura del precio (Higher Highs / Lower Lows).\n"
-            "2. Localiza niveles exactos de Soporte y Resistencia visuales.\n"
-            "3. Busca patrones de velas (Doji, Engulfing, Hammer) si son visibles.\n"
-            "4. Si ves indicadores, menciona el estado del RSI o MACD.\n"
-            "5. Dame un Veredicto: 'Bullish', 'Bearish' o 'Neutral' y sugiere un Stop Loss lógico basado en la estructura.\n"
-            "RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
-        )
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
+            messages=[{"role": "user", "content": [
+                    {"type": "text", "text": "Actúa como un analista Senior de Wall Street. Analiza esta gráfica con rigor buscando SMC, SR, Velas Japonesas. Veredicto: 'Bullish' o 'Bearish'. RESPONDE ESTRICTAMENTE EN ESPAÑOL."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]}
-            ],
+                ]}],
             max_tokens=800
         )
-        analysis_text = response.choices[0].message.content
-        bot.edit_message_text(f"📊 [REPORTE VISUAL GPT-4o]\n\n{analysis_text}", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text(f"📊 [REPORTE VISUAL]\n\n{response.choices[0].message.content}", chat_id=message.chat.id, message_id=msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ Falló el análisis GPT-4o: {e}", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text(f"❌ Falló el análisis web: {e}", chat_id=message.chat.id, message_id=msg.message_id)
+
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_text(message):
@@ -331,99 +335,102 @@ def handle_text(message):
     
     # 1. BOTONES INFERIORES:
     if text == "🐳 Radar Ballenas":
-        bot.reply_to(message, "🐳 Escaneando flujos macroinstitucionales de tu cartera...")
-        
-        highest_vol = 0
-        target = None
-        for tk in get_tracked_tickers():
-             val = fetch_and_analyze_stock(tk)
-             if val and val['avg_volume'] > 0:
-                 spike = val['latest_volume'] / val['avg_volume']
-                 if spike > highest_vol:
-                     highest_vol = spike
-                     target = val
-                     
-        if not target or highest_vol < 1.2:
-            bot.send_message(message.chat.id, "🐋 <b>Radar Ballenas</b>\nVolumen institucional operando en promedios estáticos, cero anomalías detectadas en dark pools.", parse_mode="HTML")
+        bot.reply_to(message, "🐳 Accediendo a Caché HFT de Movimientos Institucionales...")
+        if len(WHALE_MEMORY) == 0:
+            bot.send_message(message.chat.id, "🐋 <b>Radar Ballenas</b>\n\nEl océano de tu cartera está quieto. Aún no se han detectado transacciones bloque de ballenas hoy.", parse_mode="HTML")
             return
             
-        whale_msg = generate_whale_alert({"ticker": target['ticker'], "vol": round(highest_vol, 2), "trend": target['smc_trend']})
-        bot.send_message(message.chat.id, f"🐋 <b>Radar Institucional</b>\n\n{whale_msg}", parse_mode="HTML")
+        lines = ["🐋 <b>ÚLTIMAS 5 OPERACIONES BALLENA:</b>\n"]
+        for w in list(WHALE_MEMORY)[::-1]:
+            vol_str = f"{w['vol_approx']:,}"
+            lines.append(f"• <b>{w['ticker']}</b> | Vol: {vol_str} | Tipo: {w['type']} | {format_time_ago(w['timestamp'])}")
+            
+        bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
         
     elif text == "🌎 Geopolítica":
-        bot.reply_to(message, "🌎 Escaneando red global RSS y pasando IA... (Manual)")
+        bot.reply_to(message, "🌎 Escaneando red global RSS y pasando IA...")
         news = check_geopolitical_news()
         ai_res = gpt_advanced_geopolitics(news, manual=True)
-        if ai_res:
-            bot.send_message(message.chat.id, f"🌍 <b>Resumen Global Insight:</b>\n\n{ai_res}", parse_mode="HTML")
-        else:
-            bot.send_message(message.chat.id, "✅ Radar limpio. Operatividad normal.", parse_mode="HTML")
+        bot.send_message(message.chat.id, f"🌍 <b>Resumen Global Insight:</b>\n\n{ai_res}" if ai_res else "✅ Radar limpio. Operatividad normal.", parse_mode="HTML")
             
     elif text == "📉 SMC / Mi Cartera":
-        bot.reply_to(message, "📉 Computando Mapas de Liquidez Institucional SMC...")
-        report = build_full_report()
-        bot.send_message(message.chat.id, report, parse_mode="HTML")
+        bot.reply_to(message, "📉 Computando Mapas Institucionales SMC...")
+        bot.send_message(message.chat.id, build_full_report(), parse_mode="HTML")
         
     # 2. TAREAS PROFUNDAS MANUALES
     elif text.upper().startswith("ANALIZA "):
         match = re.search(r'ANALIZA\s+([A-Za-z0-9\-]+)', text.upper())
         if match:
             tk = match.group(1)
-            bot.reply_to(message, f"🔍 Bajando data técnica y de prensa para iniciar Análisis Fundamental/Técnico de {tk}...")
-            deep_report = perform_deep_analysis(tk)
-            bot.send_message(message.chat.id, f"🏦 <b>RESEARCH: {tk}</b>\n\n{deep_report}", parse_mode="HTML")
+            bot.reply_to(message, f"🔍 Bajando data técnica y de prensa para iniciar Análisis de Veredicto Dual en {tk}...")
+            bot.send_message(message.chat.id, f"🏦 <b>RESEARCH: {tk}</b>\n\n{perform_deep_analysis(tk)}", parse_mode="HTML")
             
     # 3. GESTIÓN DINÁMICA
     elif "AGREGA" in text.upper():
         match = re.search(r'AGREGA\s+([A-Za-z0-9\-]+)', text.upper())
         if match:
             tk = match.group(1)
-            if add_ticker(tk): bot.reply_to(message, f"✅ El activo <b>{tk}</b> ha sido blindado en el Radar SMC general.", parse_mode="HTML")
-            else: bot.reply_to(message, f"⚠️ El activo {tk} ya está protegido en tu portafolio.", parse_mode="HTML")
+            bot.reply_to(message, f"✅ El activo <b>{tk}</b> ha sido blindado." if add_ticker(tk) else f"⚠️ Activo {tk} ya existía.", parse_mode="HTML")
             
     elif "ELIMINA" in text.upper() or "BORRA" in text.upper():
         match = re.search(r'(?:ELIMINA|BORRA)\s+([A-Za-z0-9\-]+)', text.upper())
         if match:
             tk = match.group(1)
-            if remove_ticker(tk): bot.reply_to(message, f"🗑️ El activo <b>{tk}</b> fue destrozado y vaciado del Radar.", parse_mode="HTML")
-            else: bot.reply_to(message, f"⚠️ El activo {tk} no residía en el Radar SMC.", parse_mode="HTML")
+            bot.reply_to(message, f"🗑️ El activo <b>{tk}</b> fue destrozado." if remove_ticker(tk) else f"⚠️ No residía en tu cartera.", parse_mode="HTML")
 
-# ----------------- BUCLE PROACTIVO (CADA 5 MINUTOS) -----------------
+
+# ----------------- BUCLE PROACTIVO CENTRAL (ALTA FRECUENCIA) -----------------
 def background_loop_proactivo():
-    """TICK DOBLADO: Monitorea volumen de ballenas cada 5m y Geopolítica cada 10m (2 ticks)."""
+    """TICK DOBLADO: Monitorea bloques de ballenas cada 3m y Geopolítica cada ~12m (4 ticks)."""
     tick_count = 0
+    # Memorizamos las ballenas detectadas hoy por asset, para no spamearlo cada vela 5m consecuente
+    last_alms = {}
+    
     while True:
         try:
-            time.sleep(300) # 5 minutos exactos de latencia
+            time.sleep(180) # 3 MINUTOS exactos
             tick_count += 1
             now = datetime.now()
             
-            # --- TAREA 1: 5-MINUTOS RASTREO VOLUMEN (Umbral 2.5x) ---
+            # --- TAREA 1: CENTINELA INTRADÍA DE ORDENES MAYORES (Cada 3 min) ---
             for tk in get_tracked_tickers():
-                val = fetch_and_analyze_stock(tk)
-                if val and val['avg_volume'] > 0:
-                    spike = val['latest_volume'] / val['avg_volume']
+                intra = fetch_intraday_data(tk)
+                if intra and intra['avg_vol'] > 0:
+                    spike = intra['latest_vol'] / intra['avg_vol']
                     
-                    if spike >= 2.5: # 250% del volumen normal (Gran Institucional)
-                        # Evitar spam: Notificar anomalias de un ticker máximo 1 vez cada 4 horas
-                        last_alert = ALERTED_VOLUMES.get(tk)
-                        if not last_alert or (now - last_alert).total_seconds() > 14400:
-                            ALERTED_VOLUMES[tk] = now
-                            bot.send_message(CHAT_ID, f"⚠️ <b>DETECTADA OPERACIÓN GRANDE</b>:\n\nSe acaba de mover un bloque masivo de <b>{tk}</b> ({round(spike, 1)}x). Posible movimiento institucional activo.\n<i>Order Block SMC detectado en: ${val['order_block']:.2f}.</i>", parse_mode="HTML")
+                    if spike >= 2.5: # Si el volumen de vela 5m supera en un 250% la media = BLOQUE BALLENA
+                        
+                        # Anti-spam (Solo 1 alerta por ticker cada hora para evitar saturación de la misma vela)
+                        last_tk_alm = last_alms.get(tk)
+                        if not last_tk_alm or (now - last_tk_alm).total_seconds() > 3600:
+                            last_alms[tk] = now
+                            
+                            clean_amount = int(intra['latest_vol'])
+                            
+                            # 1. ENVIAR Push Notification directa
+                            bot.send_message(CHAT_ID, f"⚠️ <b>ALERTA DE BALLENA</b>:\nSe detectó una operación masiva en <b>{tk}</b>.\nMovimiento detectado: Aproximadamente <b>{clean_amount:,}</b> (Dirección: {intra['vol_type']})", parse_mode="HTML")
+                            
+                            # 2. INYECTAR en Estructura de Memoria para el Botón Manual
+                            WHALE_MEMORY.append({
+                                "ticker": tk,
+                                "vol_approx": clean_amount,
+                                "type": intra['vol_type'], 
+                                "timestamp": now
+                            })
 
-            # --- TAREA 2: 10-MINUTOS GEOPOLÍTICA MACRO (Solo en ticks pares) ---
-            if tick_count % 2 == 0:
+            # --- TAREA 2: ESCÁNER MACRO GEOPOLÍTICA (Solamente 1 vez cada 4 ticks = ~12 mins) ---
+            if tick_count % 4 == 0:
                 raw_news = check_geopolitical_news()
                 ai_threat_evaluation = gpt_advanced_geopolitics(raw_news, manual=False)
                 if ai_threat_evaluation:
-                     bot.send_message(CHAT_ID, f"🚨 <b>VIGILANCIA GLOBAL (10-min scan):</b>\n\n{ai_threat_evaluation}", parse_mode="HTML")
+                     bot.send_message(CHAT_ID, f"🚨 <b>VIGILANCIA GLOBAL (Geopolítica):</b>\n\n{ai_threat_evaluation}", parse_mode="HTML")
                      
         except Exception as e:
-            logging.error(f"Error en bucle asíncrono (5min/10min): {e}")
+            logging.error(f"Error en bucle asíncrono HFT: {e}")
 
 # ----------------- MAIN -----------------
 def main():
-    print(f"Iniciando Bot Gestor Cuantitativo Híbrido. Token leído y autorizado...")
+    print(f"Iniciando Bot Gestor HFT - Sistema Centinela cargado. Token verificado.")
     
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
