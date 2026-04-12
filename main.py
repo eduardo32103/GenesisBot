@@ -381,6 +381,43 @@ def cmd_start(message):
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
     bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nProtección Anticolapso Activa para Nube. Botonera lista:", reply_markup=markup)
 
+@bot.message_handler(commands=['recover'])
+def cmd_recover(message):
+    """Herramienta de Carga Crítica de Respaldo por Base64 dictada en los Requerimientos"""
+    if str(message.chat.id) != str(CHAT_ID): return
+    try:
+        command_parts = message.text.split(' ', 1)
+        if len(command_parts) < 2:
+            bot.reply_to(message, "⚠️ Has invocado la Restauración Crítica.\nUso: `/recover [STRING_BASE64_DEL_LOG]`", parse_mode="Markdown")
+            return
+            
+        b64_str = command_parts[1].strip()
+        json_str = base64.b64decode(b64_str).decode('utf-8')
+        payload = json.loads(json_str)
+        
+        portfolio = payload.get("portfolio", {})
+        stats = payload.get("global_stats", {})
+        
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            for tk, info in portfolio.items():
+                 c.execute('INSERT OR REPLACE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, ?, ?, ?, ?)', 
+                           (tk, int(info.get("is_investment", 0)), float(info.get("amount_usd", 0)), float(info.get("entry_price", 0)), info.get("timestamp", datetime.now().isoformat())))
+            
+            for k, val in stats.items():
+                 c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES (?, ?)', (k, float(val)))
+            conn.commit()
+            log_base64_backup()
+            
+        bot.reply_to(message, f"✅ **¡RECUPERACIÓN CRÍTICA EXITOSA!**\nLa Nube de Railway ha sido parchada.\nSe restauraron {len(portfolio)} activos en SQLite y PnL histórico desde la cápsula Base64.", parse_mode="Markdown")
+        
+        for tk in portfolio.keys():
+            val = fetch_and_analyze_stock(tk)
+            if val: update_smc_memory(tk, val)
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Falló la inyección de recuperación: `{e}`", parse_mode="Markdown")
+
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
