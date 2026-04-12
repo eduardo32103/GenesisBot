@@ -346,10 +346,34 @@ BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
 BRENT_MIN_VALID_PRICE = 50.0  # Si el precio es menor a esto, es un ERROR de Yahoo
 
 # ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
+def fmt_price(val):
+    """Formatea precio con decimales REALES del exchange, sin ceros de relleno"""
+    # Hasta 6 decimales de precisión, eliminar ceros sobrantes
+    s = f"{val:.6f}".rstrip('0')
+    # Asegurar mínimo 2 decimales para legibilidad
+    parts = s.split('.')
+    if len(parts) == 2 and len(parts[1]) < 2:
+        s = f"{val:.2f}"
+    elif s.endswith('.'):
+        s = f"{val:.2f}"
+    return s
+
 def _try_ticker_history(symbol, period="1d", interval="1m"):
-    """Usa yf.Ticker().history() que NUNCA devuelve MultiIndex (evita bugs de $0.37)"""
+    """Obtiene precio con precisión RAW del exchange. Prioriza info['regularMarketPrice']"""
     try:
         ticker_obj = yf.Ticker(symbol)
+
+        # PRIORIDAD 1: regularMarketPrice (precio exacto del exchange, sin redondeo)
+        try:
+            info = ticker_obj.info
+            raw_price = info.get('regularMarketPrice') or info.get('currentPrice')
+            raw_vol = info.get('regularMarketVolume') or info.get('volume') or 0
+            if raw_price and float(raw_price) > 0:
+                return {'price': float(raw_price), 'vol': float(raw_vol)}
+        except Exception:
+            pass
+
+        # PRIORIDAD 2: history() como fallback (datos históricos)
         data = ticker_obj.history(period=period, interval=interval)
         if data.empty: return None
 
@@ -544,7 +568,7 @@ def analyze_breakout_gpt(ticker, level_type, price):
     display_name = get_display_name(tk)
     if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
     client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"El activo {display_name} rompió su {level_type} en ${price:.4f}. Consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y por qué. ESPAÑOL ESTRICTO."
+    prompt = f"El activo {display_name} rompió su {level_type} en ${fmt_price(price)}. Consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y por qué. ESPAÑOL ESTRICTO."
     try: return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=200).choices[0].message.content
     except: return "¿Qué hacer? Esperar al cierre del día."
 
@@ -553,7 +577,7 @@ def perform_deep_analysis(ticker):
     display_name = get_display_name(tk)
     tech_info = f"Información técnica no disponible para {display_name}."
     tech = fetch_and_analyze_stock(tk)
-    if tech: tech_info = f"Precio: ${tech['price']:.4f}\nRSI: {tech['rsi']:.2f}\nSMC Trend: {tech['smc_trend']}"
+    if tech: tech_info = f"Precio: ${fmt_price(tech['price'])}\nRSI: {tech['rsi']:.2f}\nSMC Trend: {tech['smc_trend']}"
 
     news_str = ""
     try:
@@ -593,12 +617,12 @@ def build_wallet_dashboard():
             total_current += curr_val
 
             sign = "+" if roi_percent >= 0 else ""
-            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}% (${live_price:.4f})")
+            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}% (${fmt_price(live_price)})")
         else:
             # Mercado cerrado - mostrar activo sin ocultar
             total_invested += init_amount
             total_current += init_amount
-            details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${entry_p:.4f})")
+            details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
 
     if total_invested == 0 and realized_pnl != 0:
          return (f"---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
@@ -736,14 +760,14 @@ def handle_text(message):
 
             if analysis:
                 update_smc_memory(tk, analysis)
-                report_lines.extend([f"🏦 <b>{d_name}</b> - ${analysis['price']:.4f}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${analysis['smc_sup']:.4f}", f"• Sell-side Liquidity: ${analysis['smc_res']:.4f}", f"• Order Block Institucional: ${analysis['order_block']:.4f}", "---"])
+                report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", f"• Order Block Institucional: ${fmt_price(analysis['order_block'])}", "---"])
             elif tk in LAST_KNOWN_ANALYSIS:
                 # Usar último análisis registrado en cache
                 cached = LAST_KNOWN_ANALYSIS[tk]
-                report_lines.extend([f"🏦 <b>{d_name}</b> - ${cached['price']:.4f} <i>(último cierre)</i>", f"• Tendencia SMC: {cached['smc_trend']}", f"• Buy-side Liquidity: ${cached['smc_sup']:.4f}", f"• Sell-side Liquidity: ${cached['smc_res']:.4f}", f"• Order Block Institucional: ${cached['order_block']:.4f}", "---"])
+                report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(cached['price'])} <i>(último cierre)</i>", f"• Tendencia SMC: {cached['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(cached['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(cached['smc_res'])}", f"• Order Block Institucional: ${fmt_price(cached['order_block'])}", "---"])
             elif tk in LAST_KNOWN_PRICES:
                 # Al menos mostrar el precio conocido
-                report_lines.extend([f"🏦 <b>{d_name}</b> - ${LAST_KNOWN_PRICES[tk]['price']:.4f} <i>(último cierre)</i>", f"• ⏳ Niveles SMC pendientes de cálculo", "---"])
+                report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])} <i>(último cierre)</i>", f"• ⏳ Niveles SMC pendientes de cálculo", "---"])
             else:
                 report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Sin datos disponibles en este momento", "---"])
 
@@ -799,7 +823,7 @@ def handle_text(message):
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
-                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {display_name}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${intra['latest_price']:.4f}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {display_name}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${fmt_price(intra['latest_price'])}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
             else:
                 bot.reply_to(message, f"❌ No pude fijar el precio real de {display_name} ahora. Mercado cerrado temporalmente.")
         return
@@ -830,7 +854,7 @@ def handle_text(message):
 
                     ans_str = (
                         f"---\n✅ *GESTIÓN DE CARTERA: CIERRE*\n---\n"
-                        f"✅ [ {display_name} ] liquidado al precio de ${live_price:.4f}\n"
+                        f"✅ [ {display_name} ] liquidado al precio de ${fmt_price(live_price)}\n"
                         f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
                         f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n\n"
                         f"✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie."
@@ -901,7 +925,7 @@ def background_loop_proactivo():
                            hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                            if not check_and_add_seen_event(hash_brk):
                                adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
-                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Resistencia en <b>${rt['price']:.4f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Resistencia en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
 
                     elif cur_price < topol['sup']:
                         rt = verify_1m_realtime_data(tk)
@@ -909,7 +933,7 @@ def background_loop_proactivo():
                            hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
                            if not check_and_add_seen_event(hash_drp):
                                adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
-                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${rt['price']:.4f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
 
                 # Ballenas Doble Verificadas — también protegidas por coherencia
                 if intra['avg_vol'] > 0 and price_is_reliable:
