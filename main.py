@@ -10,13 +10,13 @@ import time
 from openai import OpenAI
 import os
 
-# Imports estables y simplificados
+# Importación ESTRICTAMENTE simplificada para esquivar crasheos en Python 3.13
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- CONFIGURACIONES ESTRATÉGICAS (ENV VARIABLES) ---
+# --- VARIABLES DE ENTORNO ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
@@ -25,7 +25,7 @@ ALERTED_NEWS = set()
 
 # ----------------- FUNCIONES AUXILIARES DIRECTAS -----------------
 def send_telegram_alert(message):
-    """Fallback directo por API pura para notificaciones y boot (A prueba de fallos asíncronos)"""
+    """Fallback por HTTP directo."""
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
@@ -36,7 +36,7 @@ def send_telegram_alert(message):
 
 # ----------------- NÚCLEO DE MERCADO -----------------
 def check_geopolitical_news():
-    logging.info("Monitoreando Radar Geopolítico de Alto Impacto...")
+    logging.info("Monitoreando Radar Geopolítico...")
     search_url = "https://news.google.com/rss/search?q=Iran+OR+Energy+OR+oil+geopolitics"
     
     HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction", "embargo", 
@@ -61,7 +61,7 @@ def check_geopolitical_news():
                     if len(news_alerts) >= 1:
                         break
     except Exception as e:
-        logging.error(f"Error obteniendo noticias RSS: {e}")
+        pass
     return news_alerts
 
 def fetch_and_analyze_stock(ticker):
@@ -110,7 +110,6 @@ def fetch_and_analyze_stock(ticker):
             'macd_line': latest_macd, 'macd_signal': latest_signal, 'bullish_divergence': divergence
         }
     except Exception as e:
-        logging.error(f"Error analizando {ticker}: {e}")
         return None
 
 def generate_strategic_report(analysis):
@@ -151,110 +150,88 @@ def build_full_report():
 
 # ----------------- CONTROLADORES DE TELEGRAM -----------------
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando manual de inicio"""
+async def cmd_start(update: Update, context):
     if str(update.message.chat_id) != str(CHAT_ID): return
     await update.message.reply_text("¡Génesis V2.0 Online! Mándame una gráfica para analizar.")
 
-async def cmd_analisis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_analisis(update: Update, context):
     if str(update.message.chat_id) != str(CHAT_ID): return
     await update.message.reply_text("🔍 Computando métricas globales...")
     report = build_full_report()
     if report:
         await update.message.reply_text(report, parse_mode="HTML")
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Integración Segura (GPT-4o)"""
+async def handle_photo(update: Update, context):
     if str(update.message.chat_id) != str(CHAT_ID): return
-        
     await update.message.reply_text("👁️ Ojo de Águila Analizando gráfica con GPT-4o...")
-    
     try:
         photo_file = update.message.photo[-1]
         file = await context.bot.get_file(photo_file.file_id)
         image_bytes = await file.download_as_bytearray()
-        
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         
         if not OPENAI_API_KEY:
-            raise ValueError("La variable OPENAI_API_KEY en Railway no se cargó correctamente.")
+            raise ValueError("Falta OPENAI_API_KEY")
             
         client = OpenAI(api_key=OPENAI_API_KEY)
-        
         prompt = (
             "Eres un Senior Trader cuantitativo. Analiza de inmediato esta gráfica y responde de forma estricta:\n"
             "1. Tendencia general.\n"
             "2. Zonas de Soportes y Resistencias críticas.\n"
             "3. Divergencias visibles.\n"
-            "4. Veredicto de Riesgo/Beneficio.\n"
-            "No asumas datos, describe únicamente lo que el gráfico muestra analíticamente."
+            "4. Veredicto de Riesgo/Beneficio."
         )
-        
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]}
             ],
             max_tokens=800
         )
-        
         analysis_text = response.choices[0].message.content
         await update.message.reply_text(f"📊 [REPORTE GPT-4o]\n\n{analysis_text}")
-        
     except Exception as e:
-        logging.error("Crash procesando imagen IA:", exc_info=True)
-        await update.message.reply_text(f"❌ Falló el análisis de OpenAI. Motivo del servidor:\n`{str(e)}`", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ Falló el análisis GPT-4o: {e}")
 
-# ----------------- TAREAS EN SEGUNDO PLANO (SIN DEPENDER DEL BOT) -----------------
-def background_hourly_task():
-    """Hilo secundario a prueba de fallos asíncronos."""
+# ----------------- HILO SECUNDARIO MUY SIMPLE -----------------
+def background_loop():
+    """Bucle ciego e independiente al bot"""
     while True:
-        time.sleep(3600)  # Duerme por 60 minutos
+        time.sleep(3600) # 1 hora exacta
         report = build_full_report()
         if report:
-             send_telegram_alert(report)
+            send_telegram_alert(report)
 
-# ----------------- INICIO -----------------
+# ----------------- ARRANQUE -----------------
 def main():
-    print("Iniciando validación de dependencias...")
-    
-    if not TELEGRAM_TOKEN:
-        logging.critical("FALTA TELEGRAM_TOKEN en tus Variables de Entorno. Apagando...")
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("FALTAN VARIABLES DE ENTORNO CRÍTICAS. CANCELANDO INICIO.")
         return
         
-    print(f"Token cargado en Railway: {str(TELEGRAM_TOKEN)[:5]}...***")
-    print("Bot intentando conectar con Telegram...")
-    
-    # 1. ENVIAR REPORTE DE BOOT INSTANTÁNEO POR API (Evita JobQueues y Callbacks)
-    send_telegram_alert("🚀 <b>¡Génesis V2.0 ONLINE EN SERVIDOR!</b>")
-    report = build_full_report()
-    if report:
-        send_telegram_alert(report)
-        
-    # 2. ENGANCHAR BUCLE HORARIO EN HILO INDEPENDIENTE (A prueba de Updater-crashes)
-    t = threading.Thread(target=background_hourly_task, daemon=True)
+    print(f"Token leído: {str(TELEGRAM_TOKEN)[:6]}...")
+
+    # 1. Mensaje de bienvenida síncrono al iniciar el contenedor
+    send_telegram_alert("🚀 <b>¡Génesis V2.0 ONLINE EN PYTHON 3.13!</b>")
+    initial_report = build_full_report()
+    if initial_report:
+        send_telegram_alert(initial_report)
+
+    # 2. Bucle infinito para reportes horarios
+    t = threading.Thread(target=background_loop, daemon=True)
     t.start()
-    
-    # 3. CONSTRUIR APLICACIÓN PRINCIPAL (Versión limpia)
+
+    # 3. Inicialización PTB estricta para evitar bloqueos
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("analisis", cmd_analisis))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    
-    logging.info("Polling infinito en Railway iniciado y depurado...")
-    app.run_polling()  # Polling vainilla súper estable
+
+    print("Bot encendido. Entrando a modo Escucha Asíncrona Neutra.")
+    app.run_polling() 
 
 if __name__ == "__main__":
     main()
