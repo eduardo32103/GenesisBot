@@ -220,30 +220,37 @@ def fetch_and_analyze_stock(ticker):
              if recent_low < prev_low and recent_rsi > prev_rsi:
                  divergence = True
                  
+        smc_trend = "Alcista 🟢" if latest_price > close_prices.ewm(span=20).mean().iloc[-1] else "Bajista 🔴"
+        recent_month = close_prices.iloc[-22:]
+        smc_sup = float(recent_month.min())
+        smc_res = float(recent_month.max())
+
         return {
             'ticker': ticker, 'price': latest_price, 'rsi': latest_rsi,
-            'macd_line': latest_macd, 'macd_signal': latest_signal, 'bullish_divergence': divergence
+            'macd_line': latest_macd, 'macd_signal': latest_signal, 'bullish_divergence': divergence,
+            'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend
         }
     except Exception as e:
         return None
 
 def build_full_report():
-    report_lines = ["🦅 <b>Génesis SMC - Inteligencia Estratégica</b> 🦅\n"]
+    report_lines = ["🦅 <b>Génesis: SMC / Mi Cartera</b> 🦅\n"]
     tickers = get_tracked_tickers()
+    
+    if not tickers:
+        return "Tu cartera está vacía. Añade activos usando 'Agrega AAPL'."
     
     for ticker in tickers:
         analysis = fetch_and_analyze_stock(ticker)
         if analysis:
-            t, rsi, macd_line, macd_signal, price, div = analysis['ticker'], analysis['rsi'], analysis['macd_line'], analysis['macd_signal'], analysis['price'], analysis['bullish_divergence']
-            strategy = "ESPERAR"
-            if div:
-                strategy = "🟢 ENTRADA POTENCIAL (Divergencia Alcista)"
-            elif rsi < 30 and macd_line > macd_signal:
-                strategy = "🟢 ENTRADA POTENCIAL"
-            elif rsi > 70 and macd_line < macd_signal:
-                strategy = "🔴 TOMAR GANANCIAS"
+            t, rsi, price = analysis['ticker'], analysis['rsi'], analysis['price']
+            sup, res, trend = analysis['smc_sup'], analysis['smc_res'], analysis['smc_trend']
             
-            report_lines.append(f"<b>{t}</b>: ${price:.2f} | RSI: {rsi:.2f}\nRecomendación: <b>{strategy}</b>\n")
+            report_lines.append(f"🏦 <b>{t}</b> - Cotización: ${price:.2f}")
+            report_lines.append(f"• <b>Tendencia SMC:</b> {trend}")
+            report_lines.append(f"• <b>Soporte (Buy-side Liquidity):</b> ${sup:.2f}")
+            report_lines.append(f"• <b>Resistencia (Sell-side Liquidity):</b> ${res:.2f}")
+            report_lines.append(f"• <b>RSI:</b> {rsi:.2f}\n")
             
     return "\n".join(report_lines)
 
@@ -256,7 +263,7 @@ def cmd_start(message):
     markup.add(
         KeyboardButton("🌎 Geopolítica"),
         KeyboardButton("🐳 Radar Ballenas"),
-        KeyboardButton("📊 Reporte SMC")
+        KeyboardButton("📉 SMC / Mi Cartera")
     )
     
     bot.reply_to(message, "¡Génesis Institucional! Pídeme 'Analiza NVDA', 'Agrega AAPL', 'Elimina MSFT', o usa el tablero:", reply_markup=markup)
@@ -319,8 +326,8 @@ def handle_text(message):
         else:
             bot.send_message(message.chat.id, "✅ Radar limpio. Operatividad normal.", parse_mode="HTML")
             
-    elif text == "📊 Reporte SMC":
-        bot.reply_to(message, "📊 Computando matriz SMC...")
+    elif text == "📉 SMC / Mi Cartera":
+        bot.reply_to(message, "📉 Computando Mapas de Liquidez y Estructura Institucional SMC...")
         report = build_full_report()
         bot.send_message(message.chat.id, report, parse_mode="HTML")
         
