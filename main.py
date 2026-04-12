@@ -11,7 +11,7 @@ from openai import OpenAI
 import os
 import telebot
 
-# --- LIBRERÍA TELEBOT (TOTALMENTE SÍNCRONA, EVITA BUGS DE ASYNCIO EN PY 3.13) ---
+# --- LIBRERÍA TELEBOT (TOTALMENTE SYNCRONA, EVITA BUGS DE ASYNCIO EN PY 3.13) ---
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -170,11 +170,13 @@ def handle_photo(message):
             
         client = OpenAI(api_key=OPENAI_API_KEY)
         prompt = (
-            "Eres un Senior Trader cuantitativo. Analiza de inmediato esta gráfica y responde de forma estricta:\n"
-            "1. Tendencia general.\n"
-            "2. Zonas de Soportes y Resistencias críticas.\n"
-            "3. Divergencias visibles.\n"
-            "4. Veredicto de Riesgo/Beneficio."
+            "Actúa como un analista Senior de Wall Street. Analiza esta gráfica técnica con rigor.\n"
+            "1. Identifica la estructura del precio (Higher Highs / Lower Lows).\n"
+            "2. Localiza niveles exactos de Soporte y Resistencia visuales.\n"
+            "3. Busca patrones de velas (Doji, Engulfing, Hammer) si son visibles.\n"
+            "4. Si ves indicadores, menciona el estado del RSI o MACD.\n"
+            "5. Dame un Veredicto: 'Bullish', 'Bearish' o 'Neutral' y sugiere un Stop Loss lógico basado en la estructura.\n"
+            "Sé muy específico y técnico. Si la imagen no es clara, pídeme una captura con mejor resolución."
         )
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -191,23 +193,24 @@ def handle_photo(message):
     except Exception as e:
         bot.edit_message_text(f"❌ Falló el análisis GPT-4o: {e}", chat_id=message.chat.id, message_id=msg.message_id)
 
-# ----------------- BUCLE DE MONITOREO -----------------
+# ----------------- BUCLE EN SEGUNDO PLANO -----------------
 def background_loop():
     """Bucle horario asegurado."""
     while True:
-        time.sleep(3600)  # Duerme una hora
         try:
             report = build_full_report()
             if report:
                 bot.send_message(CHAT_ID, report, parse_mode="HTML")
         except Exception as e:
             logging.error(f"Error en loop: {e}")
+            
+        time.sleep(3600)  # Duerme una hora
 
 # ----------------- MAIN -----------------
 def main():
     print(f"Iniciando Bot Telebot Syncrono. Token: {str(TELEGRAM_TOKEN)[:6]}...")
     
-    # Arranca el escaner de reportes en segundo plano
+    # Hilo de monitoreo que inicia SOLO UNA VEZ.
     t = threading.Thread(target=background_loop, daemon=True)
     t.start()
     
