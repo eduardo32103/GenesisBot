@@ -29,8 +29,6 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # --- CONFIGURACIÓN DE VOLÚMENES PERSISTENTES RAILWAY ---
-# Railway borra los archivos en carpeta root si no se mapea un Volume.
-# Aquí indicamos que si existe la variable DATA_DIR, la use. Si no, usa local (.)
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 if not os.path.exists(DATA_DIR):
     try:
@@ -43,22 +41,7 @@ CARTERA_FILE = os.path.join(DATA_DIR, 'cartera.json')
 WHALE_MEMORY = deque(maxlen=5) 
 SMC_LEVELS_MEMORY = {} 
 
-class Deduplicator:
-    """Escudo Inteligente de Memoria RAM: Filtra duplicados (Spam) sin comer memoria infinita."""
-    def __init__(self, max_size=200):
-        self._cache = deque(maxlen=max_size)
-    
-    def add_and_check(self, item_hash):
-        if item_hash in self._cache:
-            return True
-        self._cache.append(item_hash)
-        return False
-
-# Inicializar Escudos contra saturación HFT
-CACHE_NEWS = Deduplicator(100) 
-CACHE_WHALES = Deduplicator(100)
-
-# --- NÚCLEO DE PERSISTENCIA SEGURA ---
+# --- NÚCLEO DE PERSISTENCIA SEGURA Y DOBLE VALIDACIÓN ---
 def get_cartera_data():
     if os.path.exists(CARTERA_FILE):
         try:
@@ -73,10 +56,63 @@ def save_cartera_data(data):
     try:
         with open(CARTERA_FILE, 'w') as f:
             json.dump(data, f, indent=4)
-        # Log DE RESPALDO IMPENETRABLE PARA RECUPERACIÓN VÍA CONSOLA DE RAILWAY
         logging.info(f"BACKUP_DB_LOG (SAFE): {json.dumps(data)}")
     except Exception as e:
         logging.error(f"Error crítico guardando la base de datos: {e}")
+
+# 1. FILTRO DE HASH INVIOLABLE EN DISCO (Persistencia Crítica)
+def check_and_add_seen_event(event_hash):
+    """Validación global inviolable. Retorna True si el evento existe (Duplicado). Si es Nuevo, guarda y retorna False."""
+    data = get_cartera_data()
+    if "_GLOBAL_" not in data:
+        data["_GLOBAL_"] = {}
+    if "seen_events" not in data["_GLOBAL_"]:
+        data["_GLOBAL_"]["seen_events"] = {}
+        
+    events = data["_GLOBAL_"]["seen_events"]
+    
+    if event_hash in events:
+        return True 
+
+    events[event_hash] = datetime.now().isoformat()
+    save_cartera_data(data) # Memoria Eterna (Se guarda ANTES de procesar)
+    return False
+
+def purge_old_events():
+    """Motor de Limpieza: Destruye Hashes con antigüedad mayor a 7 Días."""
+    data = get_cartera_data()
+    if "_GLOBAL_" not in data or "seen_events" not in data["_GLOBAL_"]: return
+    
+    events = data["_GLOBAL_"]["seen_events"]
+    keys_to_delete = []
+    now = datetime.now()
+    
+    for hash_id, iso_str in events.items():
+        try:
+            ev_date = datetime.fromisoformat(iso_str)
+            if (now - ev_date).days >= 7:
+                keys_to_delete.append(hash_id)
+        except: keys_to_delete.append(hash_id) # Si algo se corrompió, lo borramos.
+        
+    if keys_to_delete:
+        for k in keys_to_delete:
+            del events[k]
+        save_cartera_data(data)
+
+def verify_1m_realtime_data(ticker):
+    """2. PRECISIÓN DE DATOS: Doble consulta instantánea (Rango 1 Minuto)."""
+    try:
+        data = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if data.empty: return None
+        if isinstance(data.columns, pd.MultiIndex):
+             data = data.copy(); data.columns = data.columns.get_level_values(0)
+        close_prices = data['Close']; volumes = data['Volume']
+        if isinstance(close_prices, pd.DataFrame): 
+             close_prices = close_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
+             
+        return {'price': float(close_prices.iloc[-1]), 'vol': float(volumes.iloc[-1])}
+    except: return None
+
 
 def get_tracked_tickers():
     data = get_cartera_data()
@@ -224,9 +260,7 @@ def fetch_and_analyze_stock(ticker):
     except: return None
 
 def update_smc_memory(ticker, analysis):
-    now = datetime.now()
-    if ticker not in SMC_LEVELS_MEMORY or (now - SMC_LEVELS_MEMORY[ticker]['update_date']).total_seconds() > 43200:
-        SMC_LEVELS_MEMORY[ticker] = {'sup': analysis['smc_sup'], 'res': analysis['smc_res'], 'alert_sup': False, 'alert_res': False, 'update_date': now}
+    SMC_LEVELS_MEMORY[ticker] = {'sup': analysis['smc_sup'], 'res': analysis['smc_res'], 'update_date': datetime.now()}
 
 def analyze_breakout_gpt(ticker, level_type, price):
     if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
@@ -323,7 +357,7 @@ def cmd_start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nProtección Anticolapso Activa para Nube. Botonera lista:", reply_markup=markup)
+    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nValidación Doble-Fetch HFT Operativa. Botonera lista:", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -462,32 +496,32 @@ def handle_text(message):
         return
 
 
-# ----------------- BUCLE CENTINELA HFT (TIEMPO REAL) -----------------
+# ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela a Ultra-Alta Velocidad (30s) y cargando Cachés/Base DB...")
-    # CHEQUEO INICIAL REQUERIDO POR EL USUARIO PARA AVISO DE DB AL ARRANCAR
+    logging.info("Arrancando Centinela Quirúrgico (30s) / Precisión Total / Persistencia SQL-JSON...")
     data = get_cartera_data()
-    if data:
-        logging.info(f"¡INFO DB RECUPERADA EXITOSAMENTE! Activos en radar: {list(data.keys())}")
-    else:
-        logging.warning("No se encontró base de datos previa o está vacía. Empezando limpia.")
+    if data: logging.info(f"¡INFO DB RECUPERADA EXITOSAMENTE! Activos en radar: {list(data.keys())}")
+    else: logging.warning("No se encontró base de datos previa o está vacía. Empezando limpia.")
         
     for tk in get_tracked_tickers():
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
 
 def background_loop_proactivo():
-    """BUCLE DE ALTA LATENCIA A 30 SEGUNDOS ESTRICTOS CON FILTRO ANTI-SPAM DE MEMORIA"""
+    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM DE DISCO (TTL 7 DÍAS)"""
     boot_smc_levels_once() 
     while True:
         try:
             time.sleep(30)
             now = datetime.now()
+            purge_old_events() # TTL Crítico automático
             
+            # --- GEOPOLÍTICA DUAL ---
             raw_news = check_geopolitical_news()
             unique_news = []
             for n_title in raw_news:
-                if not CACHE_NEWS.add_and_check(n_title): 
+                nws_id = f"NWS_{n_title}"
+                if not check_and_add_seen_event(nws_id): 
                     unique_news.append(n_title)
             
             if unique_news:
@@ -495,31 +529,43 @@ def background_loop_proactivo():
                 if ai_threat_evaluation:
                      bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
                      
+            # --- SMC & BALLENAS (DOUBLE-FETCH) ---
             for tk in get_tracked_tickers():
-                intra = fetch_intraday_data(tk)
+                intra = fetch_intraday_data(tk) # Rango 5m estático (Baja Latencia)
                 if not intra: continue
                 cur_price = intra['latest_price']
                 
+                # Rupturas Doble Verificadas
                 topol = SMC_LEVELS_MEMORY.get(tk)
                 if topol:
-                    if cur_price > topol['res'] and not topol['alert_res']:
-                        topol['alert_res'] = True
-                        adv = analyze_breakout_gpt(tk, "Resistencia", cur_price)
-                        bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{tk}</b> rompió su Resistencia SMC logrando los <b>${cur_price:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
-                    elif cur_price < topol['sup'] and not topol['alert_sup']:
-                        topol['alert_sup'] = True
-                        adv = analyze_breakout_gpt(tk, "Soporte", cur_price)
-                        bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{tk}</b> ha quebrado el Soporte SMC hundiéndose a <b>${cur_price:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                    if cur_price > topol['res']:
+                        rt = verify_1m_realtime_data(tk) # PRECISIÓN QUIRÚRGICA (Cruza a 1 minuto solo si el trigger de 5m saltó)
+                        if rt and rt['price'] > topol['res']:
+                           hash_brk = f"BRK_UP_{tk}_{topol['res']}"
+                           if not check_and_add_seen_event(hash_brk):
+                               adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
+                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{tk}</b> cruzó quirúrgicamente Resistencia en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                    
+                    elif cur_price < topol['sup']:
+                        rt = verify_1m_realtime_data(tk)
+                        if rt and rt['price'] < topol['sup']:
+                           hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
+                           if not check_and_add_seen_event(hash_drp):
+                               adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
+                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{tk}</b> cruzó quirúrgicamente Soporte en <b>${rt['price']:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
                 
+                # Ballenas Doble Verificadas
                 if intra['avg_vol'] > 0:
                     spike = intra['latest_vol'] / intra['avg_vol']
                     if spike >= 2.5: 
-                        clean_amount = int(intra['latest_vol'])
-                        whale_hash_id = f"{tk}_{clean_amount}" 
+                        rt = verify_1m_realtime_data(tk) # Constatar volumen minuto exacto
+                        valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
+                        whale_hash_id = f"WHL_{tk}_{valid_vol}" 
                         
-                        if not CACHE_WHALES.add_and_check(whale_hash_id):
-                            WHALE_MEMORY.append({"ticker": tk, "vol_approx": clean_amount, "type": intra['vol_type'], "timestamp": now})
-                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo en <b>{tk}</b> detectado AHORA: {clean_amount:,} unidades.\nPresión Institucional: {intra['vol_type']}", parse_mode="HTML")
+                        if not check_and_add_seen_event(whale_hash_id):
+                            note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
+                            WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
+                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{tk}</b>: {valid_vol:,} unidades.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
                         
         except Exception as e:
             logging.error(f"Error HFT: {e}")
