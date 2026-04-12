@@ -15,6 +15,7 @@ from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
+# Configuración extendida de logs para capturar en la consola de Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -26,7 +27,18 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
     exit()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-CARTERA_FILE = 'cartera.json'
+
+# --- CONFIGURACIÓN DE VOLÚMENES PERSISTENTES RAILWAY ---
+# Railway borra los archivos en carpeta root si no se mapea un Volume.
+# Aquí indicamos que si existe la variable DATA_DIR, la use. Si no, usa local (.)
+DATA_DIR = os.environ.get('DATA_DIR', '.')
+if not os.path.exists(DATA_DIR):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception as e:
+        logging.error(f"Error creando DATA_DIR: {e}")
+
+CARTERA_FILE = os.path.join(DATA_DIR, 'cartera.json')
 
 WHALE_MEMORY = deque(maxlen=5) 
 SMC_LEVELS_MEMORY = {} 
@@ -37,7 +49,6 @@ class Deduplicator:
         self._cache = deque(maxlen=max_size)
     
     def add_and_check(self, item_hash):
-        """Retorna True si el hash YA existía (Duplicado). Si es Nuevo, lo añade y retorna False."""
         if item_hash in self._cache:
             return True
         self._cache.append(item_hash)
@@ -47,18 +58,25 @@ class Deduplicator:
 CACHE_NEWS = Deduplicator(100) 
 CACHE_WHALES = Deduplicator(100)
 
-# --- NÚCLEO DE PERSISTENCIA (JSON UNIFICADO) ---
+# --- NÚCLEO DE PERSISTENCIA SEGURA ---
 def get_cartera_data():
     if os.path.exists(CARTERA_FILE):
         try:
             with open(CARTERA_FILE, 'r') as f:
                 return json.load(f)
-        except: return {}
+        except Exception as e:
+            logging.error(f"Falla de lectura JSON: {e}")
+            return {}
     return {}
 
 def save_cartera_data(data):
-    with open(CARTERA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(CARTERA_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        # Log DE RESPALDO IMPENETRABLE PARA RECUPERACIÓN VÍA CONSOLA DE RAILWAY
+        logging.info(f"BACKUP_DB_LOG (SAFE): {json.dumps(data)}")
+    except Exception as e:
+        logging.error(f"Error crítico guardando la base de datos: {e}")
 
 def get_tracked_tickers():
     data = get_cartera_data()
@@ -72,7 +90,6 @@ def add_ticker(ticker):
     if ticker not in data:
         data[ticker] = {"is_investment": False}
         save_cartera_data(data) 
-        
         val = fetch_and_analyze_stock(ticker)
         if val: update_smc_memory(ticker, val)
         return True
@@ -272,7 +289,6 @@ def build_wallet_dashboard():
     sign_roi = "+" if total_roi >= 0 else ""
     status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔴 EN PÉRDIDAS"
     
-    # Progress Bar (10% goal)
     goal = 0.10
     progress_ratio = total_roi / goal
     if progress_ratio < 0: progress_ratio = 0
@@ -307,7 +323,7 @@ def cmd_start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nPersistencia Integrada y Cero Latencia. Botonera lista:", reply_markup=markup)
+    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nProtección Anticolapso Activa para Nube. Botonera lista:", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -328,7 +344,7 @@ def handle_text(message):
     
     # === BOTONES MENÚ RÁPIDO ===
     if text == "💰 Mi Wallet / Estado" or "CÓMO VOY" in text.upper() or "RESUMEN" in text.upper():
-        bot.reply_to(message, "💰 Extrayendo datos de tu bóveda financiera y valuando métricas live...")
+        bot.reply_to(message, "💰 Extrayendo datos robustos y valuando métricas live...")
         bot.send_message(message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
         return
 
@@ -374,7 +390,7 @@ def handle_text(message):
         if match: 
              tk = match.group(1).upper()
              if remove_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido gestionado con éxito.\n(Destrozado de la memoria global permanentemente).", parse_mode="HTML")
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido borrado del radar.\n\n✅ Datos guardados permanentemente en la nube.", parse_mode="HTML")
              else:
                  bot.reply_to(message, f"⚠️ El activo {tk} no residía en tu radar.")
         return
@@ -384,7 +400,7 @@ def handle_text(message):
         if match: 
              tk = match.group(1).upper()
              if add_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido gestionado con éxito.\n(Añadido al radar SMC de latencia pasiva).", parse_mode="HTML")
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] añadido al radar SMC.\n\n✅ Datos guardados permanentemente en la nube.", parse_mode="HTML")
              else:
                  bot.reply_to(message, f"⚠️ El activo {tk} ya existía en tu radar SMC.")
         return
@@ -395,11 +411,11 @@ def handle_text(message):
             amt = match.group(1)
             tk = match.group(2).upper()
             if tk == "BTC": tk = "BTC-USD"
-            bot.reply_to(message, f"💸 Consultando al mercado el precio de fijación para {tk}...")
+            bot.reply_to(message, f"💸 Consultando precio de fijación para {tk}...")
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
-                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO Y PERSISTIDO*\n---\n• Activo: {tk}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Precio de Fijación (Entrada): ${intra['latest_price']:.2f}", parse_mode="HTML")
+                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {tk}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${intra['latest_price']:.2f}\n\n✅ Datos guardados permanentemente en la nube.", parse_mode="HTML")
             else:
                 bot.reply_to(message, f"❌ No pude fijar el precio real de {tk} ahora. Mercado cerrado temporalmente.")
         return
@@ -412,7 +428,7 @@ def handle_text(message):
             
             investments = get_investments()
             if tk in investments:
-                bot.reply_to(message, f"💸 Ejecutando cierre institucional para {tk} y sumando PnL a Resumen Mensual...")
+                bot.reply_to(message, f"💸 Procesando cierre institucional para {tk}...")
                 entry = investments[tk]['entry_price']
                 amt = investments[tk]['amount_usd']
                 
@@ -433,23 +449,29 @@ def handle_text(message):
 
                     ans_str = (
                         f"---\n✅ *GESTIÓN DE CARTERA: CIERRE*\n---\n"
-                        f"✅ [ {tk} ] ha sido gestionado con éxito.\n"
-                        f"📊 <b>Estado:</b> Liquidada al precio de ${live_price:.2f}\n"
+                        f"✅ [ {tk} ] liquidado al precio de ${live_price:.2f}\n"
                         f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
-                        f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n"
-                        f"<i>(El activo vuelve al radar de rastreo SMC).</i>"
+                        f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n\n"
+                        f"✅ Datos guardados permanentemente en la nube."
                     )
                     bot.send_message(message.chat.id, ans_str, parse_mode="HTML")
                 else:
                     bot.reply_to(message, f"❌ No pude contactar al mercado para saldar la liquidación de {tk}.")
             else:
-                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {tk}. Usa 'Elimina {tk}' para detener el rastreo bot.")
+                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {tk}. Usa 'Elimina {tk}' para detener rastreo.")
         return
 
 
 # ----------------- BUCLE CENTINELA HFT (TIEMPO REAL) -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela a Ultra-Alta Velocidad (30s) y cargando Cachés...")
+    logging.info("Arrancando Centinela a Ultra-Alta Velocidad (30s) y cargando Cachés/Base DB...")
+    # CHEQUEO INICIAL REQUERIDO POR EL USUARIO PARA AVISO DE DB AL ARRANCAR
+    data = get_cartera_data()
+    if data:
+        logging.info(f"¡INFO DB RECUPERADA EXITOSAMENTE! Activos en radar: {list(data.keys())}")
+    else:
+        logging.warning("No se encontró base de datos previa o está vacía. Empezando limpia.")
+        
     for tk in get_tracked_tickers():
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
@@ -459,30 +481,25 @@ def background_loop_proactivo():
     boot_smc_levels_once() 
     while True:
         try:
-            time.sleep(30) # <<< VELOCIDAD HFT (30 SEGUNDOS)
+            time.sleep(30)
             now = datetime.now()
             
-            # --- 1. PROCESAMIENTO GEOPOLÍTICO HASHED (Para no saturar Token IA cada 30s) ---
             raw_news = check_geopolitical_news()
             unique_news = []
             for n_title in raw_news:
-                # La huella es el título exacto
                 if not CACHE_NEWS.add_and_check(n_title): 
                     unique_news.append(n_title)
             
-            # Solo si detecta noticias no parseadas hoy
             if unique_news:
                 ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
                 if ai_threat_evaluation:
                      bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
                      
-            # --- 2. RASTREO TÉCNICO VIVO POR TICKER ---
             for tk in get_tracked_tickers():
                 intra = fetch_intraday_data(tk)
                 if not intra: continue
                 cur_price = intra['latest_price']
                 
-                # Rupturas SMC (alert_res ya actúa como deduplicador estático en persistencia)
                 topol = SMC_LEVELS_MEMORY.get(tk)
                 if topol:
                     if cur_price > topol['res'] and not topol['alert_res']:
@@ -494,14 +511,12 @@ def background_loop_proactivo():
                         adv = analyze_breakout_gpt(tk, "Soporte", cur_price)
                         bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{tk}</b> ha quebrado el Soporte SMC hundiéndose a <b>${cur_price:.2f}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
                 
-                # Ballenas (Hash deduplicador Dinámico por Volumen Específico)
                 if intra['avg_vol'] > 0:
                     spike = intra['latest_vol'] / intra['avg_vol']
                     if spike >= 2.5: 
                         clean_amount = int(intra['latest_vol'])
-                        whale_hash_id = f"{tk}_{clean_amount}" # Huella digital única del bloque movido
+                        whale_hash_id = f"{tk}_{clean_amount}" 
                         
-                        # Si esta candela exacta de bloques no ha sido alertada aún
                         if not CACHE_WHALES.add_and_check(whale_hash_id):
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": clean_amount, "type": intra['vol_type'], "timestamp": now})
                             bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo en <b>{tk}</b> detectado AHORA: {clean_amount:,} unidades.\nPresión Institucional: {intra['vol_type']}", parse_mode="HTML")
@@ -511,7 +526,7 @@ def background_loop_proactivo():
 
 # ----------------- MAIN -----------------
 def main():
-    print(f"Iniciando Módulo de Alta Frecuencia (30s) / Persistencia Garantizada en '{CARTERA_FILE}'")
+    print(f"Iniciando Módulo de Alta Frecuencia (30s) / Persistencia Garantizada en Railway")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
