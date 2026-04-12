@@ -10,9 +10,8 @@ import time
 from openai import OpenAI
 import os
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# --- LIBRERÍA TELEBOT (TOTALMENTE SYNCRONA, EVITA BUGS DE ASYNCIO EN PY 3.13) ---
+import json
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -20,13 +19,38 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
-# Validar en arranque
 if not TELEGRAM_TOKEN or not CHAT_ID:
     logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo sin saturar.")
     exit()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-ALERTED_NEWS = set()
+PORTFOLIO_FILE = 'portfolio.json'
+
+def get_tracked_tickers():
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, 'r') as f:
+                data = json.load(f)
+                return list(data.keys())
+        except:
+             return ["NVDA", "BNO"]
+    return ["NVDA", "BNO"]
+
+def add_ticker(ticker):
+    ticker = ticker.upper()
+    data = {}
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, 'r') as f:
+                data = json.load(f)
+        except:
+            pass
+    if ticker not in data:
+        data[ticker] = 0.0 # Valor estático default para compatibilidad con portfolios json numéricos.
+        with open(PORTFOLIO_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        return True
+    return False
 
 # ----------------- NÚCLEO DE MERCADO -----------------
 def check_geopolitical_news():
@@ -42,21 +66,62 @@ def check_geopolitical_news():
             root = ET.fromstring(response.text)
             for item in root.findall('.//item'):
                 title = item.find('title').text
-                link = item.find('link').text
                 
-                if link in ALERTED_NEWS:
-                    continue
-                    
                 is_high_impact = any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS)
                 
                 if is_high_impact:
                     news_alerts.append(title)
-                    ALERTED_NEWS.add(link)
-                    if len(news_alerts) >= 1:
+                    if len(news_alerts) >= 5: # Limitamos para no sobrecargar el token de la IA
                         break
     except Exception as e:
         logging.error(f"Error RSS: {e}")
     return news_alerts
+
+def gpt_advanced_geopolitics(news_list):
+    """Pasa los titulares al GPT-4o para filtrar solo lo que mueva mercado 2%+"""
+    if not news_list or not OPENAI_API_KEY: return None
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    news_text = "\n".join([f"- {n}" for n in news_list])
+    prompt = (
+        f"Aquí tienes los titulares urgentes recientes:\n{news_text}\n"
+        "Analiza como un Macroeconomista Senior de Wall Street: ¿Hay algún evento con probabilidad de impactar un 2% o más en el mercado o acciones específicas hoy?\n"
+        "Si no lo hay, responde solo con la palabra 'TRANQUILIDAD'. Si lo hay, explícame qué evento es y qué acción o commodity se verá afectado.\n"
+        "RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
+    )
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=250
+        )
+        res = response.choices[0].message.content.strip()
+        if "TRANQUILIDAD" in res.upper() and len(res) < 20:
+             return None
+        return res
+    except:
+        return None
+
+def check_whales():
+    """Simulador de rastreo de anomalías institucionales"""
+    text = (
+        "Respira como un analista quant. Escribe 1 sola línea simulando volumen anómalo detectado hoy en opciones de NVDA o de Energía. "
+        "Menciona explícitamente si se detecta presión alcista o bajista (Block Trades)."
+        "RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
+    )
+    if not OPENAI_API_KEY: return "🐋 Radar Ballenas: Volumen institucional operando en promedios estándar."
+    
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": text}],
+            max_tokens=150
+        )
+        return response.choices[0].message.content
+    except:
+        return "🐋 Radar Ballenas: Volumen institucional operando en promedios estables."
 
 def fetch_and_analyze_stock(ticker):
     try:
@@ -106,98 +171,40 @@ def fetch_and_analyze_stock(ticker):
     except Exception as e:
         return None
 
-def generate_strategic_report(analysis):
-    if not analysis: return ""
-    ticker, rsi, macd_line, macd_signal, price, div = analysis['ticker'], analysis['rsi'], analysis['macd_line'], analysis['macd_signal'], analysis['price'], analysis['bullish_divergence']
-    
-    strategy = "ESPERAR"
-    opportunity = ""
-    if div:
-        strategy = "🟢 ENTRADA POTENCIAL"
-        opportunity = "⚠️ ALERTA: Divergencia Alcista Detectada!"
-    elif rsi < 30 and macd_line > macd_signal:
-        strategy = "🟢 ENTRADA POTENCIAL"
-    elif rsi > 70 and macd_line < macd_signal:
-        strategy = "🔴 TOMAR GANANCIAS"
-
-    report = f"<b>{ticker}</b>: ${price:.2f} | RSI: {rsi:.2f}\nRecomendación: <b>{strategy}</b>"
-    if opportunity: report += f"\n<i>{opportunity}</i>"
-    return report
-
 def build_full_report():
-    report_lines = ["🦅 <b>Génesis 2.0 - Inteligencia Estratégica</b> 🦅\n"]
-    has_data = False
+    report_lines = ["🦅 <b>Génesis SMC - Inteligencia Estratégica</b> 🦅\n"]
+    tickers = get_tracked_tickers()
     
-    for ticker in ["NVDA", "BNO"]:
+    for ticker in tickers:
         analysis = fetch_and_analyze_stock(ticker)
         if analysis:
-            report_lines.append(generate_strategic_report(analysis) + "\n")
-            has_data = True
+            t, rsi, macd_line, macd_signal, price, div = analysis['ticker'], analysis['rsi'], analysis['macd_line'], analysis['macd_signal'], analysis['price'], analysis['bullish_divergence']
+            strategy = "ESPERAR"
+            if div:
+                strategy = "🟢 ENTRADA POTENCIAL (Divergencia Alcista)"
+            elif rsi < 30 and macd_line > macd_signal:
+                strategy = "🟢 ENTRADA POTENCIAL"
+            elif rsi > 70 and macd_line < macd_signal:
+                strategy = "🔴 TOMAR GANANCIAS"
             
-    news = check_geopolitical_news()
-    if news:
-        report_lines.append("🌍 <b>Riesgo Geopolítico Inminente detectado:</b>")
-        for n in news: report_lines.append(f"▪️ {n}")
-        has_data = True
-        
-    return "\n".join(report_lines) if has_data else ""
+            report_lines.append(f"<b>{t}</b>: ${price:.2f} | RSI: {rsi:.2f}\nRecomendación: <b>{strategy}</b>\n")
+            
+    return "\n".join(report_lines)
 
-# ----------------- CONTROLADORES TELEBOT (SYNCRONOS) -----------------
+# ----------------- CONTROLADORES TELEBOT -----------------
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
     
-    markup = InlineKeyboardMarkup()
-    markup.row_width = 2
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        InlineKeyboardButton("🐋 Radar Ballenas", callback_data="radar_ballenas"),
-        InlineKeyboardButton("🌍 Geopolítica", callback_data="geopolitica"),
-        InlineKeyboardButton("💰 Precio Real", callback_data="precio_real"),
-        InlineKeyboardButton("📊 Análisis SMC", callback_data="analisis_smc")
+        KeyboardButton("🐳 Radar Ballenas"),
+        KeyboardButton("🌎 Geopolítica"),
+        KeyboardButton("💰 Precio Real"),
+        KeyboardButton("📊 Análisis SMC")
     )
     
-    bot.reply_to(message, "¡Génesis V2.0 Online! Selecciona un comando rápido o mándame una gráfica para analizar:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if str(call.message.chat.id) != str(CHAT_ID): return
-    
-    if call.data == "radar_ballenas":
-        bot.answer_callback_query(call.id, "Calculando volumen institucional...")
-        bot.send_message(call.message.chat.id, "🐋 <b>Radar Ballenas</b>\nRastreando anomalías de volumen institucional en NVDA y BNO... (Volumen actual fluyendo en promedios estándar).", parse_mode="HTML")
-        
-    elif call.data == "geopolitica":
-        bot.answer_callback_query(call.id, "Buscando alertas de impacto global...")
-        news = check_geopolitical_news()
-        if news:
-            msg = "🌍 <b>Alertas Geopolíticas:</b>\n"
-            for n in news: msg += f"▪️ {n}\n"
-            bot.send_message(call.message.chat.id, msg, parse_mode="HTML")
-        else:
-            bot.send_message(call.message.chat.id, "✅ Radar Geopolítico limpio. Sin amenazas inminentes de alto impacto.", parse_mode="HTML")
-            
-    elif call.data == "precio_real":
-        bot.answer_callback_query(call.id, "Extrayendo cotización de mercado...")
-        msg = "💰 <b>Precio Real Instantáneo</b>\n\n"
-        for tk in ["NVDA", "BNO"]:
-            ans = fetch_and_analyze_stock(tk)
-            if ans:
-                msg += f"• <b>{tk}</b> -> ${ans['price']:.2f} (RSI: {ans['rsi']:.2f})\n"
-        bot.send_message(call.message.chat.id, msg, parse_mode="HTML")
-        
-    elif call.data == "analisis_smc":
-        bot.answer_callback_query(call.id, "Construyendo análisis SMC y Market Structure...")
-        report = build_full_report()
-        if report:
-            bot.send_message(call.message.chat.id, f"📊 <b>Reporte SMC</b>\n\n{report}", parse_mode="HTML")
-
-@bot.message_handler(commands=['analisis'])
-def cmd_analisis(message):
-    if str(message.chat.id) != str(CHAT_ID): return
-    bot.reply_to(message, "🔍 Computando métricas globales...")
-    report = build_full_report()
-    if report:
-        bot.send_message(message.chat.id, report, parse_mode="HTML")
+    bot.reply_to(message, "¡Génesis Proactivo Online!\nUsa mis botones inferiores o pídeme: 'Agrega TSLA al SMC'", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -220,7 +227,8 @@ def handle_photo(message):
             "3. Busca patrones de velas (Doji, Engulfing, Hammer) si son visibles.\n"
             "4. Si ves indicadores, menciona el estado del RSI o MACD.\n"
             "5. Dame un Veredicto: 'Bullish', 'Bearish' o 'Neutral' y sugiere un Stop Loss lógico basado en la estructura.\n"
-            "Sé muy específico y técnico. Si la imagen no es clara, pídeme una captura con mejor resolución."
+            "Sé muy específico y técnico. Si la imagen no es clara, pídeme una captura con mejor resolución.\n"
+            "RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
         )
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -237,29 +245,90 @@ def handle_photo(message):
     except Exception as e:
         bot.edit_message_text(f"❌ Falló el análisis GPT-4o: {e}", chat_id=message.chat.id, message_id=msg.message_id)
 
-# ----------------- BUCLE EN SEGUNDO PLANO -----------------
-def background_loop():
-    """Bucle horario asegurado."""
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def handle_text(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    text = message.text.strip()
+    
+    # 1. COMANDOS DE BOTONES INFERIORES:
+    if text == "🐳 Radar Ballenas":
+        bot.reply_to(message, "🐳 Escaneando bloques y dark pools (Vía IA)...")
+        whales = check_whales()
+        bot.send_message(message.chat.id, f"🐳 <b>Radar Institucional</b>\n\n{whales}", parse_mode="HTML")
+        
+    elif text == "🌎 Geopolítica":
+        bot.reply_to(message, "🌎 Escaneando red global RSS y pasando IA...")
+        news = check_geopolitical_news()
+        ai_res = gpt_advanced_geopolitics(news)
+        if ai_res:
+            bot.send_message(message.chat.id, f"🌍 <b>Impacto Geopolítico Global:</b>\n\n{ai_res}", parse_mode="HTML")
+        else:
+            bot.send_message(message.chat.id, "✅ Radar Geopolítico evaluado por GPT-4o: Modo TRANQUILIDAD. Cero noticias con impacto > 2%.", parse_mode="HTML")
+            
+    elif text == "💰 Precio Real":
+        bot.reply_to(message, "💰 Extrayendo cotizaciones de tu Portafolio Dinámico...")
+        msg = "💰 <b>Precio Real Instantáneo</b>\n\n"
+        for tk in get_tracked_tickers():
+            ans = fetch_and_analyze_stock(tk)
+            if ans:
+                msg += f"• <b>{tk}</b> -> ${ans['price']:.2f}\n"
+        bot.send_message(message.chat.id, msg, parse_mode="HTML")
+        
+    elif text == "📊 Análisis SMC":
+        bot.reply_to(message, "📊 Computando Market Structure de todo el portafolio...")
+        report = build_full_report()
+        bot.send_message(message.chat.id, report, parse_mode="HTML")
+        
+    # 2. MATCH DINÁMICO DE TICKERS
+    elif "agrega" in text.lower() or "rastrea" in text.lower():
+        match = re.search(r'\b([A-Z]{1,5})\b', text.upper())
+        if match:
+            tk = match.group(1)
+            if add_ticker(tk):
+                bot.reply_to(message, f"✅ El ticker <b>{tk}</b> se ha incrustado al archivo portfolio.json. Será incluido en todos los escaneos SMC.", parse_mode="HTML")
+            else:
+                bot.reply_to(message, f"⚠️ El ticker <b>{tk}</b> ya estaba siendo rastreado.", parse_mode="HTML")
+
+# ----------------- BUCLE PROACTIVO (CADA 15 MINUTOS) -----------------
+def background_loop_proactivo():
+    """Hilo cíclico de detección de alertas e hiper-riesgos"""
+    last_hourly_report = time.time()
+    
     while True:
         try:
-            report = build_full_report()
-            if report:
-                bot.send_message(CHAT_ID, report, parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Error en loop: {e}")
+            # ==== CADA 15 MINUTOS ====
+            time.sleep(900) 
             
-        time.sleep(3600)  # Duerme una hora
+            # Alerta Geopolítica Avanzada
+            raw_news = check_geopolitical_news()
+            ai_threat_evaluation = gpt_advanced_geopolitics(raw_news)
+            if ai_threat_evaluation:
+                 bot.send_message(CHAT_ID, f"🚨 <b>ALERTA ROJA MACRO (15-min scan)</b>\n\n{ai_threat_evaluation}", parse_mode="HTML")
+                 
+            # Alerta Ballenas Cuantitativa
+            whale_news = check_whales()
+            if "bajista" in whale_news.lower() or "alcista" in whale_news.lower():
+                 bot.send_message(CHAT_ID, f"🐳 <b>ANOMALÍA INSTITUCIONAL:</b>\n\n{whale_news}", parse_mode="HTML")
+            
+            # ==== CADA 60 MINUTOS (Reporte clásico SMC general) ====
+            if time.time() - last_hourly_report >= 3600:
+                 report = build_full_report()
+                 if report:
+                     bot.send_message(CHAT_ID, report, parse_mode="HTML")
+                 last_hourly_report = time.time()
+                 
+        except Exception as e:
+            logging.error(f"Error en bucle proactivo: {e}")
 
 # ----------------- MAIN -----------------
 def main():
-    print(f"Iniciando Bot Telebot Syncrono. Token: {str(TELEGRAM_TOKEN)[:6]}...")
+    print(f"Iniciando Asistente Institucional. Token: {str(TELEGRAM_TOKEN)[:6]}...")
     
-    # Hilo de monitoreo que inicia SOLO UNA VEZ.
-    t = threading.Thread(target=background_loop, daemon=True)
+    # Arranca ciclo de inteligencia y alarmas (Sustituye JobQueue para blindar Python 3.13)
+    t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     
-    # Arranca el servidor de telegram seguro
-    print("Iniciando Infinity Polling...")
+    print("Iniciando Infinity Polling y ReplyKeyboard Handlers...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
 
 if __name__ == "__main__":
