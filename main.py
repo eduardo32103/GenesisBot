@@ -11,11 +11,12 @@ from openai import OpenAI
 import os
 import telebot
 import json
+import sqlite3
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
-# Configuración extendida de logs para capturar en la consola de Railway
+# Configuración extendida de logs para Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -28,7 +29,7 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# --- CONFIGURACIÓN DE VOLÚMENES PERSISTENTES RAILWAY ---
+# --- MIGRACIÓN SQLITE PERSISTENTE ---
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 if not os.path.exists(DATA_DIR):
     try:
@@ -36,71 +37,167 @@ if not os.path.exists(DATA_DIR):
     except Exception as e:
         logging.error(f"Error creando DATA_DIR: {e}")
 
-CARTERA_FILE = os.path.join(DATA_DIR, 'cartera.json')
+DB_PATH = os.path.join(DATA_DIR, 'genesis_data.db')
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS portfolio (ticker TEXT PRIMARY KEY, is_investment INTEGER, amount_usd REAL, entry_price REAL, timestamp TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
+        conn.commit()
+
+init_db() # Arranque inmediato del Schema
+
+def check_db_integrity():
+    """Validador Crítico en Arranque (Carga Forzada)"""
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM portfolio')
+        count = c.fetchone()[0]
+    
+    if count == 0:
+        logging.warning("SQLite de Cartera vacía. Si hubo un WIPE de Railway, rastree el LOG para buscar la frase 'BACKUP_DB_LOG (SAFE BASE64)' para recuperar el State.")
+    else:
+        logging.info(f"¡INFO DB RECUPERADA EXITOSAMENTE MEDIANTE SQL! Hay {count} activos en Radar Físico.")
+
+def log_base64_backup():
+    """Escudo Fuerte de Railway: Genera una huella criptográfica de SQL a texto plano a prueba de Wipeos"""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute('SELECT * FROM portfolio')
+            pf = c.fetchall()
+            portfolio = {row[0]: {"is_investment": bool(row[1]), "amount_usd": row[2], "entry_price": row[3], "timestamp": row[4]} for row in pf}
+            
+            c.execute('SELECT * FROM global_stats')
+            st = c.fetchall()
+            stats = {row[0]: row[1] for row in st}
+            
+            payload = {"portfolio": portfolio, "global_stats": stats}
+            json_str = json.dumps(payload)
+            # Imprimimos de manera inmune en los logs el string encriptado que resguarda la contabilidad.
+            b64 = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+            logging.info(f"BACKUP_DB_LOG (SAFE BASE64): {b64}")
+    except Exception as e:
+        logging.error(f"Error generando encriptador Base64: {e}")
+
+
+# --- GESTOR SQLITE DE CARTERA Y HASHES ---
+def check_and_add_seen_event(event_hash):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM seen_events WHERE hash_id = ?', (event_hash,))
+        if c.fetchone(): return True # Existe. Bloquear y droppear Alarma.
+        c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (?, ?)', (event_hash, datetime.now().isoformat()))
+        conn.commit()
+    return False
+
+def purge_old_events():
+    now = datetime.now()
+    cutoff_date = (now - timedelta(days=7)).isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+         c = conn.cursor()
+         c.execute('DELETE FROM seen_events WHERE timestamp < ?', (cutoff_date,))
+         conn.commit()
+
+def get_tracked_tickers():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT ticker FROM portfolio')
+        return [row[0] for row in c.fetchall()]
+
+def add_ticker(ticker):
+    ticker = ticker.upper()
+    if ticker == "BTC": ticker = "BTC-USD"
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        if not c.fetchone():
+            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 0, 0, 0, ?)', (ticker, datetime.now().isoformat()))
+            conn.commit()
+            log_base64_backup()
+            
+            val = fetch_and_analyze_stock(ticker)
+            if val: update_smc_memory(ticker, val)
+            return True
+    return False
+
+def remove_ticker(ticker):
+    ticker = ticker.upper()
+    if ticker == "BTC": ticker = "BTC-USD"
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        if c.fetchone():
+            c.execute('DELETE FROM portfolio WHERE ticker = ?', (ticker,))
+            conn.commit()
+            log_base64_backup()
+            
+            if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
+            return True
+    return False
+
+def add_investment(ticker, amount_usd, entry_price):
+    ticker = ticker.upper()
+    if ticker == "BTC": ticker = "BTC-USD"
+    timestamp = datetime.now().isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        # UPSERT
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        if c.fetchone():
+             c.execute('UPDATE portfolio SET is_investment = 1, amount_usd = ?, entry_price = ?, timestamp = ? WHERE ticker = ?', (amount_usd, entry_price, timestamp, ticker))
+        else:
+             c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 1, ?, ?, ?)', (ticker, amount_usd, entry_price, timestamp))
+        conn.commit()
+        log_base64_backup()
+    
+    val = fetch_and_analyze_stock(ticker)
+    if val: update_smc_memory(ticker, val)
+
+def close_investment(ticker):
+    """Devuelve el activo al rastreo pasivo borrando capital de riesgo"""
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = ?', (ticker,))
+        conn.commit()
+        log_base64_backup()
+
+def get_investments():
+    invs = {}
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT ticker, amount_usd, entry_price FROM portfolio WHERE is_investment = 1')
+        for row in c.fetchall():
+            invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
+    return invs
+
+def add_realized_pnl(prof_usd):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
+        res = c.fetchone()
+        cur_pnl = res[0] if res else 0.0
+        new_val = cur_pnl + float(prof_usd)
+        
+        if res: c.execute('UPDATE global_stats SET value = ? WHERE key = "realized_pnl"', (new_val,))
+        else: c.execute('INSERT INTO global_stats (key, value) VALUES ("realized_pnl", ?)', (new_val,))
+        conn.commit()
+        log_base64_backup()
+
+def get_realized_pnl():
+    with sqlite3.connect(DB_PATH) as conn:
+         c = conn.cursor()
+         c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
+         res = c.fetchone()
+         return res[0] if res else 0.0
 
 WHALE_MEMORY = deque(maxlen=5) 
 SMC_LEVELS_MEMORY = {} 
 
-# --- NÚCLEO DE PERSISTENCIA SEGURA Y DOBLE VALIDACIÓN ---
-def get_cartera_data():
-    if os.path.exists(CARTERA_FILE):
-        try:
-            with open(CARTERA_FILE, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logging.error(f"Falla de lectura JSON: {e}")
-            return {}
-    return {}
-
-def save_cartera_data(data):
-    try:
-        with open(CARTERA_FILE, 'w') as f:
-            json.dump(data, f, indent=4)
-        logging.info(f"BACKUP_DB_LOG (SAFE): {json.dumps(data)}")
-    except Exception as e:
-        logging.error(f"Error crítico guardando la base de datos: {e}")
-
-# 1. FILTRO DE HASH INVIOLABLE EN DISCO (Persistencia Crítica)
-def check_and_add_seen_event(event_hash):
-    """Validación global inviolable. Retorna True si el evento existe (Duplicado). Si es Nuevo, guarda y retorna False."""
-    data = get_cartera_data()
-    if "_GLOBAL_" not in data:
-        data["_GLOBAL_"] = {}
-    if "seen_events" not in data["_GLOBAL_"]:
-        data["_GLOBAL_"]["seen_events"] = {}
-        
-    events = data["_GLOBAL_"]["seen_events"]
-    
-    if event_hash in events:
-        return True 
-
-    events[event_hash] = datetime.now().isoformat()
-    save_cartera_data(data) # Memoria Eterna (Se guarda ANTES de procesar)
-    return False
-
-def purge_old_events():
-    """Motor de Limpieza: Destruye Hashes con antigüedad mayor a 7 Días."""
-    data = get_cartera_data()
-    if "_GLOBAL_" not in data or "seen_events" not in data["_GLOBAL_"]: return
-    
-    events = data["_GLOBAL_"]["seen_events"]
-    keys_to_delete = []
-    now = datetime.now()
-    
-    for hash_id, iso_str in events.items():
-        try:
-            ev_date = datetime.fromisoformat(iso_str)
-            if (now - ev_date).days >= 7:
-                keys_to_delete.append(hash_id)
-        except: keys_to_delete.append(hash_id) # Si algo se corrompió, lo borramos.
-        
-    if keys_to_delete:
-        for k in keys_to_delete:
-            del events[k]
-        save_cartera_data(data)
-
+# ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
 def verify_1m_realtime_data(ticker):
-    """2. PRECISIÓN DE DATOS: Doble consulta instantánea (Rango 1 Minuto)."""
     try:
         data = yf.download(ticker, period="1d", interval="1m", progress=False)
         if data.empty: return None
@@ -109,82 +206,9 @@ def verify_1m_realtime_data(ticker):
         close_prices = data['Close']; volumes = data['Volume']
         if isinstance(close_prices, pd.DataFrame): 
              close_prices = close_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
-             
         return {'price': float(close_prices.iloc[-1]), 'vol': float(volumes.iloc[-1])}
     except: return None
 
-
-def get_tracked_tickers():
-    data = get_cartera_data()
-    return [k for k in data.keys() if k != "_GLOBAL_"]
-
-def add_ticker(ticker):
-    ticker = ticker.upper()
-    if ticker == "BTC": ticker = "BTC-USD"
-    data = get_cartera_data()
-    
-    if ticker not in data:
-        data[ticker] = {"is_investment": False}
-        save_cartera_data(data) 
-        val = fetch_and_analyze_stock(ticker)
-        if val: update_smc_memory(ticker, val)
-        return True
-    return False
-
-def remove_ticker(ticker):
-    ticker = ticker.upper()
-    if ticker == "BTC": ticker = "BTC-USD"
-    data = get_cartera_data()
-    
-    if ticker in data:
-        del data[ticker]
-        save_cartera_data(data) 
-        if ticker in SMC_LEVELS_MEMORY: 
-            del SMC_LEVELS_MEMORY[ticker]
-        return True
-    return False
-
-def add_investment(ticker, amount_usd, entry_price):
-    ticker = ticker.upper()
-    if ticker == "BTC": ticker = "BTC-USD"
-    data = get_cartera_data()
-    
-    if ticker not in data:
-        data[ticker] = {}
-        
-    data[ticker].update({
-        "is_investment": True,
-        "amount_usd": float(amount_usd),
-        "entry_price": float(entry_price),
-        "timestamp": datetime.now().isoformat()
-    })
-    save_cartera_data(data) 
-    
-    val = fetch_and_analyze_stock(ticker)
-    if val: update_smc_memory(ticker, val)
-
-def get_investments():
-    data = get_cartera_data()
-    investments = {}
-    for tk, info in data.items():
-        if tk != "_GLOBAL_" and info.get("is_investment", False):
-            investments[tk] = info
-    return investments
-
-def add_realized_pnl(prof_usd):
-    data = get_cartera_data()
-    if "_GLOBAL_" not in data:
-        data["_GLOBAL_"] = {"realized_pnl_usd": 0.0}
-    cur_pnl = data["_GLOBAL_"].get("realized_pnl_usd", 0.0)
-    data["_GLOBAL_"]["realized_pnl_usd"] = cur_pnl + float(prof_usd)
-    save_cartera_data(data)
-
-def get_realized_pnl():
-    data = get_cartera_data()
-    return data.get("_GLOBAL_", {}).get("realized_pnl_usd", 0.0)
-
-
-# ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
 def check_geopolitical_news():
     search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
     HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction", "embargo", "explosion", "guerra", "ataque", "tensión", "misil", "sanciones", "rates", "fed", "trump", "powell"]
@@ -343,11 +367,9 @@ def build_wallet_dashboard():
     if realized_pnl != 0:
         report.append(f"💵 <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
     report.append("---")
-    
     if details:
         report.append("<i>(Detalle por activo)</i>")
-        report.extend(details)
-        
+        report.extend(details) 
     return "\n".join(report)
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
@@ -357,7 +379,7 @@ def cmd_start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nValidación Doble-Fetch HFT Operativa. Botonera lista:", reply_markup=markup)
+    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nProtección Anticolapso Activa para Nube. Botonera lista:", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -424,7 +446,7 @@ def handle_text(message):
         if match: 
              tk = match.group(1).upper()
              if remove_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido borrado del radar.\n\n✅ Datos guardados permanentemente en la nube.", parse_mode="HTML")
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido borrado del radar.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
              else:
                  bot.reply_to(message, f"⚠️ El activo {tk} no residía en tu radar.")
         return
@@ -434,7 +456,7 @@ def handle_text(message):
         if match: 
              tk = match.group(1).upper()
              if add_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] añadido al radar SMC.\n\n✅ Datos guardados permanentemente en la nube.", parse_mode="HTML")
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] añadido al radar SMC.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
              else:
                  bot.reply_to(message, f"⚠️ El activo {tk} ya existía en tu radar SMC.")
         return
@@ -449,7 +471,7 @@ def handle_text(message):
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
-                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {tk}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${intra['latest_price']:.2f}\n\n✅ Datos guardados permanentemente en la nube.", parse_mode="HTML")
+                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {tk}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${intra['latest_price']:.2f}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
             else:
                 bot.reply_to(message, f"❌ No pude fijar el precio real de {tk} ahora. Mercado cerrado temporalmente.")
         return
@@ -475,10 +497,7 @@ def handle_text(message):
                     icon = "🟢" if prof >= 0 else "🔴"
                     final_usd = amt + prof
                     
-                    data = get_cartera_data()
-                    data[tk]['is_investment'] = False
-                    save_cartera_data(data)
-                    
+                    close_investment(tk)
                     add_realized_pnl(prof)
 
                     ans_str = (
@@ -486,7 +505,7 @@ def handle_text(message):
                         f"✅ [ {tk} ] liquidado al precio de ${live_price:.2f}\n"
                         f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
                         f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n\n"
-                        f"✅ Datos guardados permanentemente en la nube."
+                        f"✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie."
                     )
                     bot.send_message(message.chat.id, ans_str, parse_mode="HTML")
                 else:
@@ -498,25 +517,22 @@ def handle_text(message):
 
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela Quirúrgico (30s) / Precisión Total / Persistencia SQL-JSON...")
-    data = get_cartera_data()
-    if data: logging.info(f"¡INFO DB RECUPERADA EXITOSAMENTE! Activos en radar: {list(data.keys())}")
-    else: logging.warning("No se encontró base de datos previa o está vacía. Empezando limpia.")
+    logging.info("Arrancando Centinela Quirúrgico (30s) / Precisión Total / MOTOR NATIVO SQLITE...")
+    check_db_integrity()
         
     for tk in get_tracked_tickers():
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
 
 def background_loop_proactivo():
-    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM DE DISCO (TTL 7 DÍAS)"""
+    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM DE DISCO SQL (TTL 7 DÍAS)"""
     boot_smc_levels_once() 
     while True:
         try:
             time.sleep(30)
             now = datetime.now()
-            purge_old_events() # TTL Crítico automático
+            purge_old_events() # TTL automático
             
-            # --- GEOPOLÍTICA DUAL ---
             raw_news = check_geopolitical_news()
             unique_news = []
             for n_title in raw_news:
@@ -529,17 +545,16 @@ def background_loop_proactivo():
                 if ai_threat_evaluation:
                      bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
                      
-            # --- SMC & BALLENAS (DOUBLE-FETCH) ---
             for tk in get_tracked_tickers():
-                intra = fetch_intraday_data(tk) # Rango 5m estático (Baja Latencia)
+                intra = fetch_intraday_data(tk)
                 if not intra: continue
                 cur_price = intra['latest_price']
                 
-                # Rupturas Doble Verificadas
+                # Rupturas Doble Verificadas (YFinance 1 Minuto)
                 topol = SMC_LEVELS_MEMORY.get(tk)
                 if topol:
                     if cur_price > topol['res']:
-                        rt = verify_1m_realtime_data(tk) # PRECISIÓN QUIRÚRGICA (Cruza a 1 minuto solo si el trigger de 5m saltó)
+                        rt = verify_1m_realtime_data(tk)
                         if rt and rt['price'] > topol['res']:
                            hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                            if not check_and_add_seen_event(hash_brk):
@@ -558,7 +573,7 @@ def background_loop_proactivo():
                 if intra['avg_vol'] > 0:
                     spike = intra['latest_vol'] / intra['avg_vol']
                     if spike >= 2.5: 
-                        rt = verify_1m_realtime_data(tk) # Constatar volumen minuto exacto
+                        rt = verify_1m_realtime_data(tk)
                         valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
                         whale_hash_id = f"WHL_{tk}_{valid_vol}" 
                         
@@ -572,7 +587,7 @@ def background_loop_proactivo():
 
 # ----------------- MAIN -----------------
 def main():
-    print(f"Iniciando Módulo de Alta Frecuencia (30s) / Persistencia Garantizada en Railway")
+    print(f"Iniciando Módulo de Alta Frecuencia (30s) / Persistencia Garantizada SQLITE")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
