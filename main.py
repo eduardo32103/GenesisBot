@@ -46,7 +46,7 @@ def save_cartera_data(data):
 
 def get_tracked_tickers():
     data = get_cartera_data()
-    return list(data.keys())
+    return [k for k in data.keys() if k != "_GLOBAL_"]
 
 def add_ticker(ticker):
     ticker = ticker.upper()
@@ -55,9 +55,8 @@ def add_ticker(ticker):
     
     if ticker not in data:
         data[ticker] = {"is_investment": False}
-        save_cartera_data(data)
+        save_cartera_data(data) 
         
-        # Inicializar niveles críticos de inmediato al radar SMC
         val = fetch_and_analyze_stock(ticker)
         if val: update_smc_memory(ticker, val)
         return True
@@ -70,7 +69,7 @@ def remove_ticker(ticker):
     
     if ticker in data:
         del data[ticker]
-        save_cartera_data(data)
+        save_cartera_data(data) 
         if ticker in SMC_LEVELS_MEMORY: 
             del SMC_LEVELS_MEMORY[ticker]
         return True
@@ -81,15 +80,17 @@ def add_investment(ticker, amount_usd, entry_price):
     if ticker == "BTC": ticker = "BTC-USD"
     data = get_cartera_data()
     
-    data[ticker] = {
+    if ticker not in data:
+        data[ticker] = {}
+        
+    data[ticker].update({
         "is_investment": True,
         "amount_usd": float(amount_usd),
         "entry_price": float(entry_price),
         "timestamp": datetime.now().isoformat()
-    }
-    save_cartera_data(data)
+    })
+    save_cartera_data(data) 
     
-    # Aseguramos que la topología de seguridad empiece a rastrearlo
     val = fetch_and_analyze_stock(ticker)
     if val: update_smc_memory(ticker, val)
 
@@ -97,9 +98,23 @@ def get_investments():
     data = get_cartera_data()
     investments = {}
     for tk, info in data.items():
-        if info.get("is_investment", False):
+        if tk != "_GLOBAL_" and info.get("is_investment", False):
             investments[tk] = info
     return investments
+
+def add_realized_pnl(prof_usd):
+    data = get_cartera_data()
+    if "_GLOBAL_" not in data:
+        data["_GLOBAL_"] = {"realized_pnl_usd": 0.0}
+    
+    cur_pnl = data["_GLOBAL_"].get("realized_pnl_usd", 0.0)
+    data["_GLOBAL_"]["realized_pnl_usd"] = cur_pnl + float(prof_usd)
+    save_cartera_data(data)
+
+def get_realized_pnl():
+    data = get_cartera_data()
+    return data.get("_GLOBAL_", {}).get("realized_pnl_usd", 0.0)
+
 
 # ----------------- NÚCLEO DE MERCADO MACRO -----------------
 def check_geopolitical_news():
@@ -206,61 +221,79 @@ def perform_deep_analysis(ticker):
     try: return OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=600).choices[0].message.content
     except Exception as e: return f"Fallo al analizar: {e}"
 
-def generate_capital_report():
+
+def build_wallet_dashboard():
     investments = get_investments()
-    if not investments:
-        return "---\n📊 *ESTADO DE CUENTA - GÉNESIS*\n---\n⚠️ Portafolio Vacío. Suma capital pidiendo: 'Compré 5000 NVDA'"
+    realized_pnl = get_realized_pnl()
     
+    if not investments and realized_pnl == 0:
+        return "---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n⚠️ Portafolio Vacío. No hay liquidez invertida."
+        
     total_invested = 0.0
     total_current = 0.0
-    report_lines = ["---", "📊 *ESTADO DE CUENTA - GÉNESIS*", "---"]
-    
+    details = []
+
     for tk, dt in investments.items():
         init_amount = dt['amount_usd']
         entry_p = dt['entry_price']
-        
         intra = fetch_intraday_data(tk)
+        
         if intra:
             live_price = intra['latest_price']
-            roi_percent = ((live_price - entry_p) / entry_p)
-            current_value = init_amount * (1 + roi_percent)
-            profit = current_value - init_amount
+            roi_percent = (live_price - entry_p) / entry_p
+            curr_val = init_amount * (1 + roi_percent)
             
             total_invested += init_amount
-            total_current += current_value
+            total_current += curr_val
             
-            icon = "🟢" if profit >= 0 else "🔴"
-            sign = "+" if profit >= 0 else ""
+            sign = "+" if roi_percent >= 0 else ""
+            details.append(f"• {tk}: {sign}{roi_percent*100:.2f}%")
             
-            report_lines.append(f"📈 <b>Activo:</b> {tk}")
-            report_lines.append(f"💰 <b>Inversión:</b> ${init_amount:,.2f} (Entrada: ${entry_p:,.2f})")
-            report_lines.append(f"🚀 <b>Valor actual:</b> ${current_value:,.2f}")
-            report_lines.append(f"{icon} <b>PnL:</b> {sign}{roi_percent*100:.2f}% ({sign}${profit:,.2f})")
-            report_lines.append("---")
-            
-    if total_invested > 0:
-        total_pnl_percent = ((total_current - total_invested) / total_invested)
-        total_profit = total_current - total_invested
+    if total_invested == 0 and realized_pnl != 0:
+         return (f"---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
+                 f"💹 <b>Capital Operativo Activo:</b> $0.00\n"
+                 f"💵 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n---")
         
-        report_lines.append(f"🌐 <b>PATRIMONIO GLOBAL:</b> ${total_current:,.2f}")
-        report_lines.append(f"⚖️ <b>Balance Neto:</b> {'🟢 +' if total_profit >= 0 else '🔴 '}${total_profit:,.2f} ({total_pnl_percent*100:.2f}%)")
+    total_roi = (total_current - total_invested) / total_invested
+    sign_roi = "+" if total_roi >= 0 else ""
+    status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔴 EN PÉRDIDAS"
+    
+    # Progress Bar (10% goal)
+    goal = 0.10
+    progress_ratio = total_roi / goal
+    if progress_ratio < 0: progress_ratio = 0
+    if progress_ratio > 1: progress_ratio = 1
+    
+    filled_blocks = int(progress_ratio * 10)
+    empty_blocks = 10 - filled_blocks
+    bar = "▓" * filled_blocks + "░" * empty_blocks
+    progress_text = f"{int(progress_ratio*100)}% completado"
+    
+    report = []
+    report.append("---")
+    report.append("💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎")
+    report.append("---")
+    report.append(f"💹 <b>Rendimiento M/M (Activo):</b> [{sign_roi}{total_roi*100:.2f}%]")
+    report.append(f"📊 <b>Estatus:</b> [{status_icon}]")
+    report.append(f"🎯 <b>Meta del Mes (10%):</b> [{bar}] {progress_text}")
+    if realized_pnl != 0:
+        report.append(f"💵 <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
+    report.append("---")
+    
+    if details:
+        report.append("<i>(Detalle por activo)</i>")
+        report.extend(details)
         
-        target_percent = 0.10
-        if total_pnl_percent >= target_percent:
-            report_lines.append(f"🎯 <b>Meta del Mes (10%):</b> ¡🎯 SUPERADA CON ÉXITO!")
-        else:
-            missing_percent = (target_percent - total_pnl_percent) * 100
-            report_lines.append(f"🎯 <b>Meta del Mes (10%):</b> Falta un {missing_percent:.2f}% para el objetivo.")
-            
-    return "\n".join(report_lines)
+    return "\n".join(report)
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"), KeyboardButton("📉 SMC / Mi Cartera"))
-    bot.reply_to(message, "¡Génesis Patrimonial Online!\nPersistencia Integrada y Cero Latencia. Botonera lista:", reply_markup=markup)
+    markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
+    markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
+    bot.reply_to(message, "¡Génesis Dashboard Patrimonial Online!\nPersistencia Integrada y Cero Latencia. Botonera lista:", reply_markup=markup)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -279,6 +312,12 @@ def handle_text(message):
     if str(message.chat.id) != str(CHAT_ID): return
     text = message.text.strip()
     
+    # === BOTONES MENÚ RÁPIDO ===
+    if text == "💰 Mi Wallet / Estado" or "CÓMO VOY" in text.upper() or "RESUMEN" in text.upper():
+        bot.reply_to(message, "💰 Extrayendo datos de tu bóveda financiera y valuando métricas live...")
+        bot.send_message(message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
+        return
+
     if text == "🐳 Radar Ballenas":
         bot.reply_to(message, "🐳 Memoria HFT Institucional invocada...")
         if not WHALE_MEMORY:
@@ -287,13 +326,15 @@ def handle_text(message):
         lines = ["---", "🐋 *ÚLTIMAS 5 BALLENAS*", "---"]
         for w in list(WHALE_MEMORY)[::-1]: lines.append(f"• <b>{w['ticker']}</b> | Vol: {w['vol_approx']:,} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
         bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
+        return
         
-    elif text == "🌎 Geopolítica":
+    if text == "🌎 Geopolítica":
         bot.reply_to(message, "🌎 Procesando macro Geopolítica Manual...")
         ai_res = gpt_advanced_geopolitics(check_geopolitical_news(), manual=True)
         bot.send_message(message.chat.id, f"---\n🌍 *INSIGHT GLOBAL*\n---\n{ai_res}" if ai_res else "✅ Radar limpio.", parse_mode="HTML")
+        return
             
-    elif text == "📉 SMC / Mi Cartera":
+    if text == "📉 SMC / Mi Cartera":
         bot.reply_to(message, "📉 Computando Mapas SMC Instritucionales...")
         report_lines = ["---", "🦅 *GÉNESIS: SMC / NIVELES CRÍTICOS*", "---"]
         for tk in get_tracked_tickers():
@@ -302,42 +343,103 @@ def handle_text(message):
                 update_smc_memory(tk, analysis)
                 report_lines.extend([f"🏦 <b>{analysis['ticker']}</b> - ${analysis['price']:.2f}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${analysis['smc_sup']:.2f}", f"• Sell-side Liquidity: ${analysis['smc_res']:.2f}", f"• Order Block Institucional: ${analysis['order_block']:.2f}", "---"])
         bot.send_message(message.chat.id, "\n".join(report_lines) if len(report_lines)>3 else "Tu cartera está vacía.", parse_mode="HTML")
+        return
         
-    elif text.upper().startswith("ANALIZA "):
-        match = re.search(r'ANALIZA\s+([A-Za-z0-9\-]+)', text.upper())
+    # === EXPRESIONES REGULARES INTELIGENTES NLP ===
+    if re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text):
+        match = re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text)
         if match:
-            tk = match.group(1)
+            tk = match.group(1).upper()
+            if tk == "BTC": tk = "BTC-USD"
             bot.reply_to(message, f"🔍 Análisis Profundo Institucional en {tk}...")
             bot.send_message(message.chat.id, f"---\n🏦 *RESEARCH: {tk}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
+        return
             
-    elif "AGREGA" in text.upper():
-        match = re.search(r'AGREGA\s+([A-Za-z0-9\-]+)', text.upper())
-        if match: bot.reply_to(message, f"✅ Activo <b>{match.group(1)}</b> integrado al radar." if add_ticker(match.group(1)) else f"⚠️ Ya existía.", parse_mode="HTML")
-            
-    elif "ELIMINA" in text.upper() or "BORRA" in text.upper():
-        match = re.search(r'(?:ELIMINA|BORRA)\s+([A-Za-z0-9\-]+)', text.upper())
-        if match: bot.reply_to(message, f"🗑️ Activo <b>{match.group(1)}</b> destrozado de memoria." if remove_ticker(match.group(1)) else f"⚠️ No residía en tu radar.", parse_mode="HTML")
+    # REGEX (ELIMINA / BORRA) PRIORITARIO PARA EVITAR COLLISION
+    if re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text):
+        match = re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text)
+        if match: 
+             tk = match.group(1).upper()
+             if remove_ticker(tk):
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido gestionado con éxito.\n(Destrozado de la memoria global permanentemente).", parse_mode="HTML")
+             else:
+                 bot.reply_to(message, f"⚠️ El activo {tk} no residía en tu radar.")
+        return
 
-    elif "COMPRÉ" in text.upper() or "COMPRE" in text.upper():
-        match = re.search(r'COMPR[EÉ]\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Za-z0-9\-]+)', text.upper())
+    # REGEX (AGREGA)
+    if re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
+        match = re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
+        if match: 
+             tk = match.group(1).upper()
+             if add_ticker(tk):
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {tk} ] ha sido gestionado con éxito.\n(Añadido al radar SMC de latencia pasiva).", parse_mode="HTML")
+             else:
+                 bot.reply_to(message, f"⚠️ El activo {tk} ya existía en tu radar SMC.")
+        return
+
+    # REGEX (COMPRÉ / COMPRE)
+    if re.search(r'(?i)\bCOMPR[EÉ]\b', text):
+        match = re.search(r'(?i)\bCOMPR[EÉ]\b\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Za-z0-9\-]+)', text)
         if match:
             amt = match.group(1)
-            tk = match.group(2)
-            bot.reply_to(message, f"💸 Consultando a yfinance el precio de fijación para {tk}...")
+            tk = match.group(2).upper()
+            if tk == "BTC": tk = "BTC-USD"
+            bot.reply_to(message, f"💸 Consultando al mercado el precio de fijación para {tk}...")
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
                 bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO Y PERSISTIDO*\n---\n• Activo: {tk}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Precio de Fijación (Entrada): ${intra['latest_price']:.2f}", parse_mode="HTML")
             else:
-                bot.reply_to(message, f"❌ No pude fijar el precio real de {tk} ahora. Intenta de nuevo más tarde.")
+                bot.reply_to(message, f"❌ No pude fijar el precio real de {tk} ahora. Mercado cerrado temporalmente.")
+        return
 
-    elif "RESUMEN MENSUAL" in text.upper() or "CÓMO VOY" in text.upper() or "COMO VOY" in text.upper():
-        bot.reply_to(message, "📊 Computando flujo patrimonial y calculando PnL del JSON Integrado...")
-        bot.send_message(message.chat.id, generate_capital_report(), parse_mode="HTML")
+    # REGEX (VENDÍ / VENDI) 
+    if re.search(r'(?i)\bVEND[IÍ]\b', text):
+        match = re.search(r'(?i)\bVEND[IÍ]\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Za-z0-9\-]+)', text)
+        if match:
+            tk = match.group(1).upper()
+            if tk == "BTC": tk = "BTC-USD"
+            
+            investments = get_investments()
+            if tk in investments:
+                bot.reply_to(message, f"💸 Ejecutando cierre institucional para {tk} y sumando PnL a Resumen Mensual...")
+                entry = investments[tk]['entry_price']
+                amt = investments[tk]['amount_usd']
+                
+                intra = fetch_intraday_data(tk)
+                if intra:
+                    live_price = intra['latest_price']
+                    roi = (live_price - entry) / entry
+                    prof = amt * roi
+                    sign = "+" if prof >= 0 else ""
+                    icon = "🟢" if prof >= 0 else "🔴"
+                    final_usd = amt + prof
+                    
+                    # Remover solo inversión manteniendo rastreo
+                    data = get_cartera_data()
+                    data[tk]['is_investment'] = False
+                    save_cartera_data(data)
+                    
+                    # Sumar PnL al histórico global mensual
+                    add_realized_pnl(prof)
+
+                    ans_str = (
+                        f"---\n✅ *GESTIÓN DE CARTERA: CIERRE*\n---\n"
+                        f"✅ [ {tk} ] ha sido gestionado con éxito.\n"
+                        f"📊 <b>Estado:</b> Liquidada al precio de ${live_price:.2f}\n"
+                        f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
+                        f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n"
+                        f"<i>(El activo vuelve al radar de rastreo SMC).</i>"
+                    )
+                    bot.send_message(message.chat.id, ans_str, parse_mode="HTML")
+                else:
+                    bot.reply_to(message, f"❌ No pude contactar al mercado para saldar la liquidación de {tk}.")
+            else:
+                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {tk}. Usa 'Elimina {tk}' para detener el rastreo bot.")
+        return
 
 # ----------------- BUCLE CENTINELA MAESTRO -----------------
 def boot_smc_levels_once():
-    """Ejecutado al iniciar el Bot para recargar memorias e inicializar JSON Base si existe o arranca de cero"""
     logging.info("Arrancando Centinela y cruzando persistencia 'cartera.json'...")
     for tk in get_tracked_tickers():
         val = fetch_and_analyze_stock(tk)
