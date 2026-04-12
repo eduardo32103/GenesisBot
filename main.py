@@ -338,29 +338,82 @@ def get_realized_pnl():
 
 WHALE_MEMORY = deque(maxlen=5)
 SMC_LEVELS_MEMORY = {}
+LAST_KNOWN_PRICES = {}  # Cache de último precio válido por ticker
+LAST_KNOWN_ANALYSIS = {}  # Cache de último análisis SMC completo por ticker
+
+# Tickers de respaldo para Brent Crude
+BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
+BRENT_MIN_VALID_PRICE = 50.0  # Si el precio es menor a esto, es un ERROR de Yahoo
 
 # ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
-def get_safe_ticker_price(ticker, force_validation=False):
-    """Descarga de datos sanitizando engaños de Yahoo en activos duros (Ej: LCO)"""
-    tk = remap_ticker(ticker)
+def _try_download_price(symbol, period="1d", interval="1m"):
+    """Intenta descargar precio de un símbolo específico de Yahoo Finance"""
     try:
-        data = yf.download(tk, period="1d", interval="1m", progress=False)
+        data = yf.download(symbol, period=period, interval=interval, progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
-             data = data.copy(); data.columns = data.columns.get_level_values(0)
+            data = data.copy(); data.columns = data.columns.get_level_values(0)
 
         close_prices = data['Close']; volumes = data['Volume']
         if isinstance(close_prices, pd.DataFrame):
-             close_prices = close_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
+            close_prices = close_prices.iloc[:, 0]; volumes = volumes.iloc[:, 0]
 
         price = float(close_prices.iloc[-1])
-        # Validación Defensiva Exigida (LCO/BZ=F nunca debajo de $60 en este contexto temporal)
-        if tk == "BZ=F" and price < 60:
-             logging.warning(f"Posible error residual en Yahoo para {tk} (${price}).")
-             return None
+        vol = float(volumes.iloc[-1])
+        return {'price': price, 'vol': vol}
+    except Exception as e:
+        logging.debug(f"_try_download_price({symbol}): {e}")
+        return None
 
-        return {'price': price, 'vol': float(volumes.iloc[-1])}
-    except: return None
+def get_safe_ticker_price(ticker, force_validation=False):
+    """Descarga precio con cadena de fallback para commodities problemáticos"""
+    tk = remap_ticker(ticker)
+
+    # --- CASO ESPECIAL: BRENT (cadena de fallback BZ=F → CO=F → BNO) ---
+    if tk == "BZ=F":
+        for fallback_symbol in BRENT_FALLBACK_CHAIN:
+            result = _try_download_price(fallback_symbol)
+            if result and result['price'] >= BRENT_MIN_VALID_PRICE:
+                logging.info(f"Brent OK vía {fallback_symbol}: ${result['price']:.2f}")
+                LAST_KNOWN_PRICES[tk] = result  # Cachear bajo la clave canónica BZ=F
+                return result
+            elif result:
+                logging.warning(f"Brent rechazado vía {fallback_symbol}: ${result['price']:.2f} (< ${BRENT_MIN_VALID_PRICE})")
+
+        # Si todos fallan, intentar con datos diarios (mercado cerrado)
+        for fallback_symbol in BRENT_FALLBACK_CHAIN:
+            result = _try_download_price(fallback_symbol, period="5d", interval="1d")
+            if result and result['price'] >= BRENT_MIN_VALID_PRICE:
+                logging.info(f"Brent (cierre diario) OK vía {fallback_symbol}: ${result['price']:.2f}")
+                LAST_KNOWN_PRICES[tk] = result
+                return result
+
+        # Último recurso: devolver último precio conocido del cache
+        if tk in LAST_KNOWN_PRICES:
+            logging.warning(f"Brent: usando último precio conocido del cache: ${LAST_KNOWN_PRICES[tk]['price']:.2f}")
+            return LAST_KNOWN_PRICES[tk]
+
+        logging.error("Brent: TODAS las fuentes fallaron. Sin precio disponible.")
+        return None
+
+    # --- CASO GENERAL: cualquier otro ticker ---
+    result = _try_download_price(tk)
+    if result:
+        LAST_KNOWN_PRICES[tk] = result
+        return result
+
+    # Intentar con datos diarios si minuto falla (mercado cerrado)
+    result = _try_download_price(tk, period="5d", interval="1d")
+    if result:
+        LAST_KNOWN_PRICES[tk] = result
+        return result
+
+    # Devolver cache si existe
+    if tk in LAST_KNOWN_PRICES:
+        logging.warning(f"{tk}: usando último precio conocido: ${LAST_KNOWN_PRICES[tk]['price']:.2f}")
+        return LAST_KNOWN_PRICES[tk]
+
+    return None
 
 def verify_1m_realtime_data(ticker):
     return get_safe_ticker_price(ticker)
@@ -446,7 +499,9 @@ def fetch_and_analyze_stock(ticker):
         smc_sup = float(recent_month.min()); smc_res = float(recent_month.max())
         vol_month = volume.iloc[-22:]; order_block_price = float(close_prices.loc[vol_month.idxmax()])
 
-        return {'ticker': tk, 'price': latest_price, 'rsi': latest_rsi, 'macd_line': float(macd_line.iloc[-1]), 'macd_signal': float(macd_signal.iloc[-1]), 'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend, 'order_block': order_block_price}
+        result = {'ticker': tk, 'price': latest_price, 'rsi': latest_rsi, 'macd_line': float(macd_line.iloc[-1]), 'macd_signal': float(macd_signal.iloc[-1]), 'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend, 'order_block': order_block_price}
+        LAST_KNOWN_ANALYSIS[tk] = result  # Cachear último análisis válido
+        return result
     except: return None
 
 def update_smc_memory(ticker, analysis):
@@ -651,8 +706,15 @@ def handle_text(message):
             if analysis:
                 update_smc_memory(tk, analysis)
                 report_lines.extend([f"🏦 <b>{d_name}</b> - ${analysis['price']:.2f}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${analysis['smc_sup']:.2f}", f"• Sell-side Liquidity: ${analysis['smc_res']:.2f}", f"• Order Block Institucional: ${analysis['order_block']:.2f}", "---"])
+            elif tk in LAST_KNOWN_ANALYSIS:
+                # Usar último análisis registrado en cache
+                cached = LAST_KNOWN_ANALYSIS[tk]
+                report_lines.extend([f"🏦 <b>{d_name}</b> - ${cached['price']:.2f} <i>(último cierre)</i>", f"• Tendencia SMC: {cached['smc_trend']}", f"• Buy-side Liquidity: ${cached['smc_sup']:.2f}", f"• Sell-side Liquidity: ${cached['smc_res']:.2f}", f"• Order Block Institucional: ${cached['order_block']:.2f}", "---"])
+            elif tk in LAST_KNOWN_PRICES:
+                # Al menos mostrar el precio conocido
+                report_lines.extend([f"🏦 <b>{d_name}</b> - ${LAST_KNOWN_PRICES[tk]['price']:.2f} <i>(último cierre)</i>", f"• ⏳ Niveles SMC pendientes de cálculo", "---"])
             else:
-                report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Calculando niveles... (Mercado cerrado o datos pendientes)", "---"])
+                report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Sin datos disponibles en este momento", "---"])
 
         bot.send_message(message.chat.id, "\n".join(report_lines), parse_mode="HTML")
         return
