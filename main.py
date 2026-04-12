@@ -9,30 +9,23 @@ import threading
 import time
 from openai import OpenAI
 import os
+import telebot
 
-# Importación ESTRICTAMENTE simplificada para esquivar crasheos en Python 3.13
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+# --- LIBRERÍA TELEBOT (TOTALMENTE SÍNCRONA, EVITA BUGS DE ASYNCIO EN PY 3.13) ---
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- VARIABLES DE ENTORNO ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
-ALERTED_NEWS = set()
+# Validar en arranque
+if not TELEGRAM_TOKEN or not CHAT_ID:
+    logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo sin saturar.")
+    exit()
 
-# ----------------- FUNCIONES AUXILIARES DIRECTAS -----------------
-def send_telegram_alert(message):
-    """Fallback por HTTP directo."""
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        logging.error(f"Error HTTP Reporte: {e}")
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+ALERTED_NEWS = set()
 
 # ----------------- NÚCLEO DE MERCADO -----------------
 def check_geopolitical_news():
@@ -61,7 +54,7 @@ def check_geopolitical_news():
                     if len(news_alerts) >= 1:
                         break
     except Exception as e:
-        pass
+        logging.error(f"Error RSS: {e}")
     return news_alerts
 
 def fetch_and_analyze_stock(ticker):
@@ -148,27 +141,29 @@ def build_full_report():
         
     return "\n".join(report_lines) if has_data else ""
 
-# ----------------- CONTROLADORES DE TELEGRAM -----------------
+# ----------------- CONTROLADORES TELEBOT (SYNCRONOS) -----------------
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.reply_to(message, "¡Génesis V2.0 Online! Mándame una gráfica para analizar.")
 
-async def cmd_start(update: Update, context):
-    if str(update.message.chat_id) != str(CHAT_ID): return
-    await update.message.reply_text("¡Génesis V2.0 Online! Mándame una gráfica para analizar.")
-
-async def cmd_analisis(update: Update, context):
-    if str(update.message.chat_id) != str(CHAT_ID): return
-    await update.message.reply_text("🔍 Computando métricas globales...")
+@bot.message_handler(commands=['analisis'])
+def cmd_analisis(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.reply_to(message, "🔍 Computando métricas globales...")
     report = build_full_report()
     if report:
-        await update.message.reply_text(report, parse_mode="HTML")
+        bot.send_message(message.chat.id, report, parse_mode="HTML")
 
-async def handle_photo(update: Update, context):
-    if str(update.message.chat_id) != str(CHAT_ID): return
-    await update.message.reply_text("👁️ Ojo de Águila Analizando gráfica con GPT-4o...")
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    
+    msg = bot.reply_to(message, "👁️ Ojo de Águila Analizando gráfica con GPT-4o...")
     try:
-        photo_file = update.message.photo[-1]
-        file = await context.bot.get_file(photo_file.file_id)
-        image_bytes = await file.download_as_bytearray()
-        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
         
         if not OPENAI_API_KEY:
             raise ValueError("Falta OPENAI_API_KEY")
@@ -192,46 +187,33 @@ async def handle_photo(update: Update, context):
             max_tokens=800
         )
         analysis_text = response.choices[0].message.content
-        await update.message.reply_text(f"📊 [REPORTE GPT-4o]\n\n{analysis_text}")
+        bot.edit_message_text(f"📊 [REPORTE GPT-4o]\n\n{analysis_text}", chat_id=message.chat.id, message_id=msg.message_id)
     except Exception as e:
-        await update.message.reply_text(f"❌ Falló el análisis GPT-4o: {e}")
+        bot.edit_message_text(f"❌ Falló el análisis GPT-4o: {e}", chat_id=message.chat.id, message_id=msg.message_id)
 
-# ----------------- HILO SECUNDARIO MUY SIMPLE -----------------
+# ----------------- BUCLE DE MONITOREO -----------------
 def background_loop():
-    """Bucle ciego e independiente al bot"""
+    """Bucle horario asegurado."""
     while True:
-        time.sleep(3600) # 1 hora exacta
-        report = build_full_report()
-        if report:
-            send_telegram_alert(report)
+        time.sleep(3600)  # Duerme una hora
+        try:
+            report = build_full_report()
+            if report:
+                bot.send_message(CHAT_ID, report, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Error en loop: {e}")
 
-# ----------------- ARRANQUE -----------------
+# ----------------- MAIN -----------------
 def main():
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("FALTAN VARIABLES DE ENTORNO CRÍTICAS. CANCELANDO INICIO.")
-        return
-        
-    print(f"Token leído: {str(TELEGRAM_TOKEN)[:6]}...")
-
-    # 1. Mensaje de bienvenida síncrono al iniciar el contenedor
-    send_telegram_alert("🚀 <b>¡Génesis V2.0 ONLINE EN PYTHON 3.13!</b>")
-    initial_report = build_full_report()
-    if initial_report:
-        send_telegram_alert(initial_report)
-
-    # 2. Bucle infinito para reportes horarios
+    print(f"Iniciando Bot Telebot Syncrono. Token: {str(TELEGRAM_TOKEN)[:6]}...")
+    
+    # Arranca el escaner de reportes en segundo plano
     t = threading.Thread(target=background_loop, daemon=True)
     t.start()
-
-    # 3. Inicialización PTB estricta para evitar bloqueos
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("analisis", cmd_analisis))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
-    print("Bot encendido. Entrando a modo Escucha Asíncrona Neutra.")
-    app.run_polling() 
+    # Arranca el servidor de telegram seguro
+    print("Iniciando Infinity Polling...")
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
 
 if __name__ == "__main__":
     main()
