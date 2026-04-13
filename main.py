@@ -747,13 +747,18 @@ def handle_text(message):
         return
 
     if text == "📉 SMC / Mi Cartera":
-        bot.reply_to(message, "📉 Ejecutando Refresh Forzado de todos los activos...")
+        bot.reply_to(message, "📉 Limpiando caché y forzando datos frescos de exchange...")
         report_lines = ["---", "🦅 *GÉNESIS: SMC / NIVELES CRÍTICOS*", "---"]
         tkrs = get_tracked_tickers()
 
         if not tkrs:
              bot.send_message(message.chat.id, "Tu cartera está vacía.", parse_mode="HTML")
              return
+
+        # REFRESH FORZADO: limpiar caché de precios para obligar consulta fresca
+        for raw_tk in tkrs:
+            tk = remap_ticker(raw_tk)
+            LAST_KNOWN_PRICES.pop(tk, None)
 
         for raw_tk in tkrs:
             tk = remap_ticker(raw_tk)
@@ -764,11 +769,9 @@ def handle_text(message):
                 update_smc_memory(tk, analysis)
                 report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", f"• Order Block Institucional: ${fmt_price(analysis['order_block'])}", "---"])
             elif tk in LAST_KNOWN_ANALYSIS:
-                # Usar último análisis registrado en cache
                 cached = LAST_KNOWN_ANALYSIS[tk]
                 report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(cached['price'])} <i>(último cierre)</i>", f"• Tendencia SMC: {cached['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(cached['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(cached['smc_res'])}", f"• Order Block Institucional: ${fmt_price(cached['order_block'])}", "---"])
             elif tk in LAST_KNOWN_PRICES:
-                # Al menos mostrar el precio conocido
                 report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])} <i>(último cierre)</i>", f"• ⏳ Niveles SMC pendientes de cálculo", "---"])
             else:
                 report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Sin datos disponibles en este momento", "---"])
