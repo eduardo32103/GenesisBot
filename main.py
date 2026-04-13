@@ -65,7 +65,7 @@ def _build_backup_payload():
     }
 
 def save_state_to_telegram():
-    """Guarda el estado completo como mensaje en Telegram (la nube indestructible)"""
+    """Guarda el estado completo como mensaje SILENCIOSO en Telegram"""
     global _last_backup_msg_id
     try:
         payload = _build_backup_payload()
@@ -74,8 +74,8 @@ def save_state_to_telegram():
 
         backup_text = f"{BACKUP_PREFIX}\n{b64}"
 
-        # También imprimir en logs de Railway como respaldo secundario
-        logging.info(f"BACKUP_DB_LOG (SAFE BASE64): {b64}")
+        # Log interno de Railway (nunca visible para Eduardo)
+        logging.info(f"BACKUP_DB_LOG: estado guardado ({len(b64)} bytes)")
 
         # Si tenemos un mensaje anterior, editarlo en vez de crear uno nuevo
         if _last_backup_msg_id:
@@ -85,15 +85,15 @@ def save_state_to_telegram():
                     chat_id=BACKUP_CHAT_ID,
                     message_id=_last_backup_msg_id
                 )
-                logging.info(f"✅ Backup actualizado en Telegram (msg_id: {_last_backup_msg_id})")
+                logging.info(f"✅ Backup actualizado silenciosamente (msg_id: {_last_backup_msg_id})")
                 return
             except Exception:
                 pass  # Si falla editar (msg borrado, etc), enviar uno nuevo
 
-        # Enviar mensaje nuevo con el backup
-        msg = bot.send_message(BACKUP_CHAT_ID, backup_text)
+        # Enviar mensaje nuevo SILENCIOSO (sin notificación al usuario)
+        msg = bot.send_message(BACKUP_CHAT_ID, backup_text, disable_notification=True)
         _last_backup_msg_id = msg.message_id
-        logging.info(f"✅ Backup enviado a Telegram (msg_id: {_last_backup_msg_id})")
+        logging.info(f"✅ Backup silencioso enviado (msg_id: {_last_backup_msg_id})")
 
     except Exception as e:
         logging.error(f"Error guardando backup en Telegram: {e}")
@@ -334,6 +334,15 @@ def get_realized_pnl():
         c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
         res = c.fetchone()
         return res[0] if res else 0.0
+
+def reset_realized_pnl():
+    """Resetea la ganancia mensual acumulada a $0.00"""
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", 0.0)')
+        conn.commit()
+    save_state_to_telegram()
+    logging.info("🔄 PnL mensual reseteado a $0.00")
 
 
 WHALE_MEMORY = deque(maxlen=5)
@@ -654,7 +663,10 @@ def build_wallet_dashboard():
     realized_pnl = get_realized_pnl()
 
     if not investments and realized_pnl == 0:
-        return "---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n⚠️ Portafolio Vacío. No hay liquidez invertida."
+        return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
+                "💹 <b>Capital Operativo Activo:</b> $0.00\n"
+                "💰 <b>Ganancia Mensual Acumulada:</b> $0.00 USD\n"
+                "🎯 <b>Meta del Mes (10%):</b> [░░░░░░░░░░] 0%\n---")
 
     total_invested = 0.0
     total_current = 0.0
@@ -726,7 +738,15 @@ def cmd_start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
     markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    bot.reply_to(message, f"¡Génesis Dashboard Online!\n🛡️ Persistencia: TELEGRAM CLOUD\n📊 Activos en radar: {len(tkrs)}\nBotonera lista:", reply_markup=markup)
+    bot.reply_to(message, f"---\n🧠 *GÉNESIS 1.0 — TRADING INSTITUCIONAL* 🧠\n---\n✅ Bot iniciado correctamente.\n📊 {len(tkrs)} activos cargados en tu radar.\n🛡️ Persistencia activa. Tu cartera está segura.", reply_markup=markup, parse_mode="HTML")
+
+@bot.message_handler(commands=['reset_pnl'])
+def cmd_reset_pnl(message):
+    """Comando oculto para resetear la ganancia mensual a $0.00"""
+    if str(message.chat.id) != str(CHAT_ID): return
+    reset_realized_pnl()
+    bot.reply_to(message, "🔄 <b>PnL Mensual Reseteado</b>\n\n✅ Ganancia Mensual Acumulada: <b>$0.00 USD</b>\n✅ Contabilidad limpia desde este momento.", parse_mode="HTML")
+
 
 @bot.message_handler(commands=['recover'])
 def cmd_recover(message):
