@@ -759,18 +759,70 @@ def analyze_breakout_gpt(ticker, level_type, price):
 def perform_deep_analysis(ticker):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
-    tech_info = f"Información técnica no disponible para {display_name}."
-    tech = fetch_and_analyze_stock(tk)
-    if tech: tech_info = f"Precio: ${fmt_price(tech['price'])}\nRSI: {tech['rsi']:.2f}\nSMC Trend: {tech['smc_trend']}"
 
-    news_str = ""
+    # PASO 1: Obtener datos EN VIVO del motor multi-fuente (Binance/yfinance)
+    tech = fetch_and_analyze_stock(tk)
+
+    if tech:
+        tech_block = (
+            f"--- DATOS EN VIVO (calculados por el sistema, NO los inventes) ---\n"
+            f"• Precio EXACTO en vivo: ${fmt_price(tech['price'])}\n"
+            f"• RSI (14 períodos): {tech['rsi']:.2f}\n"
+            f"• MACD Línea: {tech['macd_line']:.4f}\n"
+            f"• MACD Señal: {tech['macd_signal']:.4f}\n"
+            f"• Tendencia SMC: {tech['smc_trend']}\n"
+            f"• Buy-side Liquidity (Soporte SMC): ${fmt_price(tech['smc_sup'])}\n"
+            f"• Sell-side Liquidity (Resistencia SMC): ${fmt_price(tech['smc_res'])}\n"
+            f"• Order Block Institucional: ${fmt_price(tech['order_block'])}\n"
+            f"--- FIN DE DATOS EN VIVO ---"
+        )
+    else:
+        # Si no hay datos técnicos, al menos obtener precio en vivo
+        live = get_safe_ticker_price(tk)
+        if live:
+            tech_block = (
+                f"--- DATOS EN VIVO ---\n"
+                f"• Precio EXACTO en vivo: ${fmt_price(live['price'])}\n"
+                f"• Indicadores técnicos: No disponibles (mercado cerrado o sin historial)\n"
+                f"--- FIN DE DATOS EN VIVO ---"
+            )
+        else:
+            tech_block = "--- DATOS EN VIVO: No disponibles en este momento ---"
+
+    # PASO 2: Noticias recientes del activo
+    news_str = "No hay noticias recientes disponibles."
     try:
-        news_str = "\n".join([f"- {n.get('title', '')}" for n in yf.Ticker(tk).news[:3]])
+        raw_news = yf.Ticker(tk).news or []
+        if raw_news:
+            news_str = "\n".join([f"- {n.get('title', '')}" for n in raw_news[:5]])
     except: pass
 
-    prompt = (f"Analiza profundamente '{display_name}'.\nTécnicos:\n{tech_info}\n\nNoticias:\n{news_str}\n" "Combina enfoques. Dictamina un VEREDICTO FINAL resaltado: 'COMPRAR', 'VENDER' o 'MANTENER/ESPERAR'. ESPAÑOL ESTRICTO.")
-    if not OPENAI_API_KEY: return "Error: API KEY INCORRECTA."
-    try: return OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=600).choices[0].message.content
+    # PASO 3: Prompt blindado anti-alucinación
+    prompt = (
+        f"Actúa como un analista financiero institucional senior.\n\n"
+        f"ACTIVO: {display_name} ({tk})\n\n"
+        f"{tech_block}\n\n"
+        f"NOTICIAS RECIENTES:\n{news_str}\n\n"
+        f"REGLAS INQUEBRANTABLES:\n"
+        f"1. Tienes PROHIBIDO inventar, adivinar o modificar el precio. Usa EXACTAMENTE ${fmt_price(tech['price']) if tech else 'N/A'} como precio actual.\n"
+        f"2. Basa tu análisis EXCLUSIVAMENTE en los datos numéricos proporcionados arriba.\n"
+        f"3. Si el RSI > 70, indica sobrecompra. Si RSI < 30, indica sobreventa.\n"
+        f"4. Analiza la posición del precio respecto a los niveles SMC (Soporte/Resistencia/Order Block).\n"
+        f"5. Combina análisis técnico + noticias para dar un VEREDICTO FINAL.\n\n"
+        f"FORMATO DE RESPUESTA:\n"
+        f"📊 Análisis Técnico: [Tu análisis basado en RSI, MACD, SMC]\n"
+        f"📰 Impacto Noticias: [Tu lectura de las noticias]\n"
+        f"🎯 VEREDICTO FINAL: [COMPRAR / VENDER / MANTENER] + justificación en 1 línea.\n\n"
+        f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
+    )
+
+    if not OPENAI_API_KEY: return "Error: API KEY no configurada."
+    try:
+        return OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600
+        ).choices[0].message.content
     except Exception as e: return f"Fallo al analizar: {e}"
 
 
