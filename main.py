@@ -734,7 +734,9 @@ def handle_text(message):
             return
         lines = ["---", "🐋 *ÚLTIMAS 5 BALLENAS*", "---"]
         for w in list(WHALE_MEMORY)[::-1]:
-            lines.append(f"• <b>{get_display_name(w['ticker'])}</b> | Vol: {w['vol_approx']:,} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
+            is_crypto = '-USD' in w['ticker']
+            vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
+            lines.append(f"• <b>{get_display_name(w['ticker'])}</b> | Vol: {vol_str} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
         bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
         return
 
@@ -937,8 +939,11 @@ def background_loop_proactivo():
 
                 # Ballenas Doble Verificadas — también protegidas por coherencia
                 if intra['avg_vol'] > 0 and price_is_reliable:
+                    is_crypto = '-USD' in tk
+                    # Crypto: umbral más alto (5x) porque yfinance reporta volumen en USD acumulado 24h
+                    whale_threshold = 5.0 if is_crypto else 2.5
                     spike = intra['latest_vol'] / intra['avg_vol']
-                    if spike >= 2.5:
+                    if spike >= whale_threshold:
                         rt = verify_1m_realtime_data(tk)
                         valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
                         whale_hash_id = f"WHL_{tk}_{valid_vol}"
@@ -946,7 +951,12 @@ def background_loop_proactivo():
                         if not check_and_add_seen_event(whale_hash_id):
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
-                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {valid_vol:,} unidades.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
+                            # Formato inteligente: cripto en USD, acciones en unidades
+                            if is_crypto:
+                                vol_display = f"${valid_vol:,} USD"
+                            else:
+                                vol_display = f"{valid_vol:,} unidades"
+                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {vol_display}.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
 
         except Exception as e:
             logging.error(f"Error HFT: {e}")
