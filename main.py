@@ -344,6 +344,18 @@ def reset_realized_pnl():
     save_state_to_telegram()
     logging.info("🔄 PnL mensual reseteado a $0.00")
 
+def reset_total_db():
+    """RESET RADICAL: borra TODAS las inversiones, PnL y contabilidad"""
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        # Limpiar inversiones (poner is_investment=0, amount=0, entry=0)
+        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0')
+        # Resetear PnL acumulado
+        c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", 0.0)')
+        conn.commit()
+    save_state_to_telegram()
+    logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
+
 
 WHALE_MEMORY = deque(maxlen=5)
 SMC_LEVELS_MEMORY = {}
@@ -666,6 +678,16 @@ def build_wallet_dashboard():
         return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
                 "💹 <b>Capital Operativo Activo:</b> $0.00\n"
                 "💰 <b>Ganancia Mensual Acumulada:</b> $0.00 USD\n"
+                "📈 <b>Rendimiento M/M:</b> [0.00%]\n"
+                "📊 <b>Estatus:</b> [⚪ SIN OPERACIONES]\n"
+                "🎯 <b>Meta del Mes (10%):</b> [░░░░░░░░░░] 0%\n---")
+
+    if not investments and realized_pnl != 0:
+        return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
+                "💹 <b>Capital Operativo Activo:</b> $0.00\n"
+                f"💵 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n"
+                "📈 <b>Rendimiento M/M:</b> [0.00%]\n"
+                "📊 <b>Estatus:</b> [⚪ SIN POSICIONES ABIERTAS]\n"
                 "🎯 <b>Meta del Mes (10%):</b> [░░░░░░░░░░] 0%\n---")
 
     total_invested = 0.0
@@ -695,10 +717,7 @@ def build_wallet_dashboard():
             total_current += init_amount
             details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
 
-    if total_invested == 0 and realized_pnl != 0:
-         return (f"---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
-                 f"💹 <b>Capital Operativo Activo:</b> $0.00\n"
-                 f"💵 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n---")
+
 
     total_roi = (total_current - total_invested) / total_invested if total_invested > 0 else 0
     sign_roi = "+" if total_roi >= 0 else ""
@@ -746,6 +765,20 @@ def cmd_reset_pnl(message):
     if str(message.chat.id) != str(CHAT_ID): return
     reset_realized_pnl()
     bot.reply_to(message, "🔄 <b>PnL Mensual Reseteado</b>\n\n✅ Ganancia Mensual Acumulada: <b>$0.00 USD</b>\n✅ Contabilidad limpia desde este momento.", parse_mode="HTML")
+
+@bot.message_handler(commands=['reset_total'])
+def cmd_reset_total(message):
+    """RESET RADICAL: borra todo el historial contable"""
+    if str(message.chat.id) != str(CHAT_ID): return
+    reset_total_db()
+    bot.reply_to(message, (
+        "⚠️ <b>SISTEMA REINICIADO</b>\n\n"
+        "🗑️ Todo el historial contable ha sido eliminado.\n"
+        "💹 Capital Operativo: <b>$0.00</b>\n"
+        "💰 Ganancia Mensual: <b>$0.00 USD</b>\n"
+        "📈 Rendimiento: <b>0.00%</b>\n\n"
+        "✅ Wallet limpia. Los activos en tu radar siguen activos para monitoreo SMC."
+    ), parse_mode="HTML")
 
 
 @bot.message_handler(commands=['recover'])
