@@ -984,6 +984,78 @@ def handle_text(message):
         return
 
 
+# ----------------- MODO CENTINELA: VIGILANCIA DE NOTICIAS POR ACTIVO -----------------
+_SENTINEL_TICK_INTERVAL = 40  # Cada 40 ticks de 30s = ~20 minutos
+
+def verificar_noticias_cartera():
+    """Vigila noticias específicas de los activos en la cartera de Eduardo"""
+    tkrs = get_tracked_tickers()
+    if not tkrs:
+        return
+
+    for raw_tk in tkrs:
+        tk = remap_ticker(raw_tk)
+        display_name = get_display_name(tk)
+
+        try:
+            ticker_obj = yf.Ticker(tk)
+            news_list = ticker_obj.news or []
+        except Exception:
+            continue
+
+        for article in news_list[:3]:  # Solo las 3 más recientes
+            title = article.get('title', '')
+            if not title:
+                continue
+
+            # Deduplicar con hash: no alertar la misma noticia dos veces
+            news_hash = f"SENTINEL_{tk}_{hash(title) % 100000}"
+            if check_and_add_seen_event(news_hash):
+                continue  # Ya la vimos
+
+            # Pasar por GPT para análisis de riesgo
+            if not OPENAI_API_KEY:
+                continue
+
+            try:
+                client = OpenAI(api_key=OPENAI_API_KEY)
+                prompt = (
+                    f"Actúa como un gestor de riesgos senior de un fondo institucional.\n"
+                    f"Analiza esta noticia del activo {display_name} ({tk}):\n"
+                    f"Titular: \"{title}\"\n\n"
+                    f"REGLAS ESTRICTAS:\n"
+                    f"- Si la noticia es NEUTRAL, de relleno, o sin impacto real en el precio, responde EXACTAMENTE: 'NEUTRAL'\n"
+                    f"- Si la noticia tiene impacto REAL (positivo o negativo), genera una alerta con este formato:\n"
+                    f"  📰 Suceso: [Resumen de 1 línea]\n"
+                    f"  💡 Sugerencia: [Vender / Vigilar / Hold / Comprar]\n"
+                    f"  ⚡ Impacto: [Alto / Medio]\n"
+                    f"RESPONDE EN ESPAÑOL."
+                )
+
+                res = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=200
+                ).choices[0].message.content.strip()
+
+                # Filtro de ruido: si GPT dice NEUTRAL, silencio total
+                if "NEUTRAL" in res.upper() and len(res) < 30:
+                    continue
+
+                # Alerta que SÍ amerita atención
+                alert_msg = (
+                    f"---\n🚨 *CENTINELA GÉNESIS: ALERTA DE ACTIVO* 🚨\n---\n"
+                    f"📈 Activo: <b>{display_name}</b>\n"
+                    f"{res}\n"
+                    f"---"
+                )
+                bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+
+            except Exception as e:
+                logging.debug(f"Sentinel GPT error for {tk}: {e}")
+                continue
+
+
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
     logging.info("Arrancando Centinela Quirúrgico (30s)...")
@@ -1001,11 +1073,13 @@ def boot_smc_levels_once():
 def background_loop_proactivo():
     """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÍAS)"""
     boot_smc_levels_once()
+    sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
     while True:
         try:
             time.sleep(30)
             now = datetime.now()
             purge_old_events()
+            sentinel_tick_counter += 1
 
             raw_news = check_geopolitical_news()
             unique_news = []
@@ -1018,6 +1092,14 @@ def background_loop_proactivo():
                 ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
                 if ai_threat_evaluation:
                      bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
+
+            # === MODO CENTINELA: verificar noticias de activos cada ~20 minutos ===
+            if sentinel_tick_counter >= _SENTINEL_TICK_INTERVAL:
+                sentinel_tick_counter = 0
+                try:
+                    verificar_noticias_cartera()
+                except Exception as e:
+                    logging.error(f"Error en Centinela de Noticias: {e}")
 
             for tk in get_tracked_tickers():
                 intra = fetch_intraday_data(tk)
