@@ -215,13 +215,31 @@ def remap_ticker(ticker_input):
     if tk in ["LCO", "BRENT", "PETROLEO"]: return "BZ=F"
     if tk in ["ORO", "GOLD", "GC"]: return "GC=F"
     if tk in ["BTC", "BITCOIN"]: return "BTC-USD"
+    if tk in ["ETH", "ETHEREUM"]: return "ETH-USD"
+    if tk in ["SOL", "SOLANA"]: return "SOL-USD"
+    if tk in ["BNB"]: return "BNB-USD"
+    if tk in ["XRP", "RIPPLE"]: return "XRP-USD"
+    if tk in ["ADA", "CARDANO"]: return "ADA-USD"
+    if tk in ["DOGE", "DOGECOIN"]: return "DOGE-USD"
+    if tk in ["AVAX", "AVALANCHE"]: return "AVAX-USD"
+    if tk in ["DOT", "POLKADOT"]: return "DOT-USD"
+    if tk in ["LINK", "CHAINLINK"]: return "LINK-USD"
     return tk
 
 def get_display_name(ticker_key):
     mapping = {
         "BZ=F": "LCO (Petróleo Brent)",
         "GC=F": "Oro (Gold)",
-        "BTC-USD": "BTC (Bitcoin)"
+        "BTC-USD": "BTC (Bitcoin)",
+        "ETH-USD": "ETH (Ethereum)",
+        "SOL-USD": "SOL (Solana)",
+        "BNB-USD": "BNB (Binance Coin)",
+        "XRP-USD": "XRP (Ripple)",
+        "ADA-USD": "ADA (Cardano)",
+        "DOGE-USD": "DOGE (Dogecoin)",
+        "AVAX-USD": "AVAX (Avalanche)",
+        "DOT-USD": "DOT (Polkadot)",
+        "LINK-USD": "LINK (Chainlink)",
     }
     return mapping.get(ticker_key, ticker_key)
 
@@ -369,15 +387,83 @@ BRENT_MIN_VALID_PRICE = 50.0  # Si el precio es menor a esto, es un ERROR de Yah
 # ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
 def fmt_price(val):
     """Formatea precio con decimales REALES del exchange, sin ceros de relleno"""
-    # Hasta 6 decimales de precisión, eliminar ceros sobrantes
     s = f"{val:.6f}".rstrip('0')
-    # Asegurar mínimo 2 decimales para legibilidad
     parts = s.split('.')
     if len(parts) == 2 and len(parts[1]) < 2:
         s = f"{val:.2f}"
     elif s.endswith('.'):
         s = f"{val:.2f}"
     return s
+
+# === MOTOR MULTI-FUENTE: APIs DIRECTAS DE EXCHANGES ===
+# Mapeo de tickers yfinance -> símbolos Binance
+CRYPTO_BINANCE_MAP = {
+    "BTC-USD": "BTCUSDT",
+    "ETH-USD": "ETHUSDT",
+    "SOL-USD": "SOLUSDT",
+    "BNB-USD": "BNBUSDT",
+    "XRP-USD": "XRPUSDT",
+    "ADA-USD": "ADAUSDT",
+    "DOGE-USD": "DOGEUSDT",
+    "DOT-USD": "DOTUSDT",
+    "AVAX-USD": "AVAXUSDT",
+    "MATIC-USD": "MATICUSDT",
+    "LINK-USD": "LINKUSDT",
+}
+
+def _fetch_crypto_price_direct(yf_ticker):
+    """Obtiene precio cripto directamente de Binance (precisión de exchange, sin yfinance)"""
+    binance_symbol = CRYPTO_BINANCE_MAP.get(yf_ticker)
+    if not binance_symbol:
+        # Intentar construir el símbolo automáticamente para cryptos no mapeadas
+        if yf_ticker.endswith('-USD'):
+            binance_symbol = yf_ticker.replace('-USD', '') + 'USDT'
+        else:
+            return None
+
+    # FUENTE 1: Binance API (precisión de exchange, sub-centésimo)
+    try:
+        resp = requests.get(
+            f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}",
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            price = float(data['price'])
+            if price > 0:
+                logging.info(f"BINANCE ✅ {yf_ticker}: ${fmt_price(price)}")
+                return {'price': price, 'vol': 0}
+    except Exception as e:
+        logging.debug(f"Binance error for {binance_symbol}: {e}")
+
+    # FUENTE 2: CoinGecko como fallback (gratis, sin API key)
+    try:
+        coin_id_map = {
+            "BTC-USD": "bitcoin", "ETH-USD": "ethereum", "SOL-USD": "solana",
+            "BNB-USD": "binancecoin", "XRP-USD": "ripple", "ADA-USD": "cardano",
+            "DOGE-USD": "dogecoin", "DOT-USD": "polkadot", "AVAX-USD": "avalanche-2",
+            "LINK-USD": "chainlink",
+        }
+        coin_id = coin_id_map.get(yf_ticker)
+        if coin_id:
+            resp = requests.get(
+                f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd",
+                timeout=5
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                price = float(data[coin_id]['usd'])
+                if price > 0:
+                    logging.info(f"COINGECKO ✅ {yf_ticker}: ${fmt_price(price)}")
+                    return {'price': price, 'vol': 0}
+    except Exception as e:
+        logging.debug(f"CoinGecko error for {yf_ticker}: {e}")
+
+    return None
+
+def _is_crypto_ticker(tk):
+    """Detecta si un ticker es una criptomoneda"""
+    return tk.endswith('-USD') or tk in CRYPTO_BINANCE_MAP
 
 def _try_ticker_history(symbol, period="1d", interval="1m"):
     """Obtiene precio con precisión RAW del exchange. Prioriza info['regularMarketPrice']"""
@@ -413,12 +499,14 @@ def _sanity_check_price(tk, new_price):
         last_price = LAST_KNOWN_PRICES[tk]['price']
         if last_price > 0:
             change_pct = abs(new_price - last_price) / last_price
-            if change_pct > 0.50:  # Desviación de más del 50% = imposible en un tick de 30s
+            if change_pct > 0.50:
                 logging.warning(f"⚠️ SANITY CHECK FALLIDO para {tk}: ${new_price:.2f} vs último ${last_price:.2f} (desviación: {change_pct*100:.1f}%). Posible error de API.")
                 return False
-    # Si el precio es absurdamente bajo para activos conocidos
-    if new_price < 0.50:
+    # Para crypto, precios bajos son válidos (DOGE=$0.07). Solo rechazar activos tradicionales < $0.50
+    if not _is_crypto_ticker(tk) and new_price < 0.50:
         logging.warning(f"⚠️ SANITY CHECK: {tk} precio ${new_price:.4f} demasiado bajo. Rechazado.")
+        return False
+    if new_price <= 0:
         return False
     return True
 
@@ -431,8 +519,24 @@ MARKET_SUFFIX_RETRIES = {
 }
 
 def get_safe_ticker_price(ticker, force_validation=False):
-    """Descarga precio con validación anti-basura, reintentos y fallback para commodities"""
+    """Motor multi-fuente: Binance para crypto, yfinance+fallbacks para acciones"""
     tk = remap_ticker(ticker)
+
+    # --- CASO CRIPTO: Binance/CoinGecko DIRECTO (sin tocar yfinance) ---
+    if _is_crypto_ticker(tk):
+        result = _fetch_crypto_price_direct(tk)
+        if result and _sanity_check_price(tk, result['price']):
+            LAST_KNOWN_PRICES[tk] = result
+            return result
+        # Fallback: yfinance como último recurso para crypto
+        result = _try_ticker_history(tk)
+        if result and _sanity_check_price(tk, result['price']):
+            LAST_KNOWN_PRICES[tk] = result
+            return result
+        if tk in LAST_KNOWN_PRICES:
+            logging.warning(f"{tk}: usando último precio crypto conocido: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+            return LAST_KNOWN_PRICES[tk]
+        return result if result else None
 
     # --- CASO ESPECIAL: BRENT (cadena de fallback BZ=F → CO=F → BNO) ---
     if tk == "BZ=F":
