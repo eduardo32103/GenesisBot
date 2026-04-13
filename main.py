@@ -5,6 +5,7 @@ import re
 import xml.etree.ElementTree as ET
 import pandas as pd
 import yfinance as yf
+import ccxt
 import threading
 import time
 from openai import OpenAI
@@ -22,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY', '')
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
 
@@ -30,6 +32,14 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
     exit()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# --- EXCHANGE INSTITUCIONAL: CCXT Binance (precio cripto en vivo) ---
+try:
+    BINANCE_EXCHANGE = ccxt.binance({'enableRateLimit': True})
+    logging.info("✅ CCXT Binance Exchange inicializado correctamente.")
+except Exception as e:
+    BINANCE_EXCHANGE = None
+    logging.warning(f"⚠️ CCXT Binance no disponible: {e}. Usando API REST como fallback.")
 
 # --- BASE DE DATOS LOCAL (SQLite como cache de runtime) ---
 DATA_DIR = os.environ.get('DATA_DIR', '.')
@@ -395,48 +405,64 @@ def fmt_price(val):
         s = f"{val:.2f}"
     return s
 
-# === MOTOR MULTI-FUENTE: APIs DIRECTAS DE EXCHANGES ===
-# Mapeo de tickers yfinance -> símbolos Binance
-CRYPTO_BINANCE_MAP = {
-    "BTC-USD": "BTCUSDT",
-    "ETH-USD": "ETHUSDT",
-    "SOL-USD": "SOLUSDT",
-    "BNB-USD": "BNBUSDT",
-    "XRP-USD": "XRPUSDT",
-    "ADA-USD": "ADAUSDT",
-    "DOGE-USD": "DOGEUSDT",
-    "DOT-USD": "DOTUSDT",
-    "AVAX-USD": "AVAXUSDT",
-    "MATIC-USD": "MATICUSDT",
-    "LINK-USD": "LINKUSDT",
+# === MOTOR INSTITUCIONAL DE PRECIOS EN VIVO ===
+# CCXT Binance para crypto | Finnhub para acciones | yfinance SOLO para historial
+
+# Mapeo de tickers internos -> pares CCXT Binance
+CRYPTO_CCXT_MAP = {
+    "BTC-USD": "BTC/USDT", "ETH-USD": "ETH/USDT", "SOL-USD": "SOL/USDT",
+    "BNB-USD": "BNB/USDT", "XRP-USD": "XRP/USDT", "ADA-USD": "ADA/USDT",
+    "DOGE-USD": "DOGE/USDT", "DOT-USD": "DOT/USDT", "AVAX-USD": "AVAX/USDT",
+    "MATIC-USD": "MATIC/USDT", "LINK-USD": "LINK/USDT",
 }
 
+# Mapeo de tickers internos -> símbolos Finnhub
+FINNHUB_SYMBOL_MAP = {
+    "BZ=F": "OANDA:BCO_USD",  # Brent Crude via Finnhub forex/CFD
+    "GC=F": "OANDA:XAU_USD",  # Gold
+}
+
+def _is_crypto_ticker(tk):
+    """Detecta si un ticker es una criptomoneda"""
+    return tk.endswith('-USD') or tk in CRYPTO_CCXT_MAP
+
 def _fetch_crypto_price_direct(yf_ticker):
-    """Obtiene precio cripto directamente de Binance (precisión de exchange, sin yfinance)"""
-    binance_symbol = CRYPTO_BINANCE_MAP.get(yf_ticker)
-    if not binance_symbol:
-        # Intentar construir el símbolo automáticamente para cryptos no mapeadas
-        if yf_ticker.endswith('-USD'):
-            binance_symbol = yf_ticker.replace('-USD', '') + 'USDT'
-        else:
-            return None
+    """MOTOR CRIPTO: CCXT Binance (prioridad) -> API REST Binance -> CoinGecko"""
 
-    # FUENTE 1: Binance API (precisión de exchange, sub-centésimo)
-    try:
-        resp = requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}",
-            timeout=5
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            price = float(data['price'])
+    # Construir par CCXT
+    ccxt_pair = CRYPTO_CCXT_MAP.get(yf_ticker)
+    if not ccxt_pair and yf_ticker.endswith('-USD'):
+        ccxt_pair = yf_ticker.replace('-USD', '') + '/USDT'
+
+    # FUENTE 1: CCXT Binance (conexión institucional directa al exchange)
+    if BINANCE_EXCHANGE and ccxt_pair:
+        try:
+            ticker_data = BINANCE_EXCHANGE.fetch_ticker(ccxt_pair)
+            price = float(ticker_data['last'])
+            vol = float(ticker_data.get('quoteVolume', 0))
             if price > 0:
-                logging.info(f"BINANCE ✅ {yf_ticker}: ${fmt_price(price)}")
-                return {'price': price, 'vol': 0}
-    except Exception as e:
-        logging.debug(f"Binance error for {binance_symbol}: {e}")
+                logging.info(f"CCXT BINANCE ✅ {yf_ticker}: ${fmt_price(price)}")
+                return {'price': price, 'vol': vol}
+        except Exception as e:
+            logging.debug(f"CCXT Binance error for {ccxt_pair}: {e}")
 
-    # FUENTE 2: CoinGecko como fallback (gratis, sin API key)
+    # FUENTE 2: Binance REST API directa (fallback si CCXT falla)
+    try:
+        binance_symbol = yf_ticker.replace('-USD', '') + 'USDT' if yf_ticker.endswith('-USD') else None
+        if binance_symbol:
+            resp = requests.get(
+                f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}",
+                timeout=5
+            )
+            if resp.status_code == 200:
+                price = float(resp.json()['price'])
+                if price > 0:
+                    logging.info(f"BINANCE REST ✅ {yf_ticker}: ${fmt_price(price)}")
+                    return {'price': price, 'vol': 0}
+    except Exception as e:
+        logging.debug(f"Binance REST error: {e}")
+
+    # FUENTE 3: CoinGecko (último recurso para crypto)
     try:
         coin_id_map = {
             "BTC-USD": "bitcoin", "ETH-USD": "ethereum", "SOL-USD": "solana",
@@ -451,151 +477,143 @@ def _fetch_crypto_price_direct(yf_ticker):
                 timeout=5
             )
             if resp.status_code == 200:
-                data = resp.json()
-                price = float(data[coin_id]['usd'])
+                price = float(resp.json()[coin_id]['usd'])
                 if price > 0:
                     logging.info(f"COINGECKO ✅ {yf_ticker}: ${fmt_price(price)}")
                     return {'price': price, 'vol': 0}
     except Exception as e:
-        logging.debug(f"CoinGecko error for {yf_ticker}: {e}")
+        logging.debug(f"CoinGecko error: {e}")
 
     return None
 
-def _is_crypto_ticker(tk):
-    """Detecta si un ticker es una criptomoneda"""
-    return tk.endswith('-USD') or tk in CRYPTO_BINANCE_MAP
+def _fetch_stock_price_finnhub(tk):
+    """MOTOR ACCIONES: Finnhub API para acciones y ETFs en vivo"""
+    if not FINNHUB_API_KEY:
+        return None
 
-def _try_ticker_history(symbol, period="1d", interval="1m"):
-    """Obtiene precio con precisión RAW del exchange. Prioriza info['regularMarketPrice']"""
+    # Mapeo especial para commodities
+    symbol = FINNHUB_SYMBOL_MAP.get(tk, tk)
+
+    try:
+        resp = requests.get(
+            f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}",
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            price = float(data.get('c', 0))  # 'c' = current price
+            if price > 0:
+                logging.info(f"FINNHUB ✅ {tk}: ${fmt_price(price)}")
+                return {'price': price, 'vol': 0}
+    except Exception as e:
+        logging.debug(f"Finnhub error for {tk}: {e}")
+
+    return None
+
+def _try_yfinance_price(symbol, period="1d", interval="1m"):
+    """yfinance DEGRADADO: solo como último recurso para precios de acciones"""
     try:
         ticker_obj = yf.Ticker(symbol)
-
-        # PRIORIDAD 1: regularMarketPrice (precio exacto del exchange, sin redondeo)
         try:
             info = ticker_obj.info
             raw_price = info.get('regularMarketPrice') or info.get('currentPrice')
             raw_vol = info.get('regularMarketVolume') or info.get('volume') or 0
             if raw_price and float(raw_price) > 0:
+                logging.info(f"YFINANCE (fallback) {symbol}: ${float(raw_price):.2f}")
                 return {'price': float(raw_price), 'vol': float(raw_vol)}
         except Exception:
             pass
-
-        # PRIORIDAD 2: history() como fallback (datos históricos)
         data = ticker_obj.history(period=period, interval=interval)
         if data.empty: return None
-
         price = float(data['Close'].iloc[-1])
         vol = float(data['Volume'].iloc[-1])
-
         if price <= 0: return None
         return {'price': price, 'vol': vol}
     except Exception as e:
-        logging.debug(f"_try_ticker_history({symbol}): {e}")
+        logging.debug(f"yfinance fallback ({symbol}): {e}")
         return None
 
 def _sanity_check_price(tk, new_price):
-    """Verifica que el precio no sea basura (desviación >50% vs último conocido = error de API)"""
+    """Verifica que el precio no sea basura (desviación >50% vs último conocido)"""
     if tk in LAST_KNOWN_PRICES:
         last_price = LAST_KNOWN_PRICES[tk]['price']
         if last_price > 0:
             change_pct = abs(new_price - last_price) / last_price
             if change_pct > 0.50:
-                logging.warning(f"⚠️ SANITY CHECK FALLIDO para {tk}: ${new_price:.2f} vs último ${last_price:.2f} (desviación: {change_pct*100:.1f}%). Posible error de API.")
+                logging.warning(f"⚠️ SANITY CHECK FALLIDO para {tk}: ${new_price:.2f} vs último ${last_price:.2f} ({change_pct*100:.1f}%)")
                 return False
-    # Para crypto, precios bajos son válidos (DOGE=$0.07). Solo rechazar activos tradicionales < $0.50
     if not _is_crypto_ticker(tk) and new_price < 0.50:
-        logging.warning(f"⚠️ SANITY CHECK: {tk} precio ${new_price:.4f} demasiado bajo. Rechazado.")
+        logging.warning(f"⚠️ SANITY CHECK: {tk} precio ${new_price:.4f} demasiado bajo.")
         return False
     if new_price <= 0:
         return False
     return True
 
-# Sufijos de mercado para reintento cuando Yahoo falla con el ticker base
-MARKET_SUFFIX_RETRIES = {
-    "IXC": ["IXC"],       # NYSE Arca - usar sin sufijo, ya es correcto
-    "BNO": ["BNO"],       # NYSE Arca
-    "IAU": ["IAU"],       # NYSE Arca
-    "NVDA": ["NVDA"],     # NASDAQ
-}
+# Tickers de respaldo para Brent Crude
+BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
+BRENT_MIN_VALID_PRICE = 50.0
 
 def get_safe_ticker_price(ticker, force_validation=False):
-    """Motor multi-fuente: Binance para crypto, yfinance+fallbacks para acciones"""
+    """MOTOR MAESTRO: CCXT/Finnhub primero, yfinance SOLO como último recurso"""
     tk = remap_ticker(ticker)
 
-    # --- CASO CRIPTO: Binance/CoinGecko DIRECTO (sin tocar yfinance) ---
+    # === RUTA CRYPTO: CCXT Binance -> REST Binance -> CoinGecko ===
     if _is_crypto_ticker(tk):
         result = _fetch_crypto_price_direct(tk)
         if result and _sanity_check_price(tk, result['price']):
             LAST_KNOWN_PRICES[tk] = result
             return result
-        # Fallback: yfinance como último recurso para crypto
-        result = _try_ticker_history(tk)
-        if result and _sanity_check_price(tk, result['price']):
-            LAST_KNOWN_PRICES[tk] = result
-            return result
+        # Cache como último recurso
         if tk in LAST_KNOWN_PRICES:
-            logging.warning(f"{tk}: usando último precio crypto conocido: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+            logging.warning(f"{tk}: exchanges crypto no responden. Usando cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
             return LAST_KNOWN_PRICES[tk]
-        return result if result else None
-
-    # --- CASO ESPECIAL: BRENT (cadena de fallback BZ=F → CO=F → BNO) ---
-    if tk == "BZ=F":
-        for fallback_symbol in BRENT_FALLBACK_CHAIN:
-            result = _try_ticker_history(fallback_symbol)
-            if result and result['price'] >= BRENT_MIN_VALID_PRICE:
-                logging.info(f"Brent OK vía {fallback_symbol}: ${result['price']:.2f}")
-                LAST_KNOWN_PRICES[tk] = result
-                return result
-            elif result:
-                logging.warning(f"Brent rechazado vía {fallback_symbol}: ${result['price']:.2f} (< ${BRENT_MIN_VALID_PRICE})")
-
-        for fallback_symbol in BRENT_FALLBACK_CHAIN:
-            result = _try_ticker_history(fallback_symbol, period="5d", interval="1d")
-            if result and result['price'] >= BRENT_MIN_VALID_PRICE:
-                logging.info(f"Brent (cierre diario) OK vía {fallback_symbol}: ${result['price']:.2f}")
-                LAST_KNOWN_PRICES[tk] = result
-                return result
-
-        if tk in LAST_KNOWN_PRICES:
-            logging.warning(f"Brent: usando último precio conocido del cache: ${LAST_KNOWN_PRICES[tk]['price']:.2f}")
-            return LAST_KNOWN_PRICES[tk]
-
-        logging.error("Brent: TODAS las fuentes fallaron.")
         return None
 
-    # --- CASO GENERAL: cualquier otro ticker ---
-    # Intento 1: Ticker.history() con intervalo 1m
-    result = _try_ticker_history(tk)
-    if result and _sanity_check_price(tk, result['price']):
-        LAST_KNOWN_PRICES[tk] = result
-        return result
-    elif result:
-        logging.warning(f"{tk}: precio 1m falló sanity check (${result['price']:.4f}).")
-
-    # Intento 2: datos diarios (más estables, mercado cerrado)
-    result = _try_ticker_history(tk, period="5d", interval="1d")
-    if result and _sanity_check_price(tk, result['price']):
-        LAST_KNOWN_PRICES[tk] = result
-        return result
-
-    # Intento 3: reintentar con sufijos de mercado alternativos
-    for alt_sym in MARKET_SUFFIX_RETRIES.get(tk, []):
-        if alt_sym != tk:
-            result = _try_ticker_history(alt_sym, period="5d", interval="1d")
-            if result and _sanity_check_price(tk, result['price']):
-                logging.info(f"{tk}: precio corregido vía {alt_sym}: ${result['price']:.2f}")
+    # === RUTA BRENT: Finnhub -> yfinance fallback chain ===
+    if tk == "BZ=F":
+        # Intentar Finnhub primero
+        finn = _fetch_stock_price_finnhub(tk)
+        if finn and finn['price'] >= BRENT_MIN_VALID_PRICE and _sanity_check_price(tk, finn['price']):
+            LAST_KNOWN_PRICES[tk] = finn
+            return finn
+        # Fallback yfinance chain
+        for fallback_symbol in BRENT_FALLBACK_CHAIN:
+            result = _try_yfinance_price(fallback_symbol)
+            if result and result['price'] >= BRENT_MIN_VALID_PRICE:
                 LAST_KNOWN_PRICES[tk] = result
                 return result
+        for fallback_symbol in BRENT_FALLBACK_CHAIN:
+            result = _try_yfinance_price(fallback_symbol, period="5d", interval="1d")
+            if result and result['price'] >= BRENT_MIN_VALID_PRICE:
+                LAST_KNOWN_PRICES[tk] = result
+                return result
+        if tk in LAST_KNOWN_PRICES:
+            return LAST_KNOWN_PRICES[tk]
+        return None
 
-    # Devolver cache si existe (precio conocido y confiable)
-    if tk in LAST_KNOWN_PRICES:
-        logging.warning(f"{tk}: usando último precio conocido: ${LAST_KNOWN_PRICES[tk]['price']:.2f}")
-        return LAST_KNOWN_PRICES[tk]
+    # === RUTA ACCIONES/ETFs: Finnhub -> yfinance (degradado) ===
+    # Intento 1: Finnhub (precio institucional en vivo)
+    finn = _fetch_stock_price_finnhub(tk)
+    if finn and _sanity_check_price(tk, finn['price']):
+        LAST_KNOWN_PRICES[tk] = finn
+        return finn
 
-    # Primera carga: aceptar el resultado si pasó > $0.50
-    if result and result['price'] > 0.50:
+    # Intento 2: yfinance como fallback (degradado)
+    result = _try_yfinance_price(tk)
+    if result and _sanity_check_price(tk, result['price']):
         LAST_KNOWN_PRICES[tk] = result
         return result
+
+    # Intento 3: yfinance datos diarios
+    result = _try_yfinance_price(tk, period="5d", interval="1d")
+    if result and _sanity_check_price(tk, result['price']):
+        LAST_KNOWN_PRICES[tk] = result
+        return result
+
+    # Cache
+    if tk in LAST_KNOWN_PRICES:
+        logging.warning(f"{tk}: todas las fuentes fallaron. Cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+        return LAST_KNOWN_PRICES[tk]
 
     return None
 
@@ -784,6 +802,14 @@ def perform_deep_analysis(ticker):
 
     # Precio final a inyectar en el prompt (INNEGOCIABLE)
     final_price = verified_price or (tech['price'] if tech else None)
+
+    # === HARD-STOP: SIN PRECIO VERIFICADO = SIN ANÁLISIS ===
+    if not final_price:
+        return ("⚠️ <b>Error de conexión con el Exchange</b>\n\n"
+                f"No se pudo obtener el precio en vivo de {display_name} desde ninguna fuente "
+                f"(CCXT Binance, Finnhub, CoinGecko).\n\n"
+                f"🛑 El análisis ha sido BLOQUEADO para evitar datos inventados.\n"
+                f"Intenta de nuevo en unos segundos.")
 
     if tech:
         tech_block = (
