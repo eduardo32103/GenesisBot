@@ -760,13 +760,35 @@ def perform_deep_analysis(ticker):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
 
-    # PASO 1: Obtener datos EN VIVO del motor multi-fuente (Binance/yfinance)
+    # PASO 0: Para CRYPTO, obtener precio DIRECTO de Binance ANTES de todo
+    # Este precio es SAGRADO y no se puede sobrescribir con basura de yfinance
+    verified_price = None
+    if _is_crypto_ticker(tk):
+        crypto_data = _fetch_crypto_price_direct(tk)
+        if crypto_data:
+            verified_price = crypto_data['price']
+            logging.info(f"ANÁLISIS {tk}: precio Binance verificado = ${fmt_price(verified_price)}")
+
+    # PASO 1: Obtener indicadores técnicos (RSI, MACD, SMC)
     tech = fetch_and_analyze_stock(tk)
+
+    # Para crypto: SIEMPRE imponer el precio Binance sobre lo que yfinance diga
+    if tech and verified_price:
+        tech['price'] = verified_price
+
+    # Si no hay tech pero sí tenemos precio verificado, obtener precio de todas formas
+    if not tech and not verified_price:
+        live = get_safe_ticker_price(tk)
+        if live:
+            verified_price = live['price']
+
+    # Precio final a inyectar en el prompt (INNEGOCIABLE)
+    final_price = verified_price or (tech['price'] if tech else None)
 
     if tech:
         tech_block = (
             f"--- DATOS EN VIVO (calculados por el sistema, NO los inventes) ---\n"
-            f"• Precio EXACTO en vivo: ${fmt_price(tech['price'])}\n"
+            f"• Precio EXACTO en vivo: ${fmt_price(final_price)}\n"
             f"• RSI (14 períodos): {tech['rsi']:.2f}\n"
             f"• MACD Línea: {tech['macd_line']:.4f}\n"
             f"• MACD Señal: {tech['macd_signal']:.4f}\n"
@@ -776,18 +798,15 @@ def perform_deep_analysis(ticker):
             f"• Order Block Institucional: ${fmt_price(tech['order_block'])}\n"
             f"--- FIN DE DATOS EN VIVO ---"
         )
+    elif final_price:
+        tech_block = (
+            f"--- DATOS EN VIVO ---\n"
+            f"• Precio EXACTO en vivo: ${fmt_price(final_price)}\n"
+            f"• Indicadores técnicos: No disponibles (mercado cerrado o sin historial)\n"
+            f"--- FIN DE DATOS EN VIVO ---"
+        )
     else:
-        # Si no hay datos técnicos, al menos obtener precio en vivo
-        live = get_safe_ticker_price(tk)
-        if live:
-            tech_block = (
-                f"--- DATOS EN VIVO ---\n"
-                f"• Precio EXACTO en vivo: ${fmt_price(live['price'])}\n"
-                f"• Indicadores técnicos: No disponibles (mercado cerrado o sin historial)\n"
-                f"--- FIN DE DATOS EN VIVO ---"
-            )
-        else:
-            tech_block = "--- DATOS EN VIVO: No disponibles en este momento ---"
+        tech_block = "--- DATOS EN VIVO: No disponibles en este momento ---"
 
     # PASO 2: Noticias recientes del activo
     news_str = "No hay noticias recientes disponibles."
@@ -798,13 +817,14 @@ def perform_deep_analysis(ticker):
     except: pass
 
     # PASO 3: Prompt blindado anti-alucinación
+    price_str = f"${fmt_price(final_price)}" if final_price else "N/A"
     prompt = (
         f"Actúa como un analista financiero institucional senior.\n\n"
         f"ACTIVO: {display_name} ({tk})\n\n"
         f"{tech_block}\n\n"
         f"NOTICIAS RECIENTES:\n{news_str}\n\n"
         f"REGLAS INQUEBRANTABLES:\n"
-        f"1. Tienes PROHIBIDO inventar, adivinar o modificar el precio. Usa EXACTAMENTE ${fmt_price(tech['price']) if tech else 'N/A'} como precio actual.\n"
+        f"1. El precio REAL Y VERIFICADO de {display_name} en este momento es {price_str}. Este dato viene DIRECTO del exchange. Tienes PROHIBIDO inventar, adivinar o usar otro precio.\n"
         f"2. Basa tu análisis EXCLUSIVAMENTE en los datos numéricos proporcionados arriba.\n"
         f"3. Si el RSI > 70, indica sobrecompra. Si RSI < 30, indica sobreventa.\n"
         f"4. Analiza la posición del precio respecto a los niveles SMC (Soporte/Resistencia/Order Block).\n"
