@@ -508,6 +508,65 @@ def gpt_advanced_geopolitics(news_list, manual=False):
         return res
     except: return None
 
+def generar_reporte_macro_manual():
+    """Reporte macro dedicado para el BOTÓN MANUAL. Siempre devuelve contenido útil."""
+    # Paso 1: Recoger noticias amplias (sin filtro de keywords para no perder contexto)
+    all_news = []
+    try:
+        # Fuente 1: Google News RSS amplio (mercados + geopolítica)
+        for query in ["stock+market+today", "geopolitics+economy+2026", "oil+gold+bitcoin+market"]:
+            url = f"https://news.google.com/rss/search?q={query}&hl=es"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.text)
+                for item in root.findall('.//item')[:3]:
+                    title = item.find('title').text
+                    if title and title not in all_news:
+                        all_news.append(title)
+    except: pass
+
+    # Fuente 2: noticias de activos del usuario vía yfinance
+    try:
+        for tk in get_tracked_tickers()[:3]:
+            ticker_obj = yf.Ticker(remap_ticker(tk))
+            for n in (ticker_obj.news or [])[:2]:
+                title = n.get('title', '')
+                if title and title not in all_news:
+                    all_news.append(title)
+    except: pass
+
+    # Fallback: usar las noticias filtradas originales
+    if not all_news:
+        all_news = check_geopolitical_news()
+
+    if not all_news:
+        return ("---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n"
+                "• No se detectaron titulares relevantes en este momento.\n"
+                "• Los mercados parecen operar sin catalizadores nuevos.\n"
+                "• Recomendación: Mantener posiciones actuales.\n"
+                "---\n📊 Sentimiento General: <b>Neutral</b>")
+
+    # Paso 2: Prompt estructurado a GPT
+    if not OPENAI_API_KEY:
+        bullets = "\n".join([f"• {n}" for n in all_news[:5]])
+        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento General: <b>Pendiente</b>"
+
+    news_text = "\n".join([f"- {n}" for n in all_news[:8]])
+    prompt = (f"Eres un analista macro institucional. Basado en estos titulares recientes:\n{news_text}\n\n"
+              f"Genera un REPORTE MACRO estructurado con EXACTAMENTE este formato:\n"
+              f"• [Análisis de la noticia más relevante y su impacto en mercados]\n"
+              f"• [Segunda noticia relevante y sectores afectados]\n"
+              f"• [Tercera noticia o tendencia macro global]\n\n"
+              f"Al final, dictamina el SENTIMIENTO GENERAL del mercado: Alcista, Bajista, Neutral o Tenso.\n"
+              f"RESPONDE ESTRICTAMENTE EN ESPAÑOL. Sé conciso y directo.")
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=400).choices[0].message.content.strip()
+        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{res}"
+    except:
+        bullets = "\n".join([f"• {n}" for n in all_news[:5]])
+        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento General: <b>Sin determinar</b>"
+
 def fetch_intraday_data(ticker):
     tk = remap_ticker(ticker)
     try:
@@ -741,9 +800,9 @@ def handle_text(message):
         return
 
     if text == "🌎 Geopolítica":
-        bot.reply_to(message, "🌎 Procesando macro Geopolítica Manual...")
-        ai_res = gpt_advanced_geopolitics(check_geopolitical_news(), manual=True)
-        bot.send_message(message.chat.id, f"---\n🌍 *INSIGHT GLOBAL*\n---\n{ai_res}" if ai_res else "✅ Radar limpio.", parse_mode="HTML")
+        bot.reply_to(message, "🌎 Generando Reporte Macro Institucional...")
+        report = generar_reporte_macro_manual()
+        bot.send_message(message.chat.id, report, parse_mode="HTML")
         return
 
     if text == "📉 SMC / Mi Cartera":
