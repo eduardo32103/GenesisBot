@@ -49,7 +49,6 @@ _global_db_conn = None
 def get_db_connection():
     global _global_db_conn
     try:
-        # Reutilizar si ya existe y está viva
         if _global_db_conn is not None:
              try:
                  c = _global_db_conn.cursor()
@@ -57,20 +56,25 @@ def get_db_connection():
                  c.fetchone()
                  return _global_db_conn
              except:
-                 _global_db_conn = None # Muerta
+                 _global_db_conn = None
         
-        url = os.environ.get('DATABASE_URL')
-        if not url: return None
-        r = urllib.parse.urlparse(url)
         _global_db_conn = pg8000.dbapi.connect(
-            user=r.username,
-            password=r.password,
-            host=r.hostname,
-            port=r.port or 5432,
-            database=r.path[1:],
+            user="postgres",
+            password="Baldenebro48",
+            host="db.znofknhwtpqrkrnacitb.supabase.co",
+            port=5432,
+            database="postgres",
             timeout=10
         )
         print("✅ Conexión exitosa a Supabase desde backend.")
+        
+        # Iniciar tabla
+        cr = _global_db_conn.cursor()
+        cr.execute("CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER DEFAULT 0, amount_usd REAL DEFAULT 0.0, entry_price REAL DEFAULT 0.0, timestamp TEXT, PRIMARY KEY (user_id, ticker))")
+        cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
+        cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
+        _global_db_conn.commit()
+        
         return _global_db_conn
     except Exception as e:
         print(f"❌ Error de conexión silencioso: {e}")
@@ -308,10 +312,7 @@ def _restore_from_b64(b64_data):
         stats = payload.get("global_stats", {})
 
         conn = get_db_connection()
-        if not conn:
-            RAM_WALLET = {tk: {"is_investment": info.get("is_investment", 0), "amount_usd": info.get("amount_usd", 0), "entry_price": info.get("entry_price", 0), "timestamp": info.get("timestamp", datetime.now().isoformat())} for tk, info in portfolio.items()}
-            RAM_PNL = float(stats.get("realized_pnl", 0.0))
-            return
+        if not conn: return
         try:
             c = conn.cursor()
             for tk, info in portfolio.items():
@@ -441,7 +442,7 @@ def purge_old_events():
 
 def get_tracked_tickers():
     conn = get_db_connection()
-    if not conn: return list(RAM_WALLET.keys())
+    if not conn: return []
     try:
         c = conn.cursor()
         c.execute('SELECT ticker FROM wallet WHERE user_id = %s', (int(CHAT_ID),))
@@ -450,9 +451,9 @@ def get_tracked_tickers():
         pass # conn.close() delegado a pooling global
 
 def get_all_portfolio_data():
-    conn = get_db_connection()
-    if not conn: return RAM_WALLET
     pf = {}
+    conn = get_db_connection()
+    if not conn: return pf
     try:
         c = conn.cursor()
         c.execute('SELECT * FROM wallet WHERE user_id = %s', (int(CHAT_ID),))
@@ -465,10 +466,7 @@ def get_all_portfolio_data():
 def add_ticker(ticker):
     ticker = remap_ticker(ticker)
     conn = get_db_connection()
-    if not conn:
-        if ticker in RAM_WALLET: return False
-        RAM_WALLET[ticker] = {"is_investment": 0, "amount_usd": 0, "entry_price": 0, "timestamp": datetime.now().isoformat()}
-        return True
+    if not conn: return "DB_ERROR"
     try:
         c = conn.cursor()
         c.execute('SELECT 1 FROM wallet WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
@@ -487,12 +485,7 @@ def add_ticker(ticker):
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
     conn = get_db_connection()
-    if not conn:
-        if ticker in RAM_WALLET:
-            del RAM_WALLET[ticker]
-            if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
-            return True
-        return False
+    if not conn: return False
     try:
         c = conn.cursor()
         c.execute('SELECT 1 FROM wallet WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
@@ -510,9 +503,7 @@ def add_investment(ticker, amount_usd, entry_price):
     ticker = remap_ticker(ticker)
     timestamp = datetime.now().isoformat()
     conn = get_db_connection()
-    if not conn:
-        RAM_WALLET[ticker] = {"is_investment": 1, "amount_usd": amount_usd, "entry_price": entry_price, "timestamp": timestamp}
-        return
+    if not conn: return
     try:
         c = conn.cursor()
         c.execute('SELECT 1 FROM wallet WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
@@ -528,12 +519,7 @@ def add_investment(ticker, amount_usd, entry_price):
 def close_investment(ticker):
     ticker = remap_ticker(ticker)
     conn = get_db_connection()
-    if not conn:
-        if ticker in RAM_WALLET:
-            RAM_WALLET[ticker]["is_investment"] = 0
-            RAM_WALLET[ticker]["amount_usd"] = 0
-            RAM_WALLET[ticker]["entry_price"] = 0
-        return
+    if not conn: return
     try:
         c = conn.cursor()
         c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
@@ -543,10 +529,9 @@ def close_investment(ticker):
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_investments():
-    conn = get_db_connection()
-    if not conn:
-        return {tk: {"amount_usd": info["amount_usd"], "entry_price": info["entry_price"]} for tk, info in RAM_WALLET.items() if info.get("is_investment")}
     invs = {}
+    conn = get_db_connection()
+    if not conn: return invs
     try:
         c = conn.cursor()
         c.execute('SELECT ticker, amount_usd, entry_price FROM wallet WHERE user_id = %s AND is_investment = 1', (int(CHAT_ID),))
@@ -557,11 +542,8 @@ def get_investments():
     return invs
 
 def add_realized_pnl(prof_usd):
-    global RAM_PNL
     conn = get_db_connection()
-    if not conn:
-        RAM_PNL += float(prof_usd)
-        return
+    if not conn: return
     try:
         c = conn.cursor()
         c.execute('SELECT value FROM global_stats WHERE key = %s', ("realized_pnl",))
@@ -577,7 +559,7 @@ def add_realized_pnl(prof_usd):
 
 def get_realized_pnl():
     conn = get_db_connection()
-    if not conn: return RAM_PNL
+    if not conn: return 0.0
     try:
         c = conn.cursor()
         c.execute('SELECT value FROM global_stats WHERE key = %s', ("realized_pnl",))
@@ -588,11 +570,8 @@ def get_realized_pnl():
 
 def reset_realized_pnl():
     """Resetea la ganancia mensual acumulada a $0.00"""
-    global RAM_PNL
     conn = get_db_connection()
-    if not conn:
-        RAM_PNL = 0.0
-        return
+    if not conn: return
     try:
         c = conn.cursor()
         c.execute('''INSERT INTO global_stats (key, value) VALUES ('realized_pnl', 0.0)
@@ -605,15 +584,8 @@ def reset_realized_pnl():
 
 def reset_total_db():
     """RESET RADICAL: borra TODAS las inversiones, PnL y contabilidad"""
-    global RAM_WALLET, RAM_PNL
     conn = get_db_connection()
-    if not conn:
-        for tk in RAM_WALLET:
-            RAM_WALLET[tk]["is_investment"] = 0
-            RAM_WALLET[tk]["amount_usd"] = 0
-            RAM_WALLET[tk]["entry_price"] = 0
-        RAM_PNL = 0.0
-        return
+    if not conn: return
     try:
         c = conn.cursor()
         c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE user_id = %s', (int(CHAT_ID),))
