@@ -894,19 +894,18 @@ def generar_reporte_macro_manual():
 
     news_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
     prompt = (
-        f"Eres GÉNESIS, un sistema de inteligencia de mercados de grado institucional impulsado por Gemini 3.1 Pro.\n\n"
-        f"TITULARES EN VIVO (fuente: {source_label}):\n{news_text}\n\n"
+        f"Eres GÉNESIS, un sistema de inteligencia de mercados institucional.\n\n"
+        f"TITULARES EN VIVO:\n{news_text}\n\n"
+        f"ACTIVOS EN LA WALLET DEL USUARIO (Prioriza el análisis en estos activos si hay noticias relacionadas): {', '.join(get_tracked_tickers())}\n\n"
         f"INSTRUCCIONES ESTRICTAS:\n"
-        f"1. Selecciona las 3 noticias de MAYOR IMPACTO para los mercados globales.\n"
-        f"2. Aprovecha tu capacidad de razonamiento para cruzar el impacto de estas noticias con posibles movimientos en zonas de liquidez (Smart Money Concepts).\n"
-        f"3. Para CADA una, genera EXACTAMENTE este formato:\n\n"
-        f"📰 [Titular traducido al español - conciso]\n"
-        f"🔥 Nivel de Impacto: [Bajo / Medio / Alto]\n"
-        f"🎯 Activos Afectados: [Lista: BTC, NVDA, Oro, Petróleo, etc.]\n"
-        f"🧠 [Comentario hiper-detallado de cómo cambia la dirección del mercado y afecta los Order Blocks institucionales]\n\n"
-        f"4. Al final, dictamina:\n"
-        f"📊 Sentimiento General del Mercado: [Alcista 🟢 / Bajista 🔴 / Neutral ⚪ / Tenso ⚠️]\n\n"
-        f"REGLAS: No inventes noticias ni datos FMP empíricos que no tengas. ESPAÑOL ESTRICTO."
+        f"1. Selecciona las noticias de MAYOR IMPACTO. Traduce los titulares al español con un tono profesional y directo.\n"
+        f"2. Para cada noticia, evalúa racionalmente si el impacto es Alcista (🟢), Bajista (🔴) o Neutral (🟡).\n"
+        f"3. Genera EXACTAMENTE este formato de respuesta para cada noticia (no agregues guiones adicionales):\n\n"
+        f"[Titular en español] | Impacto: [🔴/🟢/🟡]\n"
+        f"💡 *Análisis rápido:* (Una línea concreta de por qué importa esta noticia y si afecta la wallet del usuario, basado en SMC).\n\n"
+        f"Al final del reporte, dictamina:\n"
+        f"📊 *Sentimiento General del Mercado:* [Alcista / Bajista / Neutral]\n\n"
+        f"REGLAS: No inventes noticias ni alucines datos. ESPAÑOL ESTRICTO."
     )
 
     try:
@@ -915,7 +914,7 @@ def generar_reporte_macro_manual():
             model="gemini-1.5-pro",
             contents=prompt,
         ).text.strip()
-        return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n\n{res}"
+        return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{res}"
     except Exception as e:
         logging.error(f"Gemini macro error: {e}")
         bullets = "\n".join([f"• {h}" for h in headlines[:5]])
