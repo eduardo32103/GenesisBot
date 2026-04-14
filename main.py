@@ -43,7 +43,17 @@ DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_db_connection():
-    return psycopg2.connect(os.getenv("DATABASE_URL"), connect_timeout=5)
+    try:
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url: return None
+        return psycopg2.connect(db_url, connect_timeout=5)
+    except Exception as e:
+        print(f"❌ Error real de DB: {e}")
+        try:
+            bot.send_message(CHAT_ID, "⚠️ Error temporal al acceder a la Wallet (Base de datos desconectada).")
+        except:
+            pass
+        return None
 
 def init_db():
     try:
