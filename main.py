@@ -1,4 +1,5 @@
-import os, pg8000.dbapi, telebot\nimport urllib.parse
+import os, pg8000.dbapi, telebot
+import urllib.parse
 import logging
 import base64
 import requests
