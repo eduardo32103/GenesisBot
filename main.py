@@ -42,12 +42,12 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
 
-def get_connection():
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
+def get_db_connection():
+    return psycopg2.connect(os.getenv("DATABASE_URL"), connect_timeout=5)
 
 def init_db():
     try:
-        conn = get_connection()
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER, amount_usd REAL, entry_price REAL, timestamp TEXT, PRIMARY KEY (user_id, ticker));''')
         c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
@@ -274,7 +274,7 @@ def _restore_from_b64(b64_data):
         portfolio = payload.get("portfolio", {})
         stats = payload.get("global_stats", {})
 
-        conn = get_connection()
+        conn = get_db_connection()
         if not conn: return
         try:
             c = conn.cursor()
@@ -318,7 +318,7 @@ def _restore_from_repo_json():
                 with open(json_path, 'r') as f:
                     legacy = json.load(f)
 
-                conn = get_connection()
+                conn = get_db_connection()
                 if not conn: return False
                 try:
                     c = conn.cursor()
@@ -380,7 +380,7 @@ def get_display_name(ticker_key):
 
 # --- CONTROLADORES DE BASE DE DATOS (PostgreSQL) ---
 def check_and_add_seen_event(event_hash):
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return False
     try:
         c = conn.cursor()
@@ -394,7 +394,7 @@ def check_and_add_seen_event(event_hash):
 
 def purge_old_events():
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return
     try:
         c = conn.cursor()
@@ -404,7 +404,7 @@ def purge_old_events():
         conn.close()
 
 def get_tracked_tickers():
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return []
     try:
         c = conn.cursor()
@@ -415,7 +415,7 @@ def get_tracked_tickers():
 
 def get_all_portfolio_data():
     pf = {}
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return pf
     try:
         c = conn.cursor()
@@ -428,7 +428,7 @@ def get_all_portfolio_data():
 
 def add_ticker(ticker):
     ticker = remap_ticker(ticker)
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return "DB_ERROR"
     try:
         c = conn.cursor()
@@ -447,7 +447,7 @@ def add_ticker(ticker):
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return False
     try:
         c = conn.cursor()
@@ -465,7 +465,7 @@ def remove_ticker(ticker):
 def add_investment(ticker, amount_usd, entry_price):
     ticker = remap_ticker(ticker)
     timestamp = datetime.now().isoformat()
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return
     try:
         c = conn.cursor()
@@ -481,7 +481,7 @@ def add_investment(ticker, amount_usd, entry_price):
 
 def close_investment(ticker):
     ticker = remap_ticker(ticker)
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return
     try:
         c = conn.cursor()
@@ -493,7 +493,7 @@ def close_investment(ticker):
 
 def get_investments():
     invs = {}
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return invs
     try:
         c = conn.cursor()
@@ -505,7 +505,7 @@ def get_investments():
     return invs
 
 def add_realized_pnl(prof_usd):
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return
     try:
         c = conn.cursor()
@@ -521,7 +521,7 @@ def add_realized_pnl(prof_usd):
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return 0.0
     try:
         c = conn.cursor()
@@ -533,7 +533,7 @@ def get_realized_pnl():
 
 def reset_realized_pnl():
     """Resetea la ganancia mensual acumulada a $0.00"""
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return
     try:
         c = conn.cursor()
@@ -547,7 +547,7 @@ def reset_realized_pnl():
 
 def reset_total_db():
     """RESET RADICAL: borra TODAS las inversiones, PnL y contabilidad"""
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn: return
     try:
         c = conn.cursor()
@@ -1249,10 +1249,23 @@ def build_wallet_dashboard():
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
 
+@bot.message_handler(commands=['check_db'])
+def test_db(message):
+    bot.reply_to(message, "⏳ Intentando conectar con Supabase (Timeout de 5 segundos)...")
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('SELECT version();')
+        v = c.fetchone()[0]
+        bot.reply_to(message, f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
+        conn.close()
+    except Exception as e:
+        bot.reply_to(message, f"❌ ERROR DE RED O AUTENTICACIÓN\nSupabase ha rechazado la conexión.\n\nLog Técnico: {e}")
+
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    conn = get_connection()
+    conn = get_db_connection()
     if not conn:
         bot.reply_to(message, "🚨 Error: No hay conexión a Supabase.")
         return
