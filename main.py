@@ -1,4 +1,5 @@
-import traceback\nimport logging
+import os, psycopg2, telebot
+import logging
 import base64
 import requests
 import re
@@ -7,10 +8,7 @@ import pandas as pd
 import yfinance as yf
 import threading
 import time
-import os
-import telebot
 import json
-import psycopg2
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
@@ -44,10 +42,10 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_db_connection():
     try:
-        conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=5)
-        return conn
+        url = os.environ.get('DATABASE_URL')
+        return psycopg2.connect(url, sslmode='require', connect_timeout=5)
     except Exception as e:
-        print(f"❌ Error DB: {e}")
+        print(f"Error: {e}")
         try:
             bot.send_message(CHAT_ID, "⚠️ Base de datos temporalmente fuera de línea, reintentando...")
         except:
