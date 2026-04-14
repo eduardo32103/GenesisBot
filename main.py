@@ -44,7 +44,11 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_db_conn():
     if not DATABASE_URL: return None
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        logging.error(f"⚠️ Error crítico: Supabase rechazó la conexión. Revisar IPv4/Puerto 6543. (Detalle: {e})")
+        return None
 
 def init_db():
     conn = get_db_conn()
