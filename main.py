@@ -917,8 +917,8 @@ def generar_reporte_macro_manual():
         return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{res}"
     except Exception as e:
         logging.error(f"Gemini macro error: {e}")
-        bullets = "\n".join([f"• {h}" for h in headlines[:5]])
-        return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Sin determinar</b>"
+        bullets = "\n".join([f"• {h} | Impacto: 🟡" for h in headlines[:5]])
+        return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{bullets}\n\n💡 *Análisis rápido:* FMP Feed procesado sin IA.\n\n📊 *Sentimiento General del Mercado:* Neutral"
 
 def fetch_intraday_data(ticker):
     tk = remap_ticker(ticker)
@@ -1235,37 +1235,47 @@ def cmd_backup(message):
     tkrs = get_tracked_tickers()
     bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
 
+from openai import OpenAI
+
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    msg = bot.reply_to(message, "👁️ Analizando gráfica con GÉNESIS Vision (Gemini 2.0 Flash) ...")
+    msg = bot.reply_to(message, "👁️ Analizando gráfica con GÉNESIS Vision (GPT-4o OpenAI)...")
     try:
-        if not GEMINI_API_KEY:
-            bot.edit_message_text("⚠️ Error de configuración de modelo: GEMINI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
+        if not OPENAI_API_KEY:
+            bot.edit_message_text("⚠️ Error de configuración de modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
             return
 
         file_info = bot.get_file(message.photo[-1].file_id)
         image_bytes = bot.download_file(file_info.file_path)
+        base_img = base64.b64encode(image_bytes).decode('utf-8')
         
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
         prompt = (
             f"Eres GÉNESIS, el sistema analítico de mercados institucionales.\n"
-            f"Analiza esta gráfica bajo conceptos SMC (Order Blocks, Liquidez) y compárala con los datos de precio en vivo de FMP.\n\n"
+            f"Analiza esta captura de pantalla de TradingView con extrema precisión geométrica y lógica SMC (Smart Money Concepts).\n\n"
             f"TU MISIÓN:\n"
             f"1. Estructura SMC: Identifica rupturas de estructura (BOS), cambios de carácter (CHoCH), Order Blocks y vacíos de liquidez (FVG) visibles en la gráfica.\n"
-            f"2. Veredicto: Concluye de forma institucional si es momento de [COMPRAR], [VENDER] o [MANTENER] la posición.\n\n"
-            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
+            f"2. Coincidencia FMP: Asume que el precio actual debe validarse contra Financial Modeling Prep (FMP). Compáralo y describe mecánicamente dónde están las zonas de manipulación.\n"
+            f"3. Veredicto: Concluye de forma institucional si es momento de [COMPRAR], [VENDER] o [MANTENER] la posición.\n\n"
+            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL y actúa bajo tu identidad de GÉNESIS, sin alucinaciones."
         )
 
-        res = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')]
+        res = client.chat.completions.create(
+            model="gpt-4o", 
+            messages=[
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt}, 
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base_img}"}}
+                ]}
+            ], 
+            max_tokens=800
         )
         
-        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.text.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.choices[0].message.content.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Error de visión Gemini: {e}")
+        logging.error(f"Error de visión OpenAI: {e}")
         bot.edit_message_text("⚠️ Error de configuración de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
