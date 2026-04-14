@@ -11,7 +11,6 @@ import os
 import telebot
 import json
 import psycopg2
-import urllib.parse
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
@@ -46,17 +45,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def get_db_conn():
     if not DATABASE_URL: return None
     try:
-        result = urllib.parse.urlparse(DATABASE_URL)
-        return psycopg2.connect(
-            database=result.path[1:],
-            user=result.username,
-            password=urllib.parse.unquote(result.password) if result.password else None,
-            host=result.hostname,
-            port=result.port or 5432,
-            sslmode='require'
-        )
+        return psycopg2.connect(DATABASE_URL, sslmode='require')
     except Exception as e:
-        logging.error(f"⚠️ Error crítico: Supabase rechazó la conexión. Revisar IPv4/Puerto. (Detalle: {e})")
+        logging.error(f"❌ Error: No se pudo conectar a Supabase. Detalle: {e}")
         return None
 
 def init_db():
@@ -66,7 +57,7 @@ def init_db():
         return
     try:
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS portfolio (ticker TEXT PRIMARY KEY, is_investment INTEGER, amount_usd REAL, entry_price REAL, timestamp TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS wallet (ticker TEXT PRIMARY KEY, is_investment INTEGER, amount_usd REAL, entry_price REAL, timestamp TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
         conn.commit()
@@ -297,7 +288,7 @@ def _restore_from_b64(b64_data):
             c = conn.cursor()
             for tk, info in portfolio.items():
                 c.execute('''
-                    INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) 
+                    INSERT INTO wallet (ticker, is_investment, amount_usd, entry_price, timestamp) 
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (ticker) DO UPDATE SET 
                     is_investment = EXCLUDED.is_investment, amount_usd = EXCLUDED.amount_usd, 
@@ -341,11 +332,11 @@ def _restore_from_repo_json():
                     c = conn.cursor()
                     for tk, val in legacy.items():
                         if isinstance(val, (int, float)):
-                            c.execute('''INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) 
+                            c.execute('''INSERT INTO wallet (ticker, is_investment, amount_usd, entry_price, timestamp) 
                                          VALUES (%s, 1, 1000.0, %s, %s) ON CONFLICT (ticker) DO NOTHING''',
                                 (tk, float(val), datetime.now().isoformat()))
                         elif isinstance(val, dict):
-                            c.execute('''INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) 
+                            c.execute('''INSERT INTO wallet (ticker, is_investment, amount_usd, entry_price, timestamp) 
                                          VALUES (%s, %s, %s, %s, %s) ON CONFLICT (ticker) DO NOTHING''',
                                 (tk, int(val.get('is_investment', 1)), float(val.get('amount_usd', 1000.0)), float(val.get('entry_price', 0.0)), datetime.now().isoformat()))
                     conn.commit()
@@ -425,7 +416,7 @@ def get_tracked_tickers():
     if not conn: return []
     try:
         c = conn.cursor()
-        c.execute('SELECT ticker FROM portfolio')
+        c.execute('SELECT ticker FROM wallet')
         return [row[0] for row in c.fetchall()]
     finally:
         conn.close()
@@ -436,7 +427,7 @@ def get_all_portfolio_data():
     if not conn: return pf
     try:
         c = conn.cursor()
-        c.execute('SELECT * FROM portfolio')
+        c.execute('SELECT * FROM wallet')
         for row in c.fetchall():
             pf[row[0]] = {"is_investment": bool(row[1]), "amount_usd": row[2], "entry_price": row[3], "timestamp": row[4]}
     finally:
@@ -449,9 +440,9 @@ def add_ticker(ticker):
     if not conn: return "DB_ERROR"
     try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
+        c.execute('SELECT 1 FROM wallet WHERE ticker = %s', (ticker,))
         if not c.fetchone():
-            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 0, 0, 0, %s)', (ticker, datetime.now().isoformat()))
+            c.execute('INSERT INTO wallet (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 0, 0, 0, %s)', (ticker, datetime.now().isoformat()))
             conn.commit()
             save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
             return True
@@ -468,9 +459,9 @@ def remove_ticker(ticker):
     if not conn: return False
     try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
+        c.execute('SELECT 1 FROM wallet WHERE ticker = %s', (ticker,))
         if c.fetchone():
-            c.execute('DELETE FROM portfolio WHERE ticker = %s', (ticker,))
+            c.execute('DELETE FROM wallet WHERE ticker = %s', (ticker,))
             conn.commit()
             save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
@@ -486,11 +477,11 @@ def add_investment(ticker, amount_usd, entry_price):
     if not conn: return
     try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
+        c.execute('SELECT 1 FROM wallet WHERE ticker = %s', (ticker,))
         if c.fetchone():
-            c.execute('UPDATE portfolio SET is_investment = 1, amount_usd = %s, entry_price = %s, timestamp = %s WHERE ticker = %s', (amount_usd, entry_price, timestamp, ticker))
+            c.execute('UPDATE wallet SET is_investment = 1, amount_usd = %s, entry_price = %s, timestamp = %s WHERE ticker = %s', (amount_usd, entry_price, timestamp, ticker))
         else:
-            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 1, %s, %s, %s)', (ticker, amount_usd, entry_price, timestamp))
+            c.execute('INSERT INTO wallet (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 1, %s, %s, %s)', (ticker, amount_usd, entry_price, timestamp))
         conn.commit()
     finally:
         if conn: conn.close()
@@ -502,7 +493,7 @@ def close_investment(ticker):
     if not conn: return
     try:
         c = conn.cursor()
-        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = %s', (ticker,))
+        c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = %s', (ticker,))
         conn.commit()
     finally:
         conn.close()
@@ -514,7 +505,7 @@ def get_investments():
     if not conn: return invs
     try:
         c = conn.cursor()
-        c.execute('SELECT ticker, amount_usd, entry_price FROM portfolio WHERE is_investment = 1')
+        c.execute('SELECT ticker, amount_usd, entry_price FROM wallet WHERE is_investment = 1')
         for row in c.fetchall():
             invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
     finally:
@@ -568,7 +559,7 @@ def reset_total_db():
     if not conn: return
     try:
         c = conn.cursor()
-        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0')
+        c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0')
         c.execute('''INSERT INTO global_stats (key, value) VALUES ('realized_pnl', 0.0)
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
@@ -1275,9 +1266,9 @@ def command_clear_all(message):
         return
     try:
         c = conn.cursor()
-        c.execute('TRUNCATE TABLE portfolio')
+        c.execute('TRUNCATE TABLE wallet')
         conn.commit()
-        bot.reply_to(message, "⚠️ ATENCIÓN: DB Supabase (Tabla: portfolio) vacuada por completo.")
+        bot.reply_to(message, "⚠️ ATENCIÓN: DB Supabase (Tabla: wallet) vacuada por completo.")
     except Exception as e:
         bot.reply_to(message, f"❌ Fallo al limpiar DB: {e}")
     finally:
