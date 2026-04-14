@@ -46,7 +46,7 @@ def get_db_connection():
     try:
         db_url = os.getenv("DATABASE_URL")
         if not db_url: return None
-        return psycopg2.connect(db_url, connect_timeout=5)
+        return psycopg2.connect(db_url, connect_timeout=5, cursor_factory=psycopg2.extras.RealDictCursor)
     except Exception as e:
         print(f"❌ Error real de DB: {e}")
         try:
@@ -419,7 +419,7 @@ def get_tracked_tickers():
     try:
         c = conn.cursor()
         c.execute('SELECT ticker FROM wallet WHERE user_id = %s', (int(CHAT_ID),))
-        return [row[0] for row in c.fetchall()]
+        return [row['ticker'] for row in c.fetchall()]
     finally:
         conn.close()
 
@@ -431,7 +431,7 @@ def get_all_portfolio_data():
         c = conn.cursor()
         c.execute('SELECT * FROM wallet WHERE user_id = %s', (int(CHAT_ID),))
         for row in c.fetchall():
-            pf[row[0]] = {"is_investment": bool(row[1]), "amount_usd": row[2], "entry_price": row[3], "timestamp": row[4]}
+            pf[row['ticker']] = {"is_investment": bool(row['is_investment']), "amount_usd": row['amount_usd'], "entry_price": row['entry_price'], "timestamp": row['timestamp']}
     finally:
         conn.close()
     return pf
@@ -509,7 +509,7 @@ def get_investments():
         c = conn.cursor()
         c.execute('SELECT ticker, amount_usd, entry_price FROM wallet WHERE user_id = %s AND is_investment = 1', (int(CHAT_ID),))
         for row in c.fetchall():
-            invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
+            invs[row['ticker']] = {'amount_usd': row['amount_usd'], 'entry_price': row['entry_price']}
     finally:
         conn.close()
     return invs
@@ -521,7 +521,7 @@ def add_realized_pnl(prof_usd):
         c = conn.cursor()
         c.execute('SELECT value FROM global_stats WHERE key = %s', ("realized_pnl",))
         res = c.fetchone()
-        cur_pnl = res[0] if res else 0.0
+        cur_pnl = res['value'] if res else 0.0
         new_val = cur_pnl + float(prof_usd)
         if res: c.execute('UPDATE global_stats SET value = %s WHERE key = %s', (new_val, "realized_pnl"))
         else: c.execute('INSERT INTO global_stats (key, value) VALUES (%s, %s)', ("realized_pnl", new_val))
@@ -537,7 +537,7 @@ def get_realized_pnl():
         c = conn.cursor()
         c.execute('SELECT value FROM global_stats WHERE key = %s', ("realized_pnl",))
         res = c.fetchone()
-        return res[0] if res else 0.0
+        return res['value'] if res else 0.0
     finally:
         conn.close()
 
@@ -1266,7 +1266,8 @@ def test_db(message):
         conn = get_db_connection()
         c = conn.cursor()
         c.execute('SELECT version();')
-        v = c.fetchone()[0]
+        # We need to manually get the first value of the dict or use the key "version"
+        v = list(c.fetchone().values())[0]
         bot.reply_to(message, f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
         conn.close()
     except Exception as e:
