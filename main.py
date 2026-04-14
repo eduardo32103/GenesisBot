@@ -43,16 +43,13 @@ DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_db_connection():
-    global USE_RAM_MODE
-    if USE_RAM_MODE: return None
     try:
-        conn = psycopg2.connect(os.environ.get('DATABASE_URL'), keepalives=1, connect_timeout=15)
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=5)
         return conn
     except Exception as e:
-        USE_RAM_MODE = True
-        print(f"❌ ERROR CRÍTICO DE DB:\n{traceback.format_exc()}")
+        print(f"❌ Error DB: {e}")
         try:
-            bot.send_message(CHAT_ID, "⚠️ FALLA DE AUNTENTICACIÓN (Puerto bloqueado).\n\nEl bot ha activado automáticamente el <b>Modo Sobrevivencia (RAM)</b>. Tus operaciones serán guardadas solo temporalmente hasta que se arregle Railway.", parse_mode="HTML")
+            bot.send_message(CHAT_ID, "⚠️ Base de datos temporalmente fuera de línea, reintentando...")
         except:
             pass
         return None
