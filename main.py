@@ -45,8 +45,11 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def get_db_conn():
     if not DATABASE_URL: return None
     try:
-        return psycopg2.connect(DATABASE_URL, sslmode='require')
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        print("✅ Conexión exitosa a Supabase")
+        return conn
     except Exception as e:
+        print(f"❌ Error de conexión: {e}")
         logging.error(f"❌ Error: No se pudo conectar a Supabase. Detalle: {e}")
         return None
 
