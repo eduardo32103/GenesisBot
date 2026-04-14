@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-PREMIUM_API_KEY = os.environ.get('PREMIUM_API_KEY', '')
+PREMIUM_API_KEY = (os.environ.get('PREMIUM_API_KEY') or '').strip()
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
 
@@ -32,6 +32,8 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
 
 if not PREMIUM_API_KEY:
     logging.warning("⚠️ PREMIUM_API_KEY no configurada. El motor de precios FMP no funcionará.")
+else:
+    logging.info(f"✅ PREMIUM_API_KEY cargada correctamente ({len(PREMIUM_API_KEY)} caracteres).")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -426,57 +428,97 @@ def _get_fmp_symbol(tk):
     # Acciones y ETFs van directo: NVDA, IXC, BNO
     return tk
 
+_FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
+
 def _fetch_fmp_quote(tk):
-    """Consulta precio en vivo desde FMP — fuente única con manejo robusto"""
+    """Consulta precio en vivo desde FMP — con diagnóstico completo"""
+    global _FMP_LAST_ERROR
     if not PREMIUM_API_KEY:
+        _FMP_LAST_ERROR[tk] = "PREMIUM_API_KEY no detectada en Railway."
         logging.error("FMP: PREMIUM_API_KEY no configurada.")
         return None
 
     fmp_symbol = _get_fmp_symbol(tk)
 
-    # Lista de símbolos a intentar (el principal + alternativas para commodities)
+    # Construir lista de símbolos a probar
     symbols_to_try = [fmp_symbol]
-    if tk == "BZ=F":
+    if _is_crypto_ticker(tk):
+        base = tk.replace('-USD', '')
+        symbols_to_try = [f"{base}USD", tk, base]
+    elif tk == "BZ=F":
         symbols_to_try = ["BZUSD", "BCOUSD", "BZ=F"]
     elif tk == "GC=F":
         symbols_to_try = ["GCUSD", "GC=F", "XAUUSD"]
 
+    last_status = 0
+    last_raw = ""
+
+    # === INTENTO 1: /api/v3/quote/{symbol} (ticker directo) ===
     for symbol in symbols_to_try:
-        # Intento 1: /api/v3/quote/ (endpoint principal)
         try:
             url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={PREMIUM_API_KEY}"
             resp = requests.get(url, timeout=8)
+            last_status = resp.status_code
+            last_raw = resp.text[:500] if resp.text else "(vacío)"
+            logging.info(f"LOG FMP: Status Code {resp.status_code} para ticker {symbol}")
+
             if resp.status_code == 200:
                 data = resp.json()
-                if data and isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list) and len(data) > 0:
                     quote = data[0]
                     price = float(quote.get('price', 0) or quote.get('previousClose', 0) or 0)
                     volume = float(quote.get('volume', 0) or 0)
                     if price > 0:
                         logging.info(f"FMP ✅ {tk} ({symbol}): ${fmt_price(price)}")
                         return {'price': price, 'vol': volume}
-                    else:
-                        logging.debug(f"FMP: {symbol} precio=0 en respuesta: {quote}")
-                elif data and isinstance(data, dict):
-                    # Algunos endpoints devuelven dict en vez de lista
+                elif isinstance(data, dict) and data:
                     price = float(data.get('price', 0) or data.get('c', 0) or 0)
                     if price > 0:
                         logging.info(f"FMP ✅ {tk} ({symbol}): ${fmt_price(price)}")
                         return {'price': price, 'vol': 0}
-            elif resp.status_code == 403:
-                logging.warning(f"FMP: 403 Forbidden para {symbol}. Verifica tu plan.")
-            else:
-                logging.debug(f"FMP: HTTP {resp.status_code} para {symbol}")
-        except Exception as e:
-            logging.debug(f"FMP quote error {symbol}: {e}")
+                # Lista vacía = símbolo no reconocido, probar siguiente
+                logging.info(f"FMP: respuesta vacía para {symbol}, probando siguiente...")
 
-        # Intento 2: /api/v3/quote-short/ (endpoint ligero, algunos planes lo soportan)
+            elif resp.status_code == 403:
+                logging.warning(f"FMP: 403 Forbidden para {symbol}.")
+            elif resp.status_code == 401:
+                logging.error(f"FMP: 401 Key inválida.")
+                _FMP_LAST_ERROR[tk] = f"401 Unauthorized. Key rechazada por FMP."
+                return None
+        except Exception as e:
+            logging.warning(f"FMP error {symbol}: {e}")
+            last_raw = str(e)
+
+    # === INTENTO 2: Endpoint de lista completa (solo crypto) ===
+    if _is_crypto_ticker(tk):
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/quotes/crypto?apikey={PREMIUM_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            logging.info(f"LOG FMP: Status Code {resp.status_code} para lista crypto completa")
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    target = _get_fmp_symbol(tk).upper()
+                    for item in data:
+                        sym = (item.get('symbol', '') or '').upper()
+                        if sym == target or sym == tk.replace('-', ''):
+                            price = float(item.get('price', 0) or 0)
+                            if price > 0:
+                                logging.info(f"FMP (lista crypto) ✅ {tk}: ${fmt_price(price)}")
+                                return {'price': price, 'vol': float(item.get('volume', 0) or 0)}
+                    logging.warning(f"FMP: {tk} no encontrado en lista crypto ({len(data)} activos).")
+        except Exception as e:
+            logging.warning(f"FMP lista crypto error: {e}")
+
+    # === INTENTO 3: quote-short ===
+    for symbol in symbols_to_try:
         try:
             url = f"https://financialmodelingprep.com/api/v3/quote-short/{symbol}?apikey={PREMIUM_API_KEY}"
             resp = requests.get(url, timeout=5)
+            logging.info(f"LOG FMP (short): Status Code {resp.status_code} para {symbol}")
             if resp.status_code == 200:
                 data = resp.json()
-                if data and isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list) and len(data) > 0:
                     price = float(data[0].get('price', 0))
                     if price > 0:
                         logging.info(f"FMP (short) ✅ {tk} ({symbol}): ${fmt_price(price)}")
@@ -484,7 +526,9 @@ def _fetch_fmp_quote(tk):
         except Exception:
             pass
 
-    logging.warning(f"FMP: TODOS los intentos fallaron para {tk} (símbolos probados: {symbols_to_try})")
+    # Guardar error para diagnóstico visible
+    _FMP_LAST_ERROR[tk] = f"Status {last_status} | Símbolos: {symbols_to_try} | Respuesta: {last_raw[:200]}"
+    logging.error(f"FMP FALLÓ para {tk}: {_FMP_LAST_ERROR[tk]}")
     return None
 
 def _sanity_check_price(tk, new_price):
@@ -709,12 +753,14 @@ def perform_deep_analysis(ticker):
     # === HARD-STOP: SIN PRECIO VERIFICADO = SIN ANÁLISIS ===
     if not final_price:
         fmp_sym = _get_fmp_symbol(tk)
+        diag = _FMP_LAST_ERROR.get(tk, 'Sin información de error')
         return (f"⚠️ <b>Error de conexión con FMP</b>\n\n"
-                f"No se pudo obtener el precio en vivo de {display_name} "
-                f"(símbolo FMP: {fmp_sym}).\n\n"
-                f"🔑 Verifica que PREMIUM_API_KEY esté activa en Railway.\n"
-                f"🛑 Análisis BLOQUEADO para evitar datos inventados.\n"
-                f"Intenta de nuevo en unos segundos.")
+                f"No se pudo obtener el precio de {display_name} "
+                f"(símbolo: {fmp_sym}).\n\n"
+                f"🔍 <b>Diagnóstico:</b>\n<code>{diag}</code>\n\n"
+                f"🔑 Key cargada: {'Sí' if PREMIUM_API_KEY else 'NO'} "
+                f"({len(PREMIUM_API_KEY)} chars)\n"
+                f"🛑 Análisis BLOQUEADO para evitar datos inventados.")
 
     if tech:
         tech_block = (
