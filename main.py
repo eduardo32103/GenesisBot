@@ -657,12 +657,43 @@ def _get_fmp_symbol(tk):
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
 def _fetch_fmp_quote(tk):
-    """Consulta precio en vivo desde FMP — endpoints STABLE (post-agosto 2025)"""
+    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - v3 endpoints"""
     global _FMP_LAST_ERROR
     if not PREMIUM_API_KEY:
         _FMP_LAST_ERROR[tk] = "PREMIUM_API_KEY no detectada en Railway."
-        logging.error("FMP: PREMIUM_API_KEY no configurada.")
+        logging.error("FMP: API KEY no configurada.")
         return None
+
+    fmp_symbol = _get_fmp_symbol(tk)
+    symbols_to_try = [fmp_symbol]
+    if _is_crypto_ticker(tk):
+        symbols_to_try = [f"{tk.replace('-USD', '')}USD", tk]
+
+    last_status = 0
+    for symbol in symbols_to_try:
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={PREMIUM_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            last_status = resp.status_code
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    quote = data[0]
+                    price = float(quote.get('price', 0))
+                    volume = float(quote.get('volume', 0))
+                    if price > 0:
+                        logging.info(f"FMP ✓ {tk} ({symbol}): ${fmt_price(price)}")
+                        return {'price': price, 'vol': volume}
+            elif resp.status_code == 401:
+                logging.error("FMP: 401 Key rechazada.")
+                return None
+        except Exception as e:
+            logging.error(f"FMP error fetching {symbol}: {e}")
+
+    _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
+    logging.warning(f"FMP falló para {tk}. No hay otra fuente válida.")
+    return None
 
     fmp_symbol = _get_fmp_symbol(tk)
 
@@ -1525,6 +1556,10 @@ def handle_text(message):
              tk = remap_ticker(raw_input)
              display_name = get_display_name(tk)
 
+             validation = get_safe_ticker_price(tk)
+             if validation is None:
+                 bot.reply_to(message, "⚠️ Activo no encontrado en FMP. No se agregó.")
+                 return
              res = add_ticker(tk)
              if res == "DB_ERROR":
                  bot.reply_to(message, f"🚨 ERROR DE BASE DE DATOS: No se pudo conectar a Supabase. Revisa tu DATABASE_URL.")
