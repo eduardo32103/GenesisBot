@@ -427,36 +427,64 @@ def _get_fmp_symbol(tk):
     return tk
 
 def _fetch_fmp_quote(tk):
-    """Consulta el precio en vivo directamente desde FMP (fuente única)"""
+    """Consulta precio en vivo desde FMP — fuente única con manejo robusto"""
     if not PREMIUM_API_KEY:
         logging.error("FMP: PREMIUM_API_KEY no configurada.")
         return None
 
     fmp_symbol = _get_fmp_symbol(tk)
 
-    try:
-        resp = requests.get(
-            f"https://financialmodelingprep.com/api/v3/quote/{fmp_symbol}?apikey={PREMIUM_API_KEY}",
-            timeout=8
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and isinstance(data, list) and len(data) > 0:
-                quote = data[0]
-                price = float(quote.get('price', 0))
-                volume = float(quote.get('volume', 0))
-                if price > 0:
-                    logging.info(f"FMP ✅ {tk} ({fmp_symbol}): ${fmt_price(price)}")
-                    return {'price': price, 'vol': volume}
-                else:
-                    logging.warning(f"FMP: {fmp_symbol} devolvió precio 0.")
-            else:
-                logging.warning(f"FMP: respuesta vacía para {fmp_symbol}.")
-        else:
-            logging.warning(f"FMP: HTTP {resp.status_code} para {fmp_symbol}.")
-    except Exception as e:
-        logging.error(f"FMP error para {fmp_symbol}: {e}")
+    # Lista de símbolos a intentar (el principal + alternativas para commodities)
+    symbols_to_try = [fmp_symbol]
+    if tk == "BZ=F":
+        symbols_to_try = ["BZUSD", "BCOUSD", "BZ=F"]
+    elif tk == "GC=F":
+        symbols_to_try = ["GCUSD", "GC=F", "XAUUSD"]
 
+    for symbol in symbols_to_try:
+        # Intento 1: /api/v3/quote/ (endpoint principal)
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={PREMIUM_API_KEY}"
+            resp = requests.get(url, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    quote = data[0]
+                    price = float(quote.get('price', 0) or quote.get('previousClose', 0) or 0)
+                    volume = float(quote.get('volume', 0) or 0)
+                    if price > 0:
+                        logging.info(f"FMP ✅ {tk} ({symbol}): ${fmt_price(price)}")
+                        return {'price': price, 'vol': volume}
+                    else:
+                        logging.debug(f"FMP: {symbol} precio=0 en respuesta: {quote}")
+                elif data and isinstance(data, dict):
+                    # Algunos endpoints devuelven dict en vez de lista
+                    price = float(data.get('price', 0) or data.get('c', 0) or 0)
+                    if price > 0:
+                        logging.info(f"FMP ✅ {tk} ({symbol}): ${fmt_price(price)}")
+                        return {'price': price, 'vol': 0}
+            elif resp.status_code == 403:
+                logging.warning(f"FMP: 403 Forbidden para {symbol}. Verifica tu plan.")
+            else:
+                logging.debug(f"FMP: HTTP {resp.status_code} para {symbol}")
+        except Exception as e:
+            logging.debug(f"FMP quote error {symbol}: {e}")
+
+        # Intento 2: /api/v3/quote-short/ (endpoint ligero, algunos planes lo soportan)
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/quote-short/{symbol}?apikey={PREMIUM_API_KEY}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    price = float(data[0].get('price', 0))
+                    if price > 0:
+                        logging.info(f"FMP (short) ✅ {tk} ({symbol}): ${fmt_price(price)}")
+                        return {'price': price, 'vol': 0}
+        except Exception:
+            pass
+
+    logging.warning(f"FMP: TODOS los intentos fallaron para {tk} (símbolos probados: {symbols_to_try})")
     return None
 
 def _sanity_check_price(tk, new_price):
@@ -680,10 +708,12 @@ def perform_deep_analysis(ticker):
 
     # === HARD-STOP: SIN PRECIO VERIFICADO = SIN ANÁLISIS ===
     if not final_price:
-        return ("⚠️ <b>Error de conexión con el Exchange</b>\n\n"
-                f"No se pudo obtener el precio en vivo de {display_name} desde ninguna fuente "
-                f"(CCXT Binance, Finnhub, CoinGecko).\n\n"
-                f"🛑 El análisis ha sido BLOQUEADO para evitar datos inventados.\n"
+        fmp_sym = _get_fmp_symbol(tk)
+        return (f"⚠️ <b>Error de conexión con FMP</b>\n\n"
+                f"No se pudo obtener el precio en vivo de {display_name} "
+                f"(símbolo FMP: {fmp_sym}).\n\n"
+                f"🔑 Verifica que PREMIUM_API_KEY esté activa en Railway.\n"
+                f"🛑 Análisis BLOQUEADO para evitar datos inventados.\n"
                 f"Intenta de nuevo en unos segundos.")
 
     if tech:
