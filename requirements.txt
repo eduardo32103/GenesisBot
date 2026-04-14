@@ -3,4 +3,4 @@ beautifulsoup4>=4.11.0
 yfinance>=0.2.0
 pandas>=1.5.0
 pyTelegramBotAPI>=4.14.0
-openai>=1.0.0
+google-genai>=0.2.0
