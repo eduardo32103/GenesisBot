@@ -589,21 +589,84 @@ def verify_1m_realtime_data(ticker):
     return get_safe_ticker_price(ticker)
 
 
-def check_geopolitical_news():
-    search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
-    HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction", "embargo", "explosion", "guerra", "ataque", "tensión", "misil", "sanciones", "rates", "fed", "trump", "powell"]
-    news_alerts = []
+def _fetch_fmp_news(limit=10):
+    """Extrae noticias premium del mercado financiero via FMP /stable/news"""
+    if not PREMIUM_API_KEY:
+        return []
+
+    # Intento 1: endpoint stable (cuentas post-agosto 2025)
     try:
-        response = requests.get(search_url, timeout=5)
-        if response.status_code == 200:
-            root = ET.fromstring(response.text)
-            for item in root.findall('.//item'):
-                title = item.find('title').text
-                if any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
-                    news_alerts.append(title)
-                    if len(news_alerts) >= 5: break
-    except: pass
+        url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={PREMIUM_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        logging.info(f"LOG FMP [stable/news]: Status {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data
+    except Exception as e:
+        logging.debug(f"FMP stable/news error: {e}")
+
+    # Intento 2: endpoint legacy v3
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/stock_news?limit={limit}&apikey={PREMIUM_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        logging.info(f"LOG FMP [v3/stock_news]: Status {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data
+    except Exception as e:
+        logging.debug(f"FMP v3/stock_news error: {e}")
+
+    # Intento 3: general news
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/fmp/articles?page=0&size={limit}&apikey={PREMIUM_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict) and 'content' in data:
+                return data['content'][:limit]
+            elif isinstance(data, list):
+                return data[:limit]
+    except Exception:
+        pass
+
+    return []
+
+
+def check_geopolitical_news():
+    """Monitor automático: extrae noticias FMP y filtra por alto impacto"""
+    HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction",
+                            "embargo", "explosion", "guerra", "ataque", "tensión", "misil",
+                            "sanciones", "rates", "fed", "trump", "powell", "crash", "recession",
+                            "tariff", "default", "crisis"]
+    news_alerts = []
+
+    # Fuente principal: FMP Premium
+    fmp_news = _fetch_fmp_news(15)
+    if fmp_news:
+        for article in fmp_news:
+            title = article.get('title', '') or article.get('text', '') or ''
+            if title and any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
+                news_alerts.append(title)
+                if len(news_alerts) >= 5: break
+
+    # Fallback: Google News RSS si FMP no devuelve nada
+    if not news_alerts:
+        try:
+            search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
+            response = requests.get(search_url, timeout=5)
+            if response.status_code == 200:
+                root = ET.fromstring(response.text)
+                for item in root.findall('.//item'):
+                    title = item.find('title').text
+                    if any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
+                        news_alerts.append(title)
+                        if len(news_alerts) >= 5: break
+        except: pass
+
     return news_alerts
+
 
 def gpt_advanced_geopolitics(news_list, manual=False):
     if not news_list or not OPENAI_API_KEY: return None
@@ -619,64 +682,70 @@ def gpt_advanced_geopolitics(news_list, manual=False):
         return res
     except: return None
 
+
 def generar_reporte_macro_manual():
-    """Reporte macro dedicado para el BOTÓN MANUAL. Siempre devuelve contenido útil."""
-    # Paso 1: Recoger noticias amplias (sin filtro de keywords para no perder contexto)
-    all_news = []
-    try:
-        # Fuente 1: Google News RSS amplio (mercados + geopolítica)
-        for query in ["stock+market+today", "geopolitics+economy+2026", "oil+gold+bitcoin+market"]:
-            url = f"https://news.google.com/rss/search?q={query}&hl=es"
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                root = ET.fromstring(resp.text)
-                for item in root.findall('.//item')[:3]:
-                    title = item.find('title').text
-                    if title and title not in all_news:
-                        all_news.append(title)
-    except: pass
+    """Reporte macro PREMIUM: FMP News + GPT Impact Assessment (GÉNESIS Intelligence)"""
 
-    # Fuente 2: noticias de activos del usuario vía yfinance
-    try:
-        for tk in get_tracked_tickers()[:3]:
-            ticker_obj = yf.Ticker(remap_ticker(tk))
-            for n in (ticker_obj.news or [])[:2]:
-                title = n.get('title', '')
-                if title and title not in all_news:
-                    all_news.append(title)
-    except: pass
+    # Paso 1: Extraer noticias premium de FMP
+    fmp_news = _fetch_fmp_news(10)
 
-    # Fallback: usar las noticias filtradas originales
-    if not all_news:
-        all_news = check_geopolitical_news()
+    if not fmp_news:
+        return ("⚠️ <b>Feed de noticias premium temporalmente fuera de línea.</b>\n\n"
+                "No se pudieron extraer titulares de FMP en este momento.\n"
+                "Intenta en unos minutos.")
 
-    if not all_news:
-        return ("---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n"
-                "• No se detectaron titulares relevantes en este momento.\n"
-                "• Los mercados parecen operar sin catalizadores nuevos.\n"
-                "• Recomendación: Mantener posiciones actuales.\n"
-                "---\n📊 Sentimiento General: <b>Neutral</b>")
+    # Paso 2: Preparar los titulares para GPT
+    headlines = []
+    for article in fmp_news[:6]:
+        title = article.get('title', '') or ''
+        symbol = article.get('symbol', '') or article.get('tickers', '') or ''
+        source = article.get('site', '') or article.get('source', '') or ''
+        if title:
+            entry = title
+            if symbol:
+                entry += f" [{symbol}]"
+            if source:
+                entry += f" (Fuente: {source})"
+            headlines.append(entry)
 
-    # Paso 2: Prompt estructurado a GPT
+    if not headlines:
+        return ("⚠️ <b>Feed de noticias premium temporalmente fuera de línea.</b>\n\n"
+                "Los titulares no contienen datos procesables.")
+
+    # Paso 3: GPT Impact Assessment (GÉNESIS Intelligence)
     if not OPENAI_API_KEY:
-        bullets = "\n".join([f"• {n}" for n in all_news[:5]])
-        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento General: <b>Pendiente</b>"
+        # Sin IA: mostrar titulares crudos
+        bullets = "\n".join([f"• {h}" for h in headlines[:5]])
+        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento: <b>Pendiente (sin IA)</b>"
 
-    news_text = "\n".join([f"- {n}" for n in all_news[:8]])
-    prompt = (f"Eres un analista macro institucional. Basado en estos titulares recientes:\n{news_text}\n\n"
-              f"Genera un REPORTE MACRO estructurado con EXACTAMENTE este formato:\n"
-              f"• [Análisis de la noticia más relevante y su impacto en mercados]\n"
-              f"• [Segunda noticia relevante y sectores afectados]\n"
-              f"• [Tercera noticia o tendencia macro global]\n\n"
-              f"Al final, dictamina el SENTIMIENTO GENERAL del mercado: Alcista, Bajista, Neutral o Tenso.\n"
-              f"RESPONDE ESTRICTAMENTE EN ESPAÑOL. Sé conciso y directo.")
+    news_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
+    prompt = (
+        f"Eres GÉNESIS, un sistema de inteligencia de mercados de grado institucional.\n\n"
+        f"TITULARES EN VIVO (fuente: Financial Modeling Prep):\n{news_text}\n\n"
+        f"INSTRUCCIONES ESTRICTAS:\n"
+        f"1. Selecciona las 3 noticias de MAYOR IMPACTO para los mercados globales.\n"
+        f"2. Para CADA una, genera EXACTAMENTE este formato:\n\n"
+        f"📰 [Titular traducido al español - conciso]\n"
+        f"🔥 Nivel de Impacto: [Bajo / Medio / Alto]\n"
+        f"🎯 Activos Afectados: [Lista: BTC, NVDA, Oro, Petróleo, etc.]\n"
+        f"🧠 [Comentario de 1 línea sobre cómo cambia la dirección del mercado]\n\n"
+        f"3. Al final, dictamina:\n"
+        f"📊 Sentimiento General del Mercado: [Alcista 🟢 / Bajista 🔴 / Neutral ⚪ / Tenso ⚠️]\n\n"
+        f"REGLAS: No inventes noticias. Solo usa los titulares dados. ESPAÑOL ESTRICTO."
+    )
+
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=400).choices[0].message.content.strip()
-        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{res}"
-    except:
-        bullets = "\n".join([f"• {n}" for n in all_news[:5]])
-        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento General: <b>Sin determinar</b>"
+        res = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600
+        ).choices[0].message.content.strip()
+        return f"---\n🌎 <b>REPORTE MACRO — GÉNESIS INTELLIGENCE</b> 🌎\n---\n\n{res}"
+    except Exception as e:
+        logging.error(f"GPT macro error: {e}")
+        bullets = "\n".join([f"• {h}" for h in headlines[:5]])
+        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento: <b>Sin determinar</b>"
 
 def fetch_intraday_data(ticker):
     tk = remap_ticker(ticker)
@@ -1229,6 +1298,110 @@ def verificar_noticias_cartera():
                 continue
 
 
+# Cache de precios de referencia para detectar movimientos >3%
+_PROTECTION_BASELINE = {}  # {ticker: {'price': float, 'timestamp': datetime}}
+
+def monitor_proteccion_activos():
+    """SISTEMA GÉNESIS: Monitor de protección de activos en la wallet.
+    Compara precio FMP en vivo vs precio de referencia. Alerta si >3% de movimiento."""
+    investments = get_investments()
+    if not investments:
+        return
+
+    for inv in investments:
+        tk = remap_ticker(inv['ticker'])
+        display_name = get_display_name(tk)
+
+        # Obtener precio FMP en vivo
+        live_data = get_safe_ticker_price(tk)
+        if not live_data:
+            continue
+
+        current_price = live_data['price']
+
+        # Establecer baseline si no existe
+        if tk not in _PROTECTION_BASELINE:
+            _PROTECTION_BASELINE[tk] = {'price': current_price, 'timestamp': datetime.now()}
+            continue
+
+        baseline = _PROTECTION_BASELINE[tk]['price']
+        if baseline <= 0:
+            _PROTECTION_BASELINE[tk] = {'price': current_price, 'timestamp': datetime.now()}
+            continue
+
+        # Calcular variación porcentual
+        pct_change = ((current_price - baseline) / baseline) * 100
+
+        # Solo alertar si movimiento > 3%
+        if abs(pct_change) < 3.0:
+            continue
+
+        # Deduplicar: no alertar dos veces por el mismo rango de movimiento
+        alert_hash = f"PROT_{tk}_{int(pct_change)}"
+        if check_and_add_seen_event(alert_hash):
+            continue
+
+        # Actualizar baseline al precio actual
+        _PROTECTION_BASELINE[tk] = {'price': current_price, 'timestamp': datetime.now()}
+
+        # Determinar dirección
+        direction = "📉 CAÍDA" if pct_change < 0 else "📈 SUBIDA"
+        emoji = "🔴" if pct_change < 0 else "🟢"
+
+        # Obtener contexto SMC si está disponible
+        smc_context = ""
+        smc = SMC_LEVELS_MEMORY.get(tk)
+        if smc:
+            if current_price < smc.get('sup', 0):
+                smc_context = f"\n⚠️ Precio POR DEBAJO del Soporte SMC (${fmt_price(smc['sup'])}). Zona de riesgo."
+            elif current_price > smc.get('res', 0):
+                smc_context = f"\n✅ Precio POR ENCIMA de Resistencia SMC (${fmt_price(smc['res'])}). Posible breakout."
+            else:
+                smc_context = f"\n📊 Rango SMC: Soporte ${fmt_price(smc['sup'])} | Resistencia ${fmt_price(smc['res'])}"
+
+        # Generar veredicto con IA si está disponible
+        veredicto = ""
+        if OPENAI_API_KEY:
+            try:
+                client = OpenAI(api_key=OPENAI_API_KEY)
+                prompt = (
+                    f"Eres GÉNESIS, un sistema de protección de activos institucional.\n"
+                    f"Activo: {display_name} ({tk})\n"
+                    f"Precio actual: ${fmt_price(current_price)}\n"
+                    f"Movimiento: {pct_change:+.2f}% en las últimas horas\n"
+                    f"{smc_context}\n\n"
+                    f"Da un VEREDICTO en 1-2 líneas: ¿Mantener, vender parcial, o reforzar posición?\n"
+                    f"ESPAÑOL ESTRICTO. Sé directo y profesional."
+                )
+                res = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=150
+                ).choices[0].message.content.strip()
+                veredicto = f"\n\n🧠 <b>VEREDICTO GÉNESIS:</b>\n{res}"
+            except Exception as e:
+                logging.debug(f"Protection GPT error: {e}")
+
+        # Construir y enviar alerta
+        entry_price = inv.get('entry_price', 0)
+        entry_info = f"\n🎯 Precio de entrada: ${fmt_price(entry_price)}" if entry_price > 0 else ""
+
+        alert_msg = (
+            f"---\n🚨 <b>SISTEMA GÉNESIS — PROTECCIÓN DE ACTIVOS</b> 🚨\n---\n\n"
+            f"{emoji} <b>{direction} DETECTADA</b>\n\n"
+            f"💰 Activo: <b>{display_name}</b>\n"
+            f"📉 Movimiento: <b>{pct_change:+.2f}%</b>\n"
+            f"💵 Precio FMP: <b>${fmt_price(current_price)}</b>{entry_info}"
+            f"{smc_context}"
+            f"{veredicto}\n\n---"
+        )
+
+        try:
+            bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Error enviando alerta de protección para {tk}: {e}")
+
+
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
     logging.info("Arrancando Centinela Quirúrgico (30s)...")
@@ -1247,12 +1420,15 @@ def background_loop_proactivo():
     """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÍAS)"""
     boot_smc_levels_once()
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
+    protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
+    _PROTECTION_INTERVAL = 10  # ~5 minutos (10 ticks * 30s)
     while True:
         try:
             time.sleep(30)
             now = datetime.now()
             purge_old_events()
             sentinel_tick_counter += 1
+            protection_tick_counter += 1
 
             raw_news = check_geopolitical_news()
             unique_news = []
@@ -1273,6 +1449,14 @@ def background_loop_proactivo():
                     verificar_noticias_cartera()
                 except Exception as e:
                     logging.error(f"Error en Centinela de Noticias: {e}")
+
+            # === MONITOR DE PROTECCIÓN DE ACTIVOS: cada ~5 minutos ===
+            if protection_tick_counter >= _PROTECTION_INTERVAL:
+                protection_tick_counter = 0
+                try:
+                    monitor_proteccion_activos()
+                except Exception as e:
+                    logging.error(f"Error en Monitor de Protección: {e}")
 
             for tk in get_tracked_tickers():
                 intra = fetch_intraday_data(tk)
