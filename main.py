@@ -70,9 +70,44 @@ def _build_backup_payload():
         "timestamp": datetime.now().isoformat()
     }
 
+def _save_local_portfolio_json():
+    """Guarda portfolio.json como respaldo local persistente en disco"""
+    try:
+        portfolio = get_all_portfolio_data()
+        realized = get_realized_pnl()
+        backup_data = {}
+        for tk, info in portfolio.items():
+            backup_data[tk] = {
+                "is_investment": int(info.get("is_investment", 0)),
+                "amount_usd": float(info.get("amount_usd", 0)),
+                "entry_price": float(info.get("entry_price", 0)),
+                "timestamp": info.get("timestamp", "")
+            }
+
+        # Guardar en múltiples ubicaciones para máxima persistencia
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        paths = [
+            os.path.join(script_dir, 'portfolio.json'),
+            os.path.join(DATA_DIR, 'portfolio.json'),
+        ]
+        for path in paths:
+            try:
+                with open(path, 'w') as f:
+                    json.dump(backup_data, f, ensure_ascii=False, indent=2)
+                logging.debug(f"Portfolio guardado en {path}")
+            except Exception:
+                pass
+    except Exception as e:
+        logging.debug(f"Error guardando portfolio local: {e}")
+
 def save_state_to_telegram():
-    """Guarda el estado completo como mensaje SILENCIOSO en Telegram"""
+    """Guarda el estado completo como mensaje SILENCIOSO en Telegram.
+    Si BACKUP_CHAT_ID == CHAT_ID, borra el mensaje anterior para no ensuciar el chat."""
     global _last_backup_msg_id
+
+    # SIEMPRE guardar en disco local primero (ultra-rápido, nunca falla)
+    _save_local_portfolio_json()
+
     try:
         payload = _build_backup_payload()
         json_str = json.dumps(payload, ensure_ascii=False)
@@ -94,60 +129,86 @@ def save_state_to_telegram():
                 logging.info(f"✅ Backup actualizado silenciosamente (msg_id: {_last_backup_msg_id})")
                 return
             except Exception:
-                pass  # Si falla editar (msg borrado, etc), enviar uno nuevo
+                # Si falla editar (msg borrado, etc), intentar borrar y enviar nuevo
+                try:
+                    bot.delete_message(BACKUP_CHAT_ID, _last_backup_msg_id)
+                except Exception:
+                    pass
 
         # Enviar mensaje nuevo SILENCIOSO (sin notificación al usuario)
         msg = bot.send_message(BACKUP_CHAT_ID, backup_text, disable_notification=True)
         _last_backup_msg_id = msg.message_id
         logging.info(f"✅ Backup silencioso enviado (msg_id: {_last_backup_msg_id})")
 
+        # Si el backup va al chat principal, borrarlo después de 2s para que no se vea
+        if str(BACKUP_CHAT_ID) == str(CHAT_ID):
+            try:
+                import time as _time
+                _time.sleep(1)
+                bot.delete_message(CHAT_ID, msg.message_id)
+                logging.info(f"Backup eliminado del chat principal (era visible).")
+                # NO resetear _last_backup_msg_id: ya no sirve para editar, se crea nuevo la próxima vez
+                _last_backup_msg_id = None
+            except Exception:
+                pass  # Si no puede borrar, al menos es silencioso
+
     except Exception as e:
         logging.error(f"Error guardando backup en Telegram: {e}")
 
 def restore_state_from_telegram():
-    """Intenta recuperar el estado desde mensajes recientes de Telegram"""
+    """Recupera el estado de la cartera con múltiples fuentes, en orden de prioridad"""
     global _last_backup_msg_id
+
+    # Verificar si la DB local ya tiene datos con inversiones REALES
+    existing = get_tracked_tickers()
+    investments = get_investments()
+    if existing and investments:
+        logging.info(f"DB local tiene {len(existing)} activos y {len(investments)} inversiones. No se necesita restaurar.")
+        return True
+
+    logging.info("DB local vacía o sin inversiones. Buscando backup...")
+
+    # FUENTE 1: Buscar backup en updates recientes de Telegram
     try:
-        # Verificar si la DB local ya tiene datos
-        existing = get_tracked_tickers()
-        if existing:
-            logging.info(f"DB local tiene {len(existing)} activos. No se necesita restaurar.")
-            return True
-
-        logging.info("DB local vacía. Buscando backup en Telegram...")
-
-        # Buscar en las últimas actualizaciones del bot
-        # Método: usar getUpdates para buscar mensajes con el prefijo
         updates = bot.get_updates(limit=100, timeout=5)
-        for update in reversed(updates):  # Del más reciente al más antiguo
+        for update in reversed(updates):
             msg = update.message or update.edited_message
             if msg and msg.text and msg.text.startswith(BACKUP_PREFIX):
                 b64_data = msg.text.replace(BACKUP_PREFIX, "").strip()
-                _restore_from_b64(b64_data)
-                _last_backup_msg_id = msg.message_id
-                logging.info(f"✅ RESTAURACIÓN AUTOMÁTICA EXITOSA desde Telegram (msg_id: {msg.message_id})")
-                return True
+                if b64_data:
+                    _restore_from_b64(b64_data)
+                    _last_backup_msg_id = msg.message_id
+                    logging.info(f"✅ RESTAURACIÓN desde Telegram updates exitosa (msg_id: {msg.message_id})")
+                    return True
+    except Exception as e:
+        logging.debug(f"No se encontró backup en updates: {e}")
 
-        # Si no encontramos en updates, buscar con el método de Telegram
-        # Intentar leer mensajes fijados del chat
-        try:
-            chat_info = bot.get_chat(BACKUP_CHAT_ID)
-            pinned = chat_info.pinned_message
-            if pinned and pinned.text and pinned.text.startswith(BACKUP_PREFIX):
-                b64_data = pinned.text.replace(BACKUP_PREFIX, "").strip()
+    # FUENTE 2: Mensaje fijado en el chat de backup
+    try:
+        chat_info = bot.get_chat(BACKUP_CHAT_ID)
+        pinned = chat_info.pinned_message
+        if pinned and pinned.text and pinned.text.startswith(BACKUP_PREFIX):
+            b64_data = pinned.text.replace(BACKUP_PREFIX, "").strip()
+            if b64_data:
                 _restore_from_b64(b64_data)
                 _last_backup_msg_id = pinned.message_id
                 logging.info("✅ RESTAURACIÓN desde mensaje fijado exitosa!")
                 return True
+    except Exception:
+        pass
+
+    # FUENTE 3: portfolio.json del repositorio
+    restored = _restore_from_repo_json()
+    if restored:
+        # Guardar inmediatamente en Telegram para futuras restauraciones
+        try:
+            save_state_to_telegram()
         except Exception:
             pass
+        return True
 
-        # Último recurso: cargar desde portfolio.json del repositorio
-        return _restore_from_repo_json()
-
-    except Exception as e:
-        logging.error(f"Error en restauración desde Telegram: {e}")
-        return _restore_from_repo_json()
+    logging.warning("⚠️ No se encontró ningún respaldo. Cartera inicia vacía.")
+    return False
 
 def _restore_from_b64(b64_data):
     """Restaura la base de datos desde un string Base64"""
@@ -377,7 +438,8 @@ def reset_total_db():
         # Resetear PnL acumulado
         c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", 0.0)')
         conn.commit()
-    save_state_to_telegram()
+    # NO llamar a save_state_to_telegram() aquí para evitar que el código Base64
+    # aparezca en el chat. El backup se hará automáticamente en el próximo ciclo.
     logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
 
 
@@ -1308,8 +1370,8 @@ def monitor_proteccion_activos():
     if not investments:
         return
 
-    for inv in investments:
-        tk = remap_ticker(inv['ticker'])
+    for tk_key, inv_data in investments.items():
+        tk = remap_ticker(tk_key)
         display_name = get_display_name(tk)
 
         # Obtener precio FMP en vivo
@@ -1383,7 +1445,7 @@ def monitor_proteccion_activos():
                 logging.debug(f"Protection GPT error: {e}")
 
         # Construir y enviar alerta
-        entry_price = inv.get('entry_price', 0)
+        entry_price = inv_data.get('entry_price', 0)
         entry_info = f"\n🎯 Precio de entrada: ${fmt_price(entry_price)}" if entry_price > 0 else ""
 
         alert_msg = (
