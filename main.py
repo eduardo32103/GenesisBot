@@ -1,4 +1,4 @@
-import os, psycopg2, telebot
+import os, pg8000.dbapi, telebot\nimport urllib.parse
 import logging
 import base64
 import requests
@@ -43,7 +43,16 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def get_db_connection():
     try:
         url = os.environ.get('DATABASE_URL')
-        return psycopg2.connect(url, sslmode='require', connect_timeout=5)
+        if not url: return None
+        r = urllib.parse.urlparse(url)
+        return pg8000.dbapi.connect(
+            user=r.username,
+            password=r.password,
+            host=r.hostname,
+            port=r.port or 5432,
+            database=r.path[1:],
+            timeout=10
+        )
     except Exception as e:
         print(f"Error: {e}")
         try:
