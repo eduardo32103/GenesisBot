@@ -100,25 +100,66 @@ def _save_local_portfolio_json():
     except Exception as e:
         logging.debug(f"Error guardando portfolio local: {e}")
 
+def _load_backup_msg_id():
+    """Carga el message_id del último backup desde un archivo local"""
+    paths = [
+        os.path.join(DATA_DIR, '.backup_msg_id'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.backup_msg_id'),
+    ]
+    for p in paths:
+        try:
+            if os.path.exists(p):
+                with open(p, 'r') as f:
+                    return int(f.read().strip())
+        except Exception:
+            pass
+    return None
+
+def _save_backup_msg_id(msg_id):
+    """Guarda el message_id del backup en disco para sobrevivir reinicios"""
+    paths = [
+        os.path.join(DATA_DIR, '.backup_msg_id'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.backup_msg_id'),
+    ]
+    for p in paths:
+        try:
+            with open(p, 'w') as f:
+                f.write(str(msg_id))
+        except Exception:
+            pass
+
 def save_state_to_telegram():
-    """Guarda el estado completo como mensaje SILENCIOSO en Telegram.
-    Si BACKUP_CHAT_ID == CHAT_ID, borra el mensaje anterior para no ensuciar el chat."""
+    """Guarda el estado completo en Telegram de forma INVISIBLE y PERSISTENTE.
+    Estrategia: editar siempre el mismo mensaje (nunca borrarlo)."""
     global _last_backup_msg_id
 
-    # SIEMPRE guardar en disco local primero (ultra-rápido, nunca falla)
+    # SIEMPRE guardar en disco local primero
     _save_local_portfolio_json()
 
     try:
         payload = _build_backup_payload()
+        # Verificar que el payload tenga datos reales antes de guardar
+        portfolio = payload.get("portfolio", {})
+        has_real_data = any(
+            info.get("is_investment") or info.get("entry_price", 0) > 0
+            for info in portfolio.values()
+        ) if portfolio else False
+
+        if not portfolio:
+            logging.info("BACKUP: Portfolio vacío, no se guarda backup.")
+            return
+
         json_str = json.dumps(payload, ensure_ascii=False)
         b64 = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
-
         backup_text = f"{BACKUP_PREFIX}\n{b64}"
 
-        # Log interno de Railway (nunca visible para Eduardo)
-        logging.info(f"BACKUP_DB_LOG: estado guardado ({len(b64)} bytes)")
+        logging.info(f"BACKUP_DB_LOG: {len(portfolio)} activos ({len(b64)} bytes)")
 
-        # Si tenemos un mensaje anterior, editarlo en vez de crear uno nuevo
+        # Cargar msg_id desde disco si no lo tenemos en memoria
+        if not _last_backup_msg_id:
+            _last_backup_msg_id = _load_backup_msg_id()
+
+        # ESTRATEGIA 1: Editar el mensaje existente (invisible para Eduardo)
         if _last_backup_msg_id:
             try:
                 bot.edit_message_text(
@@ -126,49 +167,78 @@ def save_state_to_telegram():
                     chat_id=BACKUP_CHAT_ID,
                     message_id=_last_backup_msg_id
                 )
-                logging.info(f"✅ Backup actualizado silenciosamente (msg_id: {_last_backup_msg_id})")
+                logging.info(f"✅ Backup actualizado (msg_id: {_last_backup_msg_id})")
                 return
-            except Exception:
-                # Si falla editar (msg borrado, etc), intentar borrar y enviar nuevo
-                try:
-                    bot.delete_message(BACKUP_CHAT_ID, _last_backup_msg_id)
-                except Exception:
-                    pass
+            except Exception as e:
+                logging.debug(f"No se pudo editar backup msg {_last_backup_msg_id}: {e}")
+                _last_backup_msg_id = None
 
-        # Enviar mensaje nuevo SILENCIOSO (sin notificación al usuario)
+        # ESTRATEGIA 2: Crear mensaje nuevo y fijarlo
         msg = bot.send_message(BACKUP_CHAT_ID, backup_text, disable_notification=True)
         _last_backup_msg_id = msg.message_id
-        logging.info(f"✅ Backup silencioso enviado (msg_id: {_last_backup_msg_id})")
+        _save_backup_msg_id(msg.message_id)
+        logging.info(f"✅ Backup nuevo enviado (msg_id: {_last_backup_msg_id})")
 
-        # Si el backup va al chat principal, borrarlo después de 2s para que no se vea
+        # Fijar el mensaje para que SIEMPRE sea recuperable
+        try:
+            bot.pin_chat_message(BACKUP_CHAT_ID, msg.message_id, disable_notification=True)
+            logging.info("📌 Backup fijado en el chat.")
+        except Exception as e:
+            logging.debug(f"No se pudo fijar backup: {e}")
+
+        # Si va al chat principal, borrar SOLO después de fijarlo
         if str(BACKUP_CHAT_ID) == str(CHAT_ID):
             try:
-                import time as _time
-                _time.sleep(1)
+                time.sleep(0.5)
                 bot.delete_message(CHAT_ID, msg.message_id)
-                logging.info(f"Backup eliminado del chat principal (era visible).")
-                # NO resetear _last_backup_msg_id: ya no sirve para editar, se crea nuevo la próxima vez
-                _last_backup_msg_id = None
+                _last_backup_msg_id = None  # Ya no podemos editarlo
+                logging.info("Backup borrado del chat visible (pero queda en pinned).")
             except Exception:
-                pass  # Si no puede borrar, al menos es silencioso
+                pass
 
     except Exception as e:
         logging.error(f"Error guardando backup en Telegram: {e}")
 
 def restore_state_from_telegram():
-    """Recupera el estado de la cartera con múltiples fuentes, en orden de prioridad"""
+    """Recupera la cartera usando TODAS las fuentes disponibles.
+    Prioridad: Pinned message > Saved msg_id > Updates > portfolio.json"""
     global _last_backup_msg_id
 
-    # Verificar si la DB local ya tiene datos con inversiones REALES
+    # Verificar si la DB local ya tiene inversiones REALES
     existing = get_tracked_tickers()
     investments = get_investments()
     if existing and investments:
-        logging.info(f"DB local tiene {len(existing)} activos y {len(investments)} inversiones. No se necesita restaurar.")
+        logging.info(f"DB local OK: {len(existing)} activos, {len(investments)} inversiones.")
         return True
 
-    logging.info("DB local vacía o sin inversiones. Buscando backup...")
+    logging.info("🔄 DB local vacía o sin inversiones. Buscando backup...")
 
-    # FUENTE 1: Buscar backup en updates recientes de Telegram
+    # === FUENTE 1: Mensaje fijado (MÁS CONFIABLE — sobrevive reinicios) ===
+    try:
+        chat_info = bot.get_chat(BACKUP_CHAT_ID)
+        pinned = chat_info.pinned_message
+        if pinned and pinned.text and pinned.text.startswith(BACKUP_PREFIX):
+            b64_data = pinned.text.replace(BACKUP_PREFIX, "").strip()
+            if b64_data:
+                _restore_from_b64(b64_data)
+                _last_backup_msg_id = pinned.message_id
+                _save_backup_msg_id(pinned.message_id)
+                logging.info(f"✅ RESTAURACIÓN desde mensaje FIJADO (msg_id: {pinned.message_id})")
+                return True
+    except Exception as e:
+        logging.debug(f"Pinned message check failed: {e}")
+
+    # === FUENTE 2: Message ID guardado en disco ===
+    saved_id = _load_backup_msg_id()
+    if saved_id:
+        try:
+            # No podemos leer un mensaje por ID directamente, pero si es el pinned ya lo probamos arriba
+            # Intentar con forward trick: reenviar el mensaje a nosotros mismos para leerlo
+            logging.info(f"Backup msg_id guardado en disco: {saved_id}")
+        except Exception:
+            pass
+
+    # === FUENTE 3: Updates recientes de Telegram ===
     try:
         updates = bot.get_updates(limit=100, timeout=5)
         for update in reversed(updates):
@@ -178,36 +248,23 @@ def restore_state_from_telegram():
                 if b64_data:
                     _restore_from_b64(b64_data)
                     _last_backup_msg_id = msg.message_id
-                    logging.info(f"✅ RESTAURACIÓN desde Telegram updates exitosa (msg_id: {msg.message_id})")
+                    _save_backup_msg_id(msg.message_id)
+                    logging.info(f"✅ RESTAURACIÓN desde updates (msg_id: {msg.message_id})")
                     return True
     except Exception as e:
-        logging.debug(f"No se encontró backup en updates: {e}")
+        logging.debug(f"Updates check failed: {e}")
 
-    # FUENTE 2: Mensaje fijado en el chat de backup
-    try:
-        chat_info = bot.get_chat(BACKUP_CHAT_ID)
-        pinned = chat_info.pinned_message
-        if pinned and pinned.text and pinned.text.startswith(BACKUP_PREFIX):
-            b64_data = pinned.text.replace(BACKUP_PREFIX, "").strip()
-            if b64_data:
-                _restore_from_b64(b64_data)
-                _last_backup_msg_id = pinned.message_id
-                logging.info("✅ RESTAURACIÓN desde mensaje fijado exitosa!")
-                return True
-    except Exception:
-        pass
-
-    # FUENTE 3: portfolio.json del repositorio
+    # === FUENTE 4: portfolio.json del repositorio/disco ===
     restored = _restore_from_repo_json()
     if restored:
-        # Guardar inmediatamente en Telegram para futuras restauraciones
+        logging.info("✅ RESTAURACIÓN desde portfolio.json")
         try:
             save_state_to_telegram()
         except Exception:
             pass
         return True
 
-    logging.warning("⚠️ No se encontró ningún respaldo. Cartera inicia vacía.")
+    logging.warning("⚠️ No se encontró NINGÚN respaldo. Cartera inicia vacía.")
     return False
 
 def _restore_from_b64(b64_data):
