@@ -7,13 +7,11 @@ import pandas as pd
 import yfinance as yf
 import threading
 import time
-from google import genai
 import os
 import telebot
 import json
 import sqlite3
 from collections import deque
-from google.genai import types
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
@@ -985,15 +983,17 @@ def update_smc_memory(ticker, analysis):
 def analyze_breakout_gpt(ticker, level_type, price):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
-    if not GEMINI_API_KEY: return "¿Qué hacer? Mantener cautela."
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
     prompt = (f"Eres GÉNESIS, analista institucional.\n"
               f"El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en exactamente ${fmt_price(price)} verificado vía FMP.\n"
               f"Instrucción: Evalúa esta ruptura intradiaria con perspectiva de liquidez institucional.\n"
               f"Da un consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y explica mecánicamente por qué. ESPAÑOL ESTRICTO.")
-    try: return client.models.generate_content(model="gemini-1.5-pro", contents=prompt).text.strip()
+    try:
+        return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}]).choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"Fallo Gemini breakout: {e}")
+        logging.error(f"Fallo OpenAI breakout: {e}")
         return "¿Qué hacer? Esperar confirmación de volumen en la siguiente hora."
 
 def perform_deep_analysis(ticker):
@@ -1067,10 +1067,10 @@ def perform_deep_analysis(ticker):
             news_str = "\n".join([f"- {n.get('title', '')}" for n in raw_news[:5]])
     except: pass
 
-    # PASO 3: Prompt blindado anti-alucinación hiper-detallado para Gemini 3.1 Pro
+    # PASO 3: Prompt blindado anti-alucinación hiper-detallado para GPT-4o
     price_str = f"${fmt_price(final_price)}" if final_price else "N/A"
     prompt = (
-        f"Actúa como GÉNESIS, un analista financiero institucional senior (modelo Gemini 3.1 Pro).\n\n"
+        f"Actúa como GÉNESIS, un analista financiero institucional senior (modelo GPT-4o).\n\n"
         f"ACTIVO: {display_name} ({tk})\n\n"
         f"{tech_block}\n\n"
         f"NOTICIAS RECIENTES:\n{news_str}\n\n"
@@ -1087,15 +1087,17 @@ def perform_deep_analysis(ticker):
         f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
     )
 
-    if not GEMINI_API_KEY: return "Error: API KEY de Gemini no configurada."
+    if not OPENAI_API_KEY: return "Error: API KEY de OpenAI no configurada."
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        return client.models.generate_content(
-            model="gemini-1.5-pro",
-            contents=prompt,
-        ).text.strip()
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        return client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800
+        ).choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"Fallo al analizar con Gemini: {e}")
+        logging.error(f"Fallo al analizar con OpenAI: {e}")
         return f"Fallo al analizar: {e}"
 
 
