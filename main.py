@@ -11,6 +11,7 @@ import os
 import telebot
 import json
 import psycopg2
+import urllib.parse
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
@@ -45,9 +46,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def get_db_conn():
     if not DATABASE_URL: return None
     try:
-        return psycopg2.connect(DATABASE_URL)
+        result = urllib.parse.urlparse(DATABASE_URL)
+        return psycopg2.connect(
+            database=result.path[1:],
+            user=result.username,
+            password=urllib.parse.unquote(result.password) if result.password else None,
+            host=result.hostname,
+            port=result.port or 5432,
+            sslmode='require'
+        )
     except Exception as e:
-        logging.error(f"⚠️ Error crítico: Supabase rechazó la conexión. Revisar IPv4/Puerto 6543. (Detalle: {e})")
+        logging.error(f"⚠️ Error crítico: Supabase rechazó la conexión. Revisar IPv4/Puerto. (Detalle: {e})")
         return None
 
 def init_db():
