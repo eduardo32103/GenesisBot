@@ -63,12 +63,16 @@ def get_db_connection():
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         
+        url = os.environ.get('DATABASE_URL')
+        if not url: return None
+        r = urllib.parse.urlparse(url)
+        
         _global_db_conn = pg8000.dbapi.connect(
-            user="postgres",
-            password="Baldenebro48",
-            host="db.znofknhwtpqrkrnacitb.supabase.co",
-            port=6543,
-            database="postgres",
+            user=r.username,
+            password=r.password,
+            host=r.hostname,
+            port=r.port or 6543,
+            database=r.path[1:],
             ssl_context=ctx,
             timeout=10
         )
