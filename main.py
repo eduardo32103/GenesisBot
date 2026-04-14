@@ -23,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visión
 PREMIUM_API_KEY = (os.environ.get('PREMIUM_API_KEY') or '').strip()
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
@@ -41,7 +42,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # --- BASE DE DATOS LOCAL (SQLite como cache de runtime) ---
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
-DB_PATH = os.path.join(DATA_DIR, 'genesis_data.db')
+DB_PATH = os.path.join(DATA_DIR, 'genesis_wallet.db')
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -205,11 +206,9 @@ def restore_state_from_telegram():
     Prioridad: Pinned message > Saved msg_id > Updates > portfolio.json"""
     global _last_backup_msg_id
 
-    # Verificar si la DB local ya tiene inversiones REALES
     existing = get_tracked_tickers()
-    investments = get_investments()
-    if existing and investments:
-        logging.info(f"DB local OK: {len(existing)} activos, {len(investments)} inversiones.")
+    if existing:
+        logging.info(f"DB local SQLite OK y persistente: {len(existing)} activos en radar.")
         return True
 
     logging.info("🔄 DB local vacía o sin inversiones. Buscando backup...")
@@ -256,16 +255,8 @@ def restore_state_from_telegram():
         logging.debug(f"Updates check failed: {e}")
 
     # === FUENTE 4: portfolio.json del repositorio/disco ===
-    restored = _restore_from_repo_json()
-    if restored:
-        logging.info("✅ RESTAURACIÓN desde portfolio.json")
-        try:
-            save_state_to_telegram()
-        except Exception:
-            pass
-        return True
-
-    logging.warning("⚠️ No se encontró NINGÚN respaldo. Cartera inicia vacía.")
+    # Si todo falla, no borrar la DB actual, simplemente decir que no hay backup remoto
+    logging.warning("⚠️ No se encontró NINGÚN respaldo en cloud. Cartera usará solo SQLite local.")
     return False
 
 def _restore_from_b64(b64_data):
@@ -854,7 +845,7 @@ def gpt_advanced_geopolitics(news_list, manual=False):
     else:
         prompt = (f"Titulares recientes:\n{news_text}\nAnaliza si hay algo de nivel 'Alto Impacto' (>2%). Si no lo hay, responde 'TRANQUILIDAD'.\nSi lo hay: '⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Acción/Sector]'\nRESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL.")
     try:
-        res = client.models.generate_content(model="gemini-3.1-pro", contents=prompt).text.strip()
+        res = client.models.generate_content(model="gemini-1.5-pro", contents=prompt).text.strip()
         if not manual and ("TRANQUILIDAD" in res.upper() and len(res) < 20): return None
         return res
     except: return None
@@ -921,7 +912,7 @@ def generar_reporte_macro_manual():
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         res = client.models.generate_content(
-            model="gemini-3.1-pro",
+            model="gemini-1.5-pro",
             contents=prompt,
         ).text.strip()
         return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n\n{res}"
@@ -994,7 +985,7 @@ def analyze_breakout_gpt(ticker, level_type, price):
               f"El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en exactamente ${fmt_price(price)} verificado vía FMP.\n"
               f"Instrucción: Evalúa esta ruptura intradiaria con perspectiva de liquidez institucional.\n"
               f"Da un consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y explica mecánicamente por qué. ESPAÑOL ESTRICTO.")
-    try: return client.models.generate_content(model="gemini-3.1-pro", contents=prompt).text.strip()
+    try: return client.models.generate_content(model="gemini-1.5-pro", contents=prompt).text.strip()
     except Exception as e:
         logging.error(f"Fallo Gemini breakout: {e}")
         return "¿Qué hacer? Esperar confirmación de volumen en la siguiente hora."
@@ -1094,7 +1085,7 @@ def perform_deep_analysis(ticker):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         return client.models.generate_content(
-            model="gemini-3.1-pro",
+            model="gemini-1.5-pro",
             contents=prompt,
         ).text.strip()
     except Exception as e:
@@ -1245,21 +1236,28 @@ def cmd_backup(message):
     tkrs = get_tracked_tickers()
     bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
 
+import google.generativeai as genai_old
+from PIL import Image
+import io
+
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    msg = bot.reply_to(message, "👁️ Analizando estructura visual con GÉNESIS Vision (Gemini 3.1 Pro)...")
+    msg = bot.reply_to(message, "👁️ Analizando gráfica con GÉNESIS Vision (Gemini 1.5 Pro High)...")
     try:
         if not GEMINI_API_KEY:
-            bot.edit_message_text("❌ GEMINI_API_KEY no configurada.", chat_id=message.chat.id, message_id=msg.message_id)
+            bot.edit_message_text("⚠️ Error de configuración de modelo: GEMINI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
             return
 
         file_info = bot.get_file(message.photo[-1].file_id)
         image_bytes = bot.download_file(file_info.file_path)
-
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        genai_old.configure(api_key=GEMINI_API_KEY)
+        model = genai_old.GenerativeModel('gemini-1.5-pro')
+        
         prompt = (
-            f"Eres GÉNESIS, el sistema analítico de mercados institucionales. Estoy usando Gemini 3.1 Pro para visión artificial.\n"
+            f"Eres GÉNESIS, el sistema analítico de mercados institucionales.\n"
             f"Analiza esta captura de pantalla de TradingView con extrema precisión geométrica y lógica SMC (Smart Money Concepts).\n\n"
             f"TU MISIÓN:\n"
             f"1. Estructura SMC: Identifica rupturas de estructura (BOS), cambios de carácter (CHoCH), Order Blocks y vacíos de liquidez (FVG) visibles en la gráfica.\n"
@@ -1268,14 +1266,12 @@ def handle_photo(message):
             f"RESPONDE ESTRICTAMENTE EN ESPAÑOL y actúa bajo tu identidad de GÉNESIS, sin alucinaciones."
         )
 
-        res = client.models.generate_content(
-            model="gemini-3.1-pro",
-            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')]
-        )
-
+        res = model.generate_content([prompt, img])
+        
         bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.text.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
     except Exception as e:
-        bot.edit_message_text(f"❌ Falló visión: {e}", chat_id=message.chat.id, message_id=msg.message_id)
+        logging.error(f"Error de visión Gemini: {e}")
+        bot.edit_message_text("⚠️ Error de configuración de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_text(message):
@@ -1485,7 +1481,7 @@ def verificar_noticias_cartera():
                 )
 
                 res = client.models.generate_content(
-                    model="gemini-3.1-pro",
+                    model="gemini-1.5-pro",
                     contents=prompt,
                 ).text.strip()
 
@@ -1584,7 +1580,7 @@ def monitor_proteccion_activos():
                     f"ESPAÑOL ESTRICTO."
                 )
                 res = client.models.generate_content(
-                    model="gemini-3.1-pro",
+                    model="gemini-1.5-pro",
                     contents=prompt,
                 ).text.strip()
                 veredicto = f"\n\n🧠 <b>VEREDICTO GÉNESIS:</b>\n{res}"
