@@ -1262,13 +1262,13 @@ def handle_photo(message):
         client = OpenAI(api_key=OPENAI_API_KEY)
         
         prompt = (
-            "Actúa como un analista cuantitativo de un fondo de cobertura (Hedge Fund). "
-            "Analiza esta gráfica bajo conceptos Smart Money Concepts (SMC). PROHIBIDO explicar qué significa SMC, Order Blocks, BOS o CHoCH. CERO TEORÍA.\n\n"
+            "Actúa como una herramienta educativa de análisis técnico. Este análisis es puramente para fines de estudio y simulación, no es asesoría financiera. Analiza la siguiente imagen de manera objetiva.\n\n"
+            "Analiza bajo conceptos Smart Money Concepts (SMC). PROHIBIDO explicar qué significa SMC, Order Blocks, BOS o CHoCH. CERO TEORÍA.\n\n"
             "Tu respuesta DEBE seguir ESTRICTAMENTE este formato, sin agregar introducciones ni despedidas. Tono frío, analítico y directo a los datos duros:\n\n"
             "📊 CONTEXTO TÉCNICO: [1 o 2 líneas sobre la tendencia actual y la acción del precio evaluando liquidez y estructura].\n"
             "🎯 NIVELES CLAVE: [Soportes, Resistencias u Order Blocks con PRECIOS EXACTOS según la gráfica].\n"
             "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [Razón técnica directa].\n"
-            "💡 VEREDICTO INSTITUCIONAL: [Comprar / Vender / Esperar] - [Justificación directa en una línea, ej. 'Esperar retroceso al FVG en $150']."
+            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Fuerte Bajista / Neutral / Esperar Confirmación] - [Justificación descriptiva en una línea, ej. 'Alta probabilidad de rebote en FVG en $150']."
         )
 
         res = client.chat.completions.create(
