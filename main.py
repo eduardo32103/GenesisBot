@@ -44,12 +44,25 @@ RAM_PNL = 0.0
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
 
+_global_db_conn = None
+
 def get_db_connection():
+    global _global_db_conn
     try:
+        # Reutilizar si ya existe y está viva
+        if _global_db_conn is not None:
+             try:
+                 c = _global_db_conn.cursor()
+                 c.execute("SELECT 1")
+                 c.fetchone()
+                 return _global_db_conn
+             except:
+                 _global_db_conn = None # Muerta
+        
         url = os.environ.get('DATABASE_URL')
         if not url: return None
         r = urllib.parse.urlparse(url)
-        return pg8000.dbapi.connect(
+        _global_db_conn = pg8000.dbapi.connect(
             user=r.username,
             password=r.password,
             host=r.hostname,
@@ -57,12 +70,11 @@ def get_db_connection():
             database=r.path[1:],
             timeout=10
         )
+        print("✅ Conexión exitosa a Supabase desde backend.")
+        return _global_db_conn
     except Exception as e:
-        print(f"Error: {e}")
-        try:
-            bot.send_message(CHAT_ID, "⚠️ Base de datos temporalmente fuera de línea, reintentando...")
-        except:
-            pass
+        print(f"❌ Error de conexión silencioso: {e}")
+        _global_db_conn = None
         return None
 
 def init_db():
@@ -73,7 +85,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
         conn.commit()
-        conn.close()
+        pass # conn.close() delegado a pooling global
     except Exception as e:
         print(f"❌ Error: No se pudo conectar a Supabase -> {e}")
         logging.error(f"Error init_db: {e}")
@@ -319,7 +331,7 @@ def _restore_from_b64(b64_data):
                 ''', (float(rpnl),))
             conn.commit()
         finally:
-            conn.close()
+            pass # conn.close() delegado a pooling global
 
         logging.info(f"Restaurados {len(portfolio)} activos desde backup Base64.")
     except Exception as e:
@@ -357,7 +369,7 @@ def _restore_from_repo_json():
                                 (int(CHAT_ID), tk, int(val.get('is_investment', 1)), float(val.get('amount_usd', 1000.0)), float(val.get('entry_price', 0.0)), datetime.now().isoformat()))
                     conn.commit()
                 finally:
-                    conn.close()
+                    pass # conn.close() delegado a pooling global
 
                 logging.info(f"✅ Restauración desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
                 return True
@@ -413,7 +425,7 @@ def check_and_add_seen_event(event_hash):
         c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (%s, %s)', (event_hash, datetime.now().isoformat()))
         conn.commit()
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     return False
 
 def purge_old_events():
@@ -425,7 +437,7 @@ def purge_old_events():
         c.execute('DELETE FROM seen_events WHERE timestamp < %s', (cutoff_date,))
         conn.commit()
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
 
 def get_tracked_tickers():
     conn = get_db_connection()
@@ -435,7 +447,7 @@ def get_tracked_tickers():
         c.execute('SELECT ticker FROM wallet WHERE user_id = %s', (int(CHAT_ID),))
         return [row[0] for row in c.fetchall()]
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
 
 def get_all_portfolio_data():
     conn = get_db_connection()
@@ -447,7 +459,7 @@ def get_all_portfolio_data():
         for row in c.fetchall():
             pf[row[1]] = {"is_investment": bool(row[2]), "amount_usd": row[3], "entry_price": row[4], "timestamp": row[5]}
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     return pf
 
 def add_ticker(ticker):
@@ -470,7 +482,7 @@ def add_ticker(ticker):
         logging.error(f"Error ADD: {e}")
         return "DB_ERROR"
     finally:
-        if conn: conn.close()
+        if conn: pass # conn.close() delegado a pooling global
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
@@ -491,7 +503,7 @@ def remove_ticker(ticker):
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
             return True
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     return False
 
 def add_investment(ticker, amount_usd, entry_price):
@@ -510,7 +522,7 @@ def add_investment(ticker, amount_usd, entry_price):
             c.execute('INSERT INTO wallet (user_id, ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, %s, 1, %s, %s, %s)', (int(CHAT_ID), ticker, amount_usd, entry_price, timestamp))
         conn.commit()
     finally:
-        if conn: conn.close()
+        if conn: pass # conn.close() delegado a pooling global
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def close_investment(ticker):
@@ -527,7 +539,7 @@ def close_investment(ticker):
         c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
         conn.commit()
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_investments():
@@ -541,7 +553,7 @@ def get_investments():
         for row in c.fetchall():
             invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     return invs
 
 def add_realized_pnl(prof_usd):
@@ -560,7 +572,7 @@ def add_realized_pnl(prof_usd):
         else: c.execute('INSERT INTO global_stats (key, value) VALUES (%s, %s)', ("realized_pnl", new_val))
         conn.commit()
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
@@ -572,7 +584,7 @@ def get_realized_pnl():
         res = c.fetchone()
         return res[0] if res else 0.0
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
 
 def reset_realized_pnl():
     """Resetea la ganancia mensual acumulada a $0.00"""
@@ -587,7 +599,7 @@ def reset_realized_pnl():
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     save_state_to_telegram()
     logging.info("🔄 PnL mensual reseteado a $0.00")
 
@@ -609,7 +621,7 @@ def reset_total_db():
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
     logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
 
 
@@ -1304,17 +1316,18 @@ def build_wallet_dashboard():
 
 @bot.message_handler(commands=['check_db'])
 def test_db(message):
-    bot.reply_to(message, "⏳ Intentando conectar con Supabase (Timeout de 5 segundos)...")
+    print("⏳ Intentando conectar con Supabase (Timeout de 5 segundos)...")
     try:
         conn = get_db_connection()
+        if not conn:
+             print("❌ ERROR DE RED O AUTENTICACIÓN: conn es None")
+             return
         c = conn.cursor()
         c.execute('SELECT version();')
-        # We need to manually get the first value of the dict or use the key "version"
-        v = list(c.fetchone().values())[0]
-        bot.reply_to(message, f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
-        conn.close()
+        v = c.fetchone()[0]
+        print(f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
     except Exception as e:
-        bot.reply_to(message, f"❌ ERROR DE RED O AUTENTICACIÓN\nSupabase ha rechazado la conexión.\n\nLog Técnico: {e}")
+        print(f"❌ ERROR DE RED O AUTENTICACIÓN\nSupabase ha rechazado la conexión.\n\nLog Técnico: {e}")
 
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
@@ -1331,7 +1344,7 @@ def command_clear_all(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Fallo al limpiar DB: {e}")
     finally:
-        conn.close()
+        pass # conn.close() delegado a pooling global
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
