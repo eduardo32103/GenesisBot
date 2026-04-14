@@ -10,7 +10,7 @@ import time
 import os
 import telebot
 import json
-import sqlite3
+import psycopg2
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
@@ -37,18 +37,30 @@ else:
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# --- BASE DE DATOS LOCAL (SQLite como cache de runtime) ---
+# --- BASE DE DATOS LOCAL/REMOTA (PostgreSQL) ---
+DATABASE_URL = os.environ.get('DATABASE_URL')
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
-DB_PATH = os.path.join(DATA_DIR, 'genesis_wallet.db')
+
+def get_db_conn():
+    if not DATABASE_URL: return None
+    return psycopg2.connect(DATABASE_URL)
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: 
+        logging.warning("⚠️ Sin DATABASE_URL. PostgreSQL desactivado.")
+        return
+    try:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS portfolio (ticker TEXT PRIMARY KEY, is_investment INTEGER, amount_usd REAL, entry_price REAL, timestamp TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
         conn.commit()
+    except Exception as e:
+        logging.error(f"Error init_db: {e}")
+    finally:
+        conn.close()
 
 init_db()
 
@@ -259,33 +271,45 @@ def restore_state_from_telegram():
 
 def _restore_from_b64(b64_data):
     """Restaura la base de datos desde un string Base64"""
-    json_str = base64.b64decode(b64_data).decode('utf-8')
-    payload = json.loads(json_str)
+    try:
+        json_str = base64.b64decode(b64_data).decode('utf-8')
+        payload = json.loads(json_str)
 
-    portfolio = payload.get("portfolio", {})
-    stats = payload.get("global_stats", {})
+        portfolio = payload.get("portfolio", {})
+        stats = payload.get("global_stats", {})
 
-    with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
-        for tk, info in portfolio.items():
-            c.execute('INSERT OR REPLACE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, ?, ?, ?, ?)',
-                (tk,
-                 int(info.get("is_investment", 0)),
-                 float(info.get("amount_usd", 0)),
-                 float(info.get("entry_price", 0)),
-                 info.get("timestamp", datetime.now().isoformat())))
+        conn = get_db_conn()
+        if not conn: return
+        try:
+            c = conn.cursor()
+            for tk, info in portfolio.items():
+                c.execute('''
+                    INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (ticker) DO UPDATE SET 
+                    is_investment = EXCLUDED.is_investment, amount_usd = EXCLUDED.amount_usd, 
+                    entry_price = EXCLUDED.entry_price, timestamp = EXCLUDED.timestamp
+                ''', (tk, int(info.get("is_investment", 0)), float(info.get("amount_usd", 0)), float(info.get("entry_price", 0)), info.get("timestamp", datetime.now().isoformat())))
 
-        rpnl = stats.get("realized_pnl", 0)
-        if rpnl:
-            c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", ?)', (float(rpnl),))
-        conn.commit()
+            rpnl = stats.get("realized_pnl", 0)
+            if rpnl:
+                c.execute('''
+                    INSERT INTO global_stats (key, value) VALUES ('realized_pnl', %s)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                ''', (float(rpnl),))
+            conn.commit()
+        finally:
+            conn.close()
 
-    logging.info(f"Restaurados {len(portfolio)} activos desde backup Base64.")
+        logging.info(f"Restaurados {len(portfolio)} activos desde backup Base64.")
+    except Exception as e:
+        logging.error(f"Error restaurando B64: {e}")
 
 def _restore_from_repo_json():
     """Último recurso: lee portfolio.json que está en el repositorio Git"""
     # Intentar varias rutas posibles
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.environ.get('DATA_DIR', '.')
     possible_paths = [
         os.path.join(script_dir, 'portfolio.json'),
         'portfolio.json',
@@ -298,21 +322,22 @@ def _restore_from_repo_json():
                 with open(json_path, 'r') as f:
                     legacy = json.load(f)
 
-                with sqlite3.connect(DB_PATH) as conn:
+                conn = get_db_conn()
+                if not conn: return False
+                try:
                     c = conn.cursor()
                     for tk, val in legacy.items():
                         if isinstance(val, (int, float)):
-                            # Formato antiguo: {"IXC": 927.55} donde el valor es el precio de entrada
-                            c.execute('INSERT OR IGNORE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 1, 1000.0, ?, ?)',
+                            c.execute('''INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) 
+                                         VALUES (%s, 1, 1000.0, %s, %s) ON CONFLICT (ticker) DO NOTHING''',
                                 (tk, float(val), datetime.now().isoformat()))
                         elif isinstance(val, dict):
-                            c.execute('INSERT OR IGNORE INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, ?, ?, ?, ?)',
-                                (tk,
-                                 int(val.get('is_investment', 1)),
-                                 float(val.get('amount_usd', 1000.0)),
-                                 float(val.get('entry_price', 0.0)),
-                                 datetime.now().isoformat()))
+                            c.execute('''INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) 
+                                         VALUES (%s, %s, %s, %s, %s) ON CONFLICT (ticker) DO NOTHING''',
+                                (tk, int(val.get('is_investment', 1)), float(val.get('amount_usd', 1000.0)), float(val.get('entry_price', 0.0)), datetime.now().isoformat()))
                     conn.commit()
+                finally:
+                    conn.close()
 
                 logging.info(f"✅ Restauración desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
                 return True
@@ -357,136 +382,186 @@ def get_display_name(ticker_key):
     }
     return mapping.get(ticker_key, ticker_key)
 
-# --- CONTROLADORES DE BASE DE DATOS (SQLite local como cache) ---
+# --- CONTROLADORES DE BASE DE DATOS (PostgreSQL) ---
 def check_and_add_seen_event(event_hash):
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return False
+    try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM seen_events WHERE hash_id = ?', (event_hash,))
+        c.execute('SELECT 1 FROM seen_events WHERE hash_id = %s', (event_hash,))
         if c.fetchone(): return True
-        c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (?, ?)', (event_hash, datetime.now().isoformat()))
+        c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (%s, %s)', (event_hash, datetime.now().isoformat()))
         conn.commit()
+    finally:
+        conn.close()
     return False
 
 def purge_old_events():
     cutoff_date = (datetime.now() - timedelta(days=7)).isoformat()
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return
+    try:
         c = conn.cursor()
-        c.execute('DELETE FROM seen_events WHERE timestamp < ?', (cutoff_date,))
+        c.execute('DELETE FROM seen_events WHERE timestamp < %s', (cutoff_date,))
         conn.commit()
+    finally:
+        conn.close()
 
 def get_tracked_tickers():
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return []
+    try:
         c = conn.cursor()
         c.execute('SELECT ticker FROM portfolio')
         return [row[0] for row in c.fetchall()]
+    finally:
+        conn.close()
 
 def get_all_portfolio_data():
     pf = {}
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return pf
+    try:
         c = conn.cursor()
         c.execute('SELECT * FROM portfolio')
         for row in c.fetchall():
             pf[row[0]] = {"is_investment": bool(row[1]), "amount_usd": row[2], "entry_price": row[3], "timestamp": row[4]}
+    finally:
+        conn.close()
     return pf
 
 def add_ticker(ticker):
     ticker = remap_ticker(ticker)
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return False
+    try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
         if not c.fetchone():
-            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 0, 0, 0, ?)', (ticker, datetime.now().isoformat()))
+            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 0, 0, 0, %s)', (ticker, datetime.now().isoformat()))
             conn.commit()
             save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
             val = fetch_and_analyze_stock(ticker)
             if val: update_smc_memory(ticker, val)
             return True
+    finally:
+        conn.close()
     return False
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return False
+    try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
         if c.fetchone():
-            c.execute('DELETE FROM portfolio WHERE ticker = ?', (ticker,))
+            c.execute('DELETE FROM portfolio WHERE ticker = %s', (ticker,))
             conn.commit()
             save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
             return True
+    finally:
+        conn.close()
     return False
 
 def add_investment(ticker, amount_usd, entry_price):
     ticker = remap_ticker(ticker)
     timestamp = datetime.now().isoformat()
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return
+    try:
         c = conn.cursor()
-        c.execute('SELECT 1 FROM portfolio WHERE ticker = ?', (ticker,))
+        c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
         if c.fetchone():
-            c.execute('UPDATE portfolio SET is_investment = 1, amount_usd = ?, entry_price = ?, timestamp = ? WHERE ticker = ?', (amount_usd, entry_price, timestamp, ticker))
+            c.execute('UPDATE portfolio SET is_investment = 1, amount_usd = %s, entry_price = %s, timestamp = %s WHERE ticker = %s', (amount_usd, entry_price, timestamp, ticker))
         else:
-            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (?, 1, ?, ?, ?)', (ticker, amount_usd, entry_price, timestamp))
+            c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 1, %s, %s, %s)', (ticker, amount_usd, entry_price, timestamp))
         conn.commit()
+    finally:
+        conn.close()
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
     val = fetch_and_analyze_stock(ticker)
     if val: update_smc_memory(ticker, val)
 
 def close_investment(ticker):
     ticker = remap_ticker(ticker)
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return
+    try:
         c = conn.cursor()
-        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = ?', (ticker,))
+        c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE ticker = %s', (ticker,))
         conn.commit()
+    finally:
+        conn.close()
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_investments():
     invs = {}
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return invs
+    try:
         c = conn.cursor()
         c.execute('SELECT ticker, amount_usd, entry_price FROM portfolio WHERE is_investment = 1')
         for row in c.fetchall():
             invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
+    finally:
+        conn.close()
     return invs
 
 def add_realized_pnl(prof_usd):
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return
+    try:
         c = conn.cursor()
-        c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
+        c.execute('SELECT value FROM global_stats WHERE key = %s', ("realized_pnl",))
         res = c.fetchone()
         cur_pnl = res[0] if res else 0.0
         new_val = cur_pnl + float(prof_usd)
-        if res: c.execute('UPDATE global_stats SET value = ? WHERE key = "realized_pnl"', (new_val,))
-        else: c.execute('INSERT INTO global_stats (key, value) VALUES ("realized_pnl", ?)', (new_val,))
+        if res: c.execute('UPDATE global_stats SET value = %s WHERE key = %s', (new_val, "realized_pnl"))
+        else: c.execute('INSERT INTO global_stats (key, value) VALUES (%s, %s)', ("realized_pnl", new_val))
         conn.commit()
+    finally:
+        conn.close()
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return 0.0
+    try:
         c = conn.cursor()
-        c.execute('SELECT value FROM global_stats WHERE key = "realized_pnl"')
+        c.execute('SELECT value FROM global_stats WHERE key = %s', ("realized_pnl",))
         res = c.fetchone()
         return res[0] if res else 0.0
+    finally:
+        conn.close()
 
 def reset_realized_pnl():
     """Resetea la ganancia mensual acumulada a $0.00"""
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return
+    try:
         c = conn.cursor()
-        c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", 0.0)')
+        c.execute('''INSERT INTO global_stats (key, value) VALUES ('realized_pnl', 0.0)
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
+    finally:
+        conn.close()
     save_state_to_telegram()
     logging.info("🔄 PnL mensual reseteado a $0.00")
 
 def reset_total_db():
     """RESET RADICAL: borra TODAS las inversiones, PnL y contabilidad"""
-    with sqlite3.connect(DB_PATH) as conn:
+    conn = get_db_conn()
+    if not conn: return
+    try:
         c = conn.cursor()
-        # Limpiar inversiones (poner is_investment=0, amount=0, entry=0)
         c.execute('UPDATE portfolio SET is_investment = 0, amount_usd = 0, entry_price = 0')
-        # Resetear PnL acumulado
-        c.execute('INSERT OR REPLACE INTO global_stats (key, value) VALUES ("realized_pnl", 0.0)')
+        c.execute('''INSERT INTO global_stats (key, value) VALUES ('realized_pnl', 0.0)
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
-    # NO llamar a save_state_to_telegram() aquí para evitar que el código Base64
-    # aparezca en el chat. El backup se hará automáticamente en el próximo ciclo.
+    finally:
+        conn.close()
     logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
 
 
