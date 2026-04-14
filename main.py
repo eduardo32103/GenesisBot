@@ -1260,13 +1260,9 @@ def handle_photo(message):
         client = OpenAI(api_key=OPENAI_API_KEY)
         
         prompt = (
-            f"Eres GÉNESIS, el sistema analítico de mercados institucionales.\n"
-            f"Analiza esta captura de pantalla de TradingView con extrema precisión geométrica y lógica SMC (Smart Money Concepts).\n\n"
-            f"TU MISIÓN:\n"
-            f"1. Estructura SMC: Identifica rupturas de estructura (BOS), cambios de carácter (CHoCH), Order Blocks y vacíos de liquidez (FVG) visibles en la gráfica.\n"
-            f"2. Coincidencia FMP: Asume que el precio actual debe validarse contra Financial Modeling Prep (FMP). Compáralo y describe mecánicamente dónde están las zonas de manipulación.\n"
-            f"3. Veredicto: Concluye de forma institucional si es momento de [COMPRAR], [VENDER] o [MANTENER] la posición.\n\n"
-            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL y actúa bajo tu identidad de GÉNESIS, sin alucinaciones."
+            "Analiza esta gráfica bajo conceptos Smart Money Concepts (SMC). "
+            "Identifica Order Blocks, BOS, CHoCH y liquidez. "
+            "Dame un veredicto claro."
         )
 
         res = client.chat.completions.create(
