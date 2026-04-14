@@ -437,7 +437,7 @@ def get_all_portfolio_data():
 def add_ticker(ticker):
     ticker = remap_ticker(ticker)
     conn = get_db_conn()
-    if not conn: return False
+    if not conn: return "DB_ERROR"
     try:
         c = conn.cursor()
         c.execute('SELECT 1 FROM portfolio WHERE ticker = %s', (ticker,))
@@ -445,12 +445,13 @@ def add_ticker(ticker):
             c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 0, 0, 0, %s)', (ticker, datetime.now().isoformat()))
             conn.commit()
             save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
-            val = fetch_and_analyze_stock(ticker)
-            if val: update_smc_memory(ticker, val)
             return True
+        return False
+    except Exception as e:
+        logging.error(f"Error ADD: {e}")
+        return "DB_ERROR"
     finally:
-        conn.close()
-    return False
+        if conn: conn.close()
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
@@ -483,10 +484,8 @@ def add_investment(ticker, amount_usd, entry_price):
             c.execute('INSERT INTO portfolio (ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, 1, %s, %s, %s)', (ticker, amount_usd, entry_price, timestamp))
         conn.commit()
     finally:
-        conn.close()
+        if conn: conn.close()
     save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
-    val = fetch_and_analyze_stock(ticker)
-    if val: update_smc_memory(ticker, val)
 
 def close_investment(ticker):
     ticker = remap_ticker(ticker)
@@ -1258,6 +1257,23 @@ def build_wallet_dashboard():
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
 
+@bot.message_handler(commands=['clear_all'])
+def command_clear_all(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    conn = get_db_conn()
+    if not conn:
+        bot.reply_to(message, "🚨 Error: No hay conexión a Supabase.")
+        return
+    try:
+        c = conn.cursor()
+        c.execute('TRUNCATE TABLE portfolio')
+        conn.commit()
+        bot.reply_to(message, "⚠️ ATENCIÓN: DB Supabase (Tabla: portfolio) vacuada por completo.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Fallo al limpiar DB: {e}")
+    finally:
+        conn.close()
+
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
@@ -1419,15 +1435,9 @@ def handle_text(message):
             d_name = get_display_name(tk)
 
             if analysis:
-                update_smc_memory(tk, analysis)
                 report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", f"• Order Block Institucional: ${fmt_price(analysis['order_block'])}", "---"])
-            elif tk in LAST_KNOWN_ANALYSIS:
-                cached = LAST_KNOWN_ANALYSIS[tk]
-                report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(cached['price'])} <i>(último cierre)</i>", f"• Tendencia SMC: {cached['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(cached['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(cached['smc_res'])}", f"• Order Block Institucional: ${fmt_price(cached['order_block'])}", "---"])
-            elif tk in LAST_KNOWN_PRICES:
-                report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])} <i>(último cierre)</i>", f"• ⏳ Niveles SMC pendientes de cálculo", "---"])
             else:
-                report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Sin datos disponibles en este momento", "---"])
+                report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Sin datos disponibles en este momento desde los exchanges", "---"])
 
         bot.send_message(message.chat.id, "\n".join(report_lines), parse_mode="HTML")
         return
@@ -1461,13 +1471,13 @@ def handle_text(message):
              tk = remap_ticker(raw_input)
              display_name = get_display_name(tk)
 
-             if add_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] añadido al radar SMC.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+             res = add_ticker(tk)
+             if res == "DB_ERROR":
+                 bot.reply_to(message, f"🚨 ERROR DE BASE DE DATOS: No se pudo conectar a Supabase. Revisa tu DATABASE_URL.")
+             elif res == True:
+                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] añadido al radar SMC.\n\n✅ Guardado directamente en Supabase (Sin cachés).", parse_mode="HTML")
              else:
-                 if tk == "BZ=F" and raw_input in ["LCO", "BRENT", "PETROLEO"]:
-                     bot.reply_to(message, f"✅ LCO (Brent) ya está en tu radar y actualizado con el precio real de $BZ=F.")
-                 else:
-                     bot.reply_to(message, f"⚠️ El activo {display_name} ya existía en tu radar SMC.")
+                 bot.reply_to(message, f"⚠️ El activo {display_name} ya existe en tu DB centralizada (Supabase).")
         return
 
     if re.search(r'(?i)\bCOMPR[EÉ]\b', text):
