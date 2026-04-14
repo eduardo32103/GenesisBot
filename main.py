@@ -62,7 +62,7 @@ def get_db_connection():
             user="postgres",
             password="Baldenebro48",
             host="db.znofknhwtpqrkrnacitb.supabase.co",
-            port=5432,
+            port=6543,
             database="postgres",
             timeout=10
         )
