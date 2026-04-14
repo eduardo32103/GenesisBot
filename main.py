@@ -652,11 +652,13 @@ def verify_1m_realtime_data(ticker):
 
 
 def _fetch_fmp_news(limit=10):
-    """Extrae noticias premium del mercado financiero via FMP /stable/news"""
+    """Extrae noticias del mercado via FMP — prueba múltiples endpoints"""
     if not PREMIUM_API_KEY:
         return []
 
-    # Intento 1: endpoint stable (cuentas post-agosto 2025)
+    all_news = []
+
+    # === INTENTO 1: /stable/news (endpoint moderno) ===
     try:
         url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={PREMIUM_API_KEY}"
         resp = requests.get(url, timeout=8)
@@ -665,10 +667,12 @@ def _fetch_fmp_news(limit=10):
             data = resp.json()
             if isinstance(data, list) and len(data) > 0:
                 return data
+        elif resp.status_code in (403, 401):
+            logging.warning(f"FMP stable/news: {resp.status_code} — endpoint no disponible en tu plan.")
     except Exception as e:
         logging.debug(f"FMP stable/news error: {e}")
 
-    # Intento 2: endpoint legacy v3
+    # === INTENTO 2: /api/v3/stock_news general (legacy) ===
     try:
         url = f"https://financialmodelingprep.com/api/v3/stock_news?limit={limit}&apikey={PREMIUM_API_KEY}"
         resp = requests.get(url, timeout=8)
@@ -680,7 +684,41 @@ def _fetch_fmp_news(limit=10):
     except Exception as e:
         logging.debug(f"FMP v3/stock_news error: {e}")
 
-    # Intento 3: general news
+    # === INTENTO 3: /stable/news por ticker específico (algunos planes lo requieren) ===
+    default_tickers = ["AAPL", "NVDA", "BTCUSD", "SPY", "MSFT"]
+    for ticker in default_tickers:
+        try:
+            url = f"https://financialmodelingprep.com/stable/news?symbol={ticker}&limit=3&apikey={PREMIUM_API_KEY}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    all_news.extend(data)
+                    if len(all_news) >= limit:
+                        break
+        except Exception:
+            pass
+
+    if all_news:
+        logging.info(f"FMP noticias por ticker: {len(all_news)} artículos recopilados.")
+        return all_news[:limit]
+
+    # === INTENTO 4: /api/v3/stock_news por ticker (legacy con ticker) ===
+    for ticker in default_tickers[:3]:
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&limit=3&apikey={PREMIUM_API_KEY}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    all_news.extend(data)
+        except Exception:
+            pass
+
+    if all_news:
+        return all_news[:limit]
+
+    # === INTENTO 5: /api/v3/fmp/articles ===
     try:
         url = f"https://financialmodelingprep.com/api/v3/fmp/articles?page=0&size={limit}&apikey={PREMIUM_API_KEY}"
         resp = requests.get(url, timeout=8)
@@ -688,12 +726,31 @@ def _fetch_fmp_news(limit=10):
             data = resp.json()
             if isinstance(data, dict) and 'content' in data:
                 return data['content'][:limit]
-            elif isinstance(data, list):
+            elif isinstance(data, list) and len(data) > 0:
                 return data[:limit]
     except Exception:
         pass
 
+    logging.warning("FMP: Todos los endpoints de noticias fallaron.")
     return []
+
+
+def _fetch_google_news_fallback(limit=8):
+    """Fallback: Google News RSS para cuando FMP no devuelve noticias"""
+    all_news = []
+    try:
+        for query in ["financial+markets+today", "stock+market+economy", "bitcoin+crypto+market"]:
+            url = f"https://news.google.com/rss/search?q={query}&hl=en"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.text)
+                for item in root.findall('.//item')[:3]:
+                    title = item.find('title').text
+                    if title and title not in all_news:
+                        all_news.append(title)
+    except Exception:
+        pass
+    return all_news[:limit]
 
 
 def check_geopolitical_news():
@@ -748,42 +805,48 @@ def gpt_advanced_geopolitics(news_list, manual=False):
 def generar_reporte_macro_manual():
     """Reporte macro PREMIUM: FMP News + GPT Impact Assessment (GÉNESIS Intelligence)"""
 
-    # Paso 1: Extraer noticias premium de FMP
+    # Paso 1: Extraer noticias de FMP
     fmp_news = _fetch_fmp_news(10)
 
-    if not fmp_news:
-        return ("⚠️ <b>Feed de noticias premium temporalmente fuera de línea.</b>\n\n"
-                "No se pudieron extraer titulares de FMP en este momento.\n"
-                "Intenta en unos minutos.")
-
-    # Paso 2: Preparar los titulares para GPT
+    # Paso 2: Si FMP falla completamente, usar Google News como fallback
     headlines = []
-    for article in fmp_news[:6]:
-        title = article.get('title', '') or ''
-        symbol = article.get('symbol', '') or article.get('tickers', '') or ''
-        source = article.get('site', '') or article.get('source', '') or ''
-        if title:
-            entry = title
-            if symbol:
-                entry += f" [{symbol}]"
-            if source:
-                entry += f" (Fuente: {source})"
-            headlines.append(entry)
+    source_label = "Financial Modeling Prep"
+
+    if fmp_news:
+        for article in fmp_news[:6]:
+            title = article.get('title', '') or ''
+            symbol = article.get('symbol', '') or article.get('tickers', '') or ''
+            site = article.get('site', '') or article.get('source', '') or ''
+            if title:
+                entry = title
+                if symbol:
+                    entry += f" [{symbol}]"
+                if site:
+                    entry += f" ({site})"
+                headlines.append(entry)
 
     if not headlines:
-        return ("⚠️ <b>Feed de noticias premium temporalmente fuera de línea.</b>\n\n"
-                "Los titulares no contienen datos procesables.")
+        # Fallback: Google News RSS
+        google_news = _fetch_google_news_fallback(8)
+        if google_news:
+            headlines = google_news
+            source_label = "Google News"
+            logging.info(f"Noticias obtenidas de Google News ({len(headlines)} titulares).")
+
+    if not headlines:
+        return ("⚠️ <b>Feed de noticias temporalmente fuera de línea.</b>\n\n"
+                "No se pudieron extraer titulares de ninguna fuente.\n"
+                "Intenta en unos minutos.")
 
     # Paso 3: GPT Impact Assessment (GÉNESIS Intelligence)
     if not OPENAI_API_KEY:
-        # Sin IA: mostrar titulares crudos
         bullets = "\n".join([f"• {h}" for h in headlines[:5]])
-        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento: <b>Pendiente (sin IA)</b>"
+        return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Pendiente (sin IA)</b>"
 
     news_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
     prompt = (
         f"Eres GÉNESIS, un sistema de inteligencia de mercados de grado institucional.\n\n"
-        f"TITULARES EN VIVO (fuente: Financial Modeling Prep):\n{news_text}\n\n"
+        f"TITULARES EN VIVO (fuente: {source_label}):\n{news_text}\n\n"
         f"INSTRUCCIONES ESTRICTAS:\n"
         f"1. Selecciona las 3 noticias de MAYOR IMPACTO para los mercados globales.\n"
         f"2. Para CADA una, genera EXACTAMENTE este formato:\n\n"
@@ -803,11 +866,11 @@ def generar_reporte_macro_manual():
             messages=[{"role": "user", "content": prompt}],
             max_tokens=600
         ).choices[0].message.content.strip()
-        return f"---\n🌎 <b>REPORTE MACRO — GÉNESIS INTELLIGENCE</b> 🌎\n---\n\n{res}"
+        return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n\n{res}"
     except Exception as e:
         logging.error(f"GPT macro error: {e}")
         bullets = "\n".join([f"• {h}" for h in headlines[:5]])
-        return f"---\n🌎 <b>REPORTE MACROECONÓMICO GLOBAL</b> 🌎\n---\n{bullets}\n---\n📊 Sentimiento: <b>Sin determinar</b>"
+        return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Sin determinar</b>"
 
 def fetch_intraday_data(ticker):
     tk = remap_ticker(ticker)
