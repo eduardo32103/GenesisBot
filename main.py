@@ -1,4 +1,4 @@
-import os, pg8000.dbapi, telebot
+import os, pg8000.dbapi, telebot\nimport ssl
 import urllib.parse
 import logging
 import base64
@@ -58,12 +58,17 @@ def get_db_connection():
              except:
                  _global_db_conn = None
         
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
         _global_db_conn = pg8000.dbapi.connect(
             user="postgres",
             password="Baldenebro48",
             host="db.znofknhwtpqrkrnacitb.supabase.co",
             port=6543,
             database="postgres",
+            ssl_context=ctx,
             timeout=10
         )
         print("✅ Conexión exitosa a Supabase desde backend.")
