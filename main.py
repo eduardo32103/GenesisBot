@@ -837,15 +837,20 @@ def check_geopolitical_news():
 
 
 def gpt_advanced_geopolitics(news_list, manual=False):
-    if not news_list or not GEMINI_API_KEY: return None
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    if not news_list or not OPENAI_API_KEY: return None
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
     news_text = "\n".join([f"- {n}" for n in news_list])
     if manual:
         prompt = f"Titulares globales:\n{news_text}\nHaz un resumen y dime qué movería el mercado hoy. RESPONDE ESTRICTAMENTE EN ESPAÑOL."
     else:
         prompt = (f"Titulares recientes:\n{news_text}\nAnaliza si hay algo de nivel 'Alto Impacto' (>2%). Si no lo hay, responde 'TRANQUILIDAD'.\nSi lo hay: '⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Acción/Sector]'\nRESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL.")
     try:
-        res = client.models.generate_content(model="gemini-1.5-pro", contents=prompt).text.strip()
+        res = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600
+        ).choices[0].message.content.strip()
         if not manual and ("TRANQUILIDAD" in res.upper() and len(res) < 20): return None
         return res
     except: return None
@@ -888,7 +893,7 @@ def generar_reporte_macro_manual():
                 "Intenta en unos minutos.")
 
     # Paso 3: GPT Impact Assessment (GÉNESIS Intelligence)
-    if not GEMINI_API_KEY:
+    if not OPENAI_API_KEY:
         bullets = "\n".join([f"• {h}" for h in headlines[:5]])
         return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Pendiente (sin IA)</b>"
 
@@ -905,20 +910,22 @@ def generar_reporte_macro_manual():
         f"• [Titular TRADUCIDO al español] | Impacto: [🔴/🟢/🟡]\n"
         f"💡 Análisis: [Explicación de impacto en la wallet]\n\n"
         f"Al final, cierra con:\n"
-        f"📊 *Sentimiento Macro:* [Alcista / Bajista / Neutral]\n"
+        f"📊 *Sentimiento Macro:* [Alcista 🟢 / Bajista 🔴 / Neutral 🟡]\n"
     )
 
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        res = client.models.generate_content(
-            model="gemini-1.5-pro",
-            contents=prompt,
-        ).text.strip()
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        res = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000
+        ).choices[0].message.content.strip()
         return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{res}"
     except Exception as e:
-        logging.error(f"Gemini macro error: {e}")
+        logging.error(f"OpenAI macro error: {e}")
         bullets = "\n".join([f"• {h} | Impacto: 🟡" for h in headlines[:5]])
-        return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{bullets}\n\n💡 *Análisis rápido:* FMP Feed procesado sin IA.\n\n📊 *Sentimiento General del Mercado:* Neutral"
+        return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{bullets}\n\n💡 *Análisis rápido:* FMP Feed procesado sin IA.\n\n📊 *Sentimiento General del Mercado:* Neutral 🟡"
 
 def fetch_intraday_data(ticker):
     tk = remap_ticker(ticker)
