@@ -895,17 +895,17 @@ def generar_reporte_macro_manual():
     news_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
     prompt = (
         f"Eres GÉNESIS, un sistema de inteligencia de mercados institucional.\n\n"
-        f"TITULARES EN VIVO:\n{news_text}\n\n"
-        f"ACTIVOS EN LA WALLET DEL USUARIO (Prioriza el análisis en estos activos si hay noticias relacionadas): {', '.join(get_tracked_tickers())}\n\n"
-        f"INSTRUCCIONES ESTRICTAS:\n"
-        f"1. Selecciona las noticias de MAYOR IMPACTO. Traduce los titulares al español con un tono profesional y directo.\n"
-        f"2. Para cada noticia, evalúa racionalmente si el impacto es Alcista (🟢), Bajista (🔴) o Neutral (🟡).\n"
-        f"3. Genera EXACTAMENTE este formato de respuesta para cada noticia (no agregues guiones adicionales):\n\n"
-        f"[Titular en español] | Impacto: [🔴/🟢/🟡]\n"
-        f"💡 *Análisis rápido:* (Una línea concreta de por qué importa esta noticia y si afecta la wallet del usuario, basado en SMC).\n\n"
-        f"Al final del reporte, dictamina:\n"
-        f"📊 *Sentimiento General del Mercado:* [Alcista / Bajista / Neutral]\n\n"
-        f"REGLAS: No inventes noticias ni alucines datos. ESPAÑOL ESTRICTO."
+        f"TITULARES CRUDOS A TRADUCIR:\n{news_text}\n\n"
+        f"ACTIVOS EN LA WALLET DEL USUARIO: {', '.join(get_tracked_tickers())}\n\n"
+        f"INSTRUCCIONES DE PROCESAMIENTO OBLIGATORIO:\n"
+        f"1. DEBES TRADUCIR AL ESPAÑOL TODOS LOS TITULARES. Prohibido responder en inglés.\n"
+        f"2. Selecciona las 3 noticias más importantes. Para CADA UNA, asigna un sentimiento (🔴 Bearish, 🟢 Bullish, 🟡 Neutral).\n"
+        f"3. Explica en UN renglón cómo afecta esta noticia a la wallet de Eduardo.\n\n"
+        f"FORMATO EXTRICTO A GENERAR (Repite este bloque por noticia):\n"
+        f"• [Titular TRADUCIDO al español] | Impacto: [🔴/🟢/🟡]\n"
+        f"💡 Análisis: [Explicación de impacto en la wallet]\n\n"
+        f"Al final, cierra con:\n"
+        f"📊 *Sentimiento Macro:* [Alcista / Bajista / Neutral]\n"
     )
 
     try:
@@ -1235,14 +1235,10 @@ def cmd_backup(message):
     tkrs = get_tracked_tickers()
     bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
 
-import google.generativeai as genai_old
-from PIL import Image
-import io
-
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    msg = bot.reply_to(message, "👁️ Analizando gráfica con GÉNESIS Vision (Gemini 1.5 Pro High)...")
+    msg = bot.reply_to(message, "👁️ Analizando gráfica con GÉNESIS Vision (Gemini 2.0 Flash) ...")
     try:
         if not GEMINI_API_KEY:
             bot.edit_message_text("⚠️ Error de configuración de modelo: GEMINI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
@@ -1250,22 +1246,22 @@ def handle_photo(message):
 
         file_info = bot.get_file(message.photo[-1].file_id)
         image_bytes = bot.download_file(file_info.file_path)
-        img = Image.open(io.BytesIO(image_bytes))
         
-        genai_old.configure(api_key=GEMINI_API_KEY)
-        model = genai_old.GenerativeModel('gemini-1.5-pro')
+        client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = (
             f"Eres GÉNESIS, el sistema analítico de mercados institucionales.\n"
-            f"Analiza esta captura de pantalla de TradingView con extrema precisión geométrica y lógica SMC (Smart Money Concepts).\n\n"
+            f"Analiza esta gráfica bajo conceptos SMC (Order Blocks, Liquidez) y compárala con los datos de precio en vivo de FMP.\n\n"
             f"TU MISIÓN:\n"
             f"1. Estructura SMC: Identifica rupturas de estructura (BOS), cambios de carácter (CHoCH), Order Blocks y vacíos de liquidez (FVG) visibles en la gráfica.\n"
-            f"2. Coincidencia FMP: Asume que el precio actual debe validarse contra Financial Modeling Prep (FMP). Describe mecánicamente dónde están las zonas de manipulación.\n"
-            f"3. Veredicto: Concluye de forma institucional si es momento de [COMPRAR], [VENDER] o [MANTENER] la posición.\n\n"
-            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL y actúa bajo tu identidad de GÉNESIS, sin alucinaciones."
+            f"2. Veredicto: Concluye de forma institucional si es momento de [COMPRAR], [VENDER] o [MANTENER] la posición.\n\n"
+            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
         )
 
-        res = model.generate_content([prompt, img])
+        res = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')]
+        )
         
         bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.text.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
     except Exception as e:
