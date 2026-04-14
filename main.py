@@ -7,12 +7,13 @@ import pandas as pd
 import yfinance as yf
 import threading
 import time
-from openai import OpenAI
+from google import genai
 import os
 import telebot
 import json
 import sqlite3
 from collections import deque
+from google.genai import types
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
@@ -21,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 PREMIUM_API_KEY = (os.environ.get('PREMIUM_API_KEY') or '').strip()
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
@@ -845,15 +846,15 @@ def check_geopolitical_news():
 
 
 def gpt_advanced_geopolitics(news_list, manual=False):
-    if not news_list or not OPENAI_API_KEY: return None
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    if not news_list or not GEMINI_API_KEY: return None
+    client = genai.Client(api_key=GEMINI_API_KEY)
     news_text = "\n".join([f"- {n}" for n in news_list])
     if manual:
         prompt = f"Titulares globales:\n{news_text}\nHaz un resumen y dime qué movería el mercado hoy. RESPONDE ESTRICTAMENTE EN ESPAÑOL."
     else:
         prompt = (f"Titulares recientes:\n{news_text}\nAnaliza si hay algo de nivel 'Alto Impacto' (>2%). Si no lo hay, responde 'TRANQUILIDAD'.\nSi lo hay: '⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Acción/Sector]'\nRESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL.")
     try:
-        res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=300).choices[0].message.content.strip()
+        res = client.models.generate_content(model="gemini-3.1-pro", contents=prompt).text.strip()
         if not manual and ("TRANQUILIDAD" in res.upper() and len(res) < 20): return None
         return res
     except: return None
@@ -896,36 +897,36 @@ def generar_reporte_macro_manual():
                 "Intenta en unos minutos.")
 
     # Paso 3: GPT Impact Assessment (GÉNESIS Intelligence)
-    if not OPENAI_API_KEY:
+    if not GEMINI_API_KEY:
         bullets = "\n".join([f"• {h}" for h in headlines[:5]])
         return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Pendiente (sin IA)</b>"
 
     news_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
     prompt = (
-        f"Eres GÉNESIS, un sistema de inteligencia de mercados de grado institucional.\n\n"
+        f"Eres GÉNESIS, un sistema de inteligencia de mercados de grado institucional impulsado por Gemini 3.1 Pro.\n\n"
         f"TITULARES EN VIVO (fuente: {source_label}):\n{news_text}\n\n"
         f"INSTRUCCIONES ESTRICTAS:\n"
         f"1. Selecciona las 3 noticias de MAYOR IMPACTO para los mercados globales.\n"
-        f"2. Para CADA una, genera EXACTAMENTE este formato:\n\n"
+        f"2. Aprovecha tu capacidad de razonamiento para cruzar el impacto de estas noticias con posibles movimientos en zonas de liquidez (Smart Money Concepts).\n"
+        f"3. Para CADA una, genera EXACTAMENTE este formato:\n\n"
         f"📰 [Titular traducido al español - conciso]\n"
         f"🔥 Nivel de Impacto: [Bajo / Medio / Alto]\n"
         f"🎯 Activos Afectados: [Lista: BTC, NVDA, Oro, Petróleo, etc.]\n"
-        f"🧠 [Comentario de 1 línea sobre cómo cambia la dirección del mercado]\n\n"
-        f"3. Al final, dictamina:\n"
+        f"🧠 [Comentario hiper-detallado de cómo cambia la dirección del mercado y afecta los Order Blocks institucionales]\n\n"
+        f"4. Al final, dictamina:\n"
         f"📊 Sentimiento General del Mercado: [Alcista 🟢 / Bajista 🔴 / Neutral ⚪ / Tenso ⚠️]\n\n"
-        f"REGLAS: No inventes noticias. Solo usa los titulares dados. ESPAÑOL ESTRICTO."
+        f"REGLAS: No inventes noticias ni datos FMP empíricos que no tengas. ESPAÑOL ESTRICTO."
     )
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        res = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=600
-        ).choices[0].message.content.strip()
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        res = client.models.generate_content(
+            model="gemini-3.1-pro",
+            contents=prompt,
+        ).text.strip()
         return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n\n{res}"
     except Exception as e:
-        logging.error(f"GPT macro error: {e}")
+        logging.error(f"Gemini macro error: {e}")
         bullets = "\n".join([f"• {h}" for h in headlines[:5]])
         return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Sin determinar</b>"
 
@@ -987,11 +988,16 @@ def update_smc_memory(ticker, analysis):
 def analyze_breakout_gpt(ticker, level_type, price):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
-    if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"El activo {display_name} rompió su {level_type} en ${fmt_price(price)}. Consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y por qué. ESPAÑOL ESTRICTO."
-    try: return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=200).choices[0].message.content
-    except: return "¿Qué hacer? Esperar al cierre del día."
+    if not GEMINI_API_KEY: return "¿Qué hacer? Mantener cautela."
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = (f"Eres GÉNESIS, analista institucional.\n"
+              f"El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en exactamente ${fmt_price(price)} verificado vía FMP.\n"
+              f"Instrucción: Evalúa esta ruptura intradiaria con perspectiva de liquidez institucional.\n"
+              f"Da un consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y explica mecánicamente por qué. ESPAÑOL ESTRICTO.")
+    try: return client.models.generate_content(model="gemini-3.1-pro", contents=prompt).text.strip()
+    except Exception as e:
+        logging.error(f"Fallo Gemini breakout: {e}")
+        return "¿Qué hacer? Esperar confirmación de volumen en la siguiente hora."
 
 def perform_deep_analysis(ticker):
     tk = remap_ticker(ticker)
@@ -1064,34 +1070,36 @@ def perform_deep_analysis(ticker):
             news_str = "\n".join([f"- {n.get('title', '')}" for n in raw_news[:5]])
     except: pass
 
-    # PASO 3: Prompt blindado anti-alucinación
+    # PASO 3: Prompt blindado anti-alucinación hiper-detallado para Gemini 3.1 Pro
     price_str = f"${fmt_price(final_price)}" if final_price else "N/A"
     prompt = (
-        f"Actúa como un analista financiero institucional senior.\n\n"
+        f"Actúa como GÉNESIS, un analista financiero institucional senior (modelo Gemini 3.1 Pro).\n\n"
         f"ACTIVO: {display_name} ({tk})\n\n"
         f"{tech_block}\n\n"
         f"NOTICIAS RECIENTES:\n{news_str}\n\n"
         f"REGLAS INQUEBRANTABLES:\n"
-        f"1. El precio REAL Y VERIFICADO de {display_name} en este momento es {price_str}. Este dato viene DIRECTO del exchange. Tienes PROHIBIDO inventar, adivinar o usar otro precio.\n"
+        f"1. El precio REAL Y VERIFICADO de {display_name} en este momento es {price_str} (proveedor: FMP). Tienes PROHIBIDO inventar, adivinar o usar otro precio.\n"
         f"2. Basa tu análisis EXCLUSIVAMENTE en los datos numéricos proporcionados arriba.\n"
-        f"3. Si el RSI > 70, indica sobrecompra. Si RSI < 30, indica sobreventa.\n"
-        f"4. Analiza la posición del precio respecto a los niveles SMC (Soporte/Resistencia/Order Block).\n"
-        f"5. Combina análisis técnico + noticias para dar un VEREDICTO FINAL.\n\n"
-        f"FORMATO DE RESPUESTA:\n"
-        f"📊 Análisis Técnico: [Tu análisis basado en RSI, MACD, SMC]\n"
-        f"📰 Impacto Noticias: [Tu lectura de las noticias]\n"
-        f"🎯 VEREDICTO FINAL: [COMPRAR / VENDER / MANTENER] + justificación en 1 línea.\n\n"
+        f"3. Realiza una fusión de perspectivas: cruza los niveles mecánicos de 'Smart Money Concepts' (Bloques de órdenes y vacíos de liquidez) con el indicador de Tendencia SMC.\n"
+        f"4. Evalúa exhaustivamente si el precio actual sugiere que los algoritmos institucionales están acumulando en zona de demanda o distribuyendo en zona de oferta.\n"
+        f"5. Combina el pulso macro de las noticias y detalla de qué manera afectan los niveles técnicos.\n\n"
+        f"FORMATO DE RESPUESTA EN GITHUB MARKDOWN:\n"
+        f"📊 **Análisis Smart Money (SMC):** [Profundiza sobre liquidez, imbalances y el order block actual]\n"
+        f"📰 **Contexto Macro / Institucional:** [Tu lectura de cómo el flujo de impacto altera la técnica]\n"
+        f"🎯 **VEREDICTO FINAL:** [COMPRAR / VENDER / MANTENER] + [Justificación institucional en 2 líneas]\n\n"
         f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
     )
 
-    if not OPENAI_API_KEY: return "Error: API KEY no configurada."
+    if not GEMINI_API_KEY: return "Error: API KEY de Gemini no configurada."
     try:
-        return OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=600
-        ).choices[0].message.content
-    except Exception as e: return f"Fallo al analizar: {e}"
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        return client.models.generate_content(
+            model="gemini-3.1-pro",
+            contents=prompt,
+        ).text.strip()
+    except Exception as e:
+        logging.error(f"Fallo al analizar con Gemini: {e}")
+        return f"Fallo al analizar: {e}"
 
 
 def build_wallet_dashboard():
@@ -1240,14 +1248,34 @@ def cmd_backup(message):
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    msg = bot.reply_to(message, "👁️ Analizando estructura visual...")
+    msg = bot.reply_to(message, "👁️ Analizando estructura visual con GÉNESIS Vision (Gemini 3.1 Pro)...")
     try:
+        if not GEMINI_API_KEY:
+            bot.edit_message_text("❌ GEMINI_API_KEY no configurada.", chat_id=message.chat.id, message_id=msg.message_id)
+            return
+
         file_info = bot.get_file(message.photo[-1].file_id)
-        base_img = base64.b64encode(bot.download_file(file_info.file_path)).decode('utf-8')
-        res = OpenAI(api_key=OPENAI_API_KEY).chat.completions.create(
-            model="gpt-4o", messages=[{"role": "user", "content": [{"type": "text", "text": "Analiza gráfica SMC con rigor. Veredicto: 'Bullish' o 'Bearish'. ESPAÑOL ESTRICTO."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base_img}"}}]}], max_tokens=800)
-        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL*\n---\n{res.choices[0].message.content}", chat_id=message.chat.id, message_id=msg.message_id)
-    except Exception as e: bot.edit_message_text(f"❌ Falló visión: {e}", chat_id=message.chat.id, message_id=msg.message_id)
+        image_bytes = bot.download_file(file_info.file_path)
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        prompt = (
+            f"Eres GÉNESIS, el sistema analítico de mercados institucionales. Estoy usando Gemini 3.1 Pro para visión artificial.\n"
+            f"Analiza esta captura de pantalla de TradingView con extrema precisión geométrica y lógica SMC (Smart Money Concepts).\n\n"
+            f"TU MISIÓN:\n"
+            f"1. Estructura SMC: Identifica rupturas de estructura (BOS), cambios de carácter (CHoCH), Order Blocks y vacíos de liquidez (FVG) visibles en la gráfica.\n"
+            f"2. Coincidencia FMP: Asume que el precio actual debe validarse contra Financial Modeling Prep (FMP). Describe mecánicamente dónde están las zonas de manipulación.\n"
+            f"3. Veredicto: Concluye de forma institucional si es momento de [COMPRAR], [VENDER] o [MANTENER] la posición.\n\n"
+            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL y actúa bajo tu identidad de GÉNESIS, sin alucinaciones."
+        )
+
+        res = client.models.generate_content(
+            model="gemini-3.1-pro",
+            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg')]
+        )
+
+        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.text.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
+    except Exception as e:
+        bot.edit_message_text(f"❌ Falló visión: {e}", chat_id=message.chat.id, message_id=msg.message_id)
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_text(message):
@@ -1438,29 +1466,28 @@ def verificar_noticias_cartera():
                 continue  # Ya la vimos
 
             # Pasar por GPT para análisis de riesgo
-            if not OPENAI_API_KEY:
+            if not GEMINI_API_KEY:
                 continue
 
             try:
-                client = OpenAI(api_key=OPENAI_API_KEY)
+                client = genai.Client(api_key=GEMINI_API_KEY)
                 prompt = (
-                    f"Actúa como un gestor de riesgos senior de un fondo institucional.\n"
+                    f"Actúa como GÉNESIS, un gestor de riesgos senior de un fondo institucional (con base en Gemini 3.1 Pro).\n"
                     f"Analiza esta noticia del activo {display_name} ({tk}):\n"
                     f"Titular: \"{title}\"\n\n"
                     f"REGLAS ESTRICTAS:\n"
-                    f"- Si la noticia es NEUTRAL, de relleno, o sin impacto real en el precio, responde EXACTAMENTE: 'NEUTRAL'\n"
-                    f"- Si la noticia tiene impacto REAL (positivo o negativo), genera una alerta con este formato:\n"
+                    f"- Si la noticia es NEUTRAL, de relleno, o sin impacto real en el precio local, responde EXACTAMENTE: 'NEUTRAL'\n"
+                    f"- Si la noticia tiene impacto REAL (positivo o negativo), predice el impacto en las zonas de oferta/demanda y genera una alerta con este formato:\n"
                     f"  📰 Suceso: [Resumen de 1 línea]\n"
-                    f"  💡 Sugerencia: [Vender / Vigilar / Hold / Comprar]\n"
-                    f"  ⚡ Impacto: [Alto / Medio]\n"
+                    f"  💡 Sugerencia Institucional: [Vender / Vigilar / Hold / Comprar]\n"
+                    f"  ⚡ Impacto Estimado: [Alto / Medio] en la liquidez\n"
                     f"RESPONDE EN ESPAÑOL."
                 )
 
-                res = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=200
-                ).choices[0].message.content.strip()
+                res = client.models.generate_content(
+                    model="gemini-3.1-pro",
+                    contents=prompt,
+                ).text.strip()
 
                 # Filtro de ruido: si GPT dice NEUTRAL, silencio total
                 if "NEUTRAL" in res.upper() and len(res) < 30:
@@ -1543,23 +1570,23 @@ def monitor_proteccion_activos():
 
         # Generar veredicto con IA si está disponible
         veredicto = ""
-        if OPENAI_API_KEY:
+        if GEMINI_API_KEY:
             try:
-                client = OpenAI(api_key=OPENAI_API_KEY)
+                client = genai.Client(api_key=GEMINI_API_KEY)
                 prompt = (
-                    f"Eres GÉNESIS, un sistema de protección de activos institucional.\n"
-                    f"Activo: {display_name} ({tk})\n"
-                    f"Precio actual: ${fmt_price(current_price)}\n"
-                    f"Movimiento: {pct_change:+.2f}% en las últimas horas\n"
-                    f"{smc_context}\n\n"
-                    f"Da un VEREDICTO en 1-2 líneas: ¿Mantener, vender parcial, o reforzar posición?\n"
-                    f"ESPAÑOL ESTRICTO. Sé directo y profesional."
+                    f"Eres GÉNESIS (Gemini 3.1 Pro), un sistema de protección de activos enfocado en la prevención de riesgos y la estrategia Smart Money.\n"
+                    f"Activo protegido: {display_name} ({tk})\n"
+                    f"Precio real actual de FMP: ${fmt_price(current_price)}\n"
+                    f"Desviación anómala detectada: {pct_change:+.2f}% en las últimas horas\n"
+                    f"Contexto SMC en vivo:\n{smc_context}\n\n"
+                    f"Analiza profunda pero rápidamente esta desviación en relación a la liquidez del Order Block.\n"
+                    f"Da un VEREDICTO en 2 líneas: ¿Mantener, vender parcial, o reforzar posición institucional? Justifica mecánicamente.\n"
+                    f"ESPAÑOL ESTRICTO."
                 )
-                res = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=150
-                ).choices[0].message.content.strip()
+                res = client.models.generate_content(
+                    model="gemini-3.1-pro",
+                    contents=prompt,
+                ).text.strip()
                 veredicto = f"\n\n🧠 <b>VEREDICTO GÉNESIS:</b>\n{res}"
             except Exception as e:
                 logging.debug(f"Protection GPT error: {e}")
