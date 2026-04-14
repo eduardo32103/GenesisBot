@@ -36,7 +36,10 @@ else:
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # --- BASE DE DATOS LOCAL/REMOTA (PostgreSQL) ---
-DATABASE_URL = os.environ.get('DATABASE_URL')\nUSE_RAM_MODE = False\nRAM_WALLET = {}\nRAM_PNL = 0.0
+DATABASE_URL = os.environ.get('DATABASE_URL')
+USE_RAM_MODE = False
+RAM_WALLET = {}
+RAM_PNL = 0.0
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
 
