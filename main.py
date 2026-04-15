@@ -1029,9 +1029,136 @@ def _get_whale_context_for_ticker(ticker):
     return None
 
 
+# === SISTEMA DE TRADUCCIÓN AUTOMÁTICA AL ESPAÑOL ===
+
+# Diccionario de términos financieros inglés → español
+_FINANCIAL_DICT = {
+    'bull market': 'mercado alcista', 'bear market': 'mercado bajista',
+    'interest rates': 'tasas de interés', 'interest rate': 'tasa de interés',
+    'rate hike': 'alza de tasas', 'rate cut': 'recorte de tasas',
+    'earnings': 'ganancias', 'revenue': 'ingresos', 'profit': 'beneficio',
+    'loss': 'pérdida', 'losses': 'pérdidas',
+    'surge': 'alza fuerte', 'surges': 'sube fuertemente',
+    'plunge': 'desplome', 'plunges': 'se desploma',
+    'rally': 'rally alcista', 'rallies': 'repunta',
+    'crash': 'desplome', 'crashes': 'se desploma',
+    'drop': 'caída', 'drops': 'cae',
+    'rise': 'alza', 'rises': 'sube',
+    'gain': 'ganancia', 'gains': 'ganancias',
+    'fall': 'caída', 'falls': 'cae',
+    'soar': 'se dispara', 'soars': 'se dispara',
+    'decline': 'descenso', 'declines': 'desciende',
+    'volatility': 'volatilidad', 'volatile': 'volátil',
+    'downturn': 'recesión', 'recession': 'recesión',
+    'inflation': 'inflación', 'deflation': 'deflación',
+    'tariff': 'arancel', 'tariffs': 'aranceles',
+    'sanction': 'sanción', 'sanctions': 'sanciones',
+    'trade war': 'guerra comercial', 'trade deal': 'acuerdo comercial',
+    'federal reserve': 'Reserva Federal', 'the fed': 'la Fed',
+    'treasury': 'Tesoro', 'bond': 'bono', 'bonds': 'bonos',
+    'yield': 'rendimiento', 'yields': 'rendimientos',
+    'stock': 'acción', 'stocks': 'acciones',
+    'shares': 'acciones', 'share': 'acción',
+    'market cap': 'capitalización de mercado',
+    'all-time high': 'máximo histórico', 'record high': 'máximo histórico',
+    'all-time low': 'mínimo histórico',
+    'breakout': 'ruptura alcista', 'breakdown': 'ruptura bajista',
+    'support': 'soporte', 'resistance': 'resistencia',
+    'sell-off': 'venta masiva', 'selloff': 'venta masiva',
+    'buyback': 'recompra de acciones',
+    'dividend': 'dividendo', 'dividends': 'dividendos',
+    'outperform': 'supera expectativas', 'underperform': 'por debajo de expectativas',
+    'upgrade': 'mejora de calificación', 'downgrade': 'rebaja de calificación',
+    'bullish': 'alcista', 'bearish': 'bajista',
+    'outlook': 'perspectiva', 'forecast': 'pronóstico',
+    'growth': 'crecimiento', 'expansion': 'expansión',
+    'layoffs': 'despidos', 'hiring': 'contrataciones',
+    'bankruptcy': 'bancarrota', 'default': 'impago',
+    'crisis': 'crisis', 'recovery': 'recuperación',
+    'quarter': 'trimestre', 'quarterly': 'trimestral',
+    'annual': 'anual', 'yearly': 'anual',
+    'report': 'reporte', 'reports': 'reportes',
+    'warns': 'advierte', 'warning': 'advertencia',
+    'announces': 'anuncia', 'announcement': 'anuncio',
+    'launch': 'lanzamiento', 'launches': 'lanza',
+    'deal': 'acuerdo', 'merger': 'fusión', 'acquisition': 'adquisición',
+    'investor': 'inversionista', 'investors': 'inversionistas',
+    'traders': 'operadores', 'analyst': 'analista', 'analysts': 'analistas',
+    'ahead of': 'antes de', 'amid': 'en medio de',
+    'despite': 'a pesar de', 'due to': 'debido a',
+    'according to': 'según', 'following': 'tras',
+    'higher': 'más alto', 'lower': 'más bajo',
+    'strong': 'fuerte', 'weak': 'débil',
+    'bitcoin': 'Bitcoin', 'ethereum': 'Ethereum',
+    'cryptocurrency': 'criptomoneda', 'crypto': 'cripto',
+}
+
+
+def _quick_translate_financial(text):
+    """Traducción rápida por diccionario — reemplaza términos financieros comunes"""
+    result = text
+    # Ordenar por longitud descendente para evitar reemplazos parciales
+    sorted_terms = sorted(_FINANCIAL_DICT.items(), key=lambda x: len(x[0]), reverse=True)
+    for eng, esp in sorted_terms:
+        # Reemplazo case-insensitive preservando capitalización del contexto
+        pattern = re.compile(re.escape(eng), re.IGNORECASE)
+        result = pattern.sub(esp, result)
+    return result
+
+
+def _translate_titles_to_spanish(titles):
+    """Traduce una lista de títulos al español usando OpenAI (batch).
+    Si OpenAI no está disponible, usa traducción por diccionario."""
+    if not titles:
+        return titles
+
+    # Si hay OpenAI, traducción por lotes (más natural)
+    if OPENAI_API_KEY and len(titles) > 0:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
+            prompt = (
+                f"Traduce estos titulares financieros al ESPAÑOL con vocabulario profesional de mercados.\n"
+                f"Usa términos como: mercado alcista, tasas de interés, rendimiento, volatilidad, arancel, etc.\n"
+                f"Mantén los nombres propios (empresas, personas, países) sin traducir.\n"
+                f"Devuelve SOLO las traducciones numeradas, sin explicaciones.\n\n"
+                f"{numbered}"
+            )
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1500
+            ).choices[0].message.content.strip()
+
+            # Parsear respuesta numerada
+            translated = []
+            for line in res.split('\n'):
+                line = line.strip()
+                if line and line[0].isdigit():
+                    # Quitar "1. ", "2. ", etc.
+                    clean = re.sub(r'^\d+[\.\)]\s*', '', line)
+                    if clean:
+                        translated.append(clean)
+
+            if len(translated) >= len(titles) * 0.5:  # Al menos 50% traducido
+                # Rellenar los que falten con diccionario
+                while len(translated) < len(titles):
+                    idx = len(translated)
+                    translated.append(_quick_translate_financial(titles[idx]))
+                return translated
+
+        except Exception as e:
+            logging.debug(f"Error en traducción batch OpenAI: {e}")
+
+    # Fallback: traducción por diccionario
+    return [_quick_translate_financial(t) for t in titles]
+
+
 def genesis_strategic_report(manual=True):
     """REPORTE ESTRATÉGICO UNIFICADO GÉNESIS
-    Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA"""
+    Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA
+    TODO el contenido se entrega en ESPAÑOL."""
     global GENESIS_RISK_CONTEXT
 
     wallet_tickers = get_tracked_tickers()
@@ -1056,6 +1183,15 @@ def genesis_strategic_report(manual=True):
     # Sin noticias de ninguna fuente
     if not news_data:
         return "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
+
+    # === PASO 1.5: Traducir títulos al español ===
+    titles_to_translate = [n['title'] for n in news_data]
+    translated = _translate_titles_to_spanish(titles_to_translate)
+    for i, news in enumerate(news_data):
+        if i < len(translated) and translated[i]:
+            news['title_es'] = translated[i]
+        else:
+            news['title_es'] = _quick_translate_financial(news['title'])
 
     # === PASO 2: Cross-reference con wallet ===
     wallet_alerts = []    # Noticias que tocan activos de Eduardo
@@ -1112,12 +1248,12 @@ def genesis_strategic_report(manual=True):
                     whale_note = f"\n🐋 <b>Ballena:</b> {wctx['vol_str']} ({wctx['type']}) hace {wctx['minutes_ago']}min"
                     break
 
-            lines.append(f"📰 <b>Noticia:</b> {news['title'][:120]}")
+            lines.append(f"📰 <b>Noticia:</b> {news['title_es'][:140]}")
             lines.append(f"🎯 <b>Activos afectados:</b> {affected}")
             lines.append(f"{s['icon']} <b>Riesgo:</b> {s['bull_pct']}% Alcista / {s['bear_pct']}% Bajista ({s['label']})")
             if whale_note:
                 lines.append(whale_note)
-            lines.append(f"💡 <b>Análisis:</b> Basado en el sentimiento FMP, la probabilidad de impacto en tu cartera es <b>{s['bear_pct']}%</b>.")
+            lines.append(f"💡 <b>Análisis:</b> Según el sentimiento del mercado, la probabilidad de impacto en tu cartera es <b>{s['bear_pct']}%</b>.")
             lines.append("")
     else:
         lines.append("")
@@ -1132,7 +1268,7 @@ def genesis_strategic_report(manual=True):
     for news in top_general:
         s = news['sentiment']
         src = f" ({news['source']})" if news['source'] else ""
-        lines.append(f"{s['icon']} {news['title'][:100]}{src}")
+        lines.append(f"{s['icon']} {news['title_es'][:120]}{src}")
     if not top_general:
         lines.append("☕ Sin noticias macro relevantes.")
 
@@ -1163,21 +1299,23 @@ def genesis_strategic_report(manual=True):
     # === PASO 5: IA avanzada (si OpenAI está disponible) ===
     if manual and OPENAI_API_KEY and (wallet_alerts or top_general):
         try:
-            all_titles = [n['title'] for n in (wallet_alerts + top_general)[:6]]
+            all_titles = [n['title_es'] for n in (wallet_alerts + top_general)[:6]]
             wallet_str = ", ".join([get_display_name(tk) for tk in wallet_tickers])
-            sentiments_str = ", ".join([f"{n['title'][:40]}... ({n['sentiment']['label']})" for n in news_data[:5]])
+            sentiments_str = "\n".join([f"- {n['title_es'][:60]} ({n['sentiment']['label']})" for n in news_data[:5]])
 
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
             prompt = (
-                f"Eres GÉNESIS, un sistema de inteligencia estratégica de mercados.\n\n"
-                f"NOTICIAS CON SENTIMIENTO:\n{sentiments_str}\n\n"
+                f"Eres GÉNESIS, un sistema de inteligencia estratégica de mercados financieros.\n\n"
+                f"NOTICIAS DEL DÍA CON SENTIMIENTO:\n{sentiments_str}\n\n"
                 f"WALLET DE EDUARDO: {wallet_str}\n\n"
                 f"SENTIMIENTO GLOBAL: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
-                f"INSTRUCCIÓN:\n"
-                f"1. En 3-4 líneas, explica cómo estas noticias afectan DIRECTAMENTE a la wallet de Eduardo.\n"
-                f"2. Da UNA recomendación estratégica clara (Hold/Vigilar/Reducir/Aprovechar).\n"
-                f"3. RESPONDE EN ESPAÑOL.\n"
+                f"INSTRUCCIONES OBLIGATORIAS:\n"
+                f"1. Redacta TODO en ESPAÑOL con vocabulario financiero profesional.\n"
+                f"2. Usa términos como: mercado alcista, tasas de interés, rendimiento, volatilidad, liquidez, soporte, resistencia, presión vendedora/compradora.\n"
+                f"3. En 3-4 líneas, explica cómo estas noticias afectan DIRECTAMENTE los activos de Eduardo.\n"
+                f"4. Da UNA recomendación estratégica clara: Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad.\n"
+                f"5. PROHIBIDO responder en inglés. Todo debe ser 100% en español.\n"
             )
             res = client.chat.completions.create(
                 model="gpt-4o",
