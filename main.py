@@ -757,7 +757,22 @@ def get_safe_ticker_price(ticker, force_validation=False):
     return None
 
 def verify_1m_realtime_data(ticker):
-    return get_safe_ticker_price(ticker)
+    """Obtiene precio Y volumen en tiempo real via yfinance 1min."""
+    tk = remap_ticker(ticker)
+    try:
+        data = yf.download(tk, period='1d', interval='1m', progress=False)
+        if data is not None and not data.empty:
+            latest = data.iloc[-1]
+            price = float(latest['Close'].iloc[0]) if hasattr(latest['Close'], 'iloc') else float(latest['Close'])
+            vol = float(latest['Volume'].iloc[0]) if hasattr(latest['Volume'], 'iloc') else float(latest['Volume'])
+            return {'price': price, 'vol': vol}
+    except Exception as e:
+        print(f"DEBUG verify_1m: Error para {tk}: {e}")
+    # Fallback: solo precio sin volumen
+    safe = get_safe_ticker_price(tk)
+    if safe:
+        return {'price': safe['price'], 'vol': 0}
+    return None
 
 
 def _fetch_fmp_news(limit=10):
@@ -1383,6 +1398,29 @@ def fetch_intraday_data(ticker):
         avg_vol = (sum(volumes) / len(volumes)) if volumes else 0
 
         vol_type = "Compra \ud83d\udfe2" if close_p >= open_p else "Venta \ud83d\udd34"
+
+        # Si FMP no devolvio volumenes, fallback a yfinance
+        if avg_vol == 0 or latest_vol == 0:
+            try:
+                yf_data = yf.download(tk, period='5d', interval='5m', progress=False)
+                if yf_data is not None and not yf_data.empty:
+                    yf_vols = yf_data['Volume'].dropna()
+                    if hasattr(yf_vols, 'values') and len(yf_vols) > 0:
+                        # Flatten por si tiene multi-index
+                        flat_vols = [float(v) for v in yf_vols.values.flatten() if float(v) > 0]
+                        if flat_vols:
+                            latest_vol = flat_vols[-1]
+                            avg_vol = sum(flat_vols) / len(flat_vols)
+                            close_vals = yf_data['Close'].dropna()
+                            open_vals = yf_data['Open'].dropna()
+                            if len(close_vals) > 0 and len(open_vals) > 0:
+                                last_close = float(close_vals.values.flatten()[-1])
+                                last_open = float(open_vals.values.flatten()[-1])
+                                vol_type = "Compra \ud83d\udfe2" if last_close >= last_open else "Venta \ud83d\udd34"
+                            print(f"DEBUG INTRADAY: yfinance fallback OK para {tk}: latest_vol={latest_vol:,.0f} avg_vol={avg_vol:,.0f}")
+            except Exception as yf_e:
+                print(f"DEBUG INTRADAY: yfinance fallback fallo para {tk}: {yf_e}")
+
         result = {
             'ticker': tk,
             'latest_vol': latest_vol,
@@ -2186,6 +2224,14 @@ def boot_smc_levels_once():
     for tk in tkrs:
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
+
+    # PASO INICIAL: Poblar contexto geopolítico al arrancar
+    try:
+        print("DEBUG BOOT: Inicializando contexto geopolitico...")
+        genesis_strategic_report(manual=False)
+        print(f"DEBUG BOOT: Contexto listo. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
+    except Exception as e:
+        print(f"DEBUG BOOT: Error inicializando contexto geo: {e}")
 
 def background_loop_proactivo():
     """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÍAS)"""
