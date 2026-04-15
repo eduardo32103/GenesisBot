@@ -1409,11 +1409,22 @@ def fetch_intraday_data(ticker):
 
         if resp.status_code == 200:
             raw = resp.json()
-            hist = raw.get('historical', [])
+            # FMP v3 robust parsing
+            hist = []
+            if isinstance(raw, list):
+                hist = raw
+            elif isinstance(raw, dict):
+                if 'historical' in raw:
+                    hist = raw['historical']
+                elif 'historicalStockList' in raw:
+                    hist = raw['historicalStockList']
+                    if hist and isinstance(hist[0], dict) and 'historical' in hist[0]:
+                        hist = hist[0]['historical']
+
             if isinstance(hist, list) and len(hist) >= 5:
-                # hist viene más reciente primero, tomar últimos 20 días
+                # hist viene más reciente primero, tomar últimos 10 días para RVOL como pidió el usuario
                 recent_vols = []
-                for day in hist[:20]:
+                for day in hist[:10]:
                     v = float(day.get('volume', 0) or 0)
                     if v > 0:
                         recent_vols.append(v)
@@ -1424,7 +1435,7 @@ def fetch_intraday_data(ticker):
                 else:
                     print(f"DEBUG INTRADAY {tk}: historial tiene 0 volumenes positivos de {len(hist)} registros")
             else:
-                print(f"DEBUG INTRADAY {tk}: historial devolvio {len(hist) if isinstance(hist, list) else 'no-list'} registros (necesita 5+)")
+                print(f"ERROR: FMP no devolvió historial para {tk}. Estructura: {str(raw)[:100]}")
         else:
             print(f"DEBUG INTRADAY {tk}: historial HTTP {resp.status_code} para {fmp_sym}")
             # Mostrar el error exacto para diagnosticar
@@ -1514,14 +1525,39 @@ def fetch_and_analyze_stock(ticker):
         latest_price = safe_check['price']
         latest_rsi = float(rsi_series.iloc[-1])
 
-        smc_trend = "Alcista 🟢" if latest_price > closes.ewm(span=20).mean().iloc[-1] else "Bajista 🔴"
-        recent_month = closes.iloc[-22:]
+        smc_trend = "Alcista \ud83d\udfe2" if latest_price > closes.ewm(span=20).mean().iloc[-1] else "Bajista \ud83d\udd34"
+        
+        # VARIABLE 2 (SMC): Identifica el precio m\u00e1s alto (Resistencia) y m\u00e1s bajo (Soporte) de los \u00faltimos 20 d\u00edas
+        recent_month = closes.iloc[-20:]
         smc_sup = float(recent_month.min())
         smc_res = float(recent_month.max())
-        vol_month = volumes.iloc[-22:]
+        vol_month = volumes.iloc[-20:]
         order_block_price = float(closes.iloc[vol_month.idxmax()]) if vol_month.max() > 0 else latest_price
 
-        result = {'ticker': tk, 'price': latest_price, 'rsi': latest_rsi, 'macd_line': float(macd_line.iloc[-1]), 'macd_signal': float(macd_signal.iloc[-1]), 'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend, 'order_block': order_block_price}
+        # C\u00c1LCULO DE TP/SL: Take Profit en la siguiente Resistencia SMC y Stop Loss 2% abajo del Soporte SMC
+        take_profit = smc_res
+        stop_loss = smc_sup * 0.98
+
+        # VARIABLE 1 (RVOL): Volumen actual / Promedio de 10 d\u00edas
+        recent_10_vols = volumes.iloc[-10:]
+        avg_10_vol = float(recent_10_vols.mean()) if len(recent_10_vols) > 0 else 1.0
+        latest_vol = safe_check.get('volume', float(volumes.iloc[-1]))
+        rvol = float(latest_vol / avg_10_vol) if avg_10_vol > 0 else 0.0
+
+        result = {
+            'ticker': tk, 
+            'price': latest_price, 
+            'rsi': latest_rsi, 
+            'macd_line': float(macd_line.iloc[-1]), 
+            'macd_signal': float(macd_signal.iloc[-1]), 
+            'smc_sup': smc_sup, 
+            'smc_res': smc_res, 
+            'smc_trend': smc_trend, 
+            'order_block': order_block_price,
+            'take_profit': take_profit,
+            'stop_loss': stop_loss,
+            'rvol': rvol
+        }
         LAST_KNOWN_ANALYSIS[tk] = result
         return result
     except Exception as e:
@@ -1995,9 +2031,19 @@ def handle_text(message):
             d_name = get_display_name(tk)
 
             if analysis:
-                report_lines.extend([f"🏦 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", f"• Tendencia SMC: {analysis['smc_trend']}", f"• Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", f"• Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", f"• Order Block Institucional: ${fmt_price(analysis['order_block'])}", "---"])
+                rvol_str = f"{analysis['rvol']:.2f}x"
+                report_lines.extend([
+                    f"\ud83c\udfe6 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", 
+                    f"\u2022 Tendencia SMC: {analysis['smc_trend']}", 
+                    f"\u2022 Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", 
+                    f"\u2022 Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", 
+                    f"\u2022 RVOL (10d): {rvol_str}",
+                    f"\u2022 🎯 <b>Take Profit (SMC Res):</b> ${fmt_price(analysis['take_profit'])}",
+                    f"\u2022 🛡️ <b>Stop Loss (-2% Sup):</b> ${fmt_price(analysis['stop_loss'])}",
+                    "---"
+                ])
             else:
-                report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⏳ Sin datos disponibles en este momento desde los exchanges", "---"])
+                report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u23f3 Sin datos disponibles en este momento desde los exchanges", "---"])
 
         bot.send_message(message.chat.id, "\n".join(report_lines), parse_mode="HTML")
         return
