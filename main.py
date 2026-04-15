@@ -22,7 +22,7 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visión
-PREMIUM_API_KEY = (os.environ.get('PREMIUM_API_KEY') or '').strip()
+PREMIUM_API_KEY = os.environ.get('PREMIUM_API_KEY')
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
 
@@ -657,162 +657,67 @@ def _get_fmp_symbol(tk):
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
 def _fetch_fmp_quote(tk):
-    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP usando endpoints Real-Time (PRO)"""
+    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - api/v3/quote"""
     global _FMP_LAST_ERROR
+
+    # DEBUG: verificar que Railway entrego la API Key (nunca imprime la llave completa)
+    print(f"DEBUG: API KEY detectada: {bool(PREMIUM_API_KEY)}")
+
     if not PREMIUM_API_KEY:
         _FMP_LAST_ERROR[tk] = "PREMIUM_API_KEY no detectada."
-        logging.error("FMP: API KEY no configurada.")
+        logging.error("FMP: API KEY no configurada en Railway.")
         return None
 
     fmp_symbol = _get_fmp_symbol(tk)
     symbols_to_try = [fmp_symbol]
-    
-    # Manejo optimizado para Crypto (busca Varios formatos)
+
+    # Soporte Crypto exhaustivo: BTC -> BTCUSD, BTC, BTC-USD
     if _is_crypto_ticker(tk):
         base = tk.replace('-USD', '')
         symbols_to_try = [f"{base}USD", base, tk]
-
-    last_status = 0
-    for symbol in symbols_to_try:
-        try:
-            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={PREMIUM_API_KEY}"
-            resp = requests.get(url, timeout=10)
-            last_status = resp.status_code
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    quote = data[0]
-                    # Prevención absoluta contra KeyError utilizando dict.get()
-                    if isinstance(quote, dict):
-                        price = float(quote.get('price', 0) or 0)
-                        volume = float(quote.get('volume', 0) or 0)
-                        if price > 0:
-                            logging.info(f"FMP PRO ✔️ {tk} ({symbol}): ${fmt_price(price)}")
-                            return {'price': price, 'vol': volume}
-            elif resp.status_code == 401:
-                logging.error("FMP: 401 Key rechazada.")
-                return None
-        except Exception as e:
-            logging.error(f"FMP error fetching {symbol}: {e}")
-
-    _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
-    logging.warning(f"FMP falló para {tk}. No hay otra fuente válida.")
-    return None
-
-    fmp_symbol = _get_fmp_symbol(tk)
-
-    # Construir lista de símbolos a probar
-    symbols_to_try = [fmp_symbol]
-    if _is_crypto_ticker(tk):
-        base = tk.replace('-USD', '')
-        symbols_to_try = [f"{base}USD", tk, base]
     elif tk == "BZ=F":
         symbols_to_try = ["BZUSD", "BCOUSD"]
     elif tk == "GC=F":
         symbols_to_try = ["GCUSD", "XAUUSD"]
 
-    last_status = 0
-    last_raw = ""
-
-    # === INTENTO 1: /stable/quote (ENDPOINT MODERNO — obligatorio post-agosto 2025) ===
     for symbol in symbols_to_try:
-        try:
-            url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={PREMIUM_API_KEY}"
-            resp = requests.get(url, timeout=8)
-            last_status = resp.status_code
-            last_raw = resp.text[:500] if resp.text else "(vacío)"
-            logging.info(f"LOG FMP [stable/quote]: Status {resp.status_code} para {symbol}")
-
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    quote = data[0]
-                    price = float(quote.get('price', 0) or quote.get('previousClose', 0) or 0)
-                    volume = float(quote.get('volume', 0) or 0)
-                    if price > 0:
-                        logging.info(f"FMP ✅ {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': volume}
-                elif isinstance(data, dict) and data:
-                    price = float(data.get('price', 0) or data.get('previousClose', 0) or 0)
-                    if price > 0:
-                        logging.info(f"FMP ✅ {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': float(data.get('volume', 0) or 0)}
-                logging.info(f"FMP stable: respuesta vacía para {symbol}")
-
-            elif resp.status_code == 401:
-                _FMP_LAST_ERROR[tk] = "401 Unauthorized. Key rechazada."
-                logging.error("FMP: 401 Key inválida.")
-                return None
-            elif resp.status_code == 403:
-                logging.warning(f"FMP stable: 403 para {symbol}")
-        except Exception as e:
-            logging.warning(f"FMP stable error {symbol}: {e}")
-            last_raw = str(e)
-
-    # === INTENTO 2: /stable/quote-short (endpoint ligero) ===
-    for symbol in symbols_to_try:
-        try:
-            url = f"https://financialmodelingprep.com/stable/quote-short?symbol={symbol}&apikey={PREMIUM_API_KEY}"
-            resp = requests.get(url, timeout=5)
-            logging.info(f"LOG FMP [stable/quote-short]: Status {resp.status_code} para {symbol}")
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    price = float(data[0].get('price', 0))
-                    if price > 0:
-                        logging.info(f"FMP (short) ✅ {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': 0}
-                elif isinstance(data, dict) and data:
-                    price = float(data.get('price', 0))
-                    if price > 0:
-                        logging.info(f"FMP (short) ✅ {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': 0}
-        except Exception:
-            pass
-
-    # === INTENTO 3: Batch crypto quotes (solo crypto) ===
-    if _is_crypto_ticker(tk):
-        try:
-            url = f"https://financialmodelingprep.com/stable/batch-crypto-quotes?apikey={PREMIUM_API_KEY}"
-            resp = requests.get(url, timeout=10)
-            logging.info(f"LOG FMP [batch-crypto]: Status {resp.status_code}")
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    target = _get_fmp_symbol(tk).upper()
-                    for item in data:
-                        sym = (item.get('symbol', '') or '').upper()
-                        if sym == target or sym == tk.replace('-', '').upper():
-                            price = float(item.get('price', 0) or 0)
-                            if price > 0:
-                                logging.info(f"FMP (batch-crypto) ✅ {tk}: ${fmt_price(price)}")
-                                return {'price': price, 'vol': float(item.get('volume', 0) or 0)}
-                    logging.warning(f"FMP: {tk} no en batch-crypto ({len(data)} activos).")
-        except Exception as e:
-            logging.warning(f"FMP batch-crypto error: {e}")
-
-    # === FALLBACK LEGACY (por si el plan sí soporta v3) ===
-    for symbol in symbols_to_try[:1]:
         try:
             url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={PREMIUM_API_KEY}"
-            resp = requests.get(url, timeout=5)
-            logging.info(f"LOG FMP [legacy v3]: Status {resp.status_code} para {symbol}")
+            resp = requests.get(url, timeout=10)
+
+            # DEBUG: Revelar exactamente lo que devuelve FMP
+            print(f"DEBUG FMP HTTP Status: {resp.status_code} para {symbol}")
+            if resp.status_code != 200 or not resp.text.strip().startswith('['):
+                print(f"DEBUG FMP Respuesta Cruda: {resp.text[:300]}")
+
             if resp.status_code == 200:
                 data = resp.json()
+                if not data:
+                    print(f"DEBUG FMP: lista vacia para {symbol}")
+                    continue
                 if isinstance(data, list) and len(data) > 0:
-                    price = float(data[0].get('price', 0))
-                    if price > 0:
-                        logging.info(f"FMP (legacy) ✅ {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': float(data[0].get('volume', 0) or 0)}
-        except Exception:
-            pass
+                    quote = data[0]
+                    if isinstance(quote, dict):
+                        price = float(quote.get('price', 0) or 0)
+                        volume = float(quote.get('volume', 0) or 0)
+                        if price > 0:
+                            logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
+                            return {'price': price, 'vol': volume}
+                        else:
+                            print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
-    # Guardar diagnóstico
-    _FMP_LAST_ERROR[tk] = f"Status {last_status} | Símbolos: {symbols_to_try} | Respuesta: {last_raw[:200]}"
-    logging.error(f"FMP FALLÓ para {tk}: {_FMP_LAST_ERROR[tk]}")
+            elif resp.status_code in (401, 403):
+                _FMP_LAST_ERROR[tk] = f"{resp.status_code} - Key rechazada o plan insuficiente"
+                logging.error(f"FMP: {resp.status_code} para {symbol}. Verifica PREMIUM_API_KEY en Railway.")
+                return None
+
+        except Exception as e:
+            logging.error(f"FMP error fetching {symbol}: {e}")
+            print(f"DEBUG FMP Excepcion: {e}")
+
+    _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
+    logging.warning(f"FMP fallo para {tk}. Activo no localizado.")
     return None
-
 def _sanity_check_price(tk, new_price):
     """Verifica que el precio no sea basura (desviación >50% vs último conocido)"""
     if tk in LAST_KNOWN_PRICES:
