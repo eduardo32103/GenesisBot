@@ -704,9 +704,11 @@ def _fetch_fmp_quote(tk):
                 if isinstance(quote, dict):
                     price = float(quote.get('price', 0) or 0)
                     volume = float(quote.get('volume', 0) or 0)
+                    avg_volume = float(quote.get('avgVolume', 0) or 0)
+                    change = float(quote.get('change', 0) or 0)
                     if price > 0:
                         logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': volume}
+                        return {'price': price, 'vol': volume, 'volume': volume, 'avgVolume': avg_volume, 'change': change}
                     else:
                         print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
@@ -1349,71 +1351,75 @@ def generar_reporte_macro_manual():
 
 
 def fetch_intraday_data(ticker):
-    """Obtiene precio + volumen EXCLUSIVAMENTE de FMP Pro."""
+    """Obtiene precio + volumen EXCLUSIVAMENTE de FMP Pro para detección de ballenas."""
     tk = remap_ticker(ticker)
 
     if not FMP_API_KEY:
         print(f"DEBUG INTRADAY: FMP_API_KEY es None, saltando {tk}")
         return None
 
-    # PASO 1: Obtener precio verificado de FMP
-    safe_check = get_safe_ticker_price(tk)
-    if not safe_check:
-        print(f"DEBUG INTRADAY: Sin precio para {tk}")
+    # PASO 1: Obtener precio + volumen actual del día via FMP quote
+    fmp_data = _fetch_fmp_quote(tk)
+    if not fmp_data:
+        print(f"DEBUG INTRADAY: FMP quote fallo para {tk}")
         return None
-    price = safe_check.get('price')
+
+    price = fmp_data['price']
     if not price:
         return None
 
-    # PASO 2: Obtener volumen de FMP historical-chart
-    latest_vol = 0
+    latest_vol = float(fmp_data.get('volume', 0) or 0)
+    quote_avg_vol = float(fmp_data.get('avgVolume', 0) or 0)
+    change = float(fmp_data.get('change', 0) or 0)
+    vol_type = "Compra 🟢" if change >= 0 else "Venta 🔴"
+
+    # PASO 2: Obtener historial de volumen REAL de los últimos 30 días
     avg_vol = 0
-    vol_type = "N/A"
+    fmp_sym = _get_fmp_symbol(tk)
+    if _is_crypto_ticker(tk):
+        fmp_sym = tk.replace('-USD', '') + 'USD'
 
     try:
-        fmp_sym = _get_fmp_symbol(tk)
-        if _is_crypto_ticker(tk):
-            fmp_sym = tk.replace('-USD', '') + 'USD'
-
-        url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=10)
+        # Endpoint correcto para historial diario completo
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}&serietype=line"
+        resp = requests.get(url, timeout=12)
 
         if resp.status_code == 200:
-            data = resp.json()
-            if data and isinstance(data, list) and len(data) > 5:
-                volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict)]
-                positive_vols = [v for v in volumes if v > 0]
+            raw = resp.json()
+            hist = raw.get('historical', [])
+            if isinstance(hist, list) and len(hist) >= 5:
+                # hist viene más reciente primero, tomar últimos 20 días
+                recent_vols = []
+                for day in hist[:20]:
+                    v = float(day.get('volume', 0) or 0)
+                    if v > 0:
+                        recent_vols.append(v)
 
-                if positive_vols and len(positive_vols) >= 5:
-                    latest_vol = positive_vols[0]  # Más reciente primero en FMP
-                    avg_vol = sum(positive_vols) / len(positive_vols)
-                    latest_item = data[0]
-                    close_p = float(latest_item.get('close', price) or price)
-                    open_p = float(latest_item.get('open', price) or price)
-                    vol_type = "Compra 🟢" if close_p >= open_p else "Venta 🔴"
-                    print(f"DEBUG INTRADAY {tk}: FMP OK | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x")
+                if recent_vols:
+                    avg_vol = sum(recent_vols) / len(recent_vols)
+                    print(f"DEBUG INTRADAY {tk}: historial OK | {len(recent_vols)} dias | avg_vol={avg_vol:,.0f} | latest_vol={latest_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x" if avg_vol > 0 else f"DEBUG INTRADAY {tk}: avg_vol=0")
                 else:
-                    print(f"DEBUG INTRADAY {tk}: FMP devolvio {len(positive_vols)} vols positivos")
+                    print(f"DEBUG INTRADAY {tk}: historial tiene 0 volumenes positivos de {len(hist)} registros")
             else:
-                print(f"DEBUG INTRADAY {tk}: FMP historical vacio o <5 registros")
+                print(f"DEBUG INTRADAY {tk}: historial devolvio {len(hist) if isinstance(hist, list) else 'no-list'} registros (necesita 5+)")
         else:
-            print(f"DEBUG INTRADAY {tk}: FMP historical HTTP {resp.status_code}")
+            print(f"DEBUG INTRADAY {tk}: historial HTTP {resp.status_code} para {fmp_sym}")
+            # Mostrar el error exacto para diagnosticar
+            print(f"DEBUG INTRADAY {tk}: respuesta: {resp.text[:200]}")
 
     except Exception as e:
-        print(f"DEBUG INTRADAY {tk}: FMP historical error: {e}")
+        print(f"DEBUG INTRADAY {tk}: historial error: {e}")
 
-    # PASO 3: Si historical-chart no tiene volumen, intentar con FMP quote volume
+    # PASO 3: Si el historial falló, usar avgVolume del quote como fallback
+    if avg_vol == 0 and quote_avg_vol > 0:
+        avg_vol = quote_avg_vol
+        print(f"DEBUG INTRADAY {tk}: usando avgVolume del quote como fallback | avg_vol={avg_vol:,.0f} | latest_vol={latest_vol:,.0f}")
+        if avg_vol > 0 and latest_vol > 0:
+            print(f"DEBUG INTRADAY {tk}: spike={latest_vol/avg_vol:.2f}x")
+
+    # PASO 4: Si todavía no hay avg_vol, log claro
     if avg_vol == 0:
-        try:
-            fmp_data = _fetch_fmp_quote(tk)
-            if fmp_data and fmp_data.get('volume', 0) > 0:
-                latest_vol = float(fmp_data['volume'])
-                avg_vol = float(fmp_data.get('avgVolume', latest_vol) or latest_vol)
-                if avg_vol > 0 and latest_vol > 0:
-                    vol_type = "Compra 🟢" if fmp_data.get('change', 0) >= 0 else "Venta 🔴"
-                    print(f"DEBUG INTRADAY {tk}: FMP quote fallback | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x")
-        except Exception as e:
-            print(f"DEBUG INTRADAY {tk}: FMP quote fallback error: {e}")
+        print(f"DEBUG INTRADAY {tk}: SIN DATOS DE VOLUMEN. latest_vol={latest_vol:,.0f} | avg_vol=0 | Ballenas IMPOSIBLE")
 
     return {
         'ticker': tk,
@@ -1433,7 +1439,7 @@ def fetch_and_analyze_stock(ticker):
         fmp_sym = _get_fmp_symbol(tk)
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
-        url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={fmp_sym}&apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=15)
         if resp.status_code != 200:
             print(f"DEBUG ANALYZE: FMP historical-price HTTP {resp.status_code} para {fmp_sym}")
