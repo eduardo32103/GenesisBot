@@ -22,7 +22,6 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visión
-PREMIUM_API_KEY = os.environ.get('PREMIUM_API_KEY')
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
 
@@ -30,10 +29,10 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
     logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo.")
     exit()
 
-if not PREMIUM_API_KEY:
-    logging.warning("⚠️ PREMIUM_API_KEY no configurada. El motor de precios FMP no funcionará.")
+if not os.environ.get('FMP_API_KEY'):
+    logging.warning("⚠️ FMP_API_KEY no configurada. El motor de precios FMP no funcionará.")
 else:
-    logging.info(f"✅ PREMIUM_API_KEY cargada correctamente ({len(PREMIUM_API_KEY)} caracteres).")
+    logging.info(f"✅ FMP_API_KEY cargada correctamente ({len(os.environ.get('FMP_API_KEY'))} caracteres).")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -660,12 +659,13 @@ def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - api/v3/quote"""
     global _FMP_LAST_ERROR
 
-    # DEBUG: verificar que Railway entrego la API Key (nunca imprime la llave completa)
-    print(f"DEBUG: API KEY detectada: {bool(PREMIUM_API_KEY)}")
-
-    if not PREMIUM_API_KEY:
-        _FMP_LAST_ERROR[tk] = "PREMIUM_API_KEY no detectada."
-        logging.error("FMP: API KEY no configurada en Railway.")
+    # DEBUG EXACTO PEDIDO
+    print(f"DEBUG: Buscando 'FMP_API_KEY'... ¿Encontrada?: {os.environ.get('FMP_API_KEY') is not None}")
+    
+    api_key = os.environ.get('FMP_API_KEY')
+    if not api_key:
+        logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
+        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
         return None
 
     fmp_symbol = _get_fmp_symbol(tk)
@@ -682,7 +682,7 @@ def _fetch_fmp_quote(tk):
 
     for symbol in symbols_to_try:
         try:
-            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={PREMIUM_API_KEY}"
+            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={api_key}"
             resp = requests.get(url, timeout=10)
 
             # DEBUG: Revelar exactamente lo que devuelve FMP
@@ -693,7 +693,7 @@ def _fetch_fmp_quote(tk):
             if resp.status_code == 200:
                 data = resp.json()
                 if not data:
-                    print(f"DEBUG FMP: lista vacia para {symbol}")
+                    print(f"DEBUG FMP: lista vacía para {symbol}")
                     continue
                 if isinstance(data, list) and len(data) > 0:
                     quote = data[0]
@@ -708,15 +708,15 @@ def _fetch_fmp_quote(tk):
 
             elif resp.status_code in (401, 403):
                 _FMP_LAST_ERROR[tk] = f"{resp.status_code} - Key rechazada o plan insuficiente"
-                logging.error(f"FMP: {resp.status_code} para {symbol}. Verifica PREMIUM_API_KEY en Railway.")
+                logging.error(f"FMP: {resp.status_code} para {symbol}. Verifica FMP_API_KEY en Railway.")
                 return None
 
         except Exception as e:
             logging.error(f"FMP error fetching {symbol}: {e}")
-            print(f"DEBUG FMP Excepcion: {e}")
+            print(f"DEBUG FMP Excepción: {e}")
 
     _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
-    logging.warning(f"FMP fallo para {tk}. Activo no localizado.")
+    logging.warning(f"FMP falló para {tk}. Activo no localizado.")
     return None
 def _sanity_check_price(tk, new_price):
     """Verifica que el precio no sea basura (desviación >50% vs último conocido)"""
@@ -984,10 +984,16 @@ def generar_reporte_macro_manual():
         return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{bullets}\n\n💡 *Análisis rápido:* FMP Feed procesado sin IA.\n\n📊 *Sentimiento General del Mercado:* Neutral 🟡"
 
 def fetch_intraday_data(ticker):
-    """Obtiene datos intradía usando EXCLUSIVAMENTE FMP. Sin yfinance."""
+    """Obtiene datos intradía usando EXCLUSIVAMENTE FMP."""
     tk = remap_ticker(ticker)
+    
+    print(f"DEBUG: Buscando 'FMP_API_KEY'... ¿Encontrada?: {os.environ.get('FMP_API_KEY') is not None}")
+    api_key = os.environ.get('FMP_API_KEY')
+    if not api_key:
+        logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
+        return None
+        
     try:
-        # 1. Validar ticker y obtener precio actual via FMP
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
             logging.warning(f"fetch_intraday_data: FMP no devolvió precio para {tk}")
@@ -998,17 +1004,17 @@ def fetch_intraday_data(ticker):
             logging.warning(f"Respuesta inesperada de FMP: {safe_check}")
             return None
 
-        # 2. Obtener datos históricos de 5 min via FMP (no yfinance)
         fmp_sym = _get_fmp_symbol(tk)
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
 
-        url = f"https://financialmodelingprep.com/api/v3/historical-chart/5min/{fmp_sym}?apikey={PREMIUM_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/historical-chart/5min/{fmp_sym}?apikey={api_key}"
         resp = requests.get(url, timeout=10)
 
+        print(f"DEBUG FMP HTTP Status: {resp.status_code} para historical {fmp_sym}")
         if resp.status_code != 200 or not resp.text:
+            print(f"DEBUG FMP Respuesta Cruda: {resp.text[:300]}")
             logging.warning(f"FMP historical-chart: {resp.status_code} para {fmp_sym}")
-            # Devolvemos datos básicos con solo el precio actual, sin crash
             return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
 
         data = resp.json()
@@ -1016,7 +1022,6 @@ def fetch_intraday_data(ticker):
             logging.warning(f"Respuesta inesperada de FMP: {str(data)[:200]}")
             return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
 
-        # 3. Procesar candles con validación total - cero riesgo de KeyError
         volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict)]
         latest = data[0] if isinstance(data[0], dict) else {}
         close_p = float(latest.get('close', price) or price)
@@ -1035,7 +1040,6 @@ def fetch_intraday_data(ticker):
     except Exception as e:
         logging.error(f"fetch_intraday_data error para {tk}: {e}")
         return None
-
 def fetch_and_analyze_stock(ticker):
     tk = remap_ticker(ticker)
     try:
