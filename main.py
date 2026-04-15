@@ -1455,27 +1455,27 @@ def fetch_intraday_data(ticker):
     }
 def fetch_and_analyze_stock(ticker):
     """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
-    tk = remap_ticker(ticker)
+    clean_ticker = str(ticker).strip().upper()
+    tk = remap_ticker(clean_ticker)
     print(f"DEBUG SMC: Consultando niveles para {tk}...")
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
             print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
-            return None
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         # Obtener historial diario de FMP
         fmp_sym = _get_fmp_symbol(tk)
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
+        
+        print(f"DEBUG: Enviando petici\u00f3n SMC para: {fmp_sym}")
         url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=5)
         
-        if resp.status_code in [403, 404]:
-            print(f"CRÍTICO: Acceso denegado al ticker {fmp_sym}. Revisar permisos de API Key. HTTP {resp.status_code}")
-            return None
-        elif resp.status_code != 200:
-            print(f"DEBUG ANALYZE: FMP historical-price HTTP {resp.status_code} para {fmp_sym}")
-            return None
+        if resp.status_code != 200:
+            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {fmp_sym}. HTTP {resp.status_code}")
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         raw = resp.json()
         hist = []
@@ -2029,7 +2029,7 @@ def handle_text(message):
             analysis = fetch_and_analyze_stock(tk)
             d_name = get_display_name(tk)
 
-            if analysis:
+            if analysis and isinstance(analysis, dict):
                 rvol_str = f"{analysis['rvol']:.2f}x"
                 pe_str = f"{analysis['pe']:.1f}" if analysis.get('pe', 0) > 0 else "N/A"
                 report_lines.extend([
@@ -2037,11 +2037,13 @@ def handle_text(message):
                     f"\u2022 Tendencia SMC: {analysis['smc_trend']}", 
                     f"\u2022 Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", 
                     f"\u2022 Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", 
-                    f"\u2022 📊 <b>Valor:</b> RVOL: {rvol_str} | RSI: {analysis['rsi']:.1f} | P/E: {pe_str}",
-                    f"\u2022 🎯 <b>Take Profit (SMC Res):</b> ${fmt_price(analysis['take_profit'])}",
-                    f"\u2022 🛡️ <b>Stop Loss (-2% Sup):</b> ${fmt_price(analysis['stop_loss'])}",
+                    f"\u2022 \ud83d\udcca <b>Valor:</b> RVOL: {rvol_str} | RSI: {analysis['rsi']:.1f} | P/E: {pe_str}",
+                    f"\u2022 \ud83c\udfaf <b>Take Profit (SMC Res):</b> ${fmt_price(analysis['take_profit'])}",
+                    f"\u2022 \ud83d\udee1\ufe0f <b>Stop Loss (-2% Sup):</b> ${fmt_price(analysis['stop_loss'])}",
                     "---"
                 ])
+            elif isinstance(analysis, str):
+                report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 {analysis}", "---"])
             else:
                 report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u26a0\ufe0f Niveles SMC no disponibles para este ticker en este momento", "---"])
 
