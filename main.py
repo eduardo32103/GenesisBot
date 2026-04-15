@@ -729,9 +729,10 @@ def _fetch_fmp_quote(tk):
                     volume = float(quote.get('volume', 0) or 0)
                     avg_volume = float(quote.get('avgVolume', 0) or 0)
                     change = float(quote.get('change', 0) or 0)
+                    pe = float(quote.get('pe', 0) or 0)
                     if price > 0:
                         logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': volume, 'volume': volume, 'avgVolume': avg_volume, 'change': change}
+                        return {'price': price, 'vol': volume, 'volume': volume, 'avgVolume': avg_volume, 'change': change, 'pe': pe}
                     else:
                         print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
@@ -1403,23 +1404,12 @@ def fetch_intraday_data(ticker):
         fmp_sym = tk.replace('-USD', '') + 'USD'
 
     try:
-        # Endpoint correcto para historial diario completo
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}&serietype=line"
+        # Endpoint moderno para evitar Legacy Endpoint 403
+        url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{fmp_sym}?type=sma&period=10&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=12)
 
         if resp.status_code == 200:
-            raw = resp.json()
-            # FMP v3 robust parsing
-            hist = []
-            if isinstance(raw, list):
-                hist = raw
-            elif isinstance(raw, dict):
-                if 'historical' in raw:
-                    hist = raw['historical']
-                elif 'historicalStockList' in raw:
-                    hist = raw['historicalStockList']
-                    if hist and isinstance(hist[0], dict) and 'historical' in hist[0]:
-                        hist = hist[0]['historical']
+            hist = resp.json()
 
             if isinstance(hist, list) and len(hist) >= 5:
                 # hist viene más reciente primero, tomar últimos 10 días para RVOL como pidió el usuario
@@ -1451,9 +1441,10 @@ def fetch_intraday_data(ticker):
         if avg_vol > 0 and latest_vol > 0:
             print(f"DEBUG INTRADAY {tk}: spike={latest_vol/avg_vol:.2f}x")
 
-    # PASO 4: Si todavía no hay avg_vol, log claro
+    # PASO 4: Asegurar que avg_vol NUNCA sea 0
     if avg_vol == 0:
-        print(f"DEBUG INTRADAY {tk}: SIN DATOS DE VOLUMEN. latest_vol={latest_vol:,.0f} | avg_vol=0 | Ballenas IMPOSIBLE")
+        print(f"DEBUG INTRADAY {tk}: SIN DATOS DE VOLUMEN. latest_vol={latest_vol:,.0f} | avg_vol=0 | Usando 1 para evitar error matematico")
+        avg_vol = 1
 
     return {
         'ticker': tk,
@@ -1472,13 +1463,17 @@ def fetch_and_analyze_stock(ticker):
             print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
             return None
 
-        # Obtener historial diario de FMP
+        # Obtener historial diario de FMP (v3 serietype=line para evitar Legacy Forbidden)
         fmp_sym = _get_fmp_symbol(tk)
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?serietype=line&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=15)
-        if resp.status_code != 200:
+        
+        if resp.status_code in [403, 404]:
+            print(f"CRÍTICO: Acceso denegado al ticker {fmp_sym}. Revisar permisos de API Key. HTTP {resp.status_code}")
+            return None
+        elif resp.status_code != 200:
             print(f"DEBUG ANALYZE: FMP historical-price HTTP {resp.status_code} para {fmp_sym}")
             return None
 
@@ -1544,6 +1539,9 @@ def fetch_and_analyze_stock(ticker):
         latest_vol = safe_check.get('volume', float(volumes.iloc[-1]))
         rvol = float(latest_vol / avg_10_vol) if avg_10_vol > 0 else 0.0
 
+        # VARIABLE 3 (VALOR): Usa el RSI y el P/E.
+        pe = safe_check.get('pe', 0.0)
+
         result = {
             'ticker': tk, 
             'price': latest_price, 
@@ -1556,7 +1554,8 @@ def fetch_and_analyze_stock(ticker):
             'order_block': order_block_price,
             'take_profit': take_profit,
             'stop_loss': stop_loss,
-            'rvol': rvol
+            'rvol': rvol,
+            'pe': pe
         }
         LAST_KNOWN_ANALYSIS[tk] = result
         return result
@@ -2032,12 +2031,13 @@ def handle_text(message):
 
             if analysis:
                 rvol_str = f"{analysis['rvol']:.2f}x"
+                pe_str = f"{analysis['pe']:.1f}" if analysis.get('pe', 0) > 0 else "N/A"
                 report_lines.extend([
                     f"\ud83c\udfe6 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", 
                     f"\u2022 Tendencia SMC: {analysis['smc_trend']}", 
                     f"\u2022 Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", 
                     f"\u2022 Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", 
-                    f"\u2022 RVOL (10d): {rvol_str}",
+                    f"\u2022 📊 <b>Valor:</b> RVOL: {rvol_str} | RSI: {analysis['rsi']:.1f} | P/E: {pe_str}",
                     f"\u2022 🎯 <b>Take Profit (SMC Res):</b> ${fmt_price(analysis['take_profit'])}",
                     f"\u2022 🛡️ <b>Stop Loss (-2% Sup):</b> ${fmt_price(analysis['stop_loss'])}",
                     "---"
