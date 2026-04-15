@@ -24,7 +24,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visión
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
-FMP_API_KEY = os.environ.get('FMP_API_KEY')
+FMP_API_KEY = "".join(c for c in os.environ.get('FMP_API_KEY', '') if ord(c) < 128).strip()
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
     logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo.")
@@ -1469,13 +1469,21 @@ def fetch_and_analyze_stock(ticker):
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
         
-        clean_ticker = "".join(c for c in str(fmp_sym) if c.isalnum()).encode('ascii', 'ignore').decode('ascii').upper().strip()
-        print(f"DEBUG: Enviando petici\u00f3n SMC para: {clean_ticker}")
-        url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{clean_ticker}?type=sma&period=1&limit=100&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=5)
+        ticker_clean = "".join(c for c in str(fmp_sym) if ord(c) < 128).strip().upper()
+        print(f"DEBUG: Enviando petici\u00f3n SMC para: {ticker_clean}")
+        url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{ticker_clean}?type=sma&period=1&limit=20&apikey={FMP_API_KEY}"
+        
+        try:
+            resp = requests.get(url, timeout=5)
+        except UnicodeEncodeError as e:
+            print(f"ERROR CR\u00cdTICO SMC (Unicode): El ticker {ticker_clean} tiene caracteres ocultos. {e}")
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
+        except Exception as e:
+            print(f"ERROR CR\u00cdTICO SMC (Red): {e}")
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
         
         if resp.status_code != 200:
-            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {clean_ticker}. HTTP {resp.status_code}")
+            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {ticker_clean}. HTTP {resp.status_code}")
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         raw = resp.json()
@@ -2534,7 +2542,7 @@ def main():
     print("DEBUG BOOT: Iniciando Telegram polling...")
     while True:
         try:
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+            bot.polling(none_stop=True, timeout=60)
         except Exception as e:
             print(f"\u274c TELEGRAM POLLING CAIDO: {e}")
             print("DEBUG: Reconectando en 5 segundos...")
