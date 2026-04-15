@@ -1469,13 +1469,13 @@ def fetch_and_analyze_stock(ticker):
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
         
-        clean_ticker = "".join(c for c in str(fmp_sym) if c.isalnum()).upper().strip()
+        clean_ticker = "".join(c for c in str(fmp_sym) if c.isalnum()).encode('ascii', 'ignore').decode('ascii').upper().strip()
         print(f"DEBUG: Enviando petici\u00f3n SMC para: {clean_ticker}")
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{clean_ticker}?apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{clean_ticker}?type=sma&period=1&limit=100&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=5)
         
         if resp.status_code != 200:
-            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {fmp_sym}. HTTP {resp.status_code}")
+            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {clean_ticker}. HTTP {resp.status_code}")
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         raw = resp.json()
@@ -1490,19 +1490,19 @@ def fetch_and_analyze_stock(ticker):
                 if hist and isinstance(hist[0], dict) and 'historical' in hist[0]:
                     hist = hist[0]['historical']
         
-        if not hist or not isinstance(hist, list) or len(hist) < 30:
-            print(f"DEBUG ANALYZE: FMP devolvio pocos o nulos registros para {fmp_sym}. Estructura raw: {str(raw)[:150]}")
-            return None
+        if not hist or not isinstance(hist, list) or len(hist) < 5:
+            print(f"DEBUG SMC: El ticker {clean_ticker} no devolvi\u00f3 indicadores.")
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         # FMP viene en orden reciente-primero, revertir para cálculos
-        hist = list(reversed(hist[:180]))  # Últimos 6 meses aprox
+        hist = list(reversed(hist[:100]))  # Últimos 100 días max para cálculos limpios y rápidos
 
         closes = pd.Series([float(d.get('close', 0)) for d in hist])
         volumes = pd.Series([float(d.get('volume', 0) or 0) for d in hist])
 
-        if len(closes) < 30:
-            print(f"DEBUG SMC: closes length {len(closes)} < 30 para {fmp_sym}")
-            return None
+        if len(closes) < 15:
+            print(f"DEBUG SMC: closes length {len(closes)} < 15 para {clean_ticker}")
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         # RSI
         delta = closes.diff()
@@ -1518,15 +1518,15 @@ def fetch_and_analyze_stock(ticker):
         macd_line = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
         macd_signal = macd_line.ewm(span=9, adjust=False).mean()
 
-        latest_price = safe_check['price']
-        latest_rsi = float(rsi_series.iloc[-1])
-
+        # Extracci\u00f3n directa del array reverso (de m\u00e1s viejo a m\u00e1s nuevo)
+        recent_month_data = hist[-20:] # los \u00faltimos 20 d\u00edas de la lista invertida (los m\u00e1s recientes cronol\u00f3gicamente)
+        
+        smc_res = float(max([float(d.get('high', 0)) for d in recent_month_data])) if recent_month_data else latest_price
+        smc_sup = float(min([float(d.get('low', float('inf'))) for d in recent_month_data])) if recent_month_data else latest_price
+        latest_price = float(recent_month_data[-1].get('close', latest_price)) if recent_month_data else latest_price
+        
         smc_trend = "Alcista \ud83d\udfe2" if latest_price > closes.ewm(span=20).mean().iloc[-1] else "Bajista \ud83d\udd34"
         
-        # VARIABLE 2 (SMC): Identifica el precio m\u00e1s alto (Resistencia) y m\u00e1s bajo (Soporte) de los \u00faltimos 20 d\u00edas
-        recent_month = closes.iloc[-20:]
-        smc_sup = float(recent_month.min())
-        smc_res = float(recent_month.max())
         vol_month = volumes.iloc[-20:]
         order_block_price = float(closes.iloc[vol_month.idxmax()]) if vol_month.max() > 0 else latest_price
 
