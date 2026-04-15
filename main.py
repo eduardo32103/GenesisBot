@@ -49,47 +49,61 @@ _global_db_conn = None
 
 def get_db_connection():
     global _global_db_conn
-    try:
-        if _global_db_conn is not None:
-             try:
-                 c = _global_db_conn.cursor()
-                 c.execute("SELECT 1")
-                 c.fetchone()
-                 return _global_db_conn
-             except:
-                 _global_db_conn = None
-        
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        url = os.environ.get('DATABASE_URL')
-        if not url: return None
-        r = urllib.parse.urlparse(url)
-        
-        _global_db_conn = pg8000.dbapi.connect(
-            user=r.username,
-            password=r.password,
-            host=r.hostname,
-            port=r.port or 6543,
-            database=r.path[1:],
-            ssl_context=ctx,
-            timeout=10
-        )
-        print("✅ Conexión exitosa a Supabase desde backend.")
-        
-        # Iniciar tabla
-        cr = _global_db_conn.cursor()
-        cr.execute("CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER DEFAULT 0, amount_usd REAL DEFAULT 0.0, entry_price REAL DEFAULT 0.0, timestamp TEXT, PRIMARY KEY (user_id, ticker))")
-        cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
-        cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
-        _global_db_conn.commit()
-        
-        return _global_db_conn
-    except Exception as e:
-        print(f"❌ Error de conexión silencioso: {e}")
-        _global_db_conn = None
+    # Si ya hay conexión activa, verificarla
+    if _global_db_conn is not None:
+        try:
+            c = _global_db_conn.cursor()
+            c.execute("SELECT 1")
+            c.fetchone()
+            return _global_db_conn
+        except:
+            print("DEBUG DB: Conexión existente caída, reconectando...")
+            _global_db_conn = None
+
+    url = os.environ.get('DATABASE_URL')
+    if not url:
+        print("DEBUG DB: DATABASE_URL no configurada")
         return None
+
+    # Reintentar 3 veces con backoff
+    for attempt in range(1, 4):
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            r = urllib.parse.urlparse(url)
+
+            _global_db_conn = pg8000.dbapi.connect(
+                user=r.username,
+                password=r.password,
+                host=r.hostname,
+                port=r.port or 6543,
+                database=r.path[1:],
+                ssl_context=ctx,
+                timeout=10
+            )
+            print(f"✅ Conexión exitosa a Supabase (intento {attempt}/3)")
+
+            # Crear tablas si no existen
+            cr = _global_db_conn.cursor()
+            cr.execute("CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER DEFAULT 0, amount_usd REAL DEFAULT 0.0, entry_price REAL DEFAULT 0.0, timestamp TEXT, PRIMARY KEY (user_id, ticker))")
+            cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
+            cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
+            _global_db_conn.commit()
+
+            return _global_db_conn
+
+        except Exception as e:
+            print(f"❌ Error de conexión a Supabase (intento {attempt}/3): {e}")
+            _global_db_conn = None
+            if attempt < 3:
+                wait = attempt * 2  # 2s, 4s
+                print(f"DEBUG DB: Reintentando en {wait}s...")
+                time.sleep(wait)
+
+    print("❌ FATAL: No se pudo conectar a Supabase después de 3 intentos")
+    return None
 
 def init_db():
     try:
@@ -452,13 +466,20 @@ def purge_old_events():
 
 def get_tracked_tickers():
     conn = get_db_connection()
-    if not conn: return []
+    if not conn:
+        print("DEBUG WALLET: Sin conexión a DB, retornando lista vacía")
+        return []
     try:
         c = conn.cursor()
         c.execute('SELECT ticker FROM wallet WHERE user_id = %s', (int(CHAT_ID),))
-        return [row[0] for row in c.fetchall()]
+        tickers = [row[0] for row in c.fetchall()]
+        print(f"DEBUG WALLET: Cargadas {len(tickers)} acciones de la base de datos: {tickers}")
+        return tickers
+    except Exception as e:
+        print(f"DEBUG WALLET: Error leyendo tickers de Supabase: {e}")
+        return []
     finally:
-        pass # conn.close() delegado a pooling global
+        pass
 
 def get_all_portfolio_data():
     pf = {}
