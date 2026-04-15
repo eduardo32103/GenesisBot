@@ -24,6 +24,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visión
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
+FMP_API_KEY = os.environ.get('FMP_API_KEY')
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
     logging.critical("Falta TELEGRAM_TOKEN o CHAT_ID. Saliendo.")
@@ -758,14 +759,14 @@ def verify_1m_realtime_data(ticker):
 
 def _fetch_fmp_news(limit=10):
     """Extrae noticias del mercado via FMP — prueba múltiples endpoints"""
-    if not PREMIUM_API_KEY:
+    if not FMP_API_KEY:
         return []
 
     all_news = []
 
     # === INTENTO 1: /stable/news (endpoint moderno) ===
     try:
-        url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={PREMIUM_API_KEY}"
+        url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=8)
         logging.info(f"LOG FMP [stable/news]: Status {resp.status_code}")
         if resp.status_code == 200:
@@ -779,7 +780,7 @@ def _fetch_fmp_news(limit=10):
 
     # === INTENTO 2: /api/v3/stock_news general (legacy) ===
     try:
-        url = f"https://financialmodelingprep.com/api/v3/stock_news?limit={limit}&apikey={PREMIUM_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/stock_news?limit={limit}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=8)
         logging.info(f"LOG FMP [v3/stock_news]: Status {resp.status_code}")
         if resp.status_code == 200:
@@ -793,7 +794,7 @@ def _fetch_fmp_news(limit=10):
     default_tickers = ["AAPL", "NVDA", "BTCUSD", "SPY", "MSFT"]
     for ticker in default_tickers:
         try:
-            url = f"https://financialmodelingprep.com/stable/news?symbol={ticker}&limit=3&apikey={PREMIUM_API_KEY}"
+            url = f"https://financialmodelingprep.com/stable/news?symbol={ticker}&limit=3&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
@@ -811,7 +812,7 @@ def _fetch_fmp_news(limit=10):
     # === INTENTO 4: /api/v3/stock_news por ticker (legacy con ticker) ===
     for ticker in default_tickers[:3]:
         try:
-            url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&limit=3&apikey={PREMIUM_API_KEY}"
+            url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&limit=3&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
@@ -825,7 +826,7 @@ def _fetch_fmp_news(limit=10):
 
     # === INTENTO 5: /api/v3/fmp/articles ===
     try:
-        url = f"https://financialmodelingprep.com/api/v3/fmp/articles?page=0&size={limit}&apikey={PREMIUM_API_KEY}"
+        url = f"https://financialmodelingprep.com/api/v3/fmp/articles?page=0&size={limit}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=8)
         if resp.status_code == 200:
             data = resp.json()
@@ -860,36 +861,41 @@ def _fetch_google_news_fallback(limit=8):
 
 def check_geopolitical_news():
     """Monitor automático: extrae noticias FMP y filtra por alto impacto"""
-    HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction",
-                            "embargo", "explosion", "guerra", "ataque", "tensión", "misil",
-                            "sanciones", "rates", "fed", "trump", "powell", "crash", "recession",
-                            "tariff", "default", "crisis"]
-    news_alerts = []
+    try:
+        HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction",
+                                "embargo", "explosion", "guerra", "ataque", "tensión", "misil",
+                                "sanciones", "rates", "fed", "trump", "powell", "crash", "recession",
+                                "tariff", "default", "crisis"]
+        news_alerts = []
 
-    # Fuente principal: FMP Premium
-    fmp_news = _fetch_fmp_news(15)
-    if fmp_news:
-        for article in fmp_news:
-            title = article.get('title', '') or article.get('text', '') or ''
-            if title and any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
-                news_alerts.append(title)
-                if len(news_alerts) >= 5: break
+        # Fuente principal: FMP Premium
+        fmp_news = _fetch_fmp_news(15)
+        if fmp_news:
+            for article in fmp_news:
+                title = article.get('title', '') or article.get('text', '') or ''
+                if title and any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
+                    news_alerts.append(title)
+                    if len(news_alerts) >= 5: break
 
-    # Fallback: Google News RSS si FMP no devuelve nada
-    if not news_alerts:
-        try:
-            search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
-            response = requests.get(search_url, timeout=5)
-            if response.status_code == 200:
-                root = ET.fromstring(response.text)
-                for item in root.findall('.//item'):
-                    title = item.find('title').text
-                    if any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
-                        news_alerts.append(title)
-                        if len(news_alerts) >= 5: break
-        except: pass
+        # Fallback: Google News RSS si FMP no devuelve nada
+        if not news_alerts:
+            try:
+                search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
+                response = requests.get(search_url, timeout=5)
+                if response.status_code == 200:
+                    root = ET.fromstring(response.text)
+                    for item in root.findall('.//item'):
+                        title = item.find('title').text
+                        if any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
+                            news_alerts.append(title)
+                            if len(news_alerts) >= 5: break
+            except Exception:
+                pass
 
-    return news_alerts
+        return news_alerts
+    except Exception as e:
+        logging.error(f"Error en check_geopolitical_news: {e}")
+        return []
 
 
 def gpt_advanced_geopolitics(news_list, manual=False):
@@ -1126,12 +1132,13 @@ def perform_deep_analysis(ticker):
     if not final_price:
         fmp_sym = _get_fmp_symbol(tk)
         diag = _FMP_LAST_ERROR.get(tk, 'Sin información de error')
+        _key_len = len(FMP_API_KEY) if FMP_API_KEY else 0
         return (f"⚠️ <b>Error de conexión con FMP</b>\n\n"
                 f"No se pudo obtener el precio de {display_name} "
                 f"(símbolo: {fmp_sym}).\n\n"
                 f"🔍 <b>Diagnóstico:</b>\n<code>{diag}</code>\n\n"
-                f"🔑 Key cargada: {'Sí' if PREMIUM_API_KEY else 'NO'} "
-                f"({len(PREMIUM_API_KEY)} chars)\n"
+                f"🔑 Key cargada: {'Sí' if FMP_API_KEY else 'NO'} "
+                f"({_key_len} chars)\n"
                 f"🛑 Análisis BLOQUEADO para evitar datos inventados.")
 
     if tech:
@@ -1446,8 +1453,15 @@ def handle_text(message):
 
     if text == "🌎 Geopolítica":
         bot.reply_to(message, "🌎 Generando Reporte Macro Institucional...")
-        report = generar_reporte_macro_manual()
-        bot.send_message(message.chat.id, report, parse_mode="HTML")
+        try:
+            report = generar_reporte_macro_manual()
+            if report:
+                bot.send_message(message.chat.id, report, parse_mode="HTML")
+            else:
+                bot.send_message(message.chat.id, "⚠️ No hay noticias geopolíticas disponibles en este momento.", parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Error en Geopolítica: {e}")
+            bot.send_message(message.chat.id, "⚠️ No hay noticias geopolíticas disponibles en este momento.", parse_mode="HTML")
         return
 
     if text == "📉 SMC / Mi Cartera":
