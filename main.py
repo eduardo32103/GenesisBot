@@ -1340,40 +1340,39 @@ def generar_reporte_macro_manual():
 def fetch_intraday_data(ticker):
     """Obtiene datos intradía usando EXCLUSIVAMENTE FMP."""
     tk = remap_ticker(ticker)
-    
-    print(f"DEBUG: Buscando 'FMP_API_KEY'... ¿Encontrada?: {os.environ.get('FMP_API_KEY') is not None}")
-    api_key = os.environ.get('FMP_API_KEY')
-    if not api_key:
-        logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
+
+    if not FMP_API_KEY:
+        print(f"DEBUG INTRADAY: FMP_API_KEY es None, no se puede consultar {tk}")
         return None
-        
+
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
-            logging.warning(f"fetch_intraday_data: FMP no devolvió precio para {tk}")
+            print(f"DEBUG INTRADAY: get_safe_ticker_price devolvio None para {tk}")
             return None
 
         price = safe_check.get('price')
         if not price:
-            logging.warning(f"Respuesta inesperada de FMP: {safe_check}")
+            print(f"DEBUG INTRADAY: Precio es 0 o None para {tk}: {safe_check}")
             return None
 
         fmp_sym = _get_fmp_symbol(tk)
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
 
-        url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={api_key}"
+        url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
 
-        print(f"DEBUG FMP HTTP Status: {resp.status_code} para historical {fmp_sym}")
-        if resp.status_code != 200 or not resp.text:
-            print(f"DEBUG FMP Respuesta Cruda: {resp.text[:300]}")
+        if resp.status_code != 200:
+            print(f"DEBUG INTRADAY ERROR: historical-chart devolvio {resp.status_code} para {fmp_sym}")
+            print(f"DEBUG INTRADAY RESPUESTA: {resp.text[:300]}")
             logging.warning(f"FMP historical-chart: {resp.status_code} para {fmp_sym}")
+            # Retornar con precio pero sin volumen -> no activará ballenas pero no rompe nada
             return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
 
         data = resp.json()
         if not data or not isinstance(data, list) or len(data) == 0:
-            logging.warning(f"Respuesta inesperada de FMP: {str(data)[:200]}")
+            print(f"DEBUG INTRADAY: Respuesta vacía o formato inesperado para {fmp_sym}: {str(data)[:200]}")
             return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
 
         volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict)]
@@ -1383,15 +1382,17 @@ def fetch_intraday_data(ticker):
         latest_vol = float(latest.get('volume', 0) or 0)
         avg_vol = (sum(volumes) / len(volumes)) if volumes else 0
 
-        vol_type = "Compra 🟢" if close_p >= open_p else "Venta 🔴"
-        return {
+        vol_type = "Compra \ud83d\udfe2" if close_p >= open_p else "Venta \ud83d\udd34"
+        result = {
             'ticker': tk,
             'latest_vol': latest_vol,
             'avg_vol': avg_vol,
             'vol_type': vol_type,
             'latest_price': price
         }
+        return result
     except Exception as e:
+        print(f"DEBUG INTRADAY EXCEPCION para {tk}: {e}")
         logging.error(f"fetch_intraday_data error para {tk}: {e}")
         return None
 def fetch_and_analyze_stock(ticker):
@@ -2191,7 +2192,10 @@ def background_loop_proactivo():
     boot_smc_levels_once()
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
     protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
+    geo_refresh_counter = 0  # Contador para refrescar contexto geopolítico
     _PROTECTION_INTERVAL = 10  # ~5 minutos (10 ticks * 30s)
+    _GEO_REFRESH_INTERVAL = 20  # ~10 minutos (20 ticks * 30s)
+    loop_counter = 0  # Contador total de ciclos para heartbeat
     while True:
         try:
             time.sleep(30)
@@ -2199,6 +2203,12 @@ def background_loop_proactivo():
             purge_old_events()
             sentinel_tick_counter += 1
             protection_tick_counter += 1
+            geo_refresh_counter += 1
+            loop_counter += 1
+
+            # === HEARTBEAT: log cada ciclo ===
+            tracked = get_tracked_tickers()
+            print(f"DEBUG HEARTBEAT [{now.strftime('%H:%M:%S')}]: Ciclo #{loop_counter} | {len(tracked)} activos en radar | Whale memory: {len(WHALE_MEMORY)}")
 
             raw_news = check_geopolitical_news()
             unique_news = []
@@ -2211,6 +2221,16 @@ def background_loop_proactivo():
                 ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
                 if ai_threat_evaluation:
                      bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
+
+            # === REFRESCAR CONTEXTO GEOPOLÍTICO: cada ~10 minutos ===
+            if geo_refresh_counter >= _GEO_REFRESH_INTERVAL:
+                geo_refresh_counter = 0
+                try:
+                    print(f"DEBUG GEO REFRESH: Actualizando contexto geopolitico...")
+                    genesis_strategic_report(manual=False)  # Actualiza GENESIS_RISK_CONTEXT sin enviar
+                    print(f"DEBUG GEO REFRESH: Contexto actualizado. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
+                except Exception as e:
+                    print(f"DEBUG GEO REFRESH ERROR: {e}")
 
             # === MODO CENTINELA: verificar noticias de activos cada ~20 minutos ===
             if sentinel_tick_counter >= _SENTINEL_TICK_INTERVAL:
@@ -2228,11 +2248,17 @@ def background_loop_proactivo():
                 except Exception as e:
                     logging.error(f"Error en Monitor de Protección: {e}")
 
-            for tk in get_tracked_tickers():
+            # === ESCANEO DE ACTIVOS: precios, rupturas, ballenas ===
+            whale_scan_count = 0
+            whale_detected_count = 0
+            for tk in tracked:
                 intra = fetch_intraday_data(tk)
-                if not intra: continue
+                if not intra:
+                    print(f"DEBUG WHALE SCAN: {tk} -> fetch_intraday_data devolvio None")
+                    continue
                 cur_price = intra['latest_price']
                 display_name = get_display_name(tk)
+                whale_scan_count += 1
 
                 # === GUARDIA DE COHERENCIA: bloquear alertas si el precio es ilógico ===
                 price_is_reliable = True
@@ -2242,7 +2268,7 @@ def background_loop_proactivo():
                         logging.warning(f"🚫 ALERTA BLOQUEADA para {tk}: ${cur_price:.2f} vs último ${last_p:.2f} (>50% de desviación). Error de API probable.")
                         price_is_reliable = False
 
-                # Rupturas Doble Verificadas (YFinance 1 Minuto) — SOLO si el precio es confiable
+                # Rupturas Doble Verificadas — SOLO si el precio es confiable
                 topol = SMC_LEVELS_MEMORY.get(tk)
                 if topol and price_is_reliable:
                     if cur_price > topol['res']:
@@ -2250,6 +2276,7 @@ def background_loop_proactivo():
                         if rt and rt['price'] > topol['res'] and _sanity_check_price(tk, rt['price']):
                            hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                            if not check_and_add_seen_event(hash_brk):
+                               print(f"DEBUG BREAKOUT: {display_name} ROMPIO RESISTENCIA en ${fmt_price(rt['price'])}")
                                adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
                                bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Resistencia en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
 
@@ -2258,28 +2285,36 @@ def background_loop_proactivo():
                         if rt and rt['price'] < topol['sup'] and _sanity_check_price(tk, rt['price']):
                            hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
                            if not check_and_add_seen_event(hash_drp):
+                               print(f"DEBUG BREAKOUT: {display_name} ROMPIO SOPORTE en ${fmt_price(rt['price'])}")
                                adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
                                bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
 
-                # Ballenas Doble Verificadas — con cruce geopolítico GENESIS
+                # Ballenas — con cruce geopolítico GENESIS
+                # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
                 if intra['avg_vol'] > 0 and price_is_reliable:
                     is_crypto = '-USD' in tk
-                    # Crypto: umbral más alto (5x) porque yfinance reporta volumen en USD acumulado 24h
-                    whale_threshold = 5.0 if is_crypto else 2.5
+                    whale_threshold = 2.0 if is_crypto else 1.5
                     spike = intra['latest_vol'] / intra['avg_vol']
+
+                    # DEBUG: logear ratios de volumen significativos
+                    if spike > 1.0:
+                        print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
+
                     if spike >= whale_threshold:
                         rt = verify_1m_realtime_data(tk)
                         valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
                         whale_hash_id = f"WHL_{tk}_{valid_vol}"
 
                         if not check_and_add_seen_event(whale_hash_id):
+                            whale_detected_count += 1
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
-                            # Formato inteligente: cripto en USD, acciones en unidades
                             if is_crypto:
                                 vol_display = f"${valid_vol:,} USD"
                             else:
                                 vol_display = f"{valid_vol:,} unidades"
+
+                            print(f"DEBUG WHALE DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
 
                             # === ALERTA ROJA: Ballena + Sentimiento negativo ===
                             is_high_risk = tk in GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])
@@ -2287,24 +2322,31 @@ def background_loop_proactivo():
                             is_massive = valid_vol > 100_000_000 if is_crypto else valid_vol > 5_000_000
 
                             if is_high_risk or (neg_sentiment and is_massive):
-                                # ALERTA ROJA: whale en entorno de inestabilidad
                                 alert_msg = (
-                                    f"\u2500" * 28 + "\n"
-                                    f"\ud83d\udea8 <b>ALERTA ROJA: BALLENA EN ENTORNO DE INESTABILIDAD</b> \ud83d\udea8\n"
-                                    f"\u2500" * 28 + "\n"
-                                    f"\ud83d\udc0b Bloque masivo en <b>{display_name}</b>: {vol_display}\n"
-                                    f"\ud83d\udcca Presi\u00f3n: {intra['vol_type']}\n"
-                                    f"\ud83c\udf0d Contexto: Sentimiento del mercado <b>NEGATIVO</b>\n"
-                                    f"\u26a0\ufe0f Movimiento de Ballena detectado en entorno de inestabilidad\n"
-                                    f"\ud83d\udca1 <b>Recomendaci\u00f3n:</b> Aumentar vigilancia sobre {display_name}{note}\n"
-                                    f"\u2500" * 28
+                                    "\u2500" * 28 + "\n"
+                                    f"🚨 <b>ALERTA ROJA: BALLENA EN ENTORNO DE INESTABILIDAD</b> 🚨\n"
+                                    "\u2500" * 28 + "\n"
+                                    f"🐋 Bloque masivo en <b>{display_name}</b>: {vol_display}\n"
+                                    f"📊 Presión: {intra['vol_type']}\n"
+                                    f"🌍 Contexto: Sentimiento del mercado <b>NEGATIVO</b>\n"
+                                    f"⚠️ Movimiento de Ballena detectado en entorno de inestabilidad\n"
+                                    f"💡 <b>Recomendación:</b> Aumentar vigilancia sobre {display_name}{note}\n"
+                                    "\u2500" * 28
                                 )
                                 bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
                             else:
-                                bot.send_message(CHAT_ID, f"---\n\u26a0\ufe0f *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {vol_display}.\nPresi\u00f3n Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
+                                bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {vol_display}.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
+                else:
+                    if intra['avg_vol'] == 0:
+                        print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
+
+            # === HEARTBEAT BALLENAS: resumen del escaneo ===
+            print(f"DEBUG WHALE SCAN COMPLETADO: {whale_scan_count}/{len(tracked)} escaneados | {whale_detected_count} ballenas detectadas")
 
         except Exception as e:
+            print(f"DEBUG ERROR HFT LOOP: {e}")
             logging.error(f"Error HFT: {e}")
+
 
 # ----------------- MAIN -----------------
 def main():
