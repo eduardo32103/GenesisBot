@@ -408,6 +408,8 @@ def _restore_from_repo_json():
 # --- MAPEO DURO Y ALIAS VISUAL  ---
 def remap_ticker(ticker_input):
     tk = ticker_input.upper()
+    if ":" in tk:
+        tk = tk.split(":")[-1]
     if tk in ["LCO", "BRENT", "PETROLEO"]: return "BZ=F"
     if tk in ["ORO", "GOLD", "GC"]: return "GC=F"
     if tk in ["BTC", "BITCOIN"]: return "BTC-USD"
@@ -1452,9 +1454,12 @@ def fetch_intraday_data(ticker):
 def fetch_and_analyze_stock(ticker):
     """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
     tk = remap_ticker(ticker)
+    print(f"DEBUG SMC: Consultando niveles para {tk}...")
     try:
         safe_check = get_safe_ticker_price(tk)
-        if not safe_check: return None
+        if not safe_check:
+            print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
+            return None
 
         # Obtener historial diario de FMP
         fmp_sym = _get_fmp_symbol(tk)
@@ -1467,14 +1472,19 @@ def fetch_and_analyze_stock(ticker):
             return None
 
         raw = resp.json()
-        # FMP devuelve lista de dict con 'date', 'open', 'high', 'low', 'close', 'volume'
-        hist = raw if isinstance(raw, list) else raw.get('historical', raw.get('historicalStockList', []))
-        if isinstance(hist, list) and len(hist) > 0:
-            # Si es nested (historicalStockList), extraer
-            if isinstance(hist[0], dict) and 'historical' in hist[0]:
-                hist = hist[0]['historical']
+        hist = []
+        if isinstance(raw, list):
+            hist = raw
+        elif isinstance(raw, dict):
+            if 'historical' in raw:
+                hist = raw['historical']
+            elif 'historicalStockList' in raw:
+                hist = raw['historicalStockList']
+                if hist and isinstance(hist[0], dict) and 'historical' in hist[0]:
+                    hist = hist[0]['historical']
+        
         if not hist or not isinstance(hist, list) or len(hist) < 30:
-            print(f"DEBUG ANALYZE: FMP devolvio {len(hist) if hist else 0} registros para {fmp_sym} (necesita 30+)")
+            print(f"DEBUG ANALYZE: FMP devolvio pocos o nulos registros para {fmp_sym}. Estructura raw: {str(raw)[:150]}")
             return None
 
         # FMP viene en orden reciente-primero, revertir para cálculos
@@ -1484,6 +1494,7 @@ def fetch_and_analyze_stock(ticker):
         volumes = pd.Series([float(d.get('volume', 0) or 0) for d in hist])
 
         if len(closes) < 30:
+            print(f"DEBUG SMC: closes length {len(closes)} < 30 para {fmp_sym}")
             return None
 
         # RSI
