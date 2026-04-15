@@ -1469,8 +1469,9 @@ def fetch_and_analyze_stock(ticker):
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
         
-        print(f"DEBUG: Enviando petici\u00f3n SMC para: {fmp_sym}")
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}"
+        clean_ticker = "".join(c for c in str(fmp_sym) if c.isalnum()).upper().strip()
+        print(f"DEBUG: Enviando petici\u00f3n SMC para: {clean_ticker}")
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{clean_ticker}?apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=5)
         
         if resp.status_code != 200:
@@ -1560,8 +1561,8 @@ def fetch_and_analyze_stock(ticker):
         LAST_KNOWN_ANALYSIS[tk] = result
         return result
     except Exception as e:
-        print(f"DEBUG ANALYZE: Error para {tk}: {e}")
-        return None
+        print(f"ERROR CR\u00cdTICO SMC: {e}")
+        return "\u26a0\ufe0f Error t\u00e9cnico al calcular niveles."
 
 def update_smc_memory(ticker, analysis):
     tk = remap_ticker(ticker)
@@ -2047,7 +2048,9 @@ def handle_text(message):
             else:
                 report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u26a0\ufe0f Niveles SMC no disponibles para este ticker en este momento", "---"])
 
-        bot.send_message(message.chat.id, "\n".join(report_lines), parse_mode="HTML")
+        texto_smc = "\n".join(report_lines)
+        final_text = texto_smc.encode('utf-8', 'ignore').decode('utf-8')
+        bot.send_message(message.chat.id, final_text, parse_mode="HTML")
         return
 
     # === EXPRESIONES REGULARES INTELIGENTES NLP ===
@@ -2521,7 +2524,9 @@ def main():
     # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
     print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
     try:
+        import time
         bot.delete_webhook(drop_pending_updates=True)
+        time.sleep(1)
     except Exception as e:
         print(f"DEBUG BOOT: Webhook clear error (ignorado): {e}")
 
