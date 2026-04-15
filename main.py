@@ -1079,21 +1079,57 @@ def generar_reporte_macro_manual():
         return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{bullets}\n\n💡 *Análisis rápido:* FMP Feed procesado sin IA.\n\n📊 *Sentimiento General del Mercado:* Neutral 🟡"
 
 def fetch_intraday_data(ticker):
+    """Obtiene datos intradía usando EXCLUSIVAMENTE FMP. Sin yfinance."""
     tk = remap_ticker(ticker)
     try:
+        # 1. Validar ticker y obtener precio actual via FMP
         safe_check = get_safe_ticker_price(tk)
-        if not safe_check: return None
+        if not safe_check:
+            logging.warning(f"fetch_intraday_data: FMP no devolvió precio para {tk}")
+            return None
 
-        # Usar Ticker.history() para evitar bugs de MultiIndex
-        ticker_obj = yf.Ticker(tk)
-        data = ticker_obj.history(period="5d", interval="5m")
-        if data.empty: return None
+        price = safe_check.get('price')
+        if not price:
+            logging.warning(f"Respuesta inesperada de FMP: {safe_check}")
+            return None
 
-        close_prices = data['Close']; open_prices = data['Open']; volumes = data['Volume']
+        # 2. Obtener datos históricos de 5 min via FMP (no yfinance)
+        fmp_sym = _get_fmp_symbol(tk)
+        if _is_crypto_ticker(tk):
+            fmp_sym = tk.replace('-USD', '') + 'USD'
 
-        vol_type = "Compra 🟢" if float(close_prices.iloc[-1]) >= float(open_prices.iloc[-1]) else "Venta 🔴"
-        return {'ticker': tk, 'latest_vol': float(volumes.iloc[-1]), 'avg_vol': float(volumes.mean()), 'vol_type': vol_type, 'latest_price': safe_check['price']}
-    except: return None
+        url = f"https://financialmodelingprep.com/api/v3/historical-chart/5min/{fmp_sym}?apikey={PREMIUM_API_KEY}"
+        resp = requests.get(url, timeout=10)
+
+        if resp.status_code != 200 or not resp.text:
+            logging.warning(f"FMP historical-chart: {resp.status_code} para {fmp_sym}")
+            # Devolvemos datos básicos con solo el precio actual, sin crash
+            return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
+
+        data = resp.json()
+        if not data or not isinstance(data, list) or len(data) == 0:
+            logging.warning(f"Respuesta inesperada de FMP: {str(data)[:200]}")
+            return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
+
+        # 3. Procesar candles con validación total - cero riesgo de KeyError
+        volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict)]
+        latest = data[0] if isinstance(data[0], dict) else {}
+        close_p = float(latest.get('close', price) or price)
+        open_p  = float(latest.get('open', price) or price)
+        latest_vol = float(latest.get('volume', 0) or 0)
+        avg_vol = (sum(volumes) / len(volumes)) if volumes else 0
+
+        vol_type = "Compra 🟢" if close_p >= open_p else "Venta 🔴"
+        return {
+            'ticker': tk,
+            'latest_vol': latest_vol,
+            'avg_vol': avg_vol,
+            'vol_type': vol_type,
+            'latest_price': price
+        }
+    except Exception as e:
+        logging.error(f"fetch_intraday_data error para {tk}: {e}")
+        return None
 
 def fetch_and_analyze_stock(ticker):
     tk = remap_ticker(ticker)
