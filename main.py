@@ -1438,15 +1438,44 @@ def analyze_breakout_gpt(ticker, level_type, price):
     if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = (f"Eres GÉNESIS, analista institucional.\n"
-              f"El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en exactamente ${fmt_price(price)} verificado vía FMP.\n"
-              f"Instrucción: Evalúa esta ruptura intradiaria con perspectiva de liquidez institucional.\n"
-              f"Da un consejo corto de 1 párrafo: ¿Qué hacer ahora? (Elige y resalta COMPRAR, VENDER o MANTENER) y explica mecánicamente por qué. ESPAÑOL ESTRICTO.")
+
+    # === Recopilar contexto unificado GÉNESIS ===
+    # Contexto geopolítico
+    geo_context = "Sin datos geopolíticos recientes."
+    risk_ctx = GENESIS_RISK_CONTEXT
+    if risk_ctx.get('last_update'):
+        global_s = _classify_sentiment(risk_ctx['sentiment_global'])
+        geo_context = f"Sentimiento global del mercado: {global_s['label']} ({global_s['bull_pct']}% Alcista / {global_s['bear_pct']}% Bajista)."
+        if risk_ctx.get('news_digest'):
+            top_news = [n.get('title_es', n.get('title', ''))[:60] for n in risk_ctx['news_digest'][:3]]
+            geo_context += f"\nNoticias clave: {'; '.join(top_news)}"
+        if tk in risk_ctx.get('high_risk_tickers', []):
+            geo_context += f"\n⚠️ {display_name} está en ZONA DE RIESGO GEOPOLÍTICO."
+
+    # Contexto de ballenas
+    whale_context = "Sin movimientos de ballena recientes en este activo."
+    wctx = _get_whale_context_for_ticker(tk)
+    if wctx:
+        whale_context = f"Ballena detectada: {wctx['vol_str']} ({wctx['type']}) hace {wctx['minutes_ago']} minutos."
+
+    prompt = (f"Eres GÉNESIS, analista institucional senior de un fondo de cobertura.\n\n"
+              f"EVENTO: El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en ${fmt_price(price)} verificado vía FMP.\n\n"
+              f"CONTEXTO GEOPOLÍTICO:\n{geo_context}\n\n"
+              f"CONTEXTO BALLENAS:\n{whale_context}\n\n"
+              f"INSTRUCCIONES OBLIGATORIAS:\n"
+              f"1. Evalúa esta ruptura cruzando: dirección del precio, sentimiento geopolítico, y movimientos de ballenas.\n"
+              f"2. Da un consejo claro: ¿COMPRAR, VENDER o MANTENER? Resalta tu elección en negrita.\n"
+              f"3. Asigna un PORCENTAJE DE CONFIANZA (ejemplo: 75%, 85%, 92%) basado en cuántas señales convergen:\n"
+              f"   - Si ruptura + ballenas + sentimiento apuntan en la misma dirección = 85-95%\n"
+              f"   - Si hay señales mixtas = 60-75%\n"
+              f"   - Si hay contradicción fuerte = 50-65%\n"
+              f"4. Formato: 1 párrafo de máximo 4 líneas. ESPAÑOL ESTRICTO con vocabulario financiero profesional.\n"
+              f"5. Termina con: '🎯 Confianza: [X]%'\n")
     try:
-        return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}]).choices[0].message.content.strip()
+        return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=400).choices[0].message.content.strip()
     except Exception as e:
         logging.error(f"Fallo OpenAI breakout: {e}")
-        return "¿Qué hacer? Esperar confirmación de volumen en la siguiente hora."
+        return "¿Qué hacer? Esperar confirmación de volumen en la siguiente hora. 🎯 Confianza: 50%"
 
 def perform_deep_analysis(ticker):
     tk = remap_ticker(ticker)
