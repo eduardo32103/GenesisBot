@@ -7,7 +7,7 @@ import requests
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
-import yfinance as yf
+# yfinance ELIMINADO — Todo via FMP Pro
 import threading
 import time
 import json
@@ -757,18 +757,14 @@ def get_safe_ticker_price(ticker, force_validation=False):
     return None
 
 def verify_1m_realtime_data(ticker):
-    """Obtiene precio Y volumen en tiempo real via yfinance 1min."""
+    """Obtiene precio Y volumen en tiempo real via FMP quote."""
     tk = remap_ticker(ticker)
     try:
-        data = yf.download(tk, period='1d', interval='1m', progress=False)
-        if data is not None and not data.empty:
-            latest = data.iloc[-1]
-            price = float(latest['Close'].iloc[0]) if hasattr(latest['Close'], 'iloc') else float(latest['Close'])
-            vol = float(latest['Volume'].iloc[0]) if hasattr(latest['Volume'], 'iloc') else float(latest['Volume'])
-            return {'price': price, 'vol': vol}
+        fmp_data = _fetch_fmp_quote(tk)
+        if fmp_data:
+            return {'price': fmp_data['price'], 'vol': fmp_data.get('volume', 0)}
     except Exception as e:
-        print(f"DEBUG verify_1m: Error para {tk}: {e}")
-    # Fallback: solo precio sin volumen
+        print(f"DEBUG verify_1m: Error FMP para {tk}: {e}")
     safe = get_safe_ticker_price(tk)
     if safe:
         return {'price': safe['price'], 'vol': 0}
@@ -1353,90 +1349,71 @@ def generar_reporte_macro_manual():
 
 
 def fetch_intraday_data(ticker):
-    """Obtiene precio FMP + volumen yfinance para detección de ballenas."""
+    """Obtiene precio + volumen EXCLUSIVAMENTE de FMP Pro."""
     tk = remap_ticker(ticker)
 
-    # PASO 1: Obtener precio verificado de FMP
-    price = None
-    if FMP_API_KEY:
-        safe_check = get_safe_ticker_price(tk)
-        if safe_check:
-            price = safe_check.get('price')
-
-    if not price:
-        print(f"DEBUG INTRADAY: Sin precio para {tk}, saltando")
+    if not FMP_API_KEY:
+        print(f"DEBUG INTRADAY: FMP_API_KEY es None, saltando {tk}")
         return None
 
-    # PASO 2: Obtener VOLUMEN de yfinance (fuente primaria para detección de ballenas)
+    # PASO 1: Obtener precio verificado de FMP
+    safe_check = get_safe_ticker_price(tk)
+    if not safe_check:
+        print(f"DEBUG INTRADAY: Sin precio para {tk}")
+        return None
+    price = safe_check.get('price')
+    if not price:
+        return None
+
+    # PASO 2: Obtener volumen de FMP historical-chart
     latest_vol = 0
     avg_vol = 0
     vol_type = "N/A"
 
     try:
-        yf_data = yf.download(tk, period='5d', interval='5m', progress=False)
-        if yf_data is not None and not yf_data.empty:
-            # Manejar multi-index columns de yfinance moderno
-            if isinstance(yf_data.columns, pd.MultiIndex):
-                vol_col = yf_data['Volume'].iloc[:, 0] if 'Volume' in yf_data.columns.get_level_values(0) else None
-                close_col = yf_data['Close'].iloc[:, 0] if 'Close' in yf_data.columns.get_level_values(0) else None
-                open_col = yf_data['Open'].iloc[:, 0] if 'Open' in yf_data.columns.get_level_values(0) else None
-            else:
-                vol_col = yf_data['Volume'] if 'Volume' in yf_data.columns else None
-                close_col = yf_data['Close'] if 'Close' in yf_data.columns else None
-                open_col = yf_data['Open'] if 'Open' in yf_data.columns else None
+        fmp_sym = _get_fmp_symbol(tk)
+        if _is_crypto_ticker(tk):
+            fmp_sym = tk.replace('-USD', '') + 'USD'
 
-            if vol_col is not None:
-                vol_values = vol_col.dropna().tolist()
-                positive_vols = [float(v) for v in vol_values if float(v) > 0]
+        url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and isinstance(data, list) and len(data) > 5:
+                volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict)]
+                positive_vols = [v for v in volumes if v > 0]
+
                 if positive_vols and len(positive_vols) >= 5:
-                    latest_vol = positive_vols[-1]
+                    latest_vol = positive_vols[0]  # Más reciente primero en FMP
                     avg_vol = sum(positive_vols) / len(positive_vols)
-
-                    # Determinar dirección (compra/venta)
-                    if close_col is not None and open_col is not None:
-                        try:
-                            last_close = float(close_col.dropna().iloc[-1])
-                            last_open = float(open_col.dropna().iloc[-1])
-                            vol_type = "Compra 🟢" if last_close >= last_open else "Venta 🔴"
-                        except:
-                            vol_type = "Compra 🟢"
-
-                    print(f"DEBUG INTRADAY {tk}: yfinance OK | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x")
+                    latest_item = data[0]
+                    close_p = float(latest_item.get('close', price) or price)
+                    open_p = float(latest_item.get('open', price) or price)
+                    vol_type = "Compra 🟢" if close_p >= open_p else "Venta 🔴"
+                    print(f"DEBUG INTRADAY {tk}: FMP OK | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x")
                 else:
-                    print(f"DEBUG INTRADAY {tk}: yfinance devolvio {len(positive_vols)} vols positivos (necesita >=5)")
+                    print(f"DEBUG INTRADAY {tk}: FMP devolvio {len(positive_vols)} vols positivos")
             else:
-                print(f"DEBUG INTRADAY {tk}: yfinance no tiene columna Volume")
+                print(f"DEBUG INTRADAY {tk}: FMP historical vacio o <5 registros")
         else:
-            print(f"DEBUG INTRADAY {tk}: yfinance devolvio datos vacios")
-    except Exception as e:
-        print(f"DEBUG INTRADAY {tk}: yfinance error: {e}")
+            print(f"DEBUG INTRADAY {tk}: FMP historical HTTP {resp.status_code}")
 
-    # PASO 3: Si yfinance falla, intentar FMP historical-chart como fallback
-    if avg_vol == 0 and FMP_API_KEY:
+    except Exception as e:
+        print(f"DEBUG INTRADAY {tk}: FMP historical error: {e}")
+
+    # PASO 3: Si historical-chart no tiene volumen, intentar con FMP quote volume
+    if avg_vol == 0:
         try:
-            fmp_sym = _get_fmp_symbol(tk)
-            if _is_crypto_ticker(tk):
-                fmp_sym = tk.replace('-USD', '') + 'USD'
-            url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={FMP_API_KEY}"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict) and float(c.get('volume', 0) or 0) > 0]
-                    if volumes:
-                        latest_vol = volumes[0]
-                        avg_vol = sum(volumes) / len(volumes)
-                        latest_item = data[0]
-                        close_p = float(latest_item.get('close', price) or price)
-                        open_p = float(latest_item.get('open', price) or price)
-                        vol_type = "Compra 🟢" if close_p >= open_p else "Venta 🔴"
-                        print(f"DEBUG INTRADAY {tk}: FMP fallback OK | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f}")
-                    else:
-                        print(f"DEBUG INTRADAY {tk}: FMP historical devolvio 0 volumenes positivos")
-            else:
-                print(f"DEBUG INTRADAY {tk}: FMP historical HTTP {resp.status_code}")
-        except Exception as fmp_e:
-            print(f"DEBUG INTRADAY {tk}: FMP historical error: {fmp_e}")
+            fmp_data = _fetch_fmp_quote(tk)
+            if fmp_data and fmp_data.get('volume', 0) > 0:
+                latest_vol = float(fmp_data['volume'])
+                avg_vol = float(fmp_data.get('avgVolume', latest_vol) or latest_vol)
+                if avg_vol > 0 and latest_vol > 0:
+                    vol_type = "Compra 🟢" if fmp_data.get('change', 0) >= 0 else "Venta 🔴"
+                    print(f"DEBUG INTRADAY {tk}: FMP quote fallback | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x")
+        except Exception as e:
+            print(f"DEBUG INTRADAY {tk}: FMP quote fallback error: {e}")
 
     return {
         'ticker': tk,
@@ -1446,38 +1423,72 @@ def fetch_intraday_data(ticker):
         'latest_price': price
     }
 def fetch_and_analyze_stock(ticker):
+    """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
     tk = remap_ticker(ticker)
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check: return None
 
-        # Usar Ticker.history() para evitar bugs de MultiIndex con yf.download()
-        ticker_obj = yf.Ticker(tk)
-        data = ticker_obj.history(period="6mo", interval="1d")
-        if data.empty: return None
+        # Obtener historial diario de FMP
+        fmp_sym = _get_fmp_symbol(tk)
+        if _is_crypto_ticker(tk):
+            fmp_sym = tk.replace('-USD', '') + 'USD'
+        url = f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={fmp_sym}&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            print(f"DEBUG ANALYZE: FMP historical-price HTTP {resp.status_code} para {fmp_sym}")
+            return None
 
-        close_prices = data['Close']; volume = data['Volume']
+        raw = resp.json()
+        # FMP devuelve lista de dict con 'date', 'open', 'high', 'low', 'close', 'volume'
+        hist = raw if isinstance(raw, list) else raw.get('historical', raw.get('historicalStockList', []))
+        if isinstance(hist, list) and len(hist) > 0:
+            # Si es nested (historicalStockList), extraer
+            if isinstance(hist[0], dict) and 'historical' in hist[0]:
+                hist = hist[0]['historical']
+        if not hist or not isinstance(hist, list) or len(hist) < 30:
+            print(f"DEBUG ANALYZE: FMP devolvio {len(hist) if hist else 0} registros para {fmp_sym} (necesita 30+)")
+            return None
 
-        delta = close_prices.diff()
-        up = delta.clip(lower=0); down = -1 * delta.clip(upper=0)
-        ema_up = up.ewm(com=13, adjust=False).mean(); ema_down = down.ewm(com=13, adjust=False).mean()
+        # FMP viene en orden reciente-primero, revertir para cálculos
+        hist = list(reversed(hist[:180]))  # Últimos 6 meses aprox
+
+        closes = pd.Series([float(d.get('close', 0)) for d in hist])
+        volumes = pd.Series([float(d.get('volume', 0) or 0) for d in hist])
+
+        if len(closes) < 30:
+            return None
+
+        # RSI
+        delta = closes.diff()
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        ema_up = up.ewm(com=13, adjust=False).mean()
+        ema_down = down.ewm(com=13, adjust=False).mean()
         rs = ema_up / ema_down
-        rsi_series = 100 - (100 / (1 + rs)); rsi_series[ema_down == 0] = 100
+        rsi_series = 100 - (100 / (1 + rs))
+        rsi_series[ema_down == 0] = 100
 
-        macd_line = close_prices.ewm(span=12, adjust=False).mean() - close_prices.ewm(span=26, adjust=False).mean()
+        # MACD
+        macd_line = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
         macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+
         latest_price = safe_check['price']
         latest_rsi = float(rsi_series.iloc[-1])
 
-        smc_trend = "Alcista 🟢" if latest_price > close_prices.ewm(span=20).mean().iloc[-1] else "Bajista 🔴"
-        recent_month = close_prices.iloc[-22:]
-        smc_sup = float(recent_month.min()); smc_res = float(recent_month.max())
-        vol_month = volume.iloc[-22:]; order_block_price = float(close_prices.loc[vol_month.idxmax()])
+        smc_trend = "Alcista 🟢" if latest_price > closes.ewm(span=20).mean().iloc[-1] else "Bajista 🔴"
+        recent_month = closes.iloc[-22:]
+        smc_sup = float(recent_month.min())
+        smc_res = float(recent_month.max())
+        vol_month = volumes.iloc[-22:]
+        order_block_price = float(closes.iloc[vol_month.idxmax()]) if vol_month.max() > 0 else latest_price
 
         result = {'ticker': tk, 'price': latest_price, 'rsi': latest_rsi, 'macd_line': float(macd_line.iloc[-1]), 'macd_signal': float(macd_signal.iloc[-1]), 'smc_sup': smc_sup, 'smc_res': smc_res, 'smc_trend': smc_trend, 'order_block': order_block_price}
-        LAST_KNOWN_ANALYSIS[tk] = result  # Cachear último análisis válido
+        LAST_KNOWN_ANALYSIS[tk] = result
         return result
-    except: return None
+    except Exception as e:
+        print(f"DEBUG ANALYZE: Error para {tk}: {e}")
+        return None
 
 def update_smc_memory(ticker, analysis):
     tk = remap_ticker(ticker)
@@ -1540,10 +1551,10 @@ def perform_deep_analysis(ticker):
         verified_price = fmp_data['price']
         logging.info(f"ANÁLISIS {tk}: precio FMP verificado = ${fmt_price(verified_price)}")
 
-    # PASO 1: Obtener indicadores técnicos (RSI, MACD, SMC) via yfinance history
+    # PASO 1: Obtener indicadores técnicos (RSI, MACD, SMC) via FMP historical
     tech = fetch_and_analyze_stock(tk)
 
-    # SIEMPRE imponer el precio FMP sobre lo que yfinance diga en los indicadores
+    # SIEMPRE imponer el precio FMP quote sobre el precio del historial
     if tech and verified_price:
         tech['price'] = verified_price
 
@@ -1595,9 +1606,11 @@ def perform_deep_analysis(ticker):
     # PASO 2: Noticias recientes del activo
     news_str = "No hay noticias recientes disponibles."
     try:
-        raw_news = yf.Ticker(tk).news or []
-        if raw_news:
-            news_str = "\n".join([f"- {n.get('title', '')}" for n in raw_news[:5]])
+        fmp_news = _fetch_fmp_news(5)
+        if fmp_news:
+            news_titles = [n.get('title', '') for n in fmp_news if n.get('title')]
+            if news_titles:
+                news_str = "\n".join([f"- {t}" for t in news_titles[:5]])
     except: pass
 
     # PASO 3: Prompt blindado anti-alucinación hiper-detallado para GPT-4o
@@ -2062,8 +2075,15 @@ def verificar_noticias_cartera():
         display_name = get_display_name(tk)
 
         try:
-            ticker_obj = yf.Ticker(tk)
-            news_list = ticker_obj.news or []
+            # Usar FMP news en lugar de yfinance
+            fmp_sym = _get_fmp_symbol(tk)
+            if _is_crypto_ticker(tk):
+                fmp_sym = tk.replace('-USD', '') + 'USD'
+            url = f"https://financialmodelingprep.com/stable/stock-news?symbol={fmp_sym}&limit=3&apikey={FMP_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            news_list = resp.json() if resp.status_code == 200 else []
+            if not isinstance(news_list, list):
+                news_list = []
         except Exception:
             continue
 
