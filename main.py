@@ -657,17 +657,20 @@ def _get_fmp_symbol(tk):
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
 def _fetch_fmp_quote(tk):
-    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - v3 endpoints"""
+    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP usando endpoints Real-Time (PRO)"""
     global _FMP_LAST_ERROR
     if not PREMIUM_API_KEY:
-        _FMP_LAST_ERROR[tk] = "PREMIUM_API_KEY no detectada en Railway."
+        _FMP_LAST_ERROR[tk] = "PREMIUM_API_KEY no detectada."
         logging.error("FMP: API KEY no configurada.")
         return None
 
     fmp_symbol = _get_fmp_symbol(tk)
     symbols_to_try = [fmp_symbol]
+    
+    # Manejo optimizado para Crypto (busca Varios formatos)
     if _is_crypto_ticker(tk):
-        symbols_to_try = [f"{tk.replace('-USD', '')}USD", tk]
+        base = tk.replace('-USD', '')
+        symbols_to_try = [f"{base}USD", base, tk]
 
     last_status = 0
     for symbol in symbols_to_try:
@@ -680,11 +683,13 @@ def _fetch_fmp_quote(tk):
                 data = resp.json()
                 if isinstance(data, list) and len(data) > 0:
                     quote = data[0]
-                    price = float(quote.get('price', 0))
-                    volume = float(quote.get('volume', 0))
-                    if price > 0:
-                        logging.info(f"FMP ✓ {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': volume}
+                    # Prevención absoluta contra KeyError utilizando dict.get()
+                    if isinstance(quote, dict):
+                        price = float(quote.get('price', 0) or 0)
+                        volume = float(quote.get('volume', 0) or 0)
+                        if price > 0:
+                            logging.info(f"FMP PRO ✔️ {tk} ({symbol}): ${fmt_price(price)}")
+                            return {'price': price, 'vol': volume}
             elif resp.status_code == 401:
                 logging.error("FMP: 401 Key rechazada.")
                 return None
