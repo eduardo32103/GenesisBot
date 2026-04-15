@@ -2064,20 +2064,32 @@ def handle_text(message):
             d_name = get_display_name(tk)
 
             if analysis and isinstance(analysis, dict):
-                rvol_str = f"{analysis['rvol']:.2f}x"
-                pe_str = f"{analysis['pe']:.1f}" if analysis.get('pe', 0) > 0 else "N/A"
+                precio = analysis['price']
+                soporte = analysis['smc_sup']
+                resistencia = analysis['smc_res']
+                
+                if precio < soporte:
+                    veredicto = "COMPRA \ud83d\udfe2"
+                elif precio > resistencia:
+                    veredicto = "VENTA \ud83d\udd34"
+                else:
+                    veredicto = "MANTENER \u26a0\ufe0f"
+
                 report_lines.extend([
-                    f"\ud83c\udfe6 <b>{d_name}</b> - ${fmt_price(analysis['price'])}", 
-                    f"\u2022 Tendencia SMC: {analysis['smc_trend']}", 
-                    f"\u2022 Buy-side Liquidity: ${fmt_price(analysis['smc_sup'])}", 
-                    f"\u2022 Sell-side Liquidity: ${fmt_price(analysis['smc_res'])}", 
-                    f"\u2022 \ud83d\udcca <b>Valor:</b> RVOL: {rvol_str} | RSI: {analysis['rsi']:.1f} | P/E: {pe_str}",
-                    f"\u2022 \ud83c\udfaf <b>Take Profit (SMC Res):</b> ${fmt_price(analysis['take_profit'])}",
-                    f"\u2022 \ud83d\udee1\ufe0f <b>Stop Loss (-2% Sup):</b> ${fmt_price(analysis['stop_loss'])}",
+                    f"\ud83c\udfe6 <b>RESEARCH: {d_name}</b>",
+                    f"\ud83d\udcb0 <b>Precio:</b> ${fmt_price(precio)}",
+                    f"\ud83d\udcc9 <b>Soporte (Piso):</b> ${fmt_price(soporte)}",
+                    f"\ud83d\udcc8 <b>Resistencia (Techo):</b> ${fmt_price(resistencia)}",
+                    "",
+                    "\ud83c\udfaf <b>NIVELES T\u00c1CTICOS:</b>",
+                    f"\u2022 \ud83d\udfe2 TP (Toma de ganancia): ${fmt_price(analysis['take_profit'])}",
+                    f"\u2022 \ud83d\udd34 SL (Stop Loss): ${fmt_price(analysis['stop_loss'])}",
+                    "",
+                    f"\u2696\ufe0f <b>VEREDICTO:</b> <b>{veredicto}</b>",
                     "---"
                 ])
             elif isinstance(analysis, str):
-                report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 {analysis}", "---"])
+                report_lines.extend([f"\ud83c\udfe6 <b>RESEARCH: {d_name}</b>", f"\u2022 {analysis}", "---"])
             else:
                 report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u26a0\ufe0f Niveles SMC no disponibles para este ticker en este momento", "---"])
 
