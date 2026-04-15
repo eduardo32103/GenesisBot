@@ -1353,86 +1353,98 @@ def generar_reporte_macro_manual():
 
 
 def fetch_intraday_data(ticker):
-    """Obtiene datos intradía usando EXCLUSIVAMENTE FMP."""
+    """Obtiene precio FMP + volumen yfinance para detección de ballenas."""
     tk = remap_ticker(ticker)
 
-    if not FMP_API_KEY:
-        print(f"DEBUG INTRADAY: FMP_API_KEY es None, no se puede consultar {tk}")
+    # PASO 1: Obtener precio verificado de FMP
+    price = None
+    if FMP_API_KEY:
+        safe_check = get_safe_ticker_price(tk)
+        if safe_check:
+            price = safe_check.get('price')
+
+    if not price:
+        print(f"DEBUG INTRADAY: Sin precio para {tk}, saltando")
         return None
+
+    # PASO 2: Obtener VOLUMEN de yfinance (fuente primaria para detección de ballenas)
+    latest_vol = 0
+    avg_vol = 0
+    vol_type = "N/A"
 
     try:
-        safe_check = get_safe_ticker_price(tk)
-        if not safe_check:
-            print(f"DEBUG INTRADAY: get_safe_ticker_price devolvio None para {tk}")
-            return None
+        yf_data = yf.download(tk, period='5d', interval='5m', progress=False)
+        if yf_data is not None and not yf_data.empty:
+            # Manejar multi-index columns de yfinance moderno
+            if isinstance(yf_data.columns, pd.MultiIndex):
+                vol_col = yf_data['Volume'].iloc[:, 0] if 'Volume' in yf_data.columns.get_level_values(0) else None
+                close_col = yf_data['Close'].iloc[:, 0] if 'Close' in yf_data.columns.get_level_values(0) else None
+                open_col = yf_data['Open'].iloc[:, 0] if 'Open' in yf_data.columns.get_level_values(0) else None
+            else:
+                vol_col = yf_data['Volume'] if 'Volume' in yf_data.columns else None
+                close_col = yf_data['Close'] if 'Close' in yf_data.columns else None
+                open_col = yf_data['Open'] if 'Open' in yf_data.columns else None
 
-        price = safe_check.get('price')
-        if not price:
-            print(f"DEBUG INTRADAY: Precio es 0 o None para {tk}: {safe_check}")
-            return None
+            if vol_col is not None:
+                vol_values = vol_col.dropna().tolist()
+                positive_vols = [float(v) for v in vol_values if float(v) > 0]
+                if positive_vols and len(positive_vols) >= 5:
+                    latest_vol = positive_vols[-1]
+                    avg_vol = sum(positive_vols) / len(positive_vols)
 
-        fmp_sym = _get_fmp_symbol(tk)
-        if _is_crypto_ticker(tk):
-            fmp_sym = tk.replace('-USD', '') + 'USD'
+                    # Determinar dirección (compra/venta)
+                    if close_col is not None and open_col is not None:
+                        try:
+                            last_close = float(close_col.dropna().iloc[-1])
+                            last_open = float(open_col.dropna().iloc[-1])
+                            vol_type = "Compra 🟢" if last_close >= last_open else "Venta 🔴"
+                        except:
+                            vol_type = "Compra 🟢"
 
-        url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=10)
-
-        if resp.status_code != 200:
-            print(f"DEBUG INTRADAY ERROR: historical-chart devolvio {resp.status_code} para {fmp_sym}")
-            print(f"DEBUG INTRADAY RESPUESTA: {resp.text[:300]}")
-            logging.warning(f"FMP historical-chart: {resp.status_code} para {fmp_sym}")
-            # Retornar con precio pero sin volumen -> no activará ballenas pero no rompe nada
-            return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
-
-        data = resp.json()
-        if not data or not isinstance(data, list) or len(data) == 0:
-            print(f"DEBUG INTRADAY: Respuesta vacía o formato inesperado para {fmp_sym}: {str(data)[:200]}")
-            return {'ticker': tk, 'latest_vol': 0, 'avg_vol': 0, 'vol_type': 'N/A', 'latest_price': price}
-
-        volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict)]
-        latest = data[0] if isinstance(data[0], dict) else {}
-        close_p = float(latest.get('close', price) or price)
-        open_p  = float(latest.get('open', price) or price)
-        latest_vol = float(latest.get('volume', 0) or 0)
-        avg_vol = (sum(volumes) / len(volumes)) if volumes else 0
-
-        vol_type = "Compra \ud83d\udfe2" if close_p >= open_p else "Venta \ud83d\udd34"
-
-        # Si FMP no devolvio volumenes, fallback a yfinance
-        if avg_vol == 0 or latest_vol == 0:
-            try:
-                yf_data = yf.download(tk, period='5d', interval='5m', progress=False)
-                if yf_data is not None and not yf_data.empty:
-                    yf_vols = yf_data['Volume'].dropna()
-                    if hasattr(yf_vols, 'values') and len(yf_vols) > 0:
-                        # Flatten por si tiene multi-index
-                        flat_vols = [float(v) for v in yf_vols.values.flatten() if float(v) > 0]
-                        if flat_vols:
-                            latest_vol = flat_vols[-1]
-                            avg_vol = sum(flat_vols) / len(flat_vols)
-                            close_vals = yf_data['Close'].dropna()
-                            open_vals = yf_data['Open'].dropna()
-                            if len(close_vals) > 0 and len(open_vals) > 0:
-                                last_close = float(close_vals.values.flatten()[-1])
-                                last_open = float(open_vals.values.flatten()[-1])
-                                vol_type = "Compra \ud83d\udfe2" if last_close >= last_open else "Venta \ud83d\udd34"
-                            print(f"DEBUG INTRADAY: yfinance fallback OK para {tk}: latest_vol={latest_vol:,.0f} avg_vol={avg_vol:,.0f}")
-            except Exception as yf_e:
-                print(f"DEBUG INTRADAY: yfinance fallback fallo para {tk}: {yf_e}")
-
-        result = {
-            'ticker': tk,
-            'latest_vol': latest_vol,
-            'avg_vol': avg_vol,
-            'vol_type': vol_type,
-            'latest_price': price
-        }
-        return result
+                    print(f"DEBUG INTRADAY {tk}: yfinance OK | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x")
+                else:
+                    print(f"DEBUG INTRADAY {tk}: yfinance devolvio {len(positive_vols)} vols positivos (necesita >=5)")
+            else:
+                print(f"DEBUG INTRADAY {tk}: yfinance no tiene columna Volume")
+        else:
+            print(f"DEBUG INTRADAY {tk}: yfinance devolvio datos vacios")
     except Exception as e:
-        print(f"DEBUG INTRADAY EXCEPCION para {tk}: {e}")
-        logging.error(f"fetch_intraday_data error para {tk}: {e}")
-        return None
+        print(f"DEBUG INTRADAY {tk}: yfinance error: {e}")
+
+    # PASO 3: Si yfinance falla, intentar FMP historical-chart como fallback
+    if avg_vol == 0 and FMP_API_KEY:
+        try:
+            fmp_sym = _get_fmp_symbol(tk)
+            if _is_crypto_ticker(tk):
+                fmp_sym = tk.replace('-USD', '') + 'USD'
+            url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={FMP_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    volumes = [float(c.get('volume', 0) or 0) for c in data if isinstance(c, dict) and float(c.get('volume', 0) or 0) > 0]
+                    if volumes:
+                        latest_vol = volumes[0]
+                        avg_vol = sum(volumes) / len(volumes)
+                        latest_item = data[0]
+                        close_p = float(latest_item.get('close', price) or price)
+                        open_p = float(latest_item.get('open', price) or price)
+                        vol_type = "Compra 🟢" if close_p >= open_p else "Venta 🔴"
+                        print(f"DEBUG INTRADAY {tk}: FMP fallback OK | latest_vol={latest_vol:,.0f} | avg_vol={avg_vol:,.0f}")
+                    else:
+                        print(f"DEBUG INTRADAY {tk}: FMP historical devolvio 0 volumenes positivos")
+            else:
+                print(f"DEBUG INTRADAY {tk}: FMP historical HTTP {resp.status_code}")
+        except Exception as fmp_e:
+            print(f"DEBUG INTRADAY {tk}: FMP historical error: {fmp_e}")
+
+    return {
+        'ticker': tk,
+        'latest_vol': latest_vol,
+        'avg_vol': avg_vol,
+        'vol_type': vol_type,
+        'latest_price': price
+    }
 def fetch_and_analyze_stock(ticker):
     tk = remap_ticker(ticker)
     try:
