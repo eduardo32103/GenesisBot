@@ -1463,12 +1463,12 @@ def fetch_and_analyze_stock(ticker):
             print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
             return None
 
-        # Obtener historial diario de FMP (v3 serietype=line para evitar Legacy Forbidden)
+        # Obtener historial diario de FMP
         fmp_sym = _get_fmp_symbol(tk)
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?serietype=line&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=15)
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_sym}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=5)
         
         if resp.status_code in [403, 404]:
             print(f"CRÍTICO: Acceso denegado al ticker {fmp_sym}. Revisar permisos de API Key. HTTP {resp.status_code}")
@@ -2043,7 +2043,7 @@ def handle_text(message):
                     "---"
                 ])
             else:
-                report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u23f3 Sin datos disponibles en este momento desde los exchanges", "---"])
+                report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u26a0\ufe0f Niveles SMC no disponibles para este ticker en este momento", "---"])
 
         bot.send_message(message.chat.id, "\n".join(report_lines), parse_mode="HTML")
         return
@@ -2515,7 +2515,25 @@ def main():
     logging.info("Iniciando Génesis 1.0 — Persistencia: Telegram Cloud + SQLite local + Base64 logs")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    
+    # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
+    print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        print(f"DEBUG BOOT: Webhook clear error (ignorado): {e}")
+
+    # Polling con auto-reconexion
+    print("DEBUG BOOT: Iniciando Telegram polling...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"\u274c TELEGRAM POLLING CAIDO: {e}")
+            print("DEBUG: Reconectando en 5 segundos...")
+            import time
+            time.sleep(5)
+            print("DEBUG: Reintentando polling...")
 
 if __name__ == "__main__":
     main()
