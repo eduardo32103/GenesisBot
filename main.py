@@ -1469,21 +1469,25 @@ def fetch_and_analyze_stock(ticker):
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
         
+        import urllib.parse
         ticker_clean = "".join(c for c in str(fmp_sym) if ord(c) < 128).strip().upper()
-        print(f"DEBUG: Enviando petici\u00f3n SMC para: {ticker_clean}")
-        url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{ticker_clean}?type=sma&period=1&limit=20&apikey={FMP_API_KEY}"
+        safe_ticker = urllib.parse.quote(ticker_clean)
+        
+        print(f"DEBUG: Enviando petici\u00f3n SMC para: {safe_ticker}")
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_ticker}?apikey={FMP_API_KEY}"
         
         try:
             resp = requests.get(url, timeout=5)
+            print(f"DEBUG SMC: Ticker {safe_ticker} | Status: {resp.status_code}")
         except UnicodeEncodeError as e:
-            print(f"ERROR CR\u00cdTICO SMC (Unicode): El ticker {ticker_clean} tiene caracteres ocultos. {e}")
+            print(f"ERROR CR\u00cdTICO SMC (Unicode): El ticker {safe_ticker} tiene caracteres ocultos. {e}")
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
         except Exception as e:
             print(f"ERROR CR\u00cdTICO SMC (Red): {e}")
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
         
         if resp.status_code != 200:
-            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {ticker_clean}. HTTP {resp.status_code}")
+            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {safe_ticker}. HTTP {resp.status_code}")
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
 
         raw = resp.json()
@@ -2034,6 +2038,8 @@ def handle_text(message):
             LAST_KNOWN_PRICES.pop(tk, None)
 
         for raw_tk in tkrs:
+            import time
+            time.sleep(0.2)
             tk = remap_ticker(raw_tk)
             analysis = fetch_and_analyze_stock(tk)
             d_name = get_display_name(tk)
