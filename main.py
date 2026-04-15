@@ -691,8 +691,8 @@ def _fetch_fmp_quote(tk):
     fmp_symbol = _get_fmp_symbol(tk)
     symbols_to_try = [fmp_symbol]
 
-    # Soporte Crypto exhaustivo: BTC -> BTCUSD, BTC, BTC-USD
-    if _is_crypto_ticker(tk):
+    # Soporte Crypto exhaustivo
+    if _is_crypto_ticker(tk) or tk in ['BTC', 'ETH', 'SOL', 'MARA', 'XRP', 'DOGE']:
         base = tk.replace('-USD', '')
         symbols_to_try = [f"{base}USD", base, tk]
     elif tk == "BZ=F":
@@ -712,20 +712,26 @@ def _fetch_fmp_quote(tk):
 
             if resp.status_code == 200:
                 data = resp.json()
-                if not data:
-                    print(f"DEBUG FMP: respuesta vacía para {symbol}")
+                if not data or len(data) == 0:
+                    print(f"DEBUG FMP: respuesta vac\u00eda para {symbol}")
                     continue
+                
                 # /stable/quote puede devolver lista o dict
-                if isinstance(data, list) and len(data) > 0:
-                    quote = data[0]
-                elif isinstance(data, dict) and data.get('price'):
+                if isinstance(data, list):
+                    quote = data[0] if data[0] is not None else {}
+                elif isinstance(data, dict):
                     quote = data
                 else:
                     print(f"DEBUG FMP: formato inesperado para {symbol}: {str(data)[:200]}")
                     continue
 
                 if isinstance(quote, dict):
-                    price = float(quote.get('price', 0) or 0)
+                    price = quote.get('price')
+                    if price is None:
+                        print(f"DEBUG FMP: precio nulo para {symbol}. Datos: {quote}")
+                        continue
+                        
+                    price = float(price)
                     volume = float(quote.get('volume', 0) or 0)
                     avg_volume = float(quote.get('avgVolume', 0) or 0)
                     change = float(quote.get('change', 0) or 0)
