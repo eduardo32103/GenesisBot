@@ -628,7 +628,7 @@ def fmt_price(val):
     return s
 
 # === MOTOR FMP (Financial Modeling Prep) — FUENTE ÚNICA DE PRECIOS ===
-# Endpoint: https://financialmodelingprep.com/api/v3/quote/{SYMBOL}?apikey={KEY}
+# Endpoint: https://financialmodelingprep.com/stable/quote?symbol={SYMBOL}&apikey={KEY}
 
 # Mapeo de tickers internos -> símbolos FMP
 FMP_SYMBOL_MAP = {
@@ -657,14 +657,10 @@ def _get_fmp_symbol(tk):
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
 def _fetch_fmp_quote(tk):
-    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - api/v3/quote"""
+    """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
     global _FMP_LAST_ERROR
 
-    # DEBUG EXACTO PEDIDO
-    print(f"DEBUG: Buscando 'FMP_API_KEY'... ¿Encontrada?: {os.environ.get('FMP_API_KEY') is not None}")
-    
-    api_key = os.environ.get('FMP_API_KEY')
-    if not api_key:
+    if not FMP_API_KEY:
         logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
         _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
         return None
@@ -683,29 +679,36 @@ def _fetch_fmp_quote(tk):
 
     for symbol in symbols_to_try:
         try:
-            url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={api_key}"
+            # === STABLE API (nuevo) ===
+            url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=10)
 
-            # DEBUG: Revelar exactamente lo que devuelve FMP
             print(f"DEBUG FMP HTTP Status: {resp.status_code} para {symbol}")
-            if resp.status_code != 200 or not resp.text.strip().startswith('['):
+            if resp.status_code != 200:
                 print(f"DEBUG FMP Respuesta Cruda: {resp.text[:300]}")
 
             if resp.status_code == 200:
                 data = resp.json()
                 if not data:
-                    print(f"DEBUG FMP: lista vacía para {symbol}")
+                    print(f"DEBUG FMP: respuesta vacía para {symbol}")
                     continue
+                # /stable/quote puede devolver lista o dict
                 if isinstance(data, list) and len(data) > 0:
                     quote = data[0]
-                    if isinstance(quote, dict):
-                        price = float(quote.get('price', 0) or 0)
-                        volume = float(quote.get('volume', 0) or 0)
-                        if price > 0:
-                            logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
-                            return {'price': price, 'vol': volume}
-                        else:
-                            print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
+                elif isinstance(data, dict) and data.get('price'):
+                    quote = data
+                else:
+                    print(f"DEBUG FMP: formato inesperado para {symbol}: {str(data)[:200]}")
+                    continue
+
+                if isinstance(quote, dict):
+                    price = float(quote.get('price', 0) or 0)
+                    volume = float(quote.get('volume', 0) or 0)
+                    if price > 0:
+                        logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
+                        return {'price': price, 'vol': volume}
+                    else:
+                        print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
             elif resp.status_code in (401, 403):
                 _FMP_LAST_ERROR[tk] = f"{resp.status_code} - Key rechazada o plan insuficiente"
@@ -758,13 +761,25 @@ def verify_1m_realtime_data(ticker):
 
 
 def _fetch_fmp_news(limit=10):
-    """Extrae noticias del mercado via FMP — prueba múltiples endpoints"""
+    """Extrae noticias del mercado via FMP — usa SOLO endpoints /stable/"""
     if not FMP_API_KEY:
         return []
 
     all_news = []
 
-    # === INTENTO 1: /stable/news (endpoint moderno) ===
+    # === INTENTO 1: /stable/news/all (noticias generales) ===
+    try:
+        url = f"https://financialmodelingprep.com/stable/news/all?limit={limit}&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        logging.info(f"LOG FMP [stable/news/all]: Status {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data
+    except Exception as e:
+        logging.debug(f"FMP stable/news/all error: {e}")
+
+    # === INTENTO 2: /stable/news (general) ===
     try:
         url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=8)
@@ -773,24 +788,10 @@ def _fetch_fmp_news(limit=10):
             data = resp.json()
             if isinstance(data, list) and len(data) > 0:
                 return data
-        elif resp.status_code in (403, 401):
-            logging.warning(f"FMP stable/news: {resp.status_code} — endpoint no disponible en tu plan.")
     except Exception as e:
         logging.debug(f"FMP stable/news error: {e}")
 
-    # === INTENTO 2: /api/v3/stock_news general (legacy) ===
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/stock_news?limit={limit}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=8)
-        logging.info(f"LOG FMP [v3/stock_news]: Status {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and len(data) > 0:
-                return data
-    except Exception as e:
-        logging.debug(f"FMP v3/stock_news error: {e}")
-
-    # === INTENTO 3: /stable/news por ticker específico (algunos planes lo requieren) ===
+    # === INTENTO 3: /stable/news por ticker específico ===
     default_tickers = ["AAPL", "NVDA", "BTCUSD", "SPY", "MSFT"]
     for ticker in default_tickers:
         try:
@@ -809,10 +810,10 @@ def _fetch_fmp_news(limit=10):
         logging.info(f"FMP noticias por ticker: {len(all_news)} artículos recopilados.")
         return all_news[:limit]
 
-    # === INTENTO 4: /api/v3/stock_news por ticker (legacy con ticker) ===
+    # === INTENTO 4: /stable/stock-news por ticker ===
     for ticker in default_tickers[:3]:
         try:
-            url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={ticker}&limit=3&apikey={FMP_API_KEY}"
+            url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=3&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
@@ -823,19 +824,6 @@ def _fetch_fmp_news(limit=10):
 
     if all_news:
         return all_news[:limit]
-
-    # === INTENTO 5: /api/v3/fmp/articles ===
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/fmp/articles?page=0&size={limit}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=8)
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, dict) and 'content' in data:
-                return data['content'][:limit]
-            elif isinstance(data, list) and len(data) > 0:
-                return data[:limit]
-    except Exception:
-        pass
 
     logging.warning("FMP: Todos los endpoints de noticias fallaron.")
     return []
@@ -1014,7 +1002,7 @@ def fetch_intraday_data(ticker):
         if _is_crypto_ticker(tk):
             fmp_sym = tk.replace('-USD', '') + 'USD'
 
-        url = f"https://financialmodelingprep.com/api/v3/historical-chart/5min/{fmp_sym}?apikey={api_key}"
+        url = f"https://financialmodelingprep.com/stable/historical-chart/5min/{fmp_sym}?apikey={api_key}"
         resp = requests.get(url, timeout=10)
 
         print(f"DEBUG FMP HTTP Status: {resp.status_code} para historical {fmp_sym}")
