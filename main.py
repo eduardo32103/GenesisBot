@@ -848,7 +848,7 @@ def _fetch_google_news_fallback(limit=8):
 
 
 def check_geopolitical_news():
-    """Monitor automático: extrae noticias FMP y filtra por alto impacto"""
+    """Monitor automático unificado: FMP news + sentiment + wallet cross-reference"""
     try:
         HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction",
                                 "embargo", "explosion", "guerra", "ataque", "tensión", "misil",
@@ -856,7 +856,6 @@ def check_geopolitical_news():
                                 "tariff", "default", "crisis"]
         news_alerts = []
 
-        # Fuente principal: FMP Premium
         fmp_news = _fetch_fmp_news(15)
         if fmp_news:
             for article in fmp_news:
@@ -865,7 +864,6 @@ def check_geopolitical_news():
                     news_alerts.append(title)
                     if len(news_alerts) >= 5: break
 
-        # Fallback: Google News RSS si FMP no devuelve nada
         if not news_alerts:
             try:
                 search_url = "https://news.google.com/rss/search?q=geopolitics+OR+Trump+OR+rates+OR+war+OR+economy"
@@ -906,76 +904,300 @@ def gpt_advanced_geopolitics(news_list, manual=False):
     except: return None
 
 
-def generar_reporte_macro_manual():
-    """Reporte macro PREMIUM: FMP News + GPT Impact Assessment (GÉNESIS Intelligence)"""
+# =====================================================================
+# MOTOR DE INTELIGENCIA UNIFICADO GÉNESIS
+# Integra: FMP Sentiment + Wallet Cross-Reference + Whale Radar
+# =====================================================================
 
-    # Paso 1: Extraer noticias de FMP
-    fmp_news = _fetch_fmp_news(10)
+# Cache global de contexto de riesgo geopolítico (para cruce con ballenas)
+GENESIS_RISK_CONTEXT = {
+    'sentiment_global': 0.0,       # Sentimiento promedio del mercado (-1 a 1)
+    'high_risk_tickers': [],        # Tickers con sentimiento muy negativo
+    'last_update': None,            # Timestamp de última actualización
+    'news_digest': [],              # Últimas noticias procesadas con sentimiento
+}
 
-    # Paso 2: Si FMP falla completamente, usar Google News como fallback
-    headlines = []
-    source_label = "Financial Modeling Prep"
 
-    if fmp_news:
-        for article in fmp_news[:6]:
-            title = article.get('title', '') or ''
-            symbol = article.get('symbol', '') or article.get('tickers', '') or ''
-            site = article.get('site', '') or article.get('source', '') or ''
-            if title:
-                entry = title
-                if symbol:
-                    entry += f" [{symbol}]"
-                if site:
-                    entry += f" ({site})"
-                headlines.append(entry)
-
-    if not headlines:
-        # Fallback: Google News RSS
-        google_news = _fetch_google_news_fallback(8)
-        if google_news:
-            headlines = google_news
-            source_label = "Google News"
-            logging.info(f"Noticias obtenidas de Google News ({len(headlines)} titulares).")
-
-    if not headlines:
-        return ("⚠️ <b>Feed de noticias temporalmente fuera de línea.</b>\n\n"
-                "No se pudieron extraer titulares de ninguna fuente.\n"
-                "Intenta en unos minutos.")
-
-    # Paso 3: GPT Impact Assessment (GÉNESIS Intelligence)
-    if not OPENAI_API_KEY:
-        bullets = "\n".join([f"• {h}" for h in headlines[:5]])
-        return f"---\n🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n---\n{bullets}\n---\n📊 Sentimiento: <b>Pendiente (sin IA)</b>"
-
-    news_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
-    prompt = (
-        f"Eres GÉNESIS, un sistema de inteligencia de mercados institucional.\n\n"
-        f"TITULARES CRUDOS A TRADUCIR:\n{news_text}\n\n"
-        f"ACTIVOS EN LA WALLET DEL USUARIO: {', '.join(get_tracked_tickers())}\n\n"
-        f"INSTRUCCIONES DE PROCESAMIENTO OBLIGATORIO:\n"
-        f"1. DEBES TRADUCIR AL ESPAÑOL TODOS LOS TITULARES. Prohibido responder en inglés.\n"
-        f"2. Selecciona las 3 noticias más importantes. Para CADA UNA, asigna un sentimiento (🔴 Bearish, 🟢 Bullish, 🟡 Neutral).\n"
-        f"3. Explica en UN renglón cómo afecta esta noticia a la wallet de Eduardo.\n\n"
-        f"FORMATO EXTRICTO A GENERAR (Repite este bloque por noticia):\n"
-        f"• [Titular TRADUCIDO al español] | Impacto: [🔴/🟢/🟡]\n"
-        f"💡 Análisis: [Explicación de impacto en la wallet]\n\n"
-        f"Al final, cierra con:\n"
-        f"📊 *Sentimiento Macro:* [Alcista 🟢 / Bajista 🔴 / Neutral 🟡]\n"
-    )
-
+def _classify_sentiment(score):
+    """Traduce score de FMP a semáforo de riesgo con porcentajes"""
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        res = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000
-        ).choices[0].message.content.strip()
-        return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{res}"
-    except Exception as e:
-        logging.error(f"OpenAI macro error: {e}")
-        bullets = "\n".join([f"• {h} | Impacto: 🟡" for h in headlines[:5]])
-        return f"🌐 <b>REPORTE MACRO GÉNESIS</b> 🌐\n\n{bullets}\n\n💡 *Análisis rápido:* FMP Feed procesado sin IA.\n\n📊 *Sentimiento General del Mercado:* Neutral 🟡"
+        s = float(score)
+    except (TypeError, ValueError):
+        return {'label': 'Neutral', 'icon': '🟡', 'bull_pct': 50, 'bear_pct': 50, 'raw': 0.0}
+
+    if s > 0.3:
+        bull = min(95, int(50 + s * 50))
+        return {'label': 'Alcista', 'icon': '🟢', 'bull_pct': bull, 'bear_pct': 100 - bull, 'raw': s}
+    elif s < -0.3:
+        bear = min(95, int(50 + abs(s) * 50))
+        return {'label': 'Bajista', 'icon': '🔴', 'bull_pct': 100 - bear, 'bear_pct': bear, 'raw': s}
+    else:
+        return {'label': 'Neutral', 'icon': '🟡', 'bull_pct': 50, 'bear_pct': 50, 'raw': s}
+
+
+def _extract_mentioned_tickers(text, wallet_tickers):
+    """Detecta qué tickers de la wallet se mencionan en un texto"""
+    mentioned = []
+    text_upper = text.upper()
+    for tk in wallet_tickers:
+        clean_tk = tk.replace('-USD', '').replace('=F', '').upper()
+        display = get_display_name(tk).upper()
+        # Buscar el ticker crudo, el display name, o palabras clave
+        aliases = [clean_tk]
+        if 'BTC' in clean_tk: aliases.extend(['BITCOIN', 'BTC', 'CRYPTO'])
+        if 'ETH' in clean_tk: aliases.extend(['ETHEREUM', 'ETH'])
+        if 'SOL' in clean_tk: aliases.extend(['SOLANA'])
+        if 'NVDA' in clean_tk: aliases.extend(['NVIDIA'])
+        if 'MARA' in clean_tk: aliases.extend(['MARATHON', 'MARA'])
+        if 'GC' in clean_tk: aliases.extend(['GOLD', 'ORO'])
+        if 'BZ' in clean_tk: aliases.extend(['BRENT', 'OIL', 'PETRÓLEO', 'PETROLEO'])
+        if 'XRP' in clean_tk: aliases.extend(['RIPPLE'])
+
+        for alias in aliases:
+            if alias in text_upper:
+                if tk not in mentioned:
+                    mentioned.append(tk)
+                break
+    return mentioned
+
+
+def _fetch_fmp_news_with_sentiment(limit=12):
+    """Fetch FMP news y extrae sentiment score de cada artículo"""
+    raw_news = _fetch_fmp_news(limit)
+    processed = []
+
+    for article in raw_news:
+        title = article.get('title', '') or ''
+        if not title:
+            continue
+
+        # FMP puede incluir 'sentiment' directamente en el payload
+        sentiment_raw = article.get('sentiment', None)
+        if sentiment_raw is None:
+            # Inferencia básica por keywords si FMP no da sentiment
+            sentiment_raw = _infer_sentiment_from_title(title)
+
+        sentiment = _classify_sentiment(sentiment_raw)
+        symbol = article.get('symbol', '') or article.get('tickers', '') or ''
+        site = article.get('site', '') or article.get('source', '') or ''
+        url = article.get('url', '') or article.get('link', '') or ''
+
+        processed.append({
+            'title': title,
+            'symbol': symbol,
+            'source': site,
+            'url': url,
+            'sentiment': sentiment,
+        })
+
+    return processed
+
+
+def _infer_sentiment_from_title(title):
+    """Inferencia rápida de sentimiento por keywords cuando FMP no lo provee"""
+    t = title.lower()
+    BEARISH = ['crash', 'plunge', 'drop', 'fall', 'war', 'crisis', 'recession',
+               'default', 'sanction', 'tariff', 'sell-off', 'dump', 'decline',
+               'fears', 'slump', 'downturn', 'bankruptcy', 'layoffs', 'collapse']
+    BULLISH = ['surge', 'rally', 'soar', 'gain', 'bull', 'record', 'breakout',
+               'growth', 'boost', 'optimism', 'recovery', 'upgrade', 'beat',
+               'profit', 'expansion', 'all-time high', 'moon']
+
+    bear_hits = sum(1 for kw in BEARISH if kw in t)
+    bull_hits = sum(1 for kw in BULLISH if kw in t)
+
+    if bear_hits > bull_hits:
+        return -0.3 - (bear_hits * 0.15)  # Más keywords = más negativo
+    elif bull_hits > bear_hits:
+        return 0.3 + (bull_hits * 0.15)
+    return 0.0
+
+
+def _get_whale_context_for_ticker(ticker):
+    """Busca el último movimiento de ballena relevante para un ticker"""
+    for w in reversed(list(WHALE_MEMORY)):
+        if w['ticker'] == ticker:
+            minutes_ago = int((datetime.now() - w['timestamp']).total_seconds() / 60)
+            is_crypto = '-USD' in w['ticker']
+            vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
+            return {
+                'vol_str': vol_str,
+                'type': w['type'],
+                'minutes_ago': minutes_ago,
+                'vol_approx': w['vol_approx'],
+            }
+    return None
+
+
+def genesis_strategic_report(manual=True):
+    """REPORTE ESTRATÉGICO UNIFICADO GÉNESIS
+    Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA"""
+    global GENESIS_RISK_CONTEXT
+
+    wallet_tickers = get_tracked_tickers()
+
+    # === PASO 1: Fetch noticias con sentimiento ===
+    news_data = _fetch_fmp_news_with_sentiment(12)
+
+    # Fallback: Google News si FMP falla
+    if not news_data:
+        google_fallback = _fetch_google_news_fallback(8)
+        if google_fallback:
+            for title in google_fallback:
+                sent_raw = _infer_sentiment_from_title(title)
+                news_data.append({
+                    'title': title,
+                    'symbol': '',
+                    'source': 'Google News',
+                    'url': '',
+                    'sentiment': _classify_sentiment(sent_raw),
+                })
+
+    # Sin noticias de ninguna fuente
+    if not news_data:
+        return "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
+
+    # === PASO 2: Cross-reference con wallet ===
+    wallet_alerts = []    # Noticias que tocan activos de Eduardo
+    general_news = []     # Noticias generales del mercado
+
+    for news in news_data:
+        mentioned = _extract_mentioned_tickers(news['title'], wallet_tickers)
+        if news['symbol']:
+            # También buscar por symbol explícito de FMP
+            for tk in wallet_tickers:
+                fmp_sym = _get_fmp_symbol(tk)
+                if news['symbol'].upper() in [fmp_sym, tk.replace('-USD', ''), tk]:
+                    if tk not in mentioned:
+                        mentioned.append(tk)
+
+        news['affected_tickers'] = mentioned
+        if mentioned:
+            wallet_alerts.append(news)
+        else:
+            general_news.append(news)
+
+    # === PASO 3: Calcular sentimiento global ===
+    all_sentiments = [n['sentiment']['raw'] for n in news_data if n['sentiment']['raw'] != 0]
+    avg_sentiment = sum(all_sentiments) / len(all_sentiments) if all_sentiments else 0.0
+    global_risk = _classify_sentiment(avg_sentiment)
+
+    # Actualizar contexto global (para cruce con ballenas en el loop)
+    GENESIS_RISK_CONTEXT = {
+        'sentiment_global': avg_sentiment,
+        'high_risk_tickers': [tk for news in wallet_alerts
+                               for tk in news['affected_tickers']
+                               if news['sentiment']['raw'] < -0.3],
+        'last_update': datetime.now(),
+        'news_digest': news_data[:6],
+    }
+
+    # === PASO 4: Construir reporte ===
+    lines = []
+    lines.append("🌍 <b>REPORTE ESTRATÉGICO GÉNESIS</b> 🌍")
+    lines.append("\u2500" * 28)
+
+    # --- Alertas de wallet primero (máximo 4) ---
+    if wallet_alerts:
+        lines.append("")
+        lines.append("🚨 <b>ALERTAS EN TU CARTERA:</b>")
+        lines.append("")
+        for news in wallet_alerts[:4]:
+            s = news['sentiment']
+            affected = ", ".join([get_display_name(tk) for tk in news['affected_tickers']])
+            whale_note = ""
+            for tk in news['affected_tickers']:
+                wctx = _get_whale_context_for_ticker(tk)
+                if wctx:
+                    whale_note = f"\n🐋 <b>Ballena:</b> {wctx['vol_str']} ({wctx['type']}) hace {wctx['minutes_ago']}min"
+                    break
+
+            lines.append(f"📰 <b>Noticia:</b> {news['title'][:120]}")
+            lines.append(f"🎯 <b>Activos afectados:</b> {affected}")
+            lines.append(f"{s['icon']} <b>Riesgo:</b> {s['bull_pct']}% Alcista / {s['bear_pct']}% Bajista ({s['label']})")
+            if whale_note:
+                lines.append(whale_note)
+            lines.append(f"💡 <b>Análisis:</b> Basado en el sentimiento FMP, la probabilidad de impacto en tu cartera es <b>{s['bear_pct']}%</b>.")
+            lines.append("")
+    else:
+        lines.append("")
+        lines.append("✅ <b>Sin alertas directas para tu cartera.</b>")
+        lines.append("")
+
+    # --- Panorama general (máximo 3 noticias) ---
+    lines.append("\u2500" * 28)
+    lines.append("📊 <b>PANORAMA MACRO:</b>")
+    lines.append("")
+    top_general = sorted(general_news, key=lambda x: abs(x['sentiment']['raw']), reverse=True)[:3]
+    for news in top_general:
+        s = news['sentiment']
+        src = f" ({news['source']})" if news['source'] else ""
+        lines.append(f"{s['icon']} {news['title'][:100]}{src}")
+    if not top_general:
+        lines.append("☕ Sin noticias macro relevantes.")
+
+    # --- Datos de Ballenas integrados ---
+    lines.append("")
+    lines.append("\u2500" * 28)
+    lines.append("🐳 <b>RADAR BALLENAS INTEGRADO:</b>")
+    lines.append("")
+    if WHALE_MEMORY:
+        for w in list(WHALE_MEMORY)[::-1][:3]:
+            is_crypto = '-USD' in w['ticker']
+            vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
+            minutes_ago = int((datetime.now() - w['timestamp']).total_seconds() / 60)
+            # Cruzar con riesgo geopolítico
+            risk_tag = ""
+            if w['ticker'] in GENESIS_RISK_CONTEXT.get('high_risk_tickers', []):
+                risk_tag = " ⚠️ <b>[ZONA DE RIESGO]</b>"
+            lines.append(f"🐋 <b>{get_display_name(w['ticker'])}</b> | {vol_str} | {w['type']} | {minutes_ago}min{risk_tag}")
+    else:
+        lines.append("🌊 Océano tranquilo. Sin anomalías.")
+
+    # --- Sentimiento resumen ---
+    lines.append("")
+    lines.append("\u2500" * 28)
+    lines.append(f"🎯 <b>SENTIMIENTO GLOBAL:</b> {global_risk['icon']} {global_risk['label']} — {global_risk['bull_pct']}% Alcista / {global_risk['bear_pct']}% Bajista")
+    lines.append("\u2500" * 28)
+
+    # === PASO 5: IA avanzada (si OpenAI está disponible) ===
+    if manual and OPENAI_API_KEY and (wallet_alerts or top_general):
+        try:
+            all_titles = [n['title'] for n in (wallet_alerts + top_general)[:6]]
+            wallet_str = ", ".join([get_display_name(tk) for tk in wallet_tickers])
+            sentiments_str = ", ".join([f"{n['title'][:40]}... ({n['sentiment']['label']})" for n in news_data[:5]])
+
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            prompt = (
+                f"Eres GÉNESIS, un sistema de inteligencia estratégica de mercados.\n\n"
+                f"NOTICIAS CON SENTIMIENTO:\n{sentiments_str}\n\n"
+                f"WALLET DE EDUARDO: {wallet_str}\n\n"
+                f"SENTIMIENTO GLOBAL: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
+                f"INSTRUCCIÓN:\n"
+                f"1. En 3-4 líneas, explica cómo estas noticias afectan DIRECTAMENTE a la wallet de Eduardo.\n"
+                f"2. Da UNA recomendación estratégica clara (Hold/Vigilar/Reducir/Aprovechar).\n"
+                f"3. RESPONDE EN ESPAÑOL.\n"
+            )
+            res = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500
+            ).choices[0].message.content.strip()
+
+            lines.append("")
+            lines.append("🧠 <b>ANÁLISIS IA GÉNESIS:</b>")
+            lines.append(res)
+        except Exception as e:
+            logging.error(f"OpenAI strategic error: {e}")
+
+    return "\n".join(lines)
+
+
+def generar_reporte_macro_manual():
+    """Wrapper para el botón Geopolítica — usa el motor unificado"""
+    return genesis_strategic_report(manual=True)
+
 
 def fetch_intraday_data(ticker):
     """Obtiene datos intradía usando EXCLUSIVAMENTE FMP."""
@@ -1427,29 +1649,61 @@ def handle_text(message):
         return
 
     if text == "🐳 Radar Ballenas":
-        bot.reply_to(message, "🐳 Memoria HFT Institucional invocada...")
-        if not WHALE_MEMORY:
-            bot.send_message(message.chat.id, "---\n🐋 *RADAR BALLENAS*\n---\nEl océano está quieto. Sin anomalías detectadas hoy.", parse_mode="HTML")
-            return
-        lines = ["---", "🐋 *ÚLTIMAS 5 BALLENAS*", "---"]
-        for w in list(WHALE_MEMORY)[::-1]:
-            is_crypto = '-USD' in w['ticker']
-            vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
-            lines.append(f"• <b>{get_display_name(w['ticker'])}</b> | Vol: {vol_str} | Tipo: {w['type']} | {int((datetime.now() - w['timestamp']).total_seconds() / 60)} mins ago")
-        bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
+        bot.reply_to(message, "🐳 Analizando inteligencia integrada Ballenas + Geopolítica...")
+        try:
+            # Reporte unificado: ballenas + contexto geopolítico
+            lines = ["🐳 <b>RADAR BALLENAS + INTELIGENCIA GÉNESIS</b> 🐳"]
+            lines.append("\u2500" * 28)
+
+            if not WHALE_MEMORY:
+                lines.append("")
+                lines.append("🌊 Océano tranquilo. Sin anomalías institucionales detectadas.")
+            else:
+                lines.append("")
+                lines.append("🚨 <b>ÚLTIMOS MOVIMIENTOS INSTITUCIONALES:</b>")
+                lines.append("")
+                for w in list(WHALE_MEMORY)[::-1]:
+                    is_crypto = '-USD' in w['ticker']
+                    vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
+                    minutes_ago = int((datetime.now() - w['timestamp']).total_seconds() / 60)
+                    # Cruzar con contexto geopolítico
+                    risk_tag = ""
+                    if w['ticker'] in GENESIS_RISK_CONTEXT.get('high_risk_tickers', []):
+                        risk_tag = "\n    ⚠️ <b>[ENTORNO DE INESTABILIDAD DETECTADO]</b>"
+                    lines.append(f"🐋 <b>{get_display_name(w['ticker'])}</b>")
+                    lines.append(f"    Vol: {vol_str} | {w['type']} | {minutes_ago}min ago{risk_tag}")
+                    lines.append("")
+
+            # Contexto geopolítico resumido
+            lines.append("\u2500" * 28)
+            ctx = GENESIS_RISK_CONTEXT
+            if ctx.get('last_update'):
+                global_s = _classify_sentiment(ctx['sentiment_global'])
+                lines.append(f"🌍 <b>Contexto Macro:</b> {global_s['icon']} {global_s['label']} — {global_s['bull_pct']}% Alcista / {global_s['bear_pct']}% Bajista")
+                if ctx.get('high_risk_tickers'):
+                    risk_names = ', '.join([get_display_name(tk) for tk in ctx['high_risk_tickers'][:5]])
+                    lines.append(f"🔴 <b>Activos en zona de riesgo:</b> {risk_names}")
+            else:
+                lines.append("🌍 <b>Contexto Macro:</b> Pendiente de actualización")
+
+            lines.append("\u2500" * 28)
+            bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Error en Radar Ballenas unificado: {e}")
+            bot.send_message(message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
         return
 
     if text == "🌎 Geopolítica":
-        bot.reply_to(message, "🌎 Generando Reporte Macro Institucional...")
+        bot.reply_to(message, "🌍 Generando Reporte Estratégico Unificado GÉNESIS...")
         try:
             report = generar_reporte_macro_manual()
             if report:
                 bot.send_message(message.chat.id, report, parse_mode="HTML")
             else:
-                bot.send_message(message.chat.id, "⚠️ No hay noticias geopolíticas disponibles en este momento.", parse_mode="HTML")
+                bot.send_message(message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
         except Exception as e:
             logging.error(f"Error en Geopolítica: {e}")
-            bot.send_message(message.chat.id, "⚠️ No hay noticias geopolíticas disponibles en este momento.", parse_mode="HTML")
+            bot.send_message(message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
         return
 
     if text == "📉 SMC / Mi Cartera":
@@ -1840,7 +2094,7 @@ def background_loop_proactivo():
                                adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
                                bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
 
-                # Ballenas Doble Verificadas — también protegidas por coherencia
+                # Ballenas Doble Verificadas — con cruce geopolítico GENESIS
                 if intra['avg_vol'] > 0 and price_is_reliable:
                     is_crypto = '-USD' in tk
                     # Crypto: umbral más alto (5x) porque yfinance reporta volumen en USD acumulado 24h
@@ -1859,7 +2113,28 @@ def background_loop_proactivo():
                                 vol_display = f"${valid_vol:,} USD"
                             else:
                                 vol_display = f"{valid_vol:,} unidades"
-                            bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {vol_display}.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
+
+                            # === ALERTA ROJA: Ballena + Sentimiento negativo ===
+                            is_high_risk = tk in GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])
+                            neg_sentiment = GENESIS_RISK_CONTEXT.get('sentiment_global', 0) < -0.3
+                            is_massive = valid_vol > 100_000_000 if is_crypto else valid_vol > 5_000_000
+
+                            if is_high_risk or (neg_sentiment and is_massive):
+                                # ALERTA ROJA: whale en entorno de inestabilidad
+                                alert_msg = (
+                                    f"\u2500" * 28 + "\n"
+                                    f"\ud83d\udea8 <b>ALERTA ROJA: BALLENA EN ENTORNO DE INESTABILIDAD</b> \ud83d\udea8\n"
+                                    f"\u2500" * 28 + "\n"
+                                    f"\ud83d\udc0b Bloque masivo en <b>{display_name}</b>: {vol_display}\n"
+                                    f"\ud83d\udcca Presi\u00f3n: {intra['vol_type']}\n"
+                                    f"\ud83c\udf0d Contexto: Sentimiento del mercado <b>NEGATIVO</b>\n"
+                                    f"\u26a0\ufe0f Movimiento de Ballena detectado en entorno de inestabilidad\n"
+                                    f"\ud83d\udca1 <b>Recomendaci\u00f3n:</b> Aumentar vigilancia sobre {display_name}{note}\n"
+                                    f"\u2500" * 28
+                                )
+                                bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+                            else:
+                                bot.send_message(CHAT_ID, f"---\n\u26a0\ufe0f *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {vol_display}.\nPresi\u00f3n Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
 
         except Exception as e:
             logging.error(f"Error HFT: {e}")
