@@ -1970,7 +1970,64 @@ def handle_photo(message):
         bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.choices[0].message.content.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Error de visión OpenAI: {e}")
-        bot.edit_message_text("⚠️ Error de configuración de modelo", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text("\u26a0\ufe0f Error de configuraci\u00f3n de modelo", chat_id=message.chat.id, message_id=msg.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
+def whale_radar_callback(call):
+    bot.answer_callback_query(call.id, "Generando reporte de flujo 24h...")
+    
+    def process_report():
+        try:
+            import datetime
+            now_t = datetime.datetime.now()
+            report = ["---", "\ud83d\udc33 <b>BALANCE INSTITUCIONAL (24H)</b> \ud83d\udc33", "---"]
+            
+            total_net = 0
+            assets = []
+            
+            # 5. SIN BUCLES - Usando un dictionary pre-agregado
+            for tk, events in list(WHALE_HISTORY_DB.items()):
+                recent = [e for e in events if isinstance(e, dict) and 'timestamp' in e and (now_t - e['timestamp']).total_seconds() <= 86400]
+                WHALE_HISTORY_DB[tk] = recent 
+                if not recent: continue
+                
+                entradas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Compra"])
+                salidas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Venta"])
+                n_entradas = len([e for e in recent if e.get('type') == "Compra"])
+                n_salidas = len([e for e in recent if e.get('type') == "Venta"])
+                
+                neto = entradas - salidas
+                total_net += neto
+                
+                assets.append({'tk': tk, 'entradas': entradas, 'salidas': salidas, 'neto': neto, 'n_entradas': n_entradas, 'n_salidas': n_salidas})
+                
+            if not assets:
+                bot.send_message(call.message.chat.id, "\ud83d\udcca Sin movimientos institucionales de alto valor en las \u00faltimas 24h.")
+                return
+                
+            assets.sort(key=lambda x: abs(x['neto']), reverse=True)
+            for a in assets:
+                t_name = get_display_name(a['tk'])
+                sign = "+" if a['neto'] > 0 else ""
+                pres = "Alcista \ud83d\udcc8" if a['neto'] > 0 else "Bajista \ud83d\udcc9"
+                report.extend([
+                    f"\ud83e\ude99 <b>{t_name} ({a['tk']}):</b>",
+                    f"\u2022 \ud83d\udfe2 ENTRADAS: ${a['entradas']:,.0f} (De {a['n_entradas']} ballenas)",
+                    f"\u2022 \ud83d\udd34 SALIDAS: ${a['salidas']:,.0f} (De {a['n_salidas']} ballenas)",
+                    f"\u2022 \ud83d\udcca NETO: {sign}${a['neto']:,.0f} {pres}",
+                    ""
+                ])
+                
+            report.append("---")
+            report.append("TOTAL DINERO INSTITUCIONAL: <b>${:,.0f}</b>".format(total_net))
+            
+            bot.send_message(call.message.chat.id, "\n".join(report), parse_mode="HTML")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, "\u26a0\ufe0f Procesando datos...")
+            logging.error(f"Error Reporte: {e}")
+
+    import threading
+    threading.Thread(target=process_report, daemon=True).start()
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_text(message):
