@@ -2486,128 +2486,127 @@ def background_loop_proactivo():
             whale_scan_count = 0
             whale_detected_count = 0
             for tk in tracked:
-                intra = fetch_intraday_data(tk)
-                if not intra:
-                    print(f"DEBUG WHALE SCAN: {tk} -> fetch_intraday_data devolvio None")
-                    continue
-                cur_price = intra['latest_price']
-                display_name = get_display_name(tk)
-                whale_scan_count += 1
+                try:
+                    intra = fetch_intraday_data(tk)
+                    if not intra:
+                        print(f"DEBUG WHALE SCAN: {tk} -> fetch_intraday_data devolvio None")
+                        continue
+                    cur_price = intra['latest_price']
+                    display_name = get_display_name(tk)
+                    whale_scan_count += 1
 
-                # === GUARDIA DE COHERENCIA: bloquear alertas si el precio es ilógico ===
-                price_is_reliable = True
-                if tk in LAST_KNOWN_PRICES:
-                    last_p = LAST_KNOWN_PRICES[tk]['price']
-                    if last_p > 0 and abs(cur_price - last_p) / last_p > 0.50:
-                        logging.warning(f"🚫 ALERTA BLOQUEADA para {tk}: ${cur_price:.2f} vs último ${last_p:.2f} (>50% de desviación). Error de API probable.")
-                        price_is_reliable = False
+                    # === GUARDIA DE COHERENCIA: bloquear alertas si el precio es ilógico ===
+                    price_is_reliable = True
+                    if tk in LAST_KNOWN_PRICES:
+                        last_p = LAST_KNOWN_PRICES[tk]['price']
+                        if last_p > 0 and abs(cur_price - last_p) / last_p > 0.50:
+                            logging.warning(f"🚫 ALERTA BLOQUEADA para {tk}: ${cur_price:.2f} vs último ${last_p:.2f} (>50% de desviación). Error de API probable.")
+                            price_is_reliable = False
 
-                # Rupturas Doble Verificadas — SOLO si el precio es confiable
-                # Rupturas Doble Verificadas — SOLO si el precio es confiable
-                topol = SMC_LEVELS_MEMORY.get(tk)
-                analysis = LAST_KNOWN_ANALYSIS.get(tk)
-                if topol and analysis and price_is_reliable:
-                    rsi = analysis.get('rsi', 50)
-                    avg_v = intra.get('avg_vol', 1)
-                    rvol = (intra.get('latest_vol', 1) / avg_v) if avg_v > 0 else 1
+                    # Rupturas Doble Verificadas — SOLO si el precio es confiable
+                    # Rupturas Doble Verificadas — SOLO si el precio es confiable
+                    topol = SMC_LEVELS_MEMORY.get(tk)
+                    analysis = LAST_KNOWN_ANALYSIS.get(tk)
+                    if topol and analysis and price_is_reliable:
+                        rsi = analysis.get('rsi', 50)
+                        avg_v = intra.get('avg_vol', 1)
+                        rvol = (intra.get('latest_vol', 1) / avg_v) if avg_v > 0 else 1
                     
-                    if rsi < 35:
-                        reason = f"RSI en {rsi:.1f} indica sobreventa extrema."
-                    elif rsi > 65:
-                        reason = f"RSI en {rsi:.1f} se\u00f1ala sobrecompra (riesgo de recorte)."
-                    elif rvol >= 1.5:
-                        reason = f"Presi\u00f3n de volumen inusual ({rvol:.1f}x por encima de la media)."
-                    else:
-                        reason = f"La estructura SMC t\u00e9cnica dicta la fuerza de la zona."
-
-                    # L\u00f3gica 1: Ruptura Ascendente
-                    if cur_price > topol['res']:
-                        hash_brk = f"BRK_UP_{tk}_{topol['res']}"
-                        if not check_and_add_seen_event(hash_brk):
-                            msg = f"\ud83d\ude80 <b>RUPTURA DE RESISTENCIA EN {display_name}</b>.\nImpulso alcista detectado en ${fmt_price(cur_price)}.\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> COMPRAR / MANTENER."
-                            bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
-
-                    # L\u00f3gica 2: Ruptura Descendente
-                    elif cur_price < topol['sup']:
-                        hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
-                        if not check_and_add_seen_event(hash_drp):
-                            msg = f"\u26a0\ufe0f <b>RUPTURA DE SOPORTE EN {display_name}</b>.\nPosible ca\u00edda detectada (perdi\u00f3 soporte de ${fmt_price(topol['sup'])} a ${fmt_price(cur_price)}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> VENDER / CORTAR P\u00c9RDIDAS."
-                            bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
-                            
-                    # L\u00f3gica 3: Zona de Acumulaci\u00f3n (Cerca del Soporte)
-                    elif topol['sup'] <= cur_price <= (topol['sup'] * 1.015):
-                        hash_acc = f"ACCUM_{tk}_{topol['sup']}"
-                        if not check_and_add_seen_event(hash_acc):
-                            msg = f"\ud83d\udc8e <b>ZONA DE ACUMULACI\u00d3N en {display_name}</b>.\nLas instituciones est\u00e1n comprando aqu\u00ed (muy cerca del Order Block de ${fmt_price(topol['sup'])}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> OPORTUNIDAD DE COMPRA."
-                            bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
-
-                # Ballenas — con cruce geopolítico GENESIS
-                # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
-                if intra['avg_vol'] > 0 and price_is_reliable:
-                    is_crypto = '-USD' in tk
-                    whale_threshold = 2.0 if is_crypto else 1.5
-                    spike = intra['latest_vol'] / intra['avg_vol']
-
-                    # DEBUG: logear ratios de volumen significativos
-                    if spike > 1.0:
-                        print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
-
-                    if spike >= whale_threshold:
-                        import time
-                        current_time = time.time()
-                        if tk in last_whale_alert and (current_time - last_whale_alert[tk]) < 7200:
-                            continue # Cooldown de 2 horas activo
-                    
-                        rt = verify_1m_realtime_data(tk)
-                        valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
-                        
-                        is_crypto = '-USD' in tk
-                        vol_usd = valid_vol if is_crypto else (valid_vol * cur_price)
-                        
-                        min_elite_vol = 1_000_000
-                        if vol_usd < min_elite_vol:
-                            continue # Filtro \u00c9lite Institucional ($1M USD Minimo)
-                            
-                        # === INICIO DE SMART MONEY FILTER ===
-                        topol_whale = SMC_LEVELS_MEMORY.get(tk)
-                        analysis_whale = LAST_KNOWN_ANALYSIS.get(tk)
-                        
-                        if not topol_whale or not analysis_whale:
-                            continue # Requiere SMC para validar
-                            
-                        rsi_w = analysis_whale.get('rsi', 50)
-                        w_sup = topol_whale['sup']
-                        w_res = topol_whale['res']
-                        
-                        if intra['vol_type'] == "Compra":
-                            # Solo compras en Oferta (<5% del soporte) y RSI < 35
-                            if cur_price > (w_sup * 1.05) or rsi_w > 35:
-                                continue # Ballena atrapada / FOMO temprano
-                            smart_msg = "\ud83d\udd25 <b>BALLENA DE ALTA CONVICCI\u00d3N DETECTADA:</b>\nEntrada institucional masiva en bloque SMC de demanda (Soporte) con agotamiento RSI.\n\u2696\ufe0f Probabilidad de \u00e9xito alcista: <b>ALTA</b>."
+                        if rsi < 35:
+                            reason = f"RSI en {rsi:.1f} indica sobreventa extrema."
+                        elif rsi > 65:
+                            reason = f"RSI en {rsi:.1f} se\u00f1ala sobrecompra (riesgo de recorte)."
+                        elif rvol >= 1.5:
+                            reason = f"Presi\u00f3n de volumen inusual ({rvol:.1f}x por encima de la media)."
                         else:
-                            # Solo ventas en Resistencia (>95% de resistencia) y RSI > 65
-                            if cur_price < (w_res * 0.95) or rsi_w < 65:
-                                continue # Venta prematura o toma de ganancia parcial
-                            smart_msg = "\ud83d\udd25 <b>BALLENA VENDEDORA DE ALTA CONVICCI\u00d3N:</b>\nSalida institucional masiva detectada en techo SMC con sobrecompra t\u00e9cnica.\n\u2696\ufe0f Probabilidad de reversi\u00f3n bajista: <b>ALTA</b>."
-                        # === FIN DE SMART MONEY FILTER ===
+                            reason = f"La estructura SMC t\u00e9cnica dicta la fuerza de la zona."
+
+                        # L\u00f3gica 1: Ruptura Ascendente
+                        if cur_price > topol['res']:
+                            hash_brk = f"BRK_UP_{tk}_{topol['res']}"
+                            if not check_and_add_seen_event(hash_brk):
+                                msg = f"\ud83d\ude80 <b>RUPTURA DE RESISTENCIA EN {display_name}</b>.\nImpulso alcista detectado en ${fmt_price(cur_price)}.\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> COMPRAR / MANTENER."
+                                bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+
+                        # L\u00f3gica 2: Ruptura Descendente
+                        elif cur_price < topol['sup']:
+                            hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
+                            if not check_and_add_seen_event(hash_drp):
+                                msg = f"\u26a0\ufe0f <b>RUPTURA DE SOPORTE EN {display_name}</b>.\nPosible ca\u00edda detectada (perdi\u00f3 soporte de ${fmt_price(topol['sup'])} a ${fmt_price(cur_price)}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> VENDER / CORTAR P\u00c9RDIDAS."
+                                bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
                             
-                        whale_hash_id = f"WHL_SMART_{tk}_{valid_vol}"
+                        # L\u00f3gica 3: Zona de Acumulaci\u00f3n (Cerca del Soporte)
+                        elif topol['sup'] <= cur_price <= (topol['sup'] * 1.015):
+                            hash_acc = f"ACCUM_{tk}_{topol['sup']}"
+                            if not check_and_add_seen_event(hash_acc):
+                                msg = f"\ud83d\udc8e <b>ZONA DE ACUMULACI\u00d3N en {display_name}</b>.\nLas instituciones est\u00e1n comprando aqu\u00ed (muy cerca del Order Block de ${fmt_price(topol['sup'])}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> OPORTUNIDAD DE COMPRA."
+                                bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+
+                    # Ballenas — con cruce geopolítico GENESIS
+                    # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
+                    if intra['avg_vol'] > 0 and price_is_reliable:
+                        is_crypto = '-USD' in tk
+                        whale_threshold = 2.0 if is_crypto else 1.5
+                        spike = intra['latest_vol'] / intra['avg_vol']
+
+                        # DEBUG: logear ratios de volumen significativos
+                        if spike > 1.0:
+                            print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
+
+                        if spike >= whale_threshold:
+                            if tk in last_whale_alert and (current_time - last_whale_alert[tk]) < 7200:
+                                continue # Cooldown de 2 horas activo
+                        
+                            rt = verify_1m_realtime_data(tk)
+                            valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
+                        
+                            is_crypto = '-USD' in tk
+                            vol_usd = valid_vol if is_crypto else (valid_vol * cur_price)
+                        
+                            min_elite_vol = 1_000_000
+                            if vol_usd < min_elite_vol:
+                                continue # Filtro \u00c9lite Institucional ($1M USD Minimo)
+                            
+                            # === INICIO DE SMART MONEY FILTER ===
+                            topol_whale = SMC_LEVELS_MEMORY.get(tk)
+                            analysis_whale = LAST_KNOWN_ANALYSIS.get(tk)
+                        
+                            if not topol_whale or not analysis_whale:
+                                continue # Requiere SMC para validar
+                            
+                            rsi_w = analysis_whale.get('rsi', 50)
+                            w_sup = topol_whale['sup']
+                            w_res = topol_whale['res']
+                        
+                            if intra['vol_type'] == "Compra":
+                                # Solo compras en Oferta (<2% del soporte) y RSI < 35
+                                if cur_price > (w_sup * 1.02) or rsi_w > 35:
+                                    continue # Ballena atrapada
+                                smart_msg = "\ud83d\udd25 <b>BALLENA DE ALTA CONVICCI\u00d3N DETECTADA:</b>\nEntrada institucional en zona de soporte t\u00e9cnico.\nProbabilidad de \u00e9xito: ALTA."
+                            else:
+                                # Solo ventas en Resistencia (>98% de resistencia) y RSI > 65
+                                if cur_price < (w_res * 0.98) or rsi_w < 65:
+                                    continue # Venta prematura
+                                smart_msg = "\ud83d\udd25 <b>BALLENA VENDEDORA DE ALTA CONVICCI\u00d3N:</b>\nSalida institucional en zona de resistencia t\u00e9cnica.\nProbabilidad de reversi\u00f3n bajista: ALTA."
+                            # === FIN DE SMART MONEY FILTER ===
+                            
+                            whale_hash_id = f"WHL_SMART_{tk}_{valid_vol}"
 
                         if not check_and_add_seen_event(whale_hash_id):
                             last_whale_alert[tk] = current_time # Registrar el env\u00edo s\u00f3lo si es nuevo
                             whale_detected_count += 1
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
-                            
+                        
                             if tk not in WHALE_HISTORY_DB:
                                 WHALE_HISTORY_DB[tk] = []
-                            
+                        
                             WHALE_HISTORY_DB[tk].append({
                                 "type": intra['vol_type'],
                                 "vol_usd": float(vol_usd),
                                 "timestamp": now
                             })
-                            
+                        
                             if is_crypto:
                                 vol_display = f"${valid_vol:,} USD"
                             else:
@@ -2617,10 +2616,12 @@ def background_loop_proactivo():
 
                             bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}{note}"
                             bot.send_message(CHAT_ID, bot_msg, parse_mode="HTML")
-                else:
-                    if intra['avg_vol'] == 0:
-                        print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
-
+                        else:
+                            if intra['avg_vol'] == 0:
+                                print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
+                except Exception as e:
+                    logging.error(f'Error ticker {tk}: {e}')
+                    continue
             # === HEARTBEAT BALLENAS: resumen del escaneo ===
             print(f"DEBUG WHALE SCAN COMPLETADO: {whale_scan_count}/{len(tracked)} escaneados | {whale_detected_count} ballenas detectadas")
 
