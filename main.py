@@ -7,7 +7,7 @@ import requests
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
-# yfinance ELIMINADO — Todo via FMP Pro
+# yfinance ELIMINADO â€” Todo via FMP Pro
 import threading
 import time
 import json
@@ -15,13 +15,13 @@ from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
 
-# Configuración extendida de logs para Railway
+# ConfiguraciÃ³n extendida de logs para Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visión
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY') # Volvemos a requerir OpenAI para visiÃ³n
 # Canal privado donde el bot fija el backup (puede ser el mismo CHAT_ID o un canal dedicado)
 BACKUP_CHAT_ID = os.environ.get('BACKUP_CHAT_ID', CHAT_ID)
 FMP_API_KEY = "".join(c for c in os.environ.get('FMP_API_KEY', '') if ord(c) < 128).strip()
@@ -31,9 +31,9 @@ if not TELEGRAM_TOKEN or not CHAT_ID:
     exit()
 
 if not os.environ.get('FMP_API_KEY'):
-    logging.warning("⚠️ FMP_API_KEY no configurada. El motor de precios FMP no funcionará.")
+    logging.warning("âš ï¸ FMP_API_KEY no configurada. El motor de precios FMP no funcionarÃ¡.")
 else:
-    logging.info(f"✅ FMP_API_KEY cargada correctamente ({len(os.environ.get('FMP_API_KEY'))} caracteres).")
+    logging.info(f"âœ… FMP_API_KEY cargada correctamente ({len(os.environ.get('FMP_API_KEY'))} caracteres).")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -49,7 +49,7 @@ _global_db_conn = None
 
 def get_db_connection():
     global _global_db_conn
-    # Si ya hay conexión activa, verificarla
+    # Si ya hay conexiÃ³n activa, verificarla
     if _global_db_conn is not None:
         try:
             c = _global_db_conn.cursor()
@@ -57,7 +57,7 @@ def get_db_connection():
             c.fetchone()
             return _global_db_conn
         except:
-            print("DEBUG DB: Conexión existente caída, reconectando...")
+            print("DEBUG DB: ConexiÃ³n existente caÃ­da, reconectando...")
             _global_db_conn = None
 
     url = os.environ.get('DATABASE_URL')
@@ -83,7 +83,7 @@ def get_db_connection():
                 ssl_context=ctx,
                 timeout=10
             )
-            print(f"✅ Conexión exitosa a Supabase (intento {attempt}/3)")
+            print(f"âœ… ConexiÃ³n exitosa a Supabase (intento {attempt}/3)")
 
             # Crear tablas si no existen
             cr = _global_db_conn.cursor()
@@ -95,14 +95,14 @@ def get_db_connection():
             return _global_db_conn
 
         except Exception as e:
-            print(f"❌ Error de conexión a Supabase (intento {attempt}/3): {e}")
+            print(f"âŒ Error de conexiÃ³n a Supabase (intento {attempt}/3): {e}")
             _global_db_conn = None
             if attempt < 3:
                 wait = attempt * 2  # 2s, 4s
                 print(f"DEBUG DB: Reintentando en {wait}s...")
                 time.sleep(wait)
 
-    print("❌ FATAL: No se pudo conectar a Supabase después de 3 intentos")
+    print("âŒ FATAL: No se pudo conectar a Supabase despuÃ©s de 3 intentos")
     return None
 
 def init_db():
@@ -115,7 +115,7 @@ def init_db():
         conn.commit()
         pass # conn.close() delegado a pooling global
     except Exception as e:
-        print(f"❌ Error: No se pudo conectar a Supabase -> {e}")
+        print(f"âŒ Error: No se pudo conectar a Supabase -> {e}")
         logging.error(f"Error init_db: {e}")
 
 init_db()
@@ -125,8 +125,8 @@ init_db()
 # El bot guarda el estado completo de la cartera como un mensaje
 # en Telegram. Railway no puede borrar mensajes de Telegram.
 # =====================================================================
-BACKUP_PREFIX = "🔐GENESIS_BACKUP_V2🔐"
-_last_backup_msg_id = None  # Cache del message_id del último backup
+BACKUP_PREFIX = "ðŸ”GENESIS_BACKUP_V2ðŸ”"
+_last_backup_msg_id = None  # Cache del message_id del Ãºltimo backup
 
 def _build_backup_payload():
     """Construye el JSON completo del estado actual"""
@@ -152,7 +152,7 @@ def _save_local_portfolio_json():
                 "timestamp": info.get("timestamp", "")
             }
 
-        # Guardar en múltiples ubicaciones para máxima persistencia
+        # Guardar en mÃºltiples ubicaciones para mÃ¡xima persistencia
         script_dir = os.path.dirname(os.path.abspath(__file__))
         paths = [
             os.path.join(script_dir, 'portfolio.json'),
@@ -169,7 +169,7 @@ def _save_local_portfolio_json():
         logging.debug(f"Error guardando portfolio local: {e}")
 
 def _load_backup_msg_id():
-    """Carga el message_id del último backup desde un archivo local"""
+    """Carga el message_id del Ãºltimo backup desde un archivo local"""
     paths = [
         os.path.join(DATA_DIR, '.backup_msg_id'),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '.backup_msg_id'),
@@ -214,7 +214,7 @@ def save_state_to_telegram():
         ) if portfolio else False
 
         if not portfolio:
-            logging.info("BACKUP: Portfolio vacío, no se guarda backup.")
+            logging.info("BACKUP: Portfolio vacÃ­o, no se guarda backup.")
             return
 
         json_str = json.dumps(payload, ensure_ascii=False)
@@ -235,7 +235,7 @@ def save_state_to_telegram():
                     chat_id=BACKUP_CHAT_ID,
                     message_id=_last_backup_msg_id
                 )
-                logging.info(f"✅ Backup actualizado (msg_id: {_last_backup_msg_id})")
+                logging.info(f"âœ… Backup actualizado (msg_id: {_last_backup_msg_id})")
                 return
             except Exception as e:
                 logging.debug(f"No se pudo editar backup msg {_last_backup_msg_id}: {e}")
@@ -245,16 +245,16 @@ def save_state_to_telegram():
         msg = bot.send_message(BACKUP_CHAT_ID, backup_text, disable_notification=True)
         _last_backup_msg_id = msg.message_id
         _save_backup_msg_id(msg.message_id)
-        logging.info(f"✅ Backup nuevo enviado (msg_id: {_last_backup_msg_id})")
+        logging.info(f"âœ… Backup nuevo enviado (msg_id: {_last_backup_msg_id})")
 
         # Fijar el mensaje para que SIEMPRE sea recuperable
         try:
             bot.pin_chat_message(BACKUP_CHAT_ID, msg.message_id, disable_notification=True)
-            logging.info("📌 Backup fijado en el chat.")
+            logging.info("ðŸ“Œ Backup fijado en el chat.")
         except Exception as e:
             logging.debug(f"No se pudo fijar backup: {e}")
 
-        # Si va al chat principal, borrar SOLO después de fijarlo
+        # Si va al chat principal, borrar SOLO despuÃ©s de fijarlo
         if str(BACKUP_CHAT_ID) == str(CHAT_ID):
             try:
                 time.sleep(0.5)
@@ -277,9 +277,9 @@ def restore_state_from_telegram():
         logging.info(f"DB local SQLite OK y persistente: {len(existing)} activos en radar.")
         return True
 
-    logging.info("🔄 DB local vacía o sin inversiones. Buscando backup...")
+    logging.info("ðŸ”„ DB local vacÃ­a o sin inversiones. Buscando backup...")
 
-    # === FUENTE 1: Mensaje fijado (MÁS CONFIABLE — sobrevive reinicios) ===
+    # === FUENTE 1: Mensaje fijado (MÃS CONFIABLE â€” sobrevive reinicios) ===
     try:
         chat_info = bot.get_chat(BACKUP_CHAT_ID)
         pinned = chat_info.pinned_message
@@ -289,7 +289,7 @@ def restore_state_from_telegram():
                 _restore_from_b64(b64_data)
                 _last_backup_msg_id = pinned.message_id
                 _save_backup_msg_id(pinned.message_id)
-                logging.info(f"✅ RESTAURACIÓN desde mensaje FIJADO (msg_id: {pinned.message_id})")
+                logging.info(f"âœ… RESTAURACIÃ“N desde mensaje FIJADO (msg_id: {pinned.message_id})")
                 return True
     except Exception as e:
         logging.debug(f"Pinned message check failed: {e}")
@@ -315,14 +315,14 @@ def restore_state_from_telegram():
                     _restore_from_b64(b64_data)
                     _last_backup_msg_id = msg.message_id
                     _save_backup_msg_id(msg.message_id)
-                    logging.info(f"✅ RESTAURACIÓN desde updates (msg_id: {msg.message_id})")
+                    logging.info(f"âœ… RESTAURACIÃ“N desde updates (msg_id: {msg.message_id})")
                     return True
     except Exception as e:
         logging.debug(f"Updates check failed: {e}")
 
     # === FUENTE 4: portfolio.json del repositorio/disco ===
     # Si todo falla, no borrar la DB actual, simplemente decir que no hay backup remoto
-    logging.warning("⚠️ No se encontró NINGÚN respaldo en cloud. Cartera usará solo SQLite local.")
+    logging.warning("âš ï¸ No se encontrÃ³ NINGÃšN respaldo en cloud. Cartera usarÃ¡ solo SQLite local.")
     return False
 
 def _restore_from_b64(b64_data):
@@ -363,7 +363,7 @@ def _restore_from_b64(b64_data):
         logging.error(f"Error restaurando B64: {e}")
 
 def _restore_from_repo_json():
-    """Último recurso: lee portfolio.json que está en el repositorio Git"""
+    """Ãšltimo recurso: lee portfolio.json que estÃ¡ en el repositorio Git"""
     # Intentar varias rutas posibles
     script_dir = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.environ.get('DATA_DIR', '.')
@@ -396,12 +396,12 @@ def _restore_from_repo_json():
                 finally:
                     pass # conn.close() delegado a pooling global
 
-                logging.info(f"✅ Restauración desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
+                logging.info(f"âœ… RestauraciÃ³n desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
                 return True
             except Exception as e:
                 logging.error(f"Error leyendo {json_path}: {e}")
 
-    logging.warning("⚠️ No se encontró ningún respaldo. Cartera inicia vacía.")
+    logging.warning("âš ï¸ No se encontrÃ³ ningÃºn respaldo. Cartera inicia vacÃ­a.")
     return False
 
 
@@ -426,7 +426,7 @@ def remap_ticker(ticker_input):
 
 def get_display_name(ticker_key):
     mapping = {
-        "BZ=F": "LCO (Petróleo Brent)",
+        "BZ=F": "LCO (PetrÃ³leo Brent)",
         "GC=F": "Oro (Gold)",
         "BTC-USD": "BTC (Bitcoin)",
         "ETH-USD": "ETH (Ethereum)",
@@ -469,7 +469,7 @@ def purge_old_events():
 def get_tracked_tickers():
     conn = get_db_connection()
     if not conn:
-        print("DEBUG WALLET: Sin conexión a DB, retornando lista vacía")
+        print("DEBUG WALLET: Sin conexiÃ³n a DB, retornando lista vacÃ­a")
         return []
     try:
         c = conn.cursor()
@@ -506,7 +506,7 @@ def add_ticker(ticker):
         if not c.fetchone():
             c.execute('INSERT INTO wallet (user_id, ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, %s, 0, 0, 0, %s)', (int(CHAT_ID), ticker, datetime.now().isoformat()))
             conn.commit()
-            save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
+            save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
             return True
         return False
     except Exception as e:
@@ -525,7 +525,7 @@ def remove_ticker(ticker):
         if c.fetchone():
             c.execute('DELETE FROM wallet WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
             conn.commit()
-            save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
+            save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
             return True
     finally:
@@ -547,7 +547,7 @@ def add_investment(ticker, amount_usd, entry_price):
         conn.commit()
     finally:
         if conn: pass # conn.close() delegado a pooling global
-    save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
+    save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def close_investment(ticker):
     ticker = remap_ticker(ticker)
@@ -559,7 +559,7 @@ def close_investment(ticker):
         conn.commit()
     finally:
         pass # conn.close() delegado a pooling global
-    save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
+    save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def get_investments():
     invs = {}
@@ -588,7 +588,7 @@ def add_realized_pnl(prof_usd):
         conn.commit()
     finally:
         pass # conn.close() delegado a pooling global
-    save_state_to_telegram()  # ← PERSISTENCIA EN TELEGRAM
+    save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
     conn = get_db_connection()
@@ -613,7 +613,7 @@ def reset_realized_pnl():
     finally:
         pass # conn.close() delegado a pooling global
     save_state_to_telegram()
-    logging.info("🔄 PnL mensual reseteado a $0.00")
+    logging.info("ðŸ”„ PnL mensual reseteado a $0.00")
 
 def reset_total_db():
     """RESET RADICAL: borra TODAS las inversiones, PnL y contabilidad"""
@@ -627,13 +627,13 @@ def reset_total_db():
         conn.commit()
     finally:
         pass # conn.close() delegado a pooling global
-    logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
+    logging.info("âš ï¸ RESET TOTAL ejecutado: inversiones y PnL eliminados")
 
 
 WHALE_MEMORY = deque(maxlen=5)
 SMC_LEVELS_MEMORY = {}
-LAST_KNOWN_PRICES = {}  # Cache de último precio válido por ticker
-LAST_KNOWN_ANALYSIS = {}  # Cache de último análisis SMC completo por ticker
+LAST_KNOWN_PRICES = {}  # Cache de Ãºltimo precio vÃ¡lido por ticker
+LAST_KNOWN_ANALYSIS = {}  # Cache de Ãºltimo anÃ¡lisis SMC completo por ticker
 last_whale_alert = {} # Memoria Anti-Spam para Ballenas
 WHALE_HISTORY_DB = {} # Acumulador de flujos 24H
 
@@ -641,7 +641,7 @@ WHALE_HISTORY_DB = {} # Acumulador de flujos 24H
 BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
 BRENT_MIN_VALID_PRICE = 50.0  # Si el precio es menor a esto, es un ERROR de Yahoo
 
-# ----------------- NÚCLEO DE MERCADO E INTELIGENCIA -----------------
+# ----------------- NÃšCLEO DE MERCADO E INTELIGENCIA -----------------
 def fmt_price(val):
     """Formatea precio con decimales REALES del exchange, sin ceros de relleno"""
     s = f"{val:.6f}".rstrip('0')
@@ -652,10 +652,10 @@ def fmt_price(val):
         s = f"{val:.2f}"
     return s
 
-# === MOTOR FMP (Financial Modeling Prep) — FUENTE ÚNICA DE PRECIOS ===
+# === MOTOR FMP (Financial Modeling Prep) â€” FUENTE ÃšNICA DE PRECIOS ===
 # Endpoint: https://financialmodelingprep.com/stable/quote?symbol={SYMBOL}&apikey={KEY}
 
-# Mapeo de tickers internos -> símbolos FMP
+# Mapeo de tickers internos -> sÃ­mbolos FMP
 FMP_SYMBOL_MAP = {
     "BTC-USD": "BTCUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD",
     "BNB-USD": "BNBUSD", "XRP-USD": "XRPUSD", "ADA-USD": "ADAUSD",
@@ -670,7 +670,7 @@ def _is_crypto_ticker(tk):
     return tk.endswith('-USD')
 
 def _get_fmp_symbol(tk):
-    """Convierte ticker interno al símbolo FMP correcto"""
+    """Convierte ticker interno al sÃ­mbolo FMP correcto"""
     if tk in FMP_SYMBOL_MAP:
         return FMP_SYMBOL_MAP[tk]
     # Crypto auto-map: BTC-USD -> BTCUSD
@@ -679,7 +679,7 @@ def _get_fmp_symbol(tk):
     # Acciones y ETFs van directo: NVDA, IXC, BNO
     return tk
 
-_FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
+_FMP_LAST_ERROR = {}  # Cache global para diagnÃ³stico del Ãºltimo error FMP
 
 def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
@@ -751,43 +751,43 @@ def _fetch_fmp_quote(tk):
 
         except Exception as e:
             logging.error(f"FMP error fetching {symbol}: {e}")
-            print(f"DEBUG FMP Excepción: {e}")
+            print(f"DEBUG FMP ExcepciÃ³n: {e}")
 
     _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
-    logging.warning(f"FMP falló para {tk}. Activo no localizado.")
+    logging.warning(f"FMP fallÃ³ para {tk}. Activo no localizado.")
     return None
 def _sanity_check_price(tk, new_price):
-    """Verifica que el precio no sea basura (desviación >50% vs último conocido)"""
+    """Verifica que el precio no sea basura (desviaciÃ³n >50% vs Ãºltimo conocido)"""
     if tk in LAST_KNOWN_PRICES:
         last_price = LAST_KNOWN_PRICES[tk]['price']
         if last_price > 0:
             change_pct = abs(new_price - last_price) / last_price
             if change_pct > 0.50:
-                logging.warning(f"⚠️ SANITY CHECK FALLIDO para {tk}: ${new_price:.2f} vs último ${last_price:.2f} ({change_pct*100:.1f}%)")
+                logging.warning(f"âš ï¸ SANITY CHECK FALLIDO para {tk}: ${new_price:.2f} vs Ãºltimo ${last_price:.2f} ({change_pct*100:.1f}%)")
                 return False
     if not _is_crypto_ticker(tk) and new_price < 0.50:
-        logging.warning(f"⚠️ SANITY CHECK: {tk} precio ${new_price:.4f} demasiado bajo.")
+        logging.warning(f"âš ï¸ SANITY CHECK: {tk} precio ${new_price:.4f} demasiado bajo.")
         return False
     if new_price <= 0:
         return False
     return True
 
 def get_safe_ticker_price(ticker, force_validation=False):
-    """MOTOR MAESTRO: FMP como fuente ÚNICA de precios en vivo"""
+    """MOTOR MAESTRO: FMP como fuente ÃšNICA de precios en vivo"""
     tk = remap_ticker(ticker)
 
-    # FMP es la fuente única para TODOS los activos
+    # FMP es la fuente Ãºnica para TODOS los activos
     result = _fetch_fmp_quote(tk)
     if result and _sanity_check_price(tk, result['price']):
         LAST_KNOWN_PRICES[tk] = result
         return result
 
-    # Cache como único respaldo si FMP no responde
+    # Cache como Ãºnico respaldo si FMP no responde
     if tk in LAST_KNOWN_PRICES:
-        logging.warning(f"{tk}: FMP no respondió. Usando cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+        logging.warning(f"{tk}: FMP no respondiÃ³. Usando cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
         return LAST_KNOWN_PRICES[tk]
 
-    logging.error(f"{tk}: FMP falló y no hay cache disponible.")
+    logging.error(f"{tk}: FMP fallÃ³ y no hay cache disponible.")
     return None
 
 def verify_1m_realtime_data(ticker):
@@ -806,7 +806,7 @@ def verify_1m_realtime_data(ticker):
 
 
 def _fetch_fmp_news(limit=10):
-    """Extrae noticias del mercado via FMP — usa SOLO endpoints /stable/"""
+    """Extrae noticias del mercado via FMP â€” usa SOLO endpoints /stable/"""
     if not FMP_API_KEY:
         return []
 
@@ -836,7 +836,7 @@ def _fetch_fmp_news(limit=10):
     except Exception as e:
         logging.debug(f"FMP stable/news error: {e}")
 
-    # === INTENTO 3: /stable/news por ticker específico ===
+    # === INTENTO 3: /stable/news por ticker especÃ­fico ===
     default_tickers = ["AAPL", "NVDA", "BTCUSD", "SPY", "MSFT"]
     for ticker in default_tickers:
         try:
@@ -852,7 +852,7 @@ def _fetch_fmp_news(limit=10):
             pass
 
     if all_news:
-        logging.info(f"FMP noticias por ticker: {len(all_news)} artículos recopilados.")
+        logging.info(f"FMP noticias por ticker: {len(all_news)} artÃ­culos recopilados.")
         return all_news[:limit]
 
     # === INTENTO 4: /stable/stock-news por ticker ===
@@ -893,10 +893,10 @@ def _fetch_google_news_fallback(limit=8):
 
 
 def check_geopolitical_news():
-    """Monitor automático unificado: FMP news + sentiment + wallet cross-reference"""
+    """Monitor automÃ¡tico unificado: FMP news + sentiment + wallet cross-reference"""
     try:
         HIGH_IMPACT_KEYWORDS = ["war", "attack", "strike", "escalation", "missile", "sanction",
-                                "embargo", "explosion", "guerra", "ataque", "tensión", "misil",
+                                "embargo", "explosion", "guerra", "ataque", "tensiÃ³n", "misil",
                                 "sanciones", "rates", "fed", "trump", "powell", "crash", "recession",
                                 "tariff", "default", "crisis"]
         news_alerts = []
@@ -935,9 +935,9 @@ def gpt_advanced_geopolitics(news_list, manual=False):
     client = OpenAI(api_key=OPENAI_API_KEY)
     news_text = "\n".join([f"- {n}" for n in news_list])
     if manual:
-        prompt = f"Titulares globales:\n{news_text}\nHaz un resumen y dime qué movería el mercado hoy. RESPONDE ESTRICTAMENTE EN ESPAÑOL."
+        prompt = f"Titulares globales:\n{news_text}\nHaz un resumen y dime quÃ© moverÃ­a el mercado hoy. RESPONDE ESTRICTAMENTE EN ESPAÃ‘OL."
     else:
-        prompt = (f"Titulares recientes:\n{news_text}\nAnaliza si hay algo de nivel 'Alto Impacto' (>2%). Si no lo hay, responde 'TRANQUILIDAD'.\nSi lo hay: '⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Acción/Sector]'\nRESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL.")
+        prompt = (f"Titulares recientes:\n{news_text}\nAnaliza si hay algo de nivel 'Alto Impacto' (>2%). Si no lo hay, responde 'TRANQUILIDAD'.\nSi lo hay: 'âš ï¸ ALERTA URGENTE: [Resumen] - Impacto en [AcciÃ³n/Sector]'\nRESPONDE ESTRICTA Y ÃšNICAMENTE EN ESPAÃ‘OL.")
     try:
         res = client.chat.completions.create(
             model="gpt-4o",
@@ -950,38 +950,38 @@ def gpt_advanced_geopolitics(news_list, manual=False):
 
 
 # =====================================================================
-# MOTOR DE INTELIGENCIA UNIFICADO GÉNESIS
+# MOTOR DE INTELIGENCIA UNIFICADO GÃ‰NESIS
 # Integra: FMP Sentiment + Wallet Cross-Reference + Whale Radar
 # =====================================================================
 
-# Cache global de contexto de riesgo geopolítico (para cruce con ballenas)
+# Cache global de contexto de riesgo geopolÃ­tico (para cruce con ballenas)
 GENESIS_RISK_CONTEXT = {
     'sentiment_global': 0.0,       # Sentimiento promedio del mercado (-1 a 1)
     'high_risk_tickers': [],        # Tickers con sentimiento muy negativo
-    'last_update': None,            # Timestamp de última actualización
-    'news_digest': [],              # Últimas noticias procesadas con sentimiento
+    'last_update': None,            # Timestamp de Ãºltima actualizaciÃ³n
+    'news_digest': [],              # Ãšltimas noticias procesadas con sentimiento
 }
 
 
 def _classify_sentiment(score):
-    """Traduce score de FMP a semáforo de riesgo con porcentajes"""
+    """Traduce score de FMP a semÃ¡foro de riesgo con porcentajes"""
     try:
         s = float(score)
     except (TypeError, ValueError):
-        return {'label': 'Neutral', 'icon': '🟡', 'bull_pct': 50, 'bear_pct': 50, 'raw': 0.0}
+        return {'label': 'Neutral', 'icon': 'ðŸŸ¡', 'bull_pct': 50, 'bear_pct': 50, 'raw': 0.0}
 
     if s > 0.3:
         bull = min(95, int(50 + s * 50))
-        return {'label': 'Alcista', 'icon': '🟢', 'bull_pct': bull, 'bear_pct': 100 - bull, 'raw': s}
+        return {'label': 'Alcista', 'icon': 'ðŸŸ¢', 'bull_pct': bull, 'bear_pct': 100 - bull, 'raw': s}
     elif s < -0.3:
         bear = min(95, int(50 + abs(s) * 50))
-        return {'label': 'Bajista', 'icon': '🔴', 'bull_pct': 100 - bear, 'bear_pct': bear, 'raw': s}
+        return {'label': 'Bajista', 'icon': 'ðŸ”´', 'bull_pct': 100 - bear, 'bear_pct': bear, 'raw': s}
     else:
-        return {'label': 'Neutral', 'icon': '🟡', 'bull_pct': 50, 'bear_pct': 50, 'raw': s}
+        return {'label': 'Neutral', 'icon': 'ðŸŸ¡', 'bull_pct': 50, 'bear_pct': 50, 'raw': s}
 
 
 def _extract_mentioned_tickers(text, wallet_tickers):
-    """Detecta qué tickers de la wallet se mencionan en un texto"""
+    """Detecta quÃ© tickers de la wallet se mencionan en un texto"""
     mentioned = []
     text_upper = text.upper()
     for tk in wallet_tickers:
@@ -995,7 +995,7 @@ def _extract_mentioned_tickers(text, wallet_tickers):
         if 'NVDA' in clean_tk: aliases.extend(['NVIDIA'])
         if 'MARA' in clean_tk: aliases.extend(['MARATHON', 'MARA'])
         if 'GC' in clean_tk: aliases.extend(['GOLD', 'ORO'])
-        if 'BZ' in clean_tk: aliases.extend(['BRENT', 'OIL', 'PETRÓLEO', 'PETROLEO'])
+        if 'BZ' in clean_tk: aliases.extend(['BRENT', 'OIL', 'PETRÃ“LEO', 'PETROLEO'])
         if 'XRP' in clean_tk: aliases.extend(['RIPPLE'])
 
         for alias in aliases:
@@ -1007,7 +1007,7 @@ def _extract_mentioned_tickers(text, wallet_tickers):
 
 
 def _fetch_fmp_news_with_sentiment(limit=12):
-    """Fetch FMP news y extrae sentiment score de cada artículo"""
+    """Fetch FMP news y extrae sentiment score de cada artÃ­culo"""
     raw_news = _fetch_fmp_news(limit)
     processed = []
 
@@ -1019,7 +1019,7 @@ def _fetch_fmp_news_with_sentiment(limit=12):
         # FMP puede incluir 'sentiment' directamente en el payload
         sentiment_raw = article.get('sentiment', None)
         if sentiment_raw is None:
-            # Inferencia básica por keywords si FMP no da sentiment
+            # Inferencia bÃ¡sica por keywords si FMP no da sentiment
             sentiment_raw = _infer_sentiment_from_title(title)
 
         sentiment = _classify_sentiment(sentiment_raw)
@@ -1039,7 +1039,7 @@ def _fetch_fmp_news_with_sentiment(limit=12):
 
 
 def _infer_sentiment_from_title(title):
-    """Inferencia rápida de sentimiento por keywords cuando FMP no lo provee"""
+    """Inferencia rÃ¡pida de sentimiento por keywords cuando FMP no lo provee"""
     t = title.lower()
     BEARISH = ['crash', 'plunge', 'drop', 'fall', 'war', 'crisis', 'recession',
                'default', 'sanction', 'tariff', 'sell-off', 'dump', 'decline',
@@ -1052,14 +1052,14 @@ def _infer_sentiment_from_title(title):
     bull_hits = sum(1 for kw in BULLISH if kw in t)
 
     if bear_hits > bull_hits:
-        return -0.3 - (bear_hits * 0.15)  # Más keywords = más negativo
+        return -0.3 - (bear_hits * 0.15)  # MÃ¡s keywords = mÃ¡s negativo
     elif bull_hits > bear_hits:
         return 0.3 + (bull_hits * 0.15)
     return 0.0
 
 
 def _get_whale_context_for_ticker(ticker):
-    """Busca el último movimiento de ballena relevante para un ticker"""
+    """Busca el Ãºltimo movimiento de ballena relevante para un ticker"""
     for w in reversed(list(WHALE_MEMORY)):
         if w['ticker'] == ticker:
             minutes_ago = int((datetime.now() - w['timestamp']).total_seconds() / 60)
@@ -1074,99 +1074,99 @@ def _get_whale_context_for_ticker(ticker):
     return None
 
 
-# === SISTEMA DE TRADUCCIÓN AUTOMÁTICA AL ESPAÑOL ===
+# === SISTEMA DE TRADUCCIÃ“N AUTOMÃTICA AL ESPAÃ‘OL ===
 
-# Diccionario de términos financieros inglés → español
+# Diccionario de tÃ©rminos financieros inglÃ©s â†’ espaÃ±ol
 _FINANCIAL_DICT = {
     'bull market': 'mercado alcista', 'bear market': 'mercado bajista',
-    'interest rates': 'tasas de interés', 'interest rate': 'tasa de interés',
+    'interest rates': 'tasas de interÃ©s', 'interest rate': 'tasa de interÃ©s',
     'rate hike': 'alza de tasas', 'rate cut': 'recorte de tasas',
     'earnings': 'ganancias', 'revenue': 'ingresos', 'profit': 'beneficio',
-    'loss': 'pérdida', 'losses': 'pérdidas',
+    'loss': 'pÃ©rdida', 'losses': 'pÃ©rdidas',
     'surge': 'alza fuerte', 'surges': 'sube fuertemente',
     'plunge': 'desplome', 'plunges': 'se desploma',
     'rally': 'rally alcista', 'rallies': 'repunta',
     'crash': 'desplome', 'crashes': 'se desploma',
-    'drop': 'caída', 'drops': 'cae',
+    'drop': 'caÃ­da', 'drops': 'cae',
     'rise': 'alza', 'rises': 'sube',
     'gain': 'ganancia', 'gains': 'ganancias',
-    'fall': 'caída', 'falls': 'cae',
+    'fall': 'caÃ­da', 'falls': 'cae',
     'soar': 'se dispara', 'soars': 'se dispara',
     'decline': 'descenso', 'declines': 'desciende',
-    'volatility': 'volatilidad', 'volatile': 'volátil',
-    'downturn': 'recesión', 'recession': 'recesión',
-    'inflation': 'inflación', 'deflation': 'deflación',
+    'volatility': 'volatilidad', 'volatile': 'volÃ¡til',
+    'downturn': 'recesiÃ³n', 'recession': 'recesiÃ³n',
+    'inflation': 'inflaciÃ³n', 'deflation': 'deflaciÃ³n',
     'tariff': 'arancel', 'tariffs': 'aranceles',
-    'sanction': 'sanción', 'sanctions': 'sanciones',
+    'sanction': 'sanciÃ³n', 'sanctions': 'sanciones',
     'trade war': 'guerra comercial', 'trade deal': 'acuerdo comercial',
     'federal reserve': 'Reserva Federal', 'the fed': 'la Fed',
     'treasury': 'Tesoro', 'bond': 'bono', 'bonds': 'bonos',
     'yield': 'rendimiento', 'yields': 'rendimientos',
-    'stock': 'acción', 'stocks': 'acciones',
-    'shares': 'acciones', 'share': 'acción',
-    'market cap': 'capitalización de mercado',
-    'all-time high': 'máximo histórico', 'record high': 'máximo histórico',
-    'all-time low': 'mínimo histórico',
+    'stock': 'acciÃ³n', 'stocks': 'acciones',
+    'shares': 'acciones', 'share': 'acciÃ³n',
+    'market cap': 'capitalizaciÃ³n de mercado',
+    'all-time high': 'mÃ¡ximo histÃ³rico', 'record high': 'mÃ¡ximo histÃ³rico',
+    'all-time low': 'mÃ­nimo histÃ³rico',
     'breakout': 'ruptura alcista', 'breakdown': 'ruptura bajista',
     'support': 'soporte', 'resistance': 'resistencia',
     'sell-off': 'venta masiva', 'selloff': 'venta masiva',
     'buyback': 'recompra de acciones',
     'dividend': 'dividendo', 'dividends': 'dividendos',
     'outperform': 'supera expectativas', 'underperform': 'por debajo de expectativas',
-    'upgrade': 'mejora de calificación', 'downgrade': 'rebaja de calificación',
+    'upgrade': 'mejora de calificaciÃ³n', 'downgrade': 'rebaja de calificaciÃ³n',
     'bullish': 'alcista', 'bearish': 'bajista',
-    'outlook': 'perspectiva', 'forecast': 'pronóstico',
-    'growth': 'crecimiento', 'expansion': 'expansión',
+    'outlook': 'perspectiva', 'forecast': 'pronÃ³stico',
+    'growth': 'crecimiento', 'expansion': 'expansiÃ³n',
     'layoffs': 'despidos', 'hiring': 'contrataciones',
     'bankruptcy': 'bancarrota', 'default': 'impago',
-    'crisis': 'crisis', 'recovery': 'recuperación',
+    'crisis': 'crisis', 'recovery': 'recuperaciÃ³n',
     'quarter': 'trimestre', 'quarterly': 'trimestral',
     'annual': 'anual', 'yearly': 'anual',
     'report': 'reporte', 'reports': 'reportes',
     'warns': 'advierte', 'warning': 'advertencia',
     'announces': 'anuncia', 'announcement': 'anuncio',
     'launch': 'lanzamiento', 'launches': 'lanza',
-    'deal': 'acuerdo', 'merger': 'fusión', 'acquisition': 'adquisición',
+    'deal': 'acuerdo', 'merger': 'fusiÃ³n', 'acquisition': 'adquisiciÃ³n',
     'investor': 'inversionista', 'investors': 'inversionistas',
     'traders': 'operadores', 'analyst': 'analista', 'analysts': 'analistas',
     'ahead of': 'antes de', 'amid': 'en medio de',
     'despite': 'a pesar de', 'due to': 'debido a',
-    'according to': 'según', 'following': 'tras',
-    'higher': 'más alto', 'lower': 'más bajo',
-    'strong': 'fuerte', 'weak': 'débil',
+    'according to': 'segÃºn', 'following': 'tras',
+    'higher': 'mÃ¡s alto', 'lower': 'mÃ¡s bajo',
+    'strong': 'fuerte', 'weak': 'dÃ©bil',
     'bitcoin': 'Bitcoin', 'ethereum': 'Ethereum',
     'cryptocurrency': 'criptomoneda', 'crypto': 'cripto',
 }
 
 
 def _quick_translate_financial(text):
-    """Traducción rápida por diccionario — reemplaza términos financieros comunes"""
+    """TraducciÃ³n rÃ¡pida por diccionario â€” reemplaza tÃ©rminos financieros comunes"""
     result = text
     # Ordenar por longitud descendente para evitar reemplazos parciales
     sorted_terms = sorted(_FINANCIAL_DICT.items(), key=lambda x: len(x[0]), reverse=True)
     for eng, esp in sorted_terms:
-        # Reemplazo case-insensitive preservando capitalización del contexto
+        # Reemplazo case-insensitive preservando capitalizaciÃ³n del contexto
         pattern = re.compile(re.escape(eng), re.IGNORECASE)
         result = pattern.sub(esp, result)
     return result
 
 
 def _translate_titles_to_spanish(titles):
-    """Traduce una lista de títulos al español usando OpenAI (batch).
-    Si OpenAI no está disponible, usa traducción por diccionario."""
+    """Traduce una lista de tÃ­tulos al espaÃ±ol usando OpenAI (batch).
+    Si OpenAI no estÃ¡ disponible, usa traducciÃ³n por diccionario."""
     if not titles:
         return titles
 
-    # Si hay OpenAI, traducción por lotes (más natural)
+    # Si hay OpenAI, traducciÃ³n por lotes (mÃ¡s natural)
     if OPENAI_API_KEY and len(titles) > 0:
         try:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
             numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
             prompt = (
-                f"Traduce estos titulares financieros al ESPAÑOL con vocabulario profesional de mercados.\n"
-                f"Usa términos como: mercado alcista, tasas de interés, rendimiento, volatilidad, arancel, etc.\n"
-                f"Mantén los nombres propios (empresas, personas, países) sin traducir.\n"
+                f"Traduce estos titulares financieros al ESPAÃ‘OL con vocabulario profesional de mercados.\n"
+                f"Usa tÃ©rminos como: mercado alcista, tasas de interÃ©s, rendimiento, volatilidad, arancel, etc.\n"
+                f"MantÃ©n los nombres propios (empresas, personas, paÃ­ses) sin traducir.\n"
                 f"Devuelve SOLO las traducciones numeradas, sin explicaciones.\n\n"
                 f"{numbered}"
             )
@@ -1194,16 +1194,16 @@ def _translate_titles_to_spanish(titles):
                 return translated
 
         except Exception as e:
-            logging.debug(f"Error en traducción batch OpenAI: {e}")
+            logging.debug(f"Error en traducciÃ³n batch OpenAI: {e}")
 
-    # Fallback: traducción por diccionario
+    # Fallback: traducciÃ³n por diccionario
     return [_quick_translate_financial(t) for t in titles]
 
 
 def genesis_strategic_report(manual=True):
-    """REPORTE ESTRATÉGICO UNIFICADO GÉNESIS
+    """REPORTE ESTRATÃ‰GICO UNIFICADO GÃ‰NESIS
     Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA
-    TODO el contenido se entrega en ESPAÑOL."""
+    TODO el contenido se entrega en ESPAÃ‘OL."""
     global GENESIS_RISK_CONTEXT
 
     wallet_tickers = get_tracked_tickers()
@@ -1227,9 +1227,9 @@ def genesis_strategic_report(manual=True):
 
     # Sin noticias de ninguna fuente
     if not news_data:
-        return "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
+        return "â˜• Sin eventos de riesgo detectados en este momento. Vigilancia activa."
 
-    # === PASO 1.5: Traducir títulos al español ===
+    # === PASO 1.5: Traducir tÃ­tulos al espaÃ±ol ===
     titles_to_translate = [n['title'] for n in news_data]
     translated = _translate_titles_to_spanish(titles_to_translate)
     for i, news in enumerate(news_data):
@@ -1245,7 +1245,7 @@ def genesis_strategic_report(manual=True):
     for news in news_data:
         mentioned = _extract_mentioned_tickers(news['title'], wallet_tickers)
         if news['symbol']:
-            # También buscar por symbol explícito de FMP
+            # TambiÃ©n buscar por symbol explÃ­cito de FMP
             for tk in wallet_tickers:
                 fmp_sym = _get_fmp_symbol(tk)
                 if news['symbol'].upper() in [fmp_sym, tk.replace('-USD', ''), tk]:
@@ -1275,13 +1275,13 @@ def genesis_strategic_report(manual=True):
 
     # === PASO 4: Construir reporte ===
     lines = []
-    lines.append("🌍 <b>REPORTE ESTRATÉGICO GÉNESIS</b> 🌍")
+    lines.append("ðŸŒ <b>REPORTE ESTRATÃ‰GICO GÃ‰NESIS</b> ðŸŒ")
     lines.append("\u2500" * 28)
 
-    # --- Alertas de wallet primero (máximo 4) ---
+    # --- Alertas de wallet primero (mÃ¡ximo 4) ---
     if wallet_alerts:
         lines.append("")
-        lines.append("🚨 <b>ALERTAS EN TU CARTERA:</b>")
+        lines.append("ðŸš¨ <b>ALERTAS EN TU CARTERA:</b>")
         lines.append("")
         for news in wallet_alerts[:4]:
             s = news['sentiment']
@@ -1290,24 +1290,24 @@ def genesis_strategic_report(manual=True):
             for tk in news['affected_tickers']:
                 wctx = _get_whale_context_for_ticker(tk)
                 if wctx:
-                    whale_note = f"\n🐋 <b>Ballena:</b> {wctx['vol_str']} ({wctx['type']}) hace {wctx['minutes_ago']}min"
+                    whale_note = f"\nðŸ‹ <b>Ballena:</b> {wctx['vol_str']} ({wctx['type']}) hace {wctx['minutes_ago']}min"
                     break
 
-            lines.append(f"📰 <b>Noticia:</b> {news['title_es'][:140]}")
-            lines.append(f"🎯 <b>Activos afectados:</b> {affected}")
+            lines.append(f"ðŸ“° <b>Noticia:</b> {news['title_es'][:140]}")
+            lines.append(f"ðŸŽ¯ <b>Activos afectados:</b> {affected}")
             lines.append(f"{s['icon']} <b>Riesgo:</b> {s['bull_pct']}% Alcista / {s['bear_pct']}% Bajista ({s['label']})")
             if whale_note:
                 lines.append(whale_note)
-            lines.append(f"💡 <b>Análisis:</b> Según el sentimiento del mercado, la probabilidad de impacto en tu cartera es <b>{s['bear_pct']}%</b>.")
+            lines.append(f"ðŸ’¡ <b>AnÃ¡lisis:</b> SegÃºn el sentimiento del mercado, la probabilidad de impacto en tu cartera es <b>{s['bear_pct']}%</b>.")
             lines.append("")
     else:
         lines.append("")
-        lines.append("✅ <b>Sin alertas directas para tu cartera.</b>")
+        lines.append("âœ… <b>Sin alertas directas para tu cartera.</b>")
         lines.append("")
 
-    # --- Panorama general (máximo 3 noticias) ---
+    # --- Panorama general (mÃ¡ximo 3 noticias) ---
     lines.append("\u2500" * 28)
-    lines.append("📊 <b>PANORAMA MACRO:</b>")
+    lines.append("ðŸ“Š <b>PANORAMA MACRO:</b>")
     lines.append("")
     top_general = sorted(general_news, key=lambda x: abs(x['sentiment']['raw']), reverse=True)[:3]
     for news in top_general:
@@ -1315,33 +1315,33 @@ def genesis_strategic_report(manual=True):
         src = f" ({news['source']})" if news['source'] else ""
         lines.append(f"{s['icon']} {news['title_es'][:120]}{src}")
     if not top_general:
-        lines.append("☕ Sin noticias macro relevantes.")
+        lines.append("â˜• Sin noticias macro relevantes.")
 
     # --- Datos de Ballenas integrados ---
     lines.append("")
     lines.append("\u2500" * 28)
-    lines.append("🐳 <b>RADAR BALLENAS INTEGRADO:</b>")
+    lines.append("ðŸ³ <b>RADAR BALLENAS INTEGRADO:</b>")
     lines.append("")
     if WHALE_MEMORY:
         for w in list(WHALE_MEMORY)[::-1][:3]:
             is_crypto = '-USD' in w['ticker']
             vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
             minutes_ago = int((datetime.now() - w['timestamp']).total_seconds() / 60)
-            # Cruzar con riesgo geopolítico
+            # Cruzar con riesgo geopolÃ­tico
             risk_tag = ""
             if w['ticker'] in GENESIS_RISK_CONTEXT.get('high_risk_tickers', []):
-                risk_tag = " ⚠️ <b>[ZONA DE RIESGO]</b>"
-            lines.append(f"🐋 <b>{get_display_name(w['ticker'])}</b> | {vol_str} | {w['type']} | {minutes_ago}min{risk_tag}")
+                risk_tag = " âš ï¸ <b>[ZONA DE RIESGO]</b>"
+            lines.append(f"ðŸ‹ <b>{get_display_name(w['ticker'])}</b> | {vol_str} | {w['type']} | {minutes_ago}min{risk_tag}")
     else:
-        lines.append("🌊 Océano tranquilo. Sin anomalías.")
+        lines.append("ðŸŒŠ OcÃ©ano tranquilo. Sin anomalÃ­as.")
 
     # --- Sentimiento resumen ---
     lines.append("")
     lines.append("\u2500" * 28)
-    lines.append(f"🎯 <b>SENTIMIENTO GLOBAL:</b> {global_risk['icon']} {global_risk['label']} — {global_risk['bull_pct']}% Alcista / {global_risk['bear_pct']}% Bajista")
+    lines.append(f"ðŸŽ¯ <b>SENTIMIENTO GLOBAL:</b> {global_risk['icon']} {global_risk['label']} â€” {global_risk['bull_pct']}% Alcista / {global_risk['bear_pct']}% Bajista")
     lines.append("\u2500" * 28)
 
-    # === PASO 5: IA avanzada (si OpenAI está disponible) ===
+    # === PASO 5: IA avanzada (si OpenAI estÃ¡ disponible) ===
     if manual and OPENAI_API_KEY and (wallet_alerts or top_general):
         try:
             all_titles = [n['title_es'] for n in (wallet_alerts + top_general)[:6]]
@@ -1351,16 +1351,16 @@ def genesis_strategic_report(manual=True):
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
             prompt = (
-                f"Eres GÉNESIS, un sistema de inteligencia estratégica de mercados financieros.\n\n"
-                f"NOTICIAS DEL DÍA CON SENTIMIENTO:\n{sentiments_str}\n\n"
+                f"Eres GÃ‰NESIS, un sistema de inteligencia estratÃ©gica de mercados financieros.\n\n"
+                f"NOTICIAS DEL DÃA CON SENTIMIENTO:\n{sentiments_str}\n\n"
                 f"WALLET DE EDUARDO: {wallet_str}\n\n"
                 f"SENTIMIENTO GLOBAL: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
                 f"INSTRUCCIONES OBLIGATORIAS:\n"
-                f"1. Redacta TODO en ESPAÑOL con vocabulario financiero profesional.\n"
-                f"2. Usa términos como: mercado alcista, tasas de interés, rendimiento, volatilidad, liquidez, soporte, resistencia, presión vendedora/compradora.\n"
-                f"3. En 3-4 líneas, explica cómo estas noticias afectan DIRECTAMENTE los activos de Eduardo.\n"
-                f"4. Da UNA recomendación estratégica clara: Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad.\n"
-                f"5. PROHIBIDO responder en inglés. Todo debe ser 100% en español.\n"
+                f"1. Redacta TODO en ESPAÃ‘OL con vocabulario financiero profesional.\n"
+                f"2. Usa tÃ©rminos como: mercado alcista, tasas de interÃ©s, rendimiento, volatilidad, liquidez, soporte, resistencia, presiÃ³n vendedora/compradora.\n"
+                f"3. En 3-4 lÃ­neas, explica cÃ³mo estas noticias afectan DIRECTAMENTE los activos de Eduardo.\n"
+                f"4. Da UNA recomendaciÃ³n estratÃ©gica clara: Mantener / Vigilar de cerca / Reducir exposiciÃ³n / Aprovechar oportunidad.\n"
+                f"5. PROHIBIDO responder en inglÃ©s. Todo debe ser 100% en espaÃ±ol.\n"
             )
             res = client.chat.completions.create(
                 model="gpt-4o",
@@ -1369,7 +1369,7 @@ def genesis_strategic_report(manual=True):
             ).choices[0].message.content.strip()
 
             lines.append("")
-            lines.append("🧠 <b>ANÁLISIS IA GÉNESIS:</b>")
+            lines.append("ðŸ§  <b>ANÃLISIS IA GÃ‰NESIS:</b>")
             lines.append(res)
         except Exception as e:
             logging.error(f"OpenAI strategic error: {e}")
@@ -1378,19 +1378,19 @@ def genesis_strategic_report(manual=True):
 
 
 def generar_reporte_macro_manual():
-    """Wrapper para el botón Geopolítica — usa el motor unificado"""
+    """Wrapper para el botÃ³n GeopolÃ­tica â€” usa el motor unificado"""
     return genesis_strategic_report(manual=True)
 
 
 def fetch_intraday_data(ticker):
-    """Obtiene precio + volumen EXCLUSIVAMENTE de FMP Pro para detección de ballenas."""
+    """Obtiene precio + volumen EXCLUSIVAMENTE de FMP Pro para detecciÃ³n de ballenas."""
     tk = remap_ticker(ticker)
 
     if not FMP_API_KEY:
         print(f"DEBUG INTRADAY: FMP_API_KEY es None, saltando {tk}")
         return None
 
-    # PASO 1: Obtener precio + volumen actual del día via FMP quote
+    # PASO 1: Obtener precio + volumen actual del dÃ­a via FMP quote
     fmp_data = _fetch_fmp_quote(tk)
     if not fmp_data:
         print(f"DEBUG INTRADAY: FMP quote fallo para {tk}")
@@ -1403,9 +1403,9 @@ def fetch_intraday_data(ticker):
     latest_vol = float(fmp_data.get('volume', 0) or 0)
     quote_avg_vol = float(fmp_data.get('avgVolume', 0) or 0)
     change = float(fmp_data.get('change', 0) or 0)
-    vol_type = "Compra 🟢" if change >= 0 else "Venta 🔴"
+    vol_type = "Compra ðŸŸ¢" if change >= 0 else "Venta ðŸ”´"
 
-    # PASO 2: Obtener historial de volumen REAL de los últimos 30 días
+    # PASO 2: Obtener historial de volumen REAL de los Ãºltimos 30 dÃ­as
     avg_vol = 0
     fmp_sym = _get_fmp_symbol(tk)
     if _is_crypto_ticker(tk):
@@ -1420,7 +1420,7 @@ def fetch_intraday_data(ticker):
             hist = resp.json()
 
             if isinstance(hist, list) and len(hist) >= 5:
-                # hist viene más reciente primero, tomar últimos 10 días para RVOL como pidió el usuario
+                # hist viene mÃ¡s reciente primero, tomar Ãºltimos 10 dÃ­as para RVOL como pidiÃ³ el usuario
                 recent_vols = []
                 for day in hist[:10]:
                     v = float(day.get('volume', 0) or 0)
@@ -1433,7 +1433,7 @@ def fetch_intraday_data(ticker):
                 else:
                     print(f"DEBUG INTRADAY {tk}: historial tiene 0 volumenes positivos de {len(hist)} registros")
             else:
-                print(f"ERROR: FMP no devolvió historial para {tk}. Estructura: {str(raw)[:100]}")
+                print(f"ERROR: FMP no devolviÃ³ historial para {tk}. Estructura: {str(raw)[:100]}")
         else:
             print(f"DEBUG INTRADAY {tk}: historial HTTP {resp.status_code} para {fmp_sym}")
             # Mostrar el error exacto para diagnosticar
@@ -1442,7 +1442,7 @@ def fetch_intraday_data(ticker):
     except Exception as e:
         print(f"DEBUG INTRADAY {tk}: historial error: {e}")
 
-    # PASO 3: Si el historial falló, usar avgVolume del quote como fallback
+    # PASO 3: Si el historial fallÃ³, usar avgVolume del quote como fallback
     if avg_vol == 0 and quote_avg_vol > 0:
         avg_vol = quote_avg_vol
         print(f"DEBUG INTRADAY {tk}: usando avgVolume del quote como fallback | avg_vol={avg_vol:,.0f} | latest_vol={latest_vol:,.0f}")
@@ -1469,7 +1469,7 @@ def fetch_and_analyze_stock(ticker):
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
-            print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
+            print(f"DEBUG SMC: get_safe_ticker_price fallÃ³ para {tk}")
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
             
         def _get_fallback_smc():
@@ -1524,8 +1524,8 @@ def fetch_and_analyze_stock(ticker):
             print(f"DEBUG SMC: El ticker {safe_ticker} no devolvi\u00f3 indicadores.")
             return _get_fallback_smc()
 
-        # FMP viene en orden reciente-primero, revertir para cálculos
-        hist = list(reversed(hist[:100]))  # Últimos 100 días max para cálculos limpios y rápidos
+        # FMP viene en orden reciente-primero, revertir para cÃ¡lculos
+        hist = list(reversed(hist[:100]))  # Ãšltimos 100 dÃ­as max para cÃ¡lculos limpios y rÃ¡pidos
 
         closes = pd.Series([float(d.get('close', 0)) for d in hist])
         volumes = pd.Series([float(d.get('volume', 0) or 0) for d in hist])
@@ -1604,13 +1604,13 @@ def update_smc_memory(ticker, analysis):
 def analyze_breakout_gpt(ticker, level_type, price):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
-    if not OPENAI_API_KEY: return "¿Qué hacer? Mantener cautela."
+    if not OPENAI_API_KEY: return "Â¿QuÃ© hacer? Mantener cautela."
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # === Recopilar contexto unificado GÉNESIS ===
-    # Contexto geopolítico
-    geo_context = "Sin datos geopolíticos recientes."
+    # === Recopilar contexto unificado GÃ‰NESIS ===
+    # Contexto geopolÃ­tico
+    geo_context = "Sin datos geopolÃ­ticos recientes."
     risk_ctx = GENESIS_RISK_CONTEXT
     if risk_ctx.get('last_update'):
         global_s = _classify_sentiment(risk_ctx['sentiment_global'])
@@ -1619,7 +1619,7 @@ def analyze_breakout_gpt(ticker, level_type, price):
             top_news = [n.get('title_es', n.get('title', ''))[:60] for n in risk_ctx['news_digest'][:3]]
             geo_context += f"\nNoticias clave: {'; '.join(top_news)}"
         if tk in risk_ctx.get('high_risk_tickers', []):
-            geo_context += f"\n⚠️ {display_name} está en ZONA DE RIESGO GEOPOLÍTICO."
+            geo_context += f"\nâš ï¸ {display_name} estÃ¡ en ZONA DE RIESGO GEOPOLÃTICO."
 
     # Contexto de ballenas
     whale_context = "Sin movimientos de ballena recientes en este activo."
@@ -1627,45 +1627,45 @@ def analyze_breakout_gpt(ticker, level_type, price):
     if wctx:
         whale_context = f"Ballena detectada: {wctx['vol_str']} ({wctx['type']}) hace {wctx['minutes_ago']} minutos."
 
-    prompt = (f"Eres GÉNESIS, analista institucional senior de un fondo de cobertura.\n\n"
-              f"EVENTO: El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en ${fmt_price(price)} verificado vía FMP.\n\n"
-              f"CONTEXTO GEOPOLÍTICO:\n{geo_context}\n\n"
+    prompt = (f"Eres GÃ‰NESIS, analista institucional senior de un fondo de cobertura.\n\n"
+              f"EVENTO: El activo {display_name} acaba de romper su nivel de {level_type} (Smart Money Concept) en ${fmt_price(price)} verificado vÃ­a FMP.\n\n"
+              f"CONTEXTO GEOPOLÃTICO:\n{geo_context}\n\n"
               f"CONTEXTO BALLENAS:\n{whale_context}\n\n"
               f"INSTRUCCIONES OBLIGATORIAS:\n"
-              f"1. Evalúa esta ruptura cruzando: dirección del precio, sentimiento geopolítico, y movimientos de ballenas.\n"
-              f"2. Da un consejo claro: ¿COMPRAR, VENDER o MANTENER? Resalta tu elección en negrita.\n"
-              f"3. Asigna un PORCENTAJE DE CONFIANZA (ejemplo: 75%, 85%, 92%) basado en cuántas señales convergen:\n"
-              f"   - Si ruptura + ballenas + sentimiento apuntan en la misma dirección = 85-95%\n"
-              f"   - Si hay señales mixtas = 60-75%\n"
-              f"   - Si hay contradicción fuerte = 50-65%\n"
-              f"4. Formato: 1 párrafo de máximo 4 líneas. ESPAÑOL ESTRICTO con vocabulario financiero profesional.\n"
-              f"5. Termina con: '🎯 Confianza: [X]%'\n")
+              f"1. EvalÃºa esta ruptura cruzando: direcciÃ³n del precio, sentimiento geopolÃ­tico, y movimientos de ballenas.\n"
+              f"2. Da un consejo claro: Â¿COMPRAR, VENDER o MANTENER? Resalta tu elecciÃ³n en negrita.\n"
+              f"3. Asigna un PORCENTAJE DE CONFIANZA (ejemplo: 75%, 85%, 92%) basado en cuÃ¡ntas seÃ±ales convergen:\n"
+              f"   - Si ruptura + ballenas + sentimiento apuntan en la misma direcciÃ³n = 85-95%\n"
+              f"   - Si hay seÃ±ales mixtas = 60-75%\n"
+              f"   - Si hay contradicciÃ³n fuerte = 50-65%\n"
+              f"4. Formato: 1 pÃ¡rrafo de mÃ¡ximo 4 lÃ­neas. ESPAÃ‘OL ESTRICTO con vocabulario financiero profesional.\n"
+              f"5. Termina con: 'ðŸŽ¯ Confianza: [X]%'\n")
     try:
         return client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=400).choices[0].message.content.strip()
     except Exception as e:
         logging.error(f"Fallo OpenAI breakout: {e}")
-        return "¿Qué hacer? Esperar confirmación de volumen en la siguiente hora. 🎯 Confianza: 50%"
+        return "Â¿QuÃ© hacer? Esperar confirmaciÃ³n de volumen en la siguiente hora. ðŸŽ¯ Confianza: 50%"
 
 def perform_deep_analysis(ticker):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
 
     # PASO 0: Obtener precio VERIFICADO de FMP ANTES de todo
-    # Este precio es SAGRADO — viene directo del exchange via FMP
+    # Este precio es SAGRADO â€” viene directo del exchange via FMP
     verified_price = None
     fmp_data = _fetch_fmp_quote(tk)
     if fmp_data:
         verified_price = fmp_data['price']
-        logging.info(f"ANÁLISIS {tk}: precio FMP verificado = ${fmt_price(verified_price)}")
+        logging.info(f"ANÃLISIS {tk}: precio FMP verificado = ${fmt_price(verified_price)}")
 
-    # PASO 1: Obtener indicadores técnicos (RSI, MACD, SMC) via FMP historical
+    # PASO 1: Obtener indicadores tÃ©cnicos (RSI, MACD, SMC) via FMP historical
     tech = fetch_and_analyze_stock(tk)
 
     # SIEMPRE imponer el precio FMP quote sobre el precio del historial
     if tech and verified_price:
         tech['price'] = verified_price
 
-    # Si no hay tech pero sí tenemos precio verificado
+    # Si no hay tech pero sÃ­ tenemos precio verificado
     if not tech and not verified_price:
         live = get_safe_ticker_price(tk)
         if live:
@@ -1674,37 +1674,37 @@ def perform_deep_analysis(ticker):
     # Precio final a inyectar en el prompt (INNEGOCIABLE)
     final_price = verified_price or (tech['price'] if tech else None)
 
-    # === HARD-STOP: SIN PRECIO VERIFICADO = SIN ANÁLISIS ===
+    # === HARD-STOP: SIN PRECIO VERIFICADO = SIN ANÃLISIS ===
     if not final_price:
         fmp_sym = _get_fmp_symbol(tk)
-        diag = _FMP_LAST_ERROR.get(tk, 'Sin información de error')
+        diag = _FMP_LAST_ERROR.get(tk, 'Sin informaciÃ³n de error')
         _key_len = len(FMP_API_KEY) if FMP_API_KEY else 0
-        return (f"⚠️ <b>Error de conexión con FMP</b>\n\n"
+        return (f"âš ï¸ <b>Error de conexiÃ³n con FMP</b>\n\n"
                 f"No se pudo obtener el precio de {display_name} "
-                f"(símbolo: {fmp_sym}).\n\n"
-                f"🔍 <b>Diagnóstico:</b>\n<code>{diag}</code>\n\n"
-                f"🔑 Key cargada: {'Sí' if FMP_API_KEY else 'NO'} "
+                f"(sÃ­mbolo: {fmp_sym}).\n\n"
+                f"ðŸ” <b>DiagnÃ³stico:</b>\n<code>{diag}</code>\n\n"
+                f"ðŸ”‘ Key cargada: {'SÃ­' if FMP_API_KEY else 'NO'} "
                 f"({_key_len} chars)\n"
-                f"🛑 Análisis BLOQUEADO para evitar datos inventados.")
+                f"ðŸ›‘ AnÃ¡lisis BLOQUEADO para evitar datos inventados.")
 
     if tech:
         tech_block = (
             f"--- DATOS EN VIVO (calculados por el sistema, NO los inventes) ---\n"
-            f"• Precio EXACTO en vivo: ${fmt_price(final_price)}\n"
-            f"• RSI (14 períodos): {tech['rsi']:.2f}\n"
-            f"• MACD Línea: {tech['macd_line']:.4f}\n"
-            f"• MACD Señal: {tech['macd_signal']:.4f}\n"
-            f"• Tendencia SMC: {tech['smc_trend']}\n"
-            f"• Buy-side Liquidity (Soporte SMC): ${fmt_price(tech['smc_sup'])}\n"
-            f"• Sell-side Liquidity (Resistencia SMC): ${fmt_price(tech['smc_res'])}\n"
-            f"• Order Block Institucional: ${fmt_price(tech['order_block'])}\n"
+            f"â€¢ Precio EXACTO en vivo: ${fmt_price(final_price)}\n"
+            f"â€¢ RSI (14 perÃ­odos): {tech['rsi']:.2f}\n"
+            f"â€¢ MACD LÃ­nea: {tech['macd_line']:.4f}\n"
+            f"â€¢ MACD SeÃ±al: {tech['macd_signal']:.4f}\n"
+            f"â€¢ Tendencia SMC: {tech['smc_trend']}\n"
+            f"â€¢ Buy-side Liquidity (Soporte SMC): ${fmt_price(tech['smc_sup'])}\n"
+            f"â€¢ Sell-side Liquidity (Resistencia SMC): ${fmt_price(tech['smc_res'])}\n"
+            f"â€¢ Order Block Institucional: ${fmt_price(tech['order_block'])}\n"
             f"--- FIN DE DATOS EN VIVO ---"
         )
     elif final_price:
         tech_block = (
             f"--- DATOS EN VIVO ---\n"
-            f"• Precio EXACTO en vivo: ${fmt_price(final_price)}\n"
-            f"• Indicadores técnicos: No disponibles (mercado cerrado o sin historial)\n"
+            f"â€¢ Precio EXACTO en vivo: ${fmt_price(final_price)}\n"
+            f"â€¢ Indicadores tÃ©cnicos: No disponibles (mercado cerrado o sin historial)\n"
             f"--- FIN DE DATOS EN VIVO ---"
         )
     else:
@@ -1720,24 +1720,24 @@ def perform_deep_analysis(ticker):
                 news_str = "\n".join([f"- {t}" for t in news_titles[:5]])
     except: pass
 
-    # PASO 3: Prompt blindado anti-alucinación hiper-detallado para GPT-4o
+    # PASO 3: Prompt blindado anti-alucinaciÃ³n hiper-detallado para GPT-4o
     price_str = f"${fmt_price(final_price)}" if final_price else "N/A"
     prompt = (
-        f"Actúa como GÉNESIS, un analista financiero institucional senior (modelo GPT-4o).\n\n"
+        f"ActÃºa como GÃ‰NESIS, un analista financiero institucional senior (modelo GPT-4o).\n\n"
         f"ACTIVO: {display_name} ({tk})\n\n"
         f"{tech_block}\n\n"
         f"NOTICIAS RECIENTES:\n{news_str}\n\n"
         f"REGLAS INQUEBRANTABLES:\n"
         f"1. El precio REAL Y VERIFICADO de {display_name} en este momento es {price_str} (proveedor: FMP). Tienes PROHIBIDO inventar, adivinar o usar otro precio.\n"
-        f"2. Basa tu análisis EXCLUSIVAMENTE en los datos numéricos proporcionados arriba.\n"
-        f"3. Realiza una fusión de perspectivas: cruza los niveles mecánicos de 'Smart Money Concepts' (Bloques de órdenes y vacíos de liquidez) con el indicador de Tendencia SMC.\n"
-        f"4. Evalúa exhaustivamente si el precio actual sugiere que los algoritmos institucionales están acumulando en zona de demanda o distribuyendo en zona de oferta.\n"
-        f"5. Combina el pulso macro de las noticias y detalla de qué manera afectan los niveles técnicos.\n\n"
+        f"2. Basa tu anÃ¡lisis EXCLUSIVAMENTE en los datos numÃ©ricos proporcionados arriba.\n"
+        f"3. Realiza una fusiÃ³n de perspectivas: cruza los niveles mecÃ¡nicos de 'Smart Money Concepts' (Bloques de Ã³rdenes y vacÃ­os de liquidez) con el indicador de Tendencia SMC.\n"
+        f"4. EvalÃºa exhaustivamente si el precio actual sugiere que los algoritmos institucionales estÃ¡n acumulando en zona de demanda o distribuyendo en zona de oferta.\n"
+        f"5. Combina el pulso macro de las noticias y detalla de quÃ© manera afectan los niveles tÃ©cnicos.\n\n"
         f"FORMATO DE RESPUESTA EN GITHUB MARKDOWN:\n"
-        f"📊 **Análisis Smart Money (SMC):** [Profundiza sobre liquidez, imbalances y el order block actual]\n"
-        f"📰 **Contexto Macro / Institucional:** [Tu lectura de cómo el flujo de impacto altera la técnica]\n"
-        f"🎯 **VEREDICTO FINAL:** [COMPRAR / VENDER / MANTENER] + [Justificación institucional en 2 líneas]\n\n"
-        f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
+        f"ðŸ“Š **AnÃ¡lisis Smart Money (SMC):** [Profundiza sobre liquidez, imbalances y el order block actual]\n"
+        f"ðŸ“° **Contexto Macro / Institucional:** [Tu lectura de cÃ³mo el flujo de impacto altera la tÃ©cnica]\n"
+        f"ðŸŽ¯ **VEREDICTO FINAL:** [COMPRAR / VENDER / MANTENER] + [JustificaciÃ³n institucional en 2 lÃ­neas]\n\n"
+        f"RESPONDE ESTRICTAMENTE EN ESPAÃ‘OL."
     )
 
     if not OPENAI_API_KEY: return "Error: API KEY de OpenAI no configurada."
@@ -1759,20 +1759,20 @@ def build_wallet_dashboard():
     realized_pnl = get_realized_pnl()
 
     if not investments and realized_pnl == 0:
-        return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
-                "💹 <b>Capital Operativo Activo:</b> $0.00\n"
-                "💰 <b>Ganancia Mensual Acumulada:</b> $0.00 USD\n"
-                "📈 <b>Rendimiento M/M:</b> [0.00%]\n"
-                "📊 <b>Estatus:</b> [⚪ SIN OPERACIONES]\n"
-                "🎯 <b>Meta del Mes (10%):</b> [░░░░░░░░░░] 0%\n---")
+        return ("---\nðŸ’Ž *ESTADO GLOBAL DE TU WALLET* ðŸ’Ž\n---\n"
+                "ðŸ’¹ <b>Capital Operativo Activo:</b> $0.00\n"
+                "ðŸ’° <b>Ganancia Mensual Acumulada:</b> $0.00 USD\n"
+                "ðŸ“ˆ <b>Rendimiento M/M:</b> [0.00%]\n"
+                "ðŸ“Š <b>Estatus:</b> [âšª SIN OPERACIONES]\n"
+                "ðŸŽ¯ <b>Meta del Mes (10%):</b> [â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘] 0%\n---")
 
     if not investments and realized_pnl != 0:
-        return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
-                "💹 <b>Capital Operativo Activo:</b> $0.00\n"
-                f"💵 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n"
-                "📈 <b>Rendimiento M/M:</b> [0.00%]\n"
-                "📊 <b>Estatus:</b> [⚪ SIN POSICIONES ABIERTAS]\n"
-                "🎯 <b>Meta del Mes (10%):</b> [░░░░░░░░░░] 0%\n---")
+        return ("---\nðŸ’Ž *ESTADO GLOBAL DE TU WALLET* ðŸ’Ž\n---\n"
+                "ðŸ’¹ <b>Capital Operativo Activo:</b> $0.00\n"
+                f"ðŸ’µ <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n"
+                "ðŸ“ˆ <b>Rendimiento M/M:</b> [0.00%]\n"
+                "ðŸ“Š <b>Estatus:</b> [âšª SIN POSICIONES ABIERTAS]\n"
+                "ðŸŽ¯ <b>Meta del Mes (10%):</b> [â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘] 0%\n---")
 
     total_invested = 0.0
     total_current = 0.0
@@ -1794,36 +1794,36 @@ def build_wallet_dashboard():
             total_current += curr_val
 
             sign = "+" if roi_percent >= 0 else ""
-            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}% (${fmt_price(live_price)})")
+            details.append(f"â€¢ {display_name}: {sign}{roi_percent*100:.2f}% (${fmt_price(live_price)})")
         else:
             # Mercado cerrado - mostrar activo sin ocultar
             total_invested += init_amount
             total_current += init_amount
-            details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
+            details.append(f"â€¢ {display_name}: â³ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
 
 
 
     total_roi = (total_current - total_invested) / total_invested if total_invested > 0 else 0
     sign_roi = "+" if total_roi >= 0 else ""
-    status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔴 EN PÉRDIDAS"
+    status_icon = "ðŸŸ¢ EN GANANCIAS" if total_roi >= 0 else "ðŸ”´ EN PÃ‰RDIDAS"
 
     goal = 0.10
     progress_ratio = max(0, min(1, total_roi / goal))
 
     filled_blocks = int(progress_ratio * 10)
     empty_blocks = 10 - filled_blocks
-    bar = "▓" * filled_blocks + "░" * empty_blocks
+    bar = "â–“" * filled_blocks + "â–‘" * empty_blocks
     progress_text = f"{int(progress_ratio*100)}% completado"
 
     report = []
     report.append("---")
-    report.append("💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎")
+    report.append("ðŸ’Ž <b>ESTADO GLOBAL DE TU WALLET</b> ðŸ’Ž")
     report.append("---")
-    report.append(f"💹 <b>Rendimiento M/M (Activo):</b> [{sign_roi}{total_roi*100:.2f}%]")
-    report.append(f"📊 <b>Estatus:</b> [{status_icon}]")
-    report.append(f"🎯 <b>Meta del Mes (10%):</b> [{bar}] {progress_text}")
+    report.append(f"ðŸ’¹ <b>Rendimiento M/M (Activo):</b> [{sign_roi}{total_roi*100:.2f}%]")
+    report.append(f"ðŸ“Š <b>Estatus:</b> [{status_icon}]")
+    report.append(f"ðŸŽ¯ <b>Meta del Mes (10%):</b> [{bar}] {progress_text}")
     if realized_pnl != 0:
-        report.append(f"💵 <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
+        report.append(f"ðŸ’µ <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
     report.append("---")
     if details:
         report.append("<i>(Detalle por activo)</i>")
@@ -1834,33 +1834,33 @@ def build_wallet_dashboard():
 
 @bot.message_handler(commands=['check_db'])
 def test_db(message):
-    print("⏳ Intentando conectar con Supabase (Timeout de 5 segundos)...")
+    print("â³ Intentando conectar con Supabase (Timeout de 5 segundos)...")
     try:
         conn = get_db_connection()
         if not conn:
-             print("❌ ERROR DE RED O AUTENTICACIÓN: conn es None")
+             print("âŒ ERROR DE RED O AUTENTICACIÃ“N: conn es None")
              return
         c = conn.cursor()
         c.execute('SELECT version();')
         v = c.fetchone()[0]
-        print(f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
+        print(f"âœ… CONEXIÃ“N ESTABLECIDA\nPostgreSQL OK. Base de Datos en lÃ­nea y funcional.\n\nDetalle: {v}")
     except Exception as e:
-        print(f"❌ ERROR DE RED O AUTENTICACIÓN\nSupabase ha rechazado la conexión.\n\nLog Técnico: {e}")
+        print(f"âŒ ERROR DE RED O AUTENTICACIÃ“N\nSupabase ha rechazado la conexiÃ³n.\n\nLog TÃ©cnico: {e}")
 
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
     if str(message.chat.id) != str(CHAT_ID): return
     conn = get_db_connection()
     if not conn:
-        bot.reply_to(message, "🚨 Error: No hay conexión a Supabase.")
+        bot.reply_to(message, "ðŸš¨ Error: No hay conexiÃ³n a Supabase.")
         return
     try:
         c = conn.cursor()
         c.execute('TRUNCATE TABLE wallet')
         conn.commit()
-        bot.reply_to(message, "⚠️ ATENCIÓN: DB Supabase (Tabla: wallet) vacuada por completo.")
+        bot.reply_to(message, "âš ï¸ ATENCIÃ“N: DB Supabase (Tabla: wallet) vacuada por completo.")
     except Exception as e:
-        bot.reply_to(message, f"❌ Fallo al limpiar DB: {e}")
+        bot.reply_to(message, f"âŒ Fallo al limpiar DB: {e}")
     finally:
         pass # conn.close() delegado a pooling global
 
@@ -1871,16 +1871,16 @@ def cmd_start(message):
     restore_state_from_telegram()
     tkrs = get_tracked_tickers()
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.row(KeyboardButton("🌎 Geopolítica"), KeyboardButton("🐳 Radar Ballenas"))
-    markup.row(KeyboardButton("📉 SMC / Mi Cartera"), KeyboardButton("💰 Mi Wallet / Estado"))
-    bot.reply_to(message, f"---\n🧠 *GÉNESIS 1.0 — TRADING INSTITUCIONAL* 🧠\n---\n✅ Bot iniciado correctamente.\n📊 {len(tkrs)} activos cargados en tu radar.\n🛡️ Persistencia activa. Tu cartera está segura.", reply_markup=markup, parse_mode="HTML")
+    markup.row(KeyboardButton("ðŸŒŽ GeopolÃ­tica"), KeyboardButton("ðŸ³ Radar Ballenas"))
+    markup.row(KeyboardButton("ðŸ“‰ SMC / Mi Cartera"), KeyboardButton("ðŸ’° Mi Wallet / Estado"))
+    bot.reply_to(message, f"---\nðŸ§  *GÃ‰NESIS 1.0 â€” TRADING INSTITUCIONAL* ðŸ§ \n---\nâœ… Bot iniciado correctamente.\nðŸ“Š {len(tkrs)} activos cargados en tu radar.\nðŸ›¡ï¸ Persistencia activa. Tu cartera estÃ¡ segura.", reply_markup=markup, parse_mode="HTML")
 
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
     """Comando oculto para resetear la ganancia mensual a $0.00"""
     if str(message.chat.id) != str(CHAT_ID): return
     reset_realized_pnl()
-    bot.reply_to(message, "🔄 <b>PnL Mensual Reseteado</b>\n\n✅ Ganancia Mensual Acumulada: <b>$0.00 USD</b>\n✅ Contabilidad limpia desde este momento.", parse_mode="HTML")
+    bot.reply_to(message, "ðŸ”„ <b>PnL Mensual Reseteado</b>\n\nâœ… Ganancia Mensual Acumulada: <b>$0.00 USD</b>\nâœ… Contabilidad limpia desde este momento.", parse_mode="HTML")
 
 @bot.message_handler(commands=['reset_total'])
 def cmd_reset_total(message):
@@ -1888,23 +1888,23 @@ def cmd_reset_total(message):
     if str(message.chat.id) != str(CHAT_ID): return
     reset_total_db()
     bot.reply_to(message, (
-        "⚠️ <b>SISTEMA REINICIADO</b>\n\n"
-        "🗑️ Todo el historial contable ha sido eliminado.\n"
-        "💹 Capital Operativo: <b>$0.00</b>\n"
-        "💰 Ganancia Mensual: <b>$0.00 USD</b>\n"
-        "📈 Rendimiento: <b>0.00%</b>\n\n"
-        "✅ Wallet limpia. Los activos en tu radar siguen activos para monitoreo SMC."
+        "âš ï¸ <b>SISTEMA REINICIADO</b>\n\n"
+        "ðŸ—‘ï¸ Todo el historial contable ha sido eliminado.\n"
+        "ðŸ’¹ Capital Operativo: <b>$0.00</b>\n"
+        "ðŸ’° Ganancia Mensual: <b>$0.00 USD</b>\n"
+        "ðŸ“ˆ Rendimiento: <b>0.00%</b>\n\n"
+        "âœ… Wallet limpia. Los activos en tu radar siguen activos para monitoreo SMC."
     ), parse_mode="HTML")
 
 
 @bot.message_handler(commands=['recover'])
 def cmd_recover(message):
-    """Herramienta de Carga Crítica de Respaldo por Base64"""
+    """Herramienta de Carga CrÃ­tica de Respaldo por Base64"""
     if str(message.chat.id) != str(CHAT_ID): return
     try:
         command_parts = message.text.split(' ', 1)
         if len(command_parts) < 2:
-            bot.reply_to(message, "⚠️ Restauración Crítica.\nUso: `/recover [STRING_BASE64_DEL_LOG]`", parse_mode="Markdown")
+            bot.reply_to(message, "âš ï¸ RestauraciÃ³n CrÃ­tica.\nUso: `/recover [STRING_BASE64_DEL_LOG]`", parse_mode="Markdown")
             return
 
         b64_str = command_parts[1].strip()
@@ -1912,14 +1912,14 @@ def cmd_recover(message):
         save_state_to_telegram()  # Guardar inmediatamente en Telegram
 
         tkrs = get_tracked_tickers()
-        bot.reply_to(message, f"✅ **¡RECUPERACIÓN EXITOSA!**\nSe restauraron {len(tkrs)} activos.\nEl backup ya fue guardado en Telegram.", parse_mode="Markdown")
+        bot.reply_to(message, f"âœ… **Â¡RECUPERACIÃ“N EXITOSA!**\nSe restauraron {len(tkrs)} activos.\nEl backup ya fue guardado en Telegram.", parse_mode="Markdown")
 
         for tk in tkrs:
             val = fetch_and_analyze_stock(tk)
             if val: update_smc_memory(tk, val)
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Error en recuperación: `{e}`", parse_mode="Markdown")
+        bot.reply_to(message, f"âŒ Error en recuperaciÃ³n: `{e}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['backup'])
 def cmd_backup(message):
@@ -1927,17 +1927,17 @@ def cmd_backup(message):
     if str(message.chat.id) != str(CHAT_ID): return
     save_state_to_telegram()
     tkrs = get_tracked_tickers()
-    bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
+    bot.reply_to(message, f"âœ… Backup forzado completado.\nðŸ“Š {len(tkrs)} activos guardados en Telegram Cloud.")
 
 from openai import OpenAI
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    msg = bot.reply_to(message, "👁️ Analizando gráfica con GÉNESIS Vision (GPT-4o OpenAI)...")
+    msg = bot.reply_to(message, "ðŸ‘ï¸ Analizando grÃ¡fica con GÃ‰NESIS Vision (GPT-4o OpenAI)...")
     try:
         if not OPENAI_API_KEY:
-            bot.edit_message_text("⚠️ Error de configuración de modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
+            bot.edit_message_text("âš ï¸ Error de configuraciÃ³n de modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
             return
 
         file_info = bot.get_file(message.photo[-1].file_id)
@@ -1947,13 +1947,13 @@ def handle_photo(message):
         client = OpenAI(api_key=OPENAI_API_KEY)
         
         prompt = (
-            "Actúa como una herramienta educativa de análisis técnico. Este análisis es puramente para fines de estudio y simulación, no es asesoría financiera. Analiza la siguiente imagen de manera objetiva.\n\n"
-            "Analiza bajo conceptos Smart Money Concepts (SMC). PROHIBIDO explicar qué significa SMC, Order Blocks, BOS o CHoCH. CERO TEORÍA.\n\n"
-            "Tu respuesta DEBE seguir ESTRICTAMENTE este formato, sin agregar introducciones ni despedidas. Tono frío, analítico y directo a los datos duros:\n\n"
-            "📊 CONTEXTO TÉCNICO: [1 o 2 líneas sobre la tendencia actual y la acción del precio evaluando liquidez y estructura].\n"
-            "🎯 NIVELES CLAVE: [Soportes, Resistencias u Order Blocks con PRECIOS EXACTOS según la gráfica].\n"
-            "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [Razón técnica directa].\n"
-            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Fuerte Bajista / Neutral / Esperar Confirmación] - [Justificación descriptiva en una línea, ej. 'Alta probabilidad de rebote en FVG en $150']."
+            "ActÃºa como una herramienta educativa de anÃ¡lisis tÃ©cnico. Este anÃ¡lisis es puramente para fines de estudio y simulaciÃ³n, no es asesorÃ­a financiera. Analiza la siguiente imagen de manera objetiva.\n\n"
+            "Analiza bajo conceptos Smart Money Concepts (SMC). PROHIBIDO explicar quÃ© significa SMC, Order Blocks, BOS o CHoCH. CERO TEORÃA.\n\n"
+            "Tu respuesta DEBE seguir ESTRICTAMENTE este formato, sin agregar introducciones ni despedidas. Tono frÃ­o, analÃ­tico y directo a los datos duros:\n\n"
+            "ðŸ“Š CONTEXTO TÃ‰CNICO: [1 o 2 lÃ­neas sobre la tendencia actual y la acciÃ³n del precio evaluando liquidez y estructura].\n"
+            "ðŸŽ¯ NIVELES CLAVE: [Soportes, Resistencias u Order Blocks con PRECIOS EXACTOS segÃºn la grÃ¡fica].\n"
+            "âš ï¸ RIESGO DE INVERSIÃ“N: [Bajo / Medio / Alto] - [RazÃ³n tÃ©cnica directa].\n"
+            "âš–ï¸ SESGO DIRECCIONAL: [Fuerte Alcista / Fuerte Bajista / Neutral / Esperar ConfirmaciÃ³n] - [JustificaciÃ³n descriptiva en una lÃ­nea, ej. 'Alta probabilidad de rebote en FVG en $150']."
         )
 
         res = client.chat.completions.create(
@@ -1967,9 +1967,9 @@ def handle_photo(message):
             max_tokens=800
         )
         
-        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.choices[0].message.content.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"---\nðŸ“Š *REPORTE VISUAL GÃ‰NESIS*\n---\n{res.choices[0].message.content.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Error de visión OpenAI: {e}")
+        logging.error(f"Error de visiÃ³n OpenAI: {e}")
         bot.edit_message_text("\u26a0\ufe0f Error de configuraci\u00f3n de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
@@ -1980,9 +1980,9 @@ def handle_text(message):
     # Ignorar mensajes de backup del bot
     if text.startswith(BACKUP_PREFIX): return
 
-    # === BOTONES MENÚ RÁPIDO ===
-    if text == "💰 Mi Wallet / Estado" or "CÓMO VOY" in text.upper() or "RESUMEN" in text.upper():
-        bot.reply_to(message, "💰 Extrayendo datos robustos y valuando métricas live...")
+    # === BOTONES MENÃš RÃPIDO ===
+    if text == "ðŸ’° Mi Wallet / Estado" or "CÃ“MO VOY" in text.upper() or "RESUMEN" in text.upper():
+        bot.reply_to(message, "ðŸ’° Extrayendo datos robustos y valuando mÃ©tricas live...")
         bot.send_message(message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
         return
 
@@ -2051,29 +2051,29 @@ def handle_text(message):
             bot.send_message(message.chat.id, "\u26a0\ufe0f Error generando reporte de flujos institucionales.", parse_mode="HTML")
         return
 
-    if text == "🌎 Geopolítica":
-        bot.reply_to(message, "🌍 Generando Reporte Estratégico Unificado GÉNESIS...")
+    if text == "ðŸŒŽ GeopolÃ­tica":
+        bot.reply_to(message, "ðŸŒ Generando Reporte EstratÃ©gico Unificado GÃ‰NESIS...")
         try:
             report = generar_reporte_macro_manual()
             if report:
                 bot.send_message(message.chat.id, report, parse_mode="HTML")
             else:
-                bot.send_message(message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+                bot.send_message(message.chat.id, "â˜• Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
         except Exception as e:
-            logging.error(f"Error en Geopolítica: {e}")
-            bot.send_message(message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+            logging.error(f"Error en GeopolÃ­tica: {e}")
+            bot.send_message(message.chat.id, "â˜• Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
         return
 
-    if text == "📉 SMC / Mi Cartera":
-        bot.reply_to(message, "📉 Limpiando caché y forzando datos frescos de exchange...")
-        report_lines = ["---", "🦅 *GÉNESIS: SMC / NIVELES CRÍTICOS*", "---"]
+    if text == "ðŸ“‰ SMC / Mi Cartera":
+        bot.reply_to(message, "ðŸ“‰ Limpiando cachÃ© y forzando datos frescos de exchange...")
+        report_lines = ["---", "ðŸ¦… *GÃ‰NESIS: SMC / NIVELES CRÃTICOS*", "---"]
         tkrs = get_tracked_tickers()
 
         if not tkrs:
-             bot.send_message(message.chat.id, "Tu cartera está vacía.", parse_mode="HTML")
+             bot.send_message(message.chat.id, "Tu cartera estÃ¡ vacÃ­a.", parse_mode="HTML")
              return
 
-        # REFRESH FORZADO: limpiar caché de precios para obligar consulta fresca
+        # REFRESH FORZADO: limpiar cachÃ© de precios para obligar consulta fresca
         for raw_tk in tkrs:
             tk = remap_ticker(raw_tk)
             LAST_KNOWN_PRICES.pop(tk, None)
@@ -2126,8 +2126,8 @@ def handle_text(message):
         if match:
             tk = remap_ticker(match.group(1))
             display_name = get_display_name(tk)
-            bot.reply_to(message, f"🔍 Análisis Profundo Institucional en {display_name}...")
-            bot.send_message(message.chat.id, f"---\n🏦 *RESEARCH: {display_name}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
+            bot.reply_to(message, f"ðŸ” AnÃ¡lisis Profundo Institucional en {display_name}...")
+            bot.send_message(message.chat.id, f"---\nðŸ¦ *RESEARCH: {display_name}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
         return
 
     if re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text):
@@ -2137,13 +2137,13 @@ def handle_text(message):
              tk = remap_ticker(raw_input)
              display_name = get_display_name(tk)
              if remove_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] ha sido borrado del radar.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                 bot.reply_to(message, f"---\nâœ… *GESTIÃ“N DE CARTERA*\n---\nâœ… [ {display_name} ] ha sido borrado del radar.\n\nâœ… Guardado en Base de Datos Blindada. Esta informaciÃ³n no se borrarÃ¡ aunque el bot se reinicie.", parse_mode="HTML")
              else:
-                 bot.reply_to(message, f"⚠️ El activo {display_name} no residía en tu radar.")
+                 bot.reply_to(message, f"âš ï¸ El activo {display_name} no residÃ­a en tu radar.")
         return
 
-    if re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
-        match = re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
+    if re.search(r'(?i)\b(?:AGREGA|AÃ‘ADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
+        match = re.search(r'(?i)\b(?:AGREGA|AÃ‘ADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
         if match:
              raw_input = match.group(1).upper()
              tk = remap_ticker(raw_input)
@@ -2151,42 +2151,42 @@ def handle_text(message):
 
              validation = get_safe_ticker_price(tk)
              if validation is None:
-                 bot.reply_to(message, "⚠️ Activo no encontrado en FMP. No se agregó.")
+                 bot.reply_to(message, "âš ï¸ Activo no encontrado en FMP. No se agregÃ³.")
                  return
              res = add_ticker(tk)
              if res == "DB_ERROR":
-                 bot.reply_to(message, f"🚨 ERROR DE BASE DE DATOS: No se pudo conectar a Supabase. Revisa tu DATABASE_URL.")
+                 bot.reply_to(message, f"ðŸš¨ ERROR DE BASE DE DATOS: No se pudo conectar a Supabase. Revisa tu DATABASE_URL.")
              elif res == True:
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] añadido al radar SMC.\n\n✅ Guardado directamente en Supabase (Sin cachés).", parse_mode="HTML")
+                 bot.reply_to(message, f"---\nâœ… *GESTIÃ“N DE CARTERA*\n---\nâœ… [ {display_name} ] aÃ±adido al radar SMC.\n\nâœ… Guardado directamente en Supabase (Sin cachÃ©s).", parse_mode="HTML")
              else:
-                 bot.reply_to(message, f"⚠️ El activo {display_name} ya existe en tu DB centralizada (Supabase).")
+                 bot.reply_to(message, f"âš ï¸ El activo {display_name} ya existe en tu DB centralizada (Supabase).")
         return
 
-    if re.search(r'(?i)\bCOMPR[EÉ]\b', text):
-        match = re.search(r'(?i)\bCOMPR[EÉ]\b\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Za-z0-9\-]+)', text)
+    if re.search(r'(?i)\bCOMPR[EÃ‰]\b', text):
+        match = re.search(r'(?i)\bCOMPR[EÃ‰]\b\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Za-z0-9\-]+)', text)
         if match:
             amt = match.group(1)
             tk = remap_ticker(match.group(2))
             display_name = get_display_name(tk)
 
-            bot.reply_to(message, f"💸 Consultando precio de fijación para {display_name}...")
+            bot.reply_to(message, f"ðŸ’¸ Consultando precio de fijaciÃ³n para {display_name}...")
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
-                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\n• Activo: {display_name}\n• Capital Invertido: ${float(amt):,.2f} USD\n• Entrada: ${fmt_price(intra['latest_price'])}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                bot.send_message(message.chat.id, f"---\nâœ… *CAPITAL REGISTRADO*\n---\nâ€¢ Activo: {display_name}\nâ€¢ Capital Invertido: ${float(amt):,.2f} USD\nâ€¢ Entrada: ${fmt_price(intra['latest_price'])}\n\nâœ… Guardado en Base de Datos Blindada. Esta informaciÃ³n no se borrarÃ¡ aunque el bot se reinicie.", parse_mode="HTML")
             else:
-                bot.reply_to(message, f"❌ No pude fijar el precio real de {display_name} ahora. Mercado cerrado temporalmente.")
+                bot.reply_to(message, f"âŒ No pude fijar el precio real de {display_name} ahora. Mercado cerrado temporalmente.")
         return
 
-    if re.search(r'(?i)\bVEND[IÍ]\b', text):
-        match = re.search(r'(?i)\bVEND[IÍ]\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Za-z0-9\-]+)', text)
+    if re.search(r'(?i)\bVEND[IÃ]\b', text):
+        match = re.search(r'(?i)\bVEND[IÃ]\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Za-z0-9\-]+)', text)
         if match:
             tk = remap_ticker(match.group(1))
             display_name = get_display_name(tk)
 
             investments = get_investments()
             if tk in investments:
-                bot.reply_to(message, f"💸 Procesando cierre institucional para {display_name}...")
+                bot.reply_to(message, f"ðŸ’¸ Procesando cierre institucional para {display_name}...")
                 entry = investments[tk]['entry_price']
                 amt = investments[tk]['amount_usd']
 
@@ -2196,24 +2196,24 @@ def handle_text(message):
                     roi = (live_price - entry) / entry if entry > 0 else 0
                     prof = amt * roi
                     sign = "+" if prof >= 0 else ""
-                    icon = "🟢" if prof >= 0 else "🔴"
+                    icon = "ðŸŸ¢" if prof >= 0 else "ðŸ”´"
                     final_usd = amt + prof
 
                     close_investment(tk)
                     add_realized_pnl(prof)
 
                     ans_str = (
-                        f"---\n✅ *GESTIÓN DE CARTERA: CIERRE*\n---\n"
-                        f"✅ [ {display_name} ] liquidado al precio de ${fmt_price(live_price)}\n"
-                        f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
+                        f"---\nâœ… *GESTIÃ“N DE CARTERA: CIERRE*\n---\n"
+                        f"âœ… [ {display_name} ] liquidado al precio de ${fmt_price(live_price)}\n"
+                        f"ðŸ’° <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
                         f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n\n"
-                        f"✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie."
+                        f"âœ… Guardado en Base de Datos Blindada. Esta informaciÃ³n no se borrarÃ¡ aunque el bot se reinicie."
                     )
                     bot.send_message(message.chat.id, ans_str, parse_mode="HTML")
                 else:
-                    bot.reply_to(message, f"❌ No pude contactar al mercado para saldar la liquidación de {display_name}.")
+                    bot.reply_to(message, f"âŒ No pude contactar al mercado para saldar la liquidaciÃ³n de {display_name}.")
             else:
-                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {display_name}. Usa 'Elimina {display_name}' para detener rastreo.")
+                 bot.reply_to(message, f"âš ï¸ No tienes capital invertido en {display_name}. Usa 'Elimina {display_name}' para detener rastreo.")
         return
 
 
@@ -2221,7 +2221,7 @@ def handle_text(message):
 _SENTINEL_TICK_INTERVAL = 40  # Cada 40 ticks de 30s = ~20 minutos
 
 def verificar_noticias_cartera():
-    """Vigila noticias específicas de los activos en la cartera de Eduardo"""
+    """Vigila noticias especÃ­ficas de los activos en la cartera de Eduardo"""
     tkrs = get_tracked_tickers()
     if not tkrs:
         return
@@ -2243,7 +2243,7 @@ def verificar_noticias_cartera():
         except Exception:
             continue
 
-        for article in news_list[:3]:  # Solo las 3 más recientes
+        for article in news_list[:3]:  # Solo las 3 mÃ¡s recientes
             title = article.get('title', '')
             if not title:
                 continue
@@ -2253,23 +2253,23 @@ def verificar_noticias_cartera():
             if check_and_add_seen_event(news_hash):
                 continue  # Ya la vimos
 
-            # Pasar por GPT para análisis de riesgo
+            # Pasar por GPT para anÃ¡lisis de riesgo
             if not GEMINI_API_KEY:
                 continue
 
             try:
                 client = genai.Client(api_key=GEMINI_API_KEY)
                 prompt = (
-                    f"Actúa como GÉNESIS, un gestor de riesgos senior de un fondo institucional (con base en Gemini 3.1 Pro).\n"
+                    f"ActÃºa como GÃ‰NESIS, un gestor de riesgos senior de un fondo institucional (con base en Gemini 3.1 Pro).\n"
                     f"Analiza esta noticia del activo {display_name} ({tk}):\n"
                     f"Titular: \"{title}\"\n\n"
                     f"REGLAS ESTRICTAS:\n"
                     f"- Si la noticia es NEUTRAL, de relleno, o sin impacto real en el precio local, responde EXACTAMENTE: 'NEUTRAL'\n"
                     f"- Si la noticia tiene impacto REAL (positivo o negativo), predice el impacto en las zonas de oferta/demanda y genera una alerta con este formato:\n"
-                    f"  📰 Suceso: [Resumen de 1 línea]\n"
-                    f"  💡 Sugerencia Institucional: [Vender / Vigilar / Hold / Comprar]\n"
-                    f"  ⚡ Impacto Estimado: [Alto / Medio] en la liquidez\n"
-                    f"RESPONDE EN ESPAÑOL."
+                    f"  ðŸ“° Suceso: [Resumen de 1 lÃ­nea]\n"
+                    f"  ðŸ’¡ Sugerencia Institucional: [Vender / Vigilar / Hold / Comprar]\n"
+                    f"  âš¡ Impacto Estimado: [Alto / Medio] en la liquidez\n"
+                    f"RESPONDE EN ESPAÃ‘OL."
                 )
 
                 res = client.models.generate_content(
@@ -2281,10 +2281,10 @@ def verificar_noticias_cartera():
                 if "NEUTRAL" in res.upper() and len(res) < 30:
                     continue
 
-                # Alerta que SÍ amerita atención
+                # Alerta que SÃ amerita atenciÃ³n
                 alert_msg = (
-                    f"---\n🚨 *CENTINELA GÉNESIS: ALERTA DE ACTIVO* 🚨\n---\n"
-                    f"📈 Activo: <b>{display_name}</b>\n"
+                    f"---\nðŸš¨ *CENTINELA GÃ‰NESIS: ALERTA DE ACTIVO* ðŸš¨\n---\n"
+                    f"ðŸ“ˆ Activo: <b>{display_name}</b>\n"
                     f"{res}\n"
                     f"---"
                 )
@@ -2299,7 +2299,7 @@ def verificar_noticias_cartera():
 _PROTECTION_BASELINE = {}  # {ticker: {'price': float, 'timestamp': datetime}}
 
 def monitor_proteccion_activos():
-    """SISTEMA GÉNESIS: Monitor de protección de activos en la wallet.
+    """SISTEMA GÃ‰NESIS: Monitor de protecciÃ³n de activos en la wallet.
     Compara precio FMP en vivo vs precio de referencia. Alerta si >3% de movimiento."""
     investments = get_investments()
     if not investments:
@@ -2326,7 +2326,7 @@ def monitor_proteccion_activos():
             _PROTECTION_BASELINE[tk] = {'price': current_price, 'timestamp': datetime.now()}
             continue
 
-        # Calcular variación porcentual
+        # Calcular variaciÃ³n porcentual
         pct_change = ((current_price - baseline) / baseline) * 100
 
         # Solo alertar si movimiento > 3%
@@ -2341,54 +2341,54 @@ def monitor_proteccion_activos():
         # Actualizar baseline al precio actual
         _PROTECTION_BASELINE[tk] = {'price': current_price, 'timestamp': datetime.now()}
 
-        # Determinar dirección
-        direction = "📉 CAÍDA" if pct_change < 0 else "📈 SUBIDA"
-        emoji = "🔴" if pct_change < 0 else "🟢"
+        # Determinar direcciÃ³n
+        direction = "ðŸ“‰ CAÃDA" if pct_change < 0 else "ðŸ“ˆ SUBIDA"
+        emoji = "ðŸ”´" if pct_change < 0 else "ðŸŸ¢"
 
-        # Obtener contexto SMC si está disponible
+        # Obtener contexto SMC si estÃ¡ disponible
         smc_context = ""
         smc = SMC_LEVELS_MEMORY.get(tk)
         if smc:
             if current_price < smc.get('sup', 0):
-                smc_context = f"\n⚠️ Precio POR DEBAJO del Soporte SMC (${fmt_price(smc['sup'])}). Zona de riesgo."
+                smc_context = f"\nâš ï¸ Precio POR DEBAJO del Soporte SMC (${fmt_price(smc['sup'])}). Zona de riesgo."
             elif current_price > smc.get('res', 0):
-                smc_context = f"\n✅ Precio POR ENCIMA de Resistencia SMC (${fmt_price(smc['res'])}). Posible breakout."
+                smc_context = f"\nâœ… Precio POR ENCIMA de Resistencia SMC (${fmt_price(smc['res'])}). Posible breakout."
             else:
-                smc_context = f"\n📊 Rango SMC: Soporte ${fmt_price(smc['sup'])} | Resistencia ${fmt_price(smc['res'])}"
+                smc_context = f"\nðŸ“Š Rango SMC: Soporte ${fmt_price(smc['sup'])} | Resistencia ${fmt_price(smc['res'])}"
 
-        # Generar veredicto con IA si está disponible
+        # Generar veredicto con IA si estÃ¡ disponible
         veredicto = ""
         if GEMINI_API_KEY:
             try:
                 client = genai.Client(api_key=GEMINI_API_KEY)
                 prompt = (
-                    f"Eres GÉNESIS (Gemini 3.1 Pro), un sistema de protección de activos enfocado en la prevención de riesgos y la estrategia Smart Money.\n"
+                    f"Eres GÃ‰NESIS (Gemini 3.1 Pro), un sistema de protecciÃ³n de activos enfocado en la prevenciÃ³n de riesgos y la estrategia Smart Money.\n"
                     f"Activo protegido: {display_name} ({tk})\n"
                     f"Precio real actual de FMP: ${fmt_price(current_price)}\n"
-                    f"Desviación anómala detectada: {pct_change:+.2f}% en las últimas horas\n"
+                    f"DesviaciÃ³n anÃ³mala detectada: {pct_change:+.2f}% en las Ãºltimas horas\n"
                     f"Contexto SMC en vivo:\n{smc_context}\n\n"
-                    f"Analiza profunda pero rápidamente esta desviación en relación a la liquidez del Order Block.\n"
-                    f"Da un VEREDICTO en 2 líneas: ¿Mantener, vender parcial, o reforzar posición institucional? Justifica mecánicamente.\n"
-                    f"ESPAÑOL ESTRICTO."
+                    f"Analiza profunda pero rÃ¡pidamente esta desviaciÃ³n en relaciÃ³n a la liquidez del Order Block.\n"
+                    f"Da un VEREDICTO en 2 lÃ­neas: Â¿Mantener, vender parcial, o reforzar posiciÃ³n institucional? Justifica mecÃ¡nicamente.\n"
+                    f"ESPAÃ‘OL ESTRICTO."
                 )
                 res = client.models.generate_content(
                     model="gemini-1.5-pro",
                     contents=prompt,
                 ).text.strip()
-                veredicto = f"\n\n🧠 <b>VEREDICTO GÉNESIS:</b>\n{res}"
+                veredicto = f"\n\nðŸ§  <b>VEREDICTO GÃ‰NESIS:</b>\n{res}"
             except Exception as e:
                 logging.debug(f"Protection GPT error: {e}")
 
         # Construir y enviar alerta
         entry_price = inv_data.get('entry_price', 0)
-        entry_info = f"\n🎯 Precio de entrada: ${fmt_price(entry_price)}" if entry_price > 0 else ""
+        entry_info = f"\nðŸŽ¯ Precio de entrada: ${fmt_price(entry_price)}" if entry_price > 0 else ""
 
         alert_msg = (
-            f"---\n🚨 <b>SISTEMA GÉNESIS — PROTECCIÓN DE ACTIVOS</b> 🚨\n---\n\n"
+            f"---\nðŸš¨ <b>SISTEMA GÃ‰NESIS â€” PROTECCIÃ“N DE ACTIVOS</b> ðŸš¨\n---\n\n"
             f"{emoji} <b>{direction} DETECTADA</b>\n\n"
-            f"💰 Activo: <b>{display_name}</b>\n"
-            f"📉 Movimiento: <b>{pct_change:+.2f}%</b>\n"
-            f"💵 Precio FMP: <b>${fmt_price(current_price)}</b>{entry_info}"
+            f"ðŸ’° Activo: <b>{display_name}</b>\n"
+            f"ðŸ“‰ Movimiento: <b>{pct_change:+.2f}%</b>\n"
+            f"ðŸ’µ Precio FMP: <b>${fmt_price(current_price)}</b>{entry_info}"
             f"{smc_context}"
             f"{veredicto}\n\n---"
         )
@@ -2396,24 +2396,24 @@ def monitor_proteccion_activos():
         try:
             bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
         except Exception as e:
-            logging.error(f"Error enviando alerta de protección para {tk}: {e}")
+            logging.error(f"Error enviando alerta de protecciÃ³n para {tk}: {e}")
 
 
-# ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
+# ----------------- BUCLE CENTINELA HFT PRECISIÃ“N QUIRÃšRGICA -----------------
 def boot_smc_levels_once():
-    logging.info("Arrancando Centinela Quirúrgico (30s)...")
+    logging.info("Arrancando Centinela QuirÃºrgico (30s)...")
 
-    # PASO CRÍTICO: Restaurar datos ANTES de hacer cualquier otra cosa
+    # PASO CRÃTICO: Restaurar datos ANTES de hacer cualquier otra cosa
     restore_state_from_telegram()
 
     tkrs = get_tracked_tickers()
-    logging.info(f"Activos cargados en radar: {len(tkrs)} → {tkrs}")
+    logging.info(f"Activos cargados en radar: {len(tkrs)} â†’ {tkrs}")
 
     for tk in tkrs:
         val = fetch_and_analyze_stock(tk)
         if val: update_smc_memory(tk, val)
 
-    # PASO INICIAL: Poblar contexto geopolítico al arrancar
+    # PASO INICIAL: Poblar contexto geopolÃ­tico al arrancar
     try:
         print("DEBUG BOOT: Inicializando contexto geopolitico...")
         genesis_strategic_report(manual=False)
@@ -2422,11 +2422,11 @@ def boot_smc_levels_once():
         print(f"DEBUG BOOT: Error inicializando contexto geo: {e}")
 
 def background_loop_proactivo():
-    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÍAS)"""
+    """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÃ“N Y ANTI-SPAM (TTL 7 DÃAS)"""
     boot_smc_levels_once()
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
-    protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
-    geo_refresh_counter = 0  # Contador para refrescar contexto geopolítico
+    protection_tick_counter = 0  # Contador para monitor de protecciÃ³n cada ~5 min
+    geo_refresh_counter = 0  # Contador para refrescar contexto geopolÃ­tico
     _PROTECTION_INTERVAL = 10  # ~5 minutos (10 ticks * 30s)
     _GEO_REFRESH_INTERVAL = 20  # ~10 minutos (20 ticks * 30s)
     loop_counter = 0  # Contador total de ciclos para heartbeat
@@ -2454,9 +2454,9 @@ def background_loop_proactivo():
             if unique_news:
                 ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
                 if ai_threat_evaluation:
-                     bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
+                     bot.send_message(CHAT_ID, f"---\nðŸš¨ *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
 
-            # === REFRESCAR CONTEXTO GEOPOLÍTICO: cada ~10 minutos ===
+            # === REFRESCAR CONTEXTO GEOPOLÃTICO: cada ~10 minutos ===
             if geo_refresh_counter >= _GEO_REFRESH_INTERVAL:
                 geo_refresh_counter = 0
                 try:
@@ -2474,13 +2474,13 @@ def background_loop_proactivo():
                 except Exception as e:
                     logging.error(f"Error en Centinela de Noticias: {e}")
 
-            # === MONITOR DE PROTECCIÓN DE ACTIVOS: cada ~5 minutos ===
+            # === MONITOR DE PROTECCIÃ“N DE ACTIVOS: cada ~5 minutos ===
             if protection_tick_counter >= _PROTECTION_INTERVAL:
                 protection_tick_counter = 0
                 try:
                     monitor_proteccion_activos()
                 except Exception as e:
-                    logging.error(f"Error en Monitor de Protección: {e}")
+                    logging.error(f"Error en Monitor de ProtecciÃ³n: {e}")
 
             # === ESCANEO DE ACTIVOS: precios, rupturas, ballenas ===
             whale_scan_count = 0
@@ -2495,16 +2495,16 @@ def background_loop_proactivo():
                     display_name = get_display_name(tk)
                     whale_scan_count += 1
 
-                    # === GUARDIA DE COHERENCIA: bloquear alertas si el precio es ilógico ===
+                    # === GUARDIA DE COHERENCIA: bloquear alertas si el precio es ilÃ³gico ===
                     price_is_reliable = True
                     if tk in LAST_KNOWN_PRICES:
                         last_p = LAST_KNOWN_PRICES[tk]['price']
                         if last_p > 0 and abs(cur_price - last_p) / last_p > 0.50:
-                            logging.warning(f"🚫 ALERTA BLOQUEADA para {tk}: ${cur_price:.2f} vs último ${last_p:.2f} (>50% de desviación). Error de API probable.")
+                            logging.warning(f"ðŸš« ALERTA BLOQUEADA para {tk}: ${cur_price:.2f} vs Ãºltimo ${last_p:.2f} (>50% de desviaciÃ³n). Error de API probable.")
                             price_is_reliable = False
 
-                    # Rupturas Doble Verificadas — SOLO si el precio es confiable
-                    # Rupturas Doble Verificadas — SOLO si el precio es confiable
+                    # Rupturas Doble Verificadas â€” SOLO si el precio es confiable
+                    # Rupturas Doble Verificadas â€” SOLO si el precio es confiable
                     topol = SMC_LEVELS_MEMORY.get(tk)
                     analysis = LAST_KNOWN_ANALYSIS.get(tk)
                     if topol and analysis and price_is_reliable:
@@ -2525,24 +2525,24 @@ def background_loop_proactivo():
                         if cur_price > topol['res']:
                             hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                             if not check_and_add_seen_event(hash_brk):
-                                msg = f"\ud83d\ude80 <b>RUPTURA DE RESISTENCIA EN {display_name}</b>.\nImpulso alcista detectado en ${fmt_price(cur_price)}.\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> COMPRAR / MANTENER."
+                                msg = f"\ud83d\ude80 <b>RUPTURA DE RESISTENCIA EN {display_name}</b>.\nImpulso alcista detectado en ${fmt_price(cur_price)}.\n\nðŸ§  {reason}\n\u2696\ufe0f <b>Veredicto:</b> COMPRAR / MANTENER."
                                 bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
 
                         # L\u00f3gica 2: Ruptura Descendente
                         elif cur_price < topol['sup']:
                             hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
                             if not check_and_add_seen_event(hash_drp):
-                                msg = f"\u26a0\ufe0f <b>RUPTURA DE SOPORTE EN {display_name}</b>.\nPosible ca\u00edda detectada (perdi\u00f3 soporte de ${fmt_price(topol['sup'])} a ${fmt_price(cur_price)}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> VENDER / CORTAR P\u00c9RDIDAS."
+                                msg = f"\u26a0\ufe0f <b>RUPTURA DE SOPORTE EN {display_name}</b>.\nPosible ca\u00edda detectada (perdi\u00f3 soporte de ${fmt_price(topol['sup'])} a ${fmt_price(cur_price)}).\n\nðŸ§  {reason}\n\u2696\ufe0f <b>Veredicto:</b> VENDER / CORTAR P\u00c9RDIDAS."
                                 bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
                             
                         # L\u00f3gica 3: Zona de Acumulaci\u00f3n (Cerca del Soporte)
                         elif topol['sup'] <= cur_price <= (topol['sup'] * 1.015):
                             hash_acc = f"ACCUM_{tk}_{topol['sup']}"
                             if not check_and_add_seen_event(hash_acc):
-                                msg = f"\ud83d\udc8e <b>ZONA DE ACUMULACI\u00d3N en {display_name}</b>.\nLas instituciones est\u00e1n comprando aqu\u00ed (muy cerca del Order Block de ${fmt_price(topol['sup'])}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> OPORTUNIDAD DE COMPRA."
+                                msg = f"\ud83d\udc8e <b>ZONA DE ACUMULACI\u00d3N en {display_name}</b>.\nLas instituciones est\u00e1n comprando aqu\u00ed (muy cerca del Order Block de ${fmt_price(topol['sup'])}).\n\nðŸ§  {reason}\n\u2696\ufe0f <b>Veredicto:</b> OPORTUNIDAD DE COMPRA."
                                 bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
 
-                    # Ballenas — con cruce geopolítico GENESIS
+                    # Ballenas â€” con cruce geopolÃ­tico GENESIS
                     # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
                     if intra['avg_vol'] > 0 and price_is_reliable:
                         is_crypto = '-USD' in tk
@@ -2640,11 +2640,11 @@ def test_whale(call):
 
 # ----------------- MAIN -----------------
 def main():
-    logging.info("Iniciando Génesis 1.0 — Persistencia: Telegram Cloud + SQLite local + Base64 logs")
+    logging.info("Iniciando GÃ©nesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     
-    # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
+    # 1. FORZAR CIERRE DE CONEXIÃ“N: Elimina conflicto getUpdates
     print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
     try:
         import time
@@ -2655,7 +2655,7 @@ def main():
 
     # Polling con auto-reconexion
     print("DEBUG BOOT: Iniciando Telegram polling...")
-    print(">>> SISTEMA G\u00c9NESIS ONLINE Y SIN ERRORES DE ESPACIOS <<<")
+    print(">>> GENESIS ONLINE <<<")
     while True:
         try:
             print("\ud83d\ude80 GENESIS EST\u00c1 VIVO Y ESCUCHANDO...")
@@ -2669,3 +2669,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
