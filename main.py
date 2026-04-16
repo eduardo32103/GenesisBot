@@ -806,71 +806,7 @@ def verify_1m_realtime_data(ticker):
 
 
 def _fetch_fmp_news(limit=10):
-    """Extrae noticias del mercado via FMP â€” usa SOLO endpoints /stable/"""
-    if not FMP_API_KEY:
-        return []
-
-    all_news = []
-
-    # === INTENTO 1: /stable/news/all (noticias generales) ===
-    try:
-        url = f"https://financialmodelingprep.com/stable/news/all?limit={limit}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=8)
-        logging.info(f"LOG FMP [stable/news/all]: Status {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and len(data) > 0:
-                return data
-    except Exception as e:
-        logging.debug(f"FMP stable/news/all error: {e}")
-
-    # === INTENTO 2: /stable/news (general) ===
-    try:
-        url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=8)
-        logging.info(f"LOG FMP [stable/news]: Status {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and len(data) > 0:
-                return data
-    except Exception as e:
-        logging.debug(f"FMP stable/news error: {e}")
-
-    # === INTENTO 3: /stable/news por ticker especÃ­fico ===
-    default_tickers = ["AAPL", "NVDA", "BTCUSD", "SPY", "MSFT"]
-    for ticker in default_tickers:
-        try:
-            url = f"https://financialmodelingprep.com/stable/news?symbol={ticker}&limit=3&apikey={FMP_API_KEY}"
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    all_news.extend(data)
-                    if len(all_news) >= limit:
-                        break
-        except Exception:
-            pass
-
-    if all_news:
-        logging.info(f"FMP noticias por ticker: {len(all_news)} artÃ­culos recopilados.")
-        return all_news[:limit]
-
-    # === INTENTO 4: /stable/stock-news por ticker ===
-    for ticker in default_tickers[:3]:
-        try:
-            url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=3&apikey={FMP_API_KEY}"
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    all_news.extend(data)
-        except Exception:
-            pass
-
-    if all_news:
-        return all_news[:limit]
-
-    logging.warning("FMP: Todos los endpoints de noticias fallaron.")
+    print("📰 Noticias: No disponibles temporalmente")
     return []
 
 
@@ -1871,20 +1807,20 @@ def cmd_start(message):
     
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton(text="GEOPOLITICA", callback_data="geopolitics"),
-        InlineKeyboardButton(text="RADAR DE BALLENAS", callback_data="whale_radar")
+        InlineKeyboardButton(text="🛡️ Geopolítica", callback_data="geopolitics"),
+        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="radar_institucional")
     )
     markup.add(
-        InlineKeyboardButton(text="NIVELES SMC", callback_data="smc_levels"),
-        InlineKeyboardButton(text="MI WALLET", callback_data="wallet_status")
+        InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
+        InlineKeyboardButton(text="💰 Mi Wallet / Estado", callback_data="wallet_status")
     )
     
     reply_text = """---
-<b>GENESIS 1.0 - TRADING INSTITUCIONAL</b>
+🐋 <b>GENESIS 1.0 - TRADING INSTITUCIONAL</b> 📈
 ---
-Bot iniciado.
-Radar: """ + str(len(tkrs)) + """ activos.
-Persistencia segura."""
+✅ Bot iniciado correctamente.
+📊 Radar: """ + str(len(tkrs)) + """ activos.
+🛡️ Persistencia activa. Tu cartera está segura."""
     bot.reply_to(message, reply_text, reply_markup=markup, parse_mode="HTML")
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
@@ -2644,17 +2580,17 @@ def background_loop_proactivo():
             print(f"DEBUG ERROR HFT LOOP: {e}")
             logging.error(f"Error HFT: {e}")
 
-@bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
+@bot.callback_query_handler(func=lambda call: call.data == "radar_institucional")
 def callback_whale_radar(call):
     try:
-        bot.answer_callback_query(call.id, "Consultando datos institucionales...")
+        bot.answer_callback_query(call.id, "🐋 Conectando con Wall Street...")
     except:
         pass
     
     try:
         tkrs = get_tracked_tickers()
         if not tkrs:
-            bot.send_message(call.message.chat.id, "Tu radar esta vacio.")
+            bot.send_message(call.message.chat.id, "✅ Tu radar está vacío.")
             return
 
         import os
@@ -2664,15 +2600,15 @@ def callback_whale_radar(call):
         syms = ",".join(tkrs)
         url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
         
-        resp = requests.get(url, timeout=15)
-        # Avoid json exception by checking status
-        if resp.status_code != 200:
-            bot.send_message(call.message.chat.id, "FMP API Blocked or Error: HTTP " + str(resp.status_code))
-            return
+        try:
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                raise ValueError(f"HTTP {resp.status_code}")
+            data = resp.json()
+        except:
+            data = []
             
-        data = resp.json()
-        
-        report = ["---", "<b>RADAR DE BALLENAS (EN VIVO)</b>", "---"]
+        report = ["--- 🐋 <b>RADAR DE BALLENAS</b> ---"]
         ballenas_count = 0
         
         if isinstance(data, list):
@@ -2685,15 +2621,18 @@ def callback_whale_radar(call):
                 
                 if avg_vol > 0 and vol > (avg_vol * 2):
                     ballenas_count += 1
-                    estado = "COMPRA MASIVA" if change > 0 else "VENTA MASIVA"
-                    report.append(f"<b>{tk}</b>: {estado}")
-                    report.append(f"   - Precio: ${price:.2f} ({change:+.2f}%)")
-                    report.append(f"   - Volumen Actual: {vol:,}")
-                    report.append(f"   - Promedio: {avg_vol:,} ({(vol/avg_vol):.1f}x)")
+                    estado = "🟢 COMPRA MASIVA" if change > 0 else "🔴 VENTA MASIVA"
+                    report.append(f"🪙 <b>{tk}</b>: {estado}")
+                    report.append(f"   • Precio: ${price:.2f} ({change:+.2f}%)")
+                    report.append(f"   • Volumen Actual: {vol:,}")
+                    report.append(f"   • Promedio: {avg_vol:,} ({(vol/avg_vol):.1f}x)")
                     report.append("")
                 
         if ballenas_count == 0:
-            bot.send_message(call.message.chat.id, "No se detectan anomalias de volumen en vivo en este momento.")
+            msg = """--- 🐋 RADAR DE BALLENAS ---
+Mercado en calma. No hay movimientos institucionales de alto valor en este momento.
+---"""
+            bot.send_message(call.message.chat.id, msg)
             return
             
         bot.send_message(call.message.chat.id, "\\n".join(report), parse_mode="HTML")
@@ -2701,7 +2640,7 @@ def callback_whale_radar(call):
     except Exception as e:
         print(f"ERROR RADAR: {e}")
         try:
-            bot.send_message(call.message.chat.id, f"Error interno en boton radar: {e}")
+            bot.send_message(call.message.chat.id, f"⚠️ Error interno en radar: {e}")
         except:
             pass
 
@@ -2736,4 +2675,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
