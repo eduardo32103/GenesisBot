@@ -2634,9 +2634,58 @@ def background_loop_proactivo():
             logging.error(f"Error HFT: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
-def test_whale(call):
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, "Reporte en mantenimiento")
+def whale_radar_callback(call):
+    bot.answer_callback_query(call.id, "📊 Analizando flujo institucional...")
+    bot.send_message(call.message.chat.id, "🔎 Buscando movimientos de ballenas en las últimas 24h...")
+    
+    try:
+        import datetime
+        now_t = datetime.datetime.now()
+        report = ["---", "🐋 BALANCE INSTITUCIONAL (24H) 🐋", "---"]
+        
+        total_net = 0
+        assets = []
+        
+        for tk, events in list(WHALE_HISTORY_DB.items()):
+            recent = [e for e in events if isinstance(e, dict) and 'timestamp' in e and (now_t - e['timestamp']).total_seconds() <= 86400]
+            WHALE_HISTORY_DB[tk] = recent 
+            if not recent: continue
+            
+            entradas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Compra"])
+            salidas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Venta"])
+            n_entradas = len([e for e in recent if e.get('type') == "Compra"])
+            n_salidas = len([e for e in recent if e.get('type') == "Venta"])
+            
+            neto = entradas - salidas
+            total_net += neto
+            
+            assets.append({'tk': tk, 'entradas': entradas, 'salidas': salidas, 'neto': neto, 'n_entradas': n_entradas, 'n_salidas': n_salidas})
+            
+        if not assets:
+            bot.send_message(call.message.chat.id, "✅ No se detectaron ballenas de alto valor en las últimas 24h.")
+            return
+
+        assets.sort(key=lambda x: abs(x['neto']), reverse=True)
+        for a in assets:
+            t_name = get_display_name(a['tk'])
+            sign = "+" if a['neto'] > 0 else ""
+            pres = "Alcista 📈" if a['neto'] > 0 else "Bajista 📉"
+            report.extend([
+                f"🪙 {t_name} ({a['tk']}):",
+                f"• 🟢 ENTRADAS: ${a['entradas']:,.0f} (De {a['n_entradas']} ballenas)",
+                f"• 🔴 SALIDAS: ${a['salidas']:,.0f} (De {a['n_salidas']} ballenas)",
+                f"• 📊 NETO: {sign}${a['neto']:,.0f} {pres}",
+                ""
+            ])
+            
+        report.append("---")
+        report.append(f"TOTAL DINERO INSTITUCIONAL: ${total_net:,.0f}")
+        
+        bot.send_message(call.message.chat.id, "\n".join(report))
+        
+    except Exception as e:
+        print(f"ERROR DENTRO DEL BOTÓN: {e}")
+        bot.send_message(call.message.chat.id, "⚠️ Error generando el reporte interno de radar.")
 
 # ----------------- MAIN -----------------
 def main():
