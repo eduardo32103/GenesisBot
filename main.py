@@ -1931,145 +1931,6 @@ def handle_text(message):
     if text.startswith(BACKUP_PREFIX): return
 
     # === BOTONES MENÃš RÃPIDO ===
-    if text == "ðŸ’° Mi Wallet / Estado" or "CÃ“MO VOY" in text.upper() or "RESUMEN" in text.upper():
-        bot.reply_to(message, "ðŸ’° Extrayendo datos robustos y valuando mÃ©tricas live...")
-        bot.send_message(message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
-        return
-
-    if text == "\ud83d\udc33 Radar Ballenas":
-        bot.reply_to(message, "\ud83d\udc33 Analizando flujos transaccionales institucionales (24H)...")
-        try:
-            import datetime
-            now_t = datetime.datetime.now()
-            report = ["---", "\ud83d\udc33 <b>REPORTE DE BALLENAS (\u00daLTIMAS 24H)</b> \ud83d\udc33", "---"]
-            
-            total_net = 0
-            assets = []
-            
-            for tk, events in list(WHALE_HISTORY_DB.items()):
-                # Filtrar \u00faltimas 24h (86400 segundos)
-                recent = [e for e in events if (now_t - e['timestamp']).total_seconds() <= 86400]
-                WHALE_HISTORY_DB[tk] = recent # Purga de memoria
-                
-                if not recent: continue
-                
-                entradas_events = [e['vol_usd'] for e in recent if "Compra" in e['type']]
-                salidas_events = [e['vol_usd'] for e in recent if "Venta" in e['type']]
-                
-                entradas = sum(entradas_events)
-                salidas = sum(salidas_events)
-                neto = entradas - salidas
-                total_net += neto
-                
-                assets.append({
-                    'tk': tk, 
-                    'entradas': entradas, 
-                    'salidas': salidas, 
-                    'neto': neto,
-                    'n_entradas': len(entradas_events),
-                    'n_salidas': len(salidas_events)
-                })
-                
-            if not assets:
-                report.append("\ud83c\udf0a Oc\u00e9ano tranquilo. Sin flujo institucional en las \u00faltimas 24h.")
-                bot.send_message(message.chat.id, "\n".join(report), parse_mode="HTML")
-                return
-                
-            # Orden de mayor a menor flujo de inter\u00e9s absoluto
-            assets.sort(key=lambda x: abs(x['neto']), reverse=True)
-            
-            for a in assets:
-                t_name = get_display_name(a['tk'])
-                sign = "+" if a['neto'] > 0 else ""
-                pres = "Presi\u00f3n Alcista \ud83d\udcc8" if a['neto'] > 0 else "Presi\u00f3n Bajista \ud83d\udcc9"
-                report.extend([
-                    f"\ud83e\ude99 <b>{t_name} ({a['tk']}):</b>",
-                    f"\u2022 \ud83d\udfe2 ENTRADAS: ${a['entradas']:,.0f} USD (De {a['n_entradas']} ballenas)",
-                    f"\u2022 \ud83d\udd34 SALIDAS: ${a['salidas']:,.0f} USD (De {a['n_salidas']} ballenas)",
-                    f"\u2022 \ud83d\udcca NETO: {sign}${a['neto']:,.0f} USD ({pres})",
-                    ""
-                ])
-                
-            report.append("---")
-            report.append("<b>TOTAL MERCADO (Cartera):</b>")
-            t_sign = "+" if total_net > 0 else ""
-            report.append(f"\ud83d\udcb0 Flujo Total: <b>{t_sign}${total_net:,.0f} USD</b>")
-            
-            bot.send_message(message.chat.id, "\n".join(report), parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Error en Reporte de Ballenas 24H: {e}")
-            bot.send_message(message.chat.id, "\u26a0\ufe0f Error generando reporte de flujos institucionales.", parse_mode="HTML")
-        return
-
-    if text == "ðŸŒŽ GeopolÃ­tica":
-        bot.reply_to(message, "ðŸŒ Generando Reporte EstratÃ©gico Unificado GÃ‰NESIS...")
-        try:
-            report = generar_reporte_macro_manual()
-            if report:
-                bot.send_message(message.chat.id, report, parse_mode="HTML")
-            else:
-                bot.send_message(message.chat.id, "â˜• Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Error en GeopolÃ­tica: {e}")
-            bot.send_message(message.chat.id, "â˜• Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
-        return
-
-    if text == "ðŸ“‰ SMC / Mi Cartera":
-        bot.reply_to(message, "ðŸ“‰ Limpiando cachÃ© y forzando datos frescos de exchange...")
-        report_lines = ["---", "ðŸ¦… *GÃ‰NESIS: SMC / NIVELES CRÃTICOS*", "---"]
-        tkrs = get_tracked_tickers()
-
-        if not tkrs:
-             bot.send_message(message.chat.id, "Tu cartera estÃ¡ vacÃ­a.", parse_mode="HTML")
-             return
-
-        # REFRESH FORZADO: limpiar cachÃ© de precios para obligar consulta fresca
-        for raw_tk in tkrs:
-            tk = remap_ticker(raw_tk)
-            LAST_KNOWN_PRICES.pop(tk, None)
-
-        for raw_tk in tkrs:
-            import time
-            time.sleep(0.2)
-            tk = remap_ticker(raw_tk)
-            analysis = fetch_and_analyze_stock(tk)
-            d_name = get_display_name(tk)
-
-            if analysis and isinstance(analysis, dict):
-                precio = analysis['price']
-                soporte = analysis['smc_sup']
-                resistencia = analysis['smc_res']
-                
-                if precio < soporte:
-                    veredicto = "COMPRA \ud83d\udfe2"
-                elif precio > resistencia:
-                    veredicto = "VENTA \ud83d\udd34"
-                else:
-                    veredicto = "MANTENER \u26a0\ufe0f"
-
-                report_lines.extend([
-                    f"\ud83c\udfe6 <b>RESEARCH: {d_name}</b>",
-                    f"\ud83d\udcb0 <b>Precio:</b> ${fmt_price(precio)}",
-                    f"\ud83d\udcc9 <b>Soporte (Piso):</b> ${fmt_price(soporte)}",
-                    f"\ud83d\udcc8 <b>Resistencia (Techo):</b> ${fmt_price(resistencia)}",
-                    "",
-                    "\ud83c\udfaf <b>NIVELES T\u00c1CTICOS:</b>",
-                    f"\u2022 \ud83d\udfe2 TP (Toma de ganancia): ${fmt_price(analysis['take_profit'])}",
-                    f"\u2022 \ud83d\udd34 SL (Stop Loss): ${fmt_price(analysis['stop_loss'])}",
-                    "",
-                    f"\u2696\ufe0f <b>VEREDICTO:</b> <b>{veredicto}</b>",
-                    "---"
-                ])
-            elif isinstance(analysis, str):
-                report_lines.extend([f"\ud83c\udfe6 <b>RESEARCH: {d_name}</b>", f"\u2022 {analysis}", "---"])
-            else:
-                report_lines.extend([f"\ud83c\udfe6 <b>{d_name}</b>", f"\u2022 \u26a0\ufe0f Niveles SMC no disponibles para este ticker en este momento", "---"])
-
-        texto_smc = "\n".join(report_lines)
-        final_text = texto_smc.encode('utf-8', 'ignore').decode('utf-8')
-        bot.send_message(message.chat.id, final_text, parse_mode="HTML")
-        return
-
     # === EXPRESIONES REGULARES INTELIGENTES NLP ===
     if re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text)
@@ -2646,6 +2507,80 @@ Mercado en calma. No hay movimientos institucionales de alto valor en este momen
             bot.send_message(call.message.chat.id, f"⚠️ Error interno en radar: {e}")
         except:
             pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "geopolitics")
+def callback_geopolitics(call):
+    bot.answer_callback_query(call.id, "🛡️ Generando Reporte Estratégico GÉNESIS...")
+    try:
+        report = generar_reporte_macro_manual()
+        if report:
+            bot.send_message(call.message.chat.id, report, parse_mode="HTML")
+        else:
+            bot.send_message(call.message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+    except Exception as e:
+        import logging
+        logging.error(f"Error en Geopolítica: {e}")
+        bot.send_message(call.message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "smc_levels")
+def callback_smc(call):
+    bot.answer_callback_query(call.id, "🦅 Forzando datos frescos y analizando niveles SMC...")
+    report_lines = ["---", "🦅 <b>GÉNESIS: SMC / NIVELES CRÍTICOS</b>", "---"]
+    tkrs = get_tracked_tickers()
+
+    if not tkrs:
+         bot.send_message(call.message.chat.id, "Tu radar está vacío.", parse_mode="HTML")
+         return
+
+    # REFRESH FORZADO: limpiar caché de precios
+    for raw_tk in tkrs:
+        tk = remap_ticker(raw_tk)
+        LAST_KNOWN_PRICES.pop(tk, None)
+
+    for raw_tk in tkrs:
+        import time
+        time.sleep(0.2)
+        tk = remap_ticker(raw_tk)
+        analysis = fetch_and_analyze_stock(tk)
+        d_name = get_display_name(tk)
+
+        if analysis and isinstance(analysis, dict):
+            precio = analysis['price']
+            soporte = analysis['smc_sup']
+            resistencia = analysis['smc_res']
+            
+            if precio < soporte:
+                veredicto = "COMPRA 🟢"
+            elif precio > resistencia:
+                veredicto = "VENTA 🔴"
+            else:
+                veredicto = "MANTENER ⚠️"
+
+            report_lines.extend([
+                f"🏦 <b>RESEARCH: {d_name}</b>",
+                f"💰 <b>Precio:</b> ${fmt_price(precio)}",
+                f"📉 <b>Soporte (Piso):</b> ${fmt_price(soporte)}",
+                f"📈 <b>Resistencia (Techo):</b> ${fmt_price(resistencia)}",
+                "",
+                "🎯 <b>NIVELES TÁCTICOS:</b>",
+                f"   • 🟢 TP (Toma de ganancia): ${fmt_price(analysis.get('take_profit', 0))}",
+                f"   • 🔴 SL (Stop Loss): ${fmt_price(analysis.get('stop_loss', 0))}",
+                "",
+                f"⚖️ <b>VEREDICTO:</b> <b>{veredicto}</b>",
+                "---"
+            ])
+        elif isinstance(analysis, str):
+            report_lines.extend([f"🏦 <b>RESEARCH: {d_name}</b>", f"• {analysis}", "---"])
+        else:
+            report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⚠️ Niveles SMC no disponibles para este ticker en este momento", "---"])
+
+    texto_smc = "\n".join(report_lines)
+    bot.send_message(call.message.chat.id, texto_smc, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "wallet_status")
+def callback_wallet(call):
+    bot.answer_callback_query(call.id, "💰 Extrayendo datos robustos y valuando métricas live...")
+    bot.send_message(call.message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
 
 # ----------------- MAIN -----------------
 def main():
