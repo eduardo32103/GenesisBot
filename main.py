@@ -1319,76 +1319,32 @@ def generar_reporte_macro_manual():
 
 
 def fetch_intraday_data(ticker):
-    """Obtiene precio + volumen EXCLUSIVAMENTE de FMP Pro para detección de ballenas."""
+    """Obtiene precio + volumen de FMP quote directo, ignorando endpoints Legacy."""
     tk = remap_ticker(ticker)
 
     if not FMP_API_KEY:
-        print(f"DEBUG INTRADAY: FMP_API_KEY es None, saltando {tk}")
         return None
 
-    # PASO 1: Obtener precio + volumen actual del día via FMP quote
     fmp_data = _fetch_fmp_quote(tk)
     if not fmp_data:
-        print(f"DEBUG INTRADAY: FMP quote fallo para {tk}")
         return None
 
-    price = fmp_data['price']
+    price = fmp_data.get('price')
     if not price:
         return None
 
     latest_vol = float(fmp_data.get('volume', 0) or 0)
-    quote_avg_vol = float(fmp_data.get('avgVolume', 0) or 0)
+    avg_vol = float(fmp_data.get('avgVolume', 0) or 0)
     change = float(fmp_data.get('change', 0) or 0)
-    vol_type = "Compra 🟢" if change >= 0 else "Venta 🔒´"
+    
+    vol_type = "Compra 🟢" if change >= 0 else "Venta 🔴"
 
-    # PASO 2: Obtener historial de volumen REAL de los últimos 30 días
-    avg_vol = 0
-    fmp_sym = _get_fmp_symbol(tk)
-    if _is_crypto_ticker(tk):
-        fmp_sym = tk.replace('-USD', '') + 'USD'
-
-    try:
-        # Endpoint moderno para evitar Legacy Endpoint 403
-        url = f"https://financialmodelingprep.com/api/v3/technical_indicator/1day/{fmp_sym}?type=sma&period=10&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=12)
-
-        if resp.status_code == 200:
-            hist = resp.json()
-
-            if isinstance(hist, list) and len(hist) >= 5:
-                # hist viene más reciente primero, tomar últimos 10 días para RVOL como pidió el usuario
-                recent_vols = []
-                for day in hist[:10]:
-                    v = float(day.get('volume', 0) or 0)
-                    if v > 0:
-                        recent_vols.append(v)
-
-                if recent_vols:
-                    avg_vol = sum(recent_vols) / len(recent_vols)
-                    print(f"DEBUG INTRADAY {tk}: historial OK | {len(recent_vols)} dias | avg_vol={avg_vol:,.0f} | latest_vol={latest_vol:,.0f} | spike={latest_vol/avg_vol:.2f}x" if avg_vol > 0 else f"DEBUG INTRADAY {tk}: avg_vol=0")
-                else:
-                    print(f"DEBUG INTRADAY {tk}: historial tiene 0 volumenes positivos de {len(hist)} registros")
-            else:
-                print(f"ERROR: FMP no devolvió historial para {tk}. Estructura: {str(raw)[:100]}")
-        else:
-            print(f"DEBUG INTRADAY {tk}: historial HTTP {resp.status_code} para {fmp_sym}")
-            # Mostrar el error exacto para diagnosticar
-            print(f"DEBUG INTRADAY {tk}: respuesta: {resp.text[:200]}")
-
-    except Exception as e:
-        print(f"DEBUG INTRADAY {tk}: historial error: {e}")
-
-    # PASO 3: Si el historial falló, usar avgVolume del quote como fallback
-    if avg_vol == 0 and quote_avg_vol > 0:
-        avg_vol = quote_avg_vol
-        print(f"DEBUG INTRADAY {tk}: usando avgVolume del quote como fallback | avg_vol={avg_vol:,.0f} | latest_vol={latest_vol:,.0f}")
-        if avg_vol > 0 and latest_vol > 0:
-            print(f"DEBUG INTRADAY {tk}: spike={latest_vol/avg_vol:.2f}x")
-
-    # PASO 4: Asegurar validez estad\u00edstica del Volumen
     if avg_vol < 1000:
-        print(f"DEBUG INTRADAY {tk}: Ignorando activo por avg_vol muy bajo o inv\u00e1lido ({avg_vol}). Evita Spam.")
+        print(f"DEBUG INTRADAY {tk}: Ignorando activo por avg_vol ({avg_vol}).")
         return None
+
+    if avg_vol > 0 and latest_vol > 0:
+        print(f"DEBUG INTRADAY {tk}: spike={(latest_vol/avg_vol):.2f}x (vol: {latest_vol:,.0f} / avg_vol: {avg_vol:,.0f})")
 
     return {
         'ticker': tk,
@@ -1695,20 +1651,20 @@ def build_wallet_dashboard():
     realized_pnl = get_realized_pnl()
 
     if not investments and realized_pnl == 0:
-        return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
-                "💧 <b>Capital Operativo Activo:</b> $0.00\n"
-                "💰 <b>Ganancia Mensual Acumulada:</b> $0.00 USD\n"
-                "📈 <b>Rendimiento M/M:</b> [0.00%]\n"
-                "📊 <b>Estatus:</b> [âšª SIN OPERACIONES]\n"
-                "🎯 <b>Meta del Mes (10%):</b> [â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘] 0%\n---")
+        return ("---\\n💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎\\n---\\n"
+                "💧 <b>Capital Operativo Activo:</b> $0.00\\n"
+                "💰 <b>Ganancia Mensual Acumulada:</b> $0.00 USD\\n"
+                "📈 <b>Rendimiento M/M:</b> [0.00%]\\n"
+                "📊 <b>Estatus:</b> [⚪ SIN OPERACIONES]\\n"
+                "🎯 <b>Meta del Mes (10%):</b> [██████████] 0%\\n---")
 
     if not investments and realized_pnl != 0:
-        return ("---\n💎 *ESTADO GLOBAL DE TU WALLET* 💎\n---\n"
-                "💧 <b>Capital Operativo Activo:</b> $0.00\n"
-                f"🔥µ <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\n"
-                "📈 <b>Rendimiento M/M:</b> [0.00%]\n"
-                "📊 <b>Estatus:</b> [âšª SIN POSICIONES ABIERTAS]\n"
-                "🎯 <b>Meta del Mes (10%):</b> [â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘â–‘] 0%\n---")
+        return ("---\\n💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎\\n---\\n"
+                "💧 <b>Capital Operativo Activo:</b> $0.00\\n"
+                f"🔥 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\\n"
+                "📈 <b>Rendimiento M/M:</b> [0.00%]\\n"
+                "📊 <b>Estatus:</b> [⚪ SIN POSICIONES ABIERTAS]\\n"
+                "🎯 <b>Meta del Mes (10%):</b> [██████████] 0%\\n---")
 
     total_invested = 0.0
     total_current = 0.0
@@ -1730,26 +1686,23 @@ def build_wallet_dashboard():
             total_current += curr_val
 
             sign = "+" if roi_percent >= 0 else ""
-            details.append(f"â€¢ {display_name}: {sign}{roi_percent*100:.2f}% (${fmt_price(live_price)})")
+            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}% (${fmt_price(live_price)})")
         else:
-            # Mercado cerrado - mostrar activo sin ocultar
             total_invested += init_amount
             total_current += init_amount
-            details.append(f"â€¢ {display_name}: â³ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
-
-
+            details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
 
     total_roi = (total_current - total_invested) / total_invested if total_invested > 0 else 0
     sign_roi = "+" if total_roi >= 0 else ""
-    status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔒´ EN PÉRDIDAS"
+    status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔴 EN PÉRDIDAS"
 
     goal = 0.10
     progress_ratio = max(0, min(1, total_roi / goal))
 
     filled_blocks = int(progress_ratio * 10)
     empty_blocks = 10 - filled_blocks
-    bar = "â–“" * filled_blocks + "â–‘" * empty_blocks
-    progress_text = f"{int(progress_ratio*100)}% completado"
+    bar = "█" * filled_blocks + "░" * empty_blocks
+    progress_text = f"{int(progress_ratio*100)}%"
 
     report = []
     report.append("---")
@@ -1759,12 +1712,13 @@ def build_wallet_dashboard():
     report.append(f"📊 <b>Estatus:</b> [{status_icon}]")
     report.append(f"🎯 <b>Meta del Mes (10%):</b> [{bar}] {progress_text}")
     if realized_pnl != 0:
-        report.append(f"🔥µ <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
+        report.append(f"🔥 <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
     report.append("---")
     if details:
         report.append("<i>(Detalle por activo)</i>")
         report.extend(details)
-    return "\n".join(report)
+    return "\\n".join(report)
+
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
 
