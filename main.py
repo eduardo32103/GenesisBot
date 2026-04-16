@@ -635,6 +635,7 @@ SMC_LEVELS_MEMORY = {}
 LAST_KNOWN_PRICES = {}  # Cache de último precio válido por ticker
 LAST_KNOWN_ANALYSIS = {}  # Cache de último análisis SMC completo por ticker
 last_whale_alert = {} # Memoria Anti-Spam para Ballenas
+WHALE_HISTORY_DB = {} # Acumulador de flujos 24H
 
 # Tickers de respaldo para Brent Crude
 BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
@@ -1985,49 +1986,69 @@ def handle_text(message):
         bot.send_message(message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
         return
 
-    if text == "🐳 Radar Ballenas":
-        bot.reply_to(message, "🐳 Analizando inteligencia integrada Ballenas + Geopolítica...")
+    if text == "\ud83d\udc33 Radar Ballenas":
+        bot.reply_to(message, "\ud83d\udc33 Analizando flujos transaccionales institucionales (24H)...")
         try:
-            # Reporte unificado: ballenas + contexto geopolítico
-            lines = ["🐳 <b>RADAR BALLENAS + INTELIGENCIA GÉNESIS</b> 🐳"]
-            lines.append("\u2500" * 28)
-
-            if not WHALE_MEMORY:
-                lines.append("")
-                lines.append("🌊 Océano tranquilo. Sin anomalías institucionales detectadas.")
-            else:
-                lines.append("")
-                lines.append("🚨 <b>ÚLTIMOS MOVIMIENTOS INSTITUCIONALES:</b>")
-                lines.append("")
-                for w in list(WHALE_MEMORY)[::-1]:
-                    is_crypto = '-USD' in w['ticker']
-                    vol_str = f"${w['vol_approx']:,} USD" if is_crypto else f"{w['vol_approx']:,} unidades"
-                    minutes_ago = int((datetime.now() - w['timestamp']).total_seconds() / 60)
-                    # Cruzar con contexto geopolítico
-                    risk_tag = ""
-                    if w['ticker'] in GENESIS_RISK_CONTEXT.get('high_risk_tickers', []):
-                        risk_tag = "\n    ⚠️ <b>[ENTORNO DE INESTABILIDAD DETECTADO]</b>"
-                    lines.append(f"🐋 <b>{get_display_name(w['ticker'])}</b>")
-                    lines.append(f"    Vol: {vol_str} | {w['type']} | {minutes_ago}min ago{risk_tag}")
-                    lines.append("")
-
-            # Contexto geopolítico resumido
-            lines.append("\u2500" * 28)
-            ctx = GENESIS_RISK_CONTEXT
-            if ctx.get('last_update'):
-                global_s = _classify_sentiment(ctx['sentiment_global'])
-                lines.append(f"🌍 <b>Contexto Macro:</b> {global_s['icon']} {global_s['label']} — {global_s['bull_pct']}% Alcista / {global_s['bear_pct']}% Bajista")
-                if ctx.get('high_risk_tickers'):
-                    risk_names = ', '.join([get_display_name(tk) for tk in ctx['high_risk_tickers'][:5]])
-                    lines.append(f"🔴 <b>Activos en zona de riesgo:</b> {risk_names}")
-            else:
-                lines.append("🌍 <b>Contexto Macro:</b> Pendiente de actualización")
-
-            lines.append("\u2500" * 28)
-            bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
+            import datetime
+            now_t = datetime.datetime.now()
+            report = ["---", "\ud83d\udc33 <b>REPORTE DE BALLENAS (\u00daLTIMAS 24H)</b> \ud83d\udc33", "---"]
+            
+            total_net = 0
+            assets = []
+            
+            for tk, events in list(WHALE_HISTORY_DB.items()):
+                # Filtrar \u00faltimas 24h (86400 segundos)
+                recent = [e for e in events if (now_t - e['timestamp']).total_seconds() <= 86400]
+                WHALE_HISTORY_DB[tk] = recent # Purga de memoria
+                
+                if not recent: continue
+                
+                entradas_events = [e['vol_usd'] for e in recent if "Compra" in e['type']]
+                salidas_events = [e['vol_usd'] for e in recent if "Venta" in e['type']]
+                
+                entradas = sum(entradas_events)
+                salidas = sum(salidas_events)
+                neto = entradas - salidas
+                total_net += neto
+                
+                assets.append({
+                    'tk': tk, 
+                    'entradas': entradas, 
+                    'salidas': salidas, 
+                    'neto': neto,
+                    'n_entradas': len(entradas_events),
+                    'n_salidas': len(salidas_events)
+                })
+                
+            if not assets:
+                report.append("\ud83c\udf0a Oc\u00e9ano tranquilo. Sin flujo institucional en las \u00faltimas 24h.")
+                bot.send_message(message.chat.id, "\n".join(report), parse_mode="HTML")
+                return
+                
+            # Orden de mayor a menor flujo de inter\u00e9s absoluto
+            assets.sort(key=lambda x: abs(x['neto']), reverse=True)
+            
+            for a in assets:
+                t_name = get_display_name(a['tk'])
+                sign = "+" if a['neto'] > 0 else ""
+                pres = "Presi\u00f3n Alcista \ud83d\udcc8" if a['neto'] > 0 else "Presi\u00f3n Bajista \ud83d\udcc9"
+                report.extend([
+                    f"\ud83e\ude99 <b>{t_name} ({a['tk']}):</b>",
+                    f"\u2022 \ud83d\udfe2 ENTRADAS: ${a['entradas']:,.0f} USD (De {a['n_entradas']} ballenas)",
+                    f"\u2022 \ud83d\udd34 SALIDAS: ${a['salidas']:,.0f} USD (De {a['n_salidas']} ballenas)",
+                    f"\u2022 \ud83d\udcca NETO: {sign}${a['neto']:,.0f} USD ({pres})",
+                    ""
+                ])
+                
+            report.append("---")
+            report.append("<b>TOTAL MERCADO (Cartera):</b>")
+            t_sign = "+" if total_net > 0 else ""
+            report.append(f"\ud83d\udcb0 Flujo Total: <b>{t_sign}${total_net:,.0f} USD</b>")
+            
+            bot.send_message(message.chat.id, "\n".join(report), parse_mode="HTML")
         except Exception as e:
-            logging.error(f"Error en Radar Ballenas unificado: {e}")
-            bot.send_message(message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+            logging.error(f"Error en Reporte de Ballenas 24H: {e}")
+            bot.send_message(message.chat.id, "\u26a0\ufe0f Error generando reporte de flujos institucionales.", parse_mode="HTML")
         return
 
     if text == "🌎 Geopolítica":
@@ -2539,40 +2560,63 @@ def background_loop_proactivo():
                     
                         rt = verify_1m_realtime_data(tk)
                         valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
-                        whale_hash_id = f"WHL_{tk}_{valid_vol}"
+                        
+                        is_crypto = '-USD' in tk
+                        vol_usd = valid_vol if is_crypto else (valid_vol * cur_price)
+                        
+                        min_elite_vol = 1_000_000
+                        if vol_usd < min_elite_vol:
+                            continue # Filtro \u00c9lite Institucional ($1M USD Minimo)
+                            
+                        # === INICIO DE SMART MONEY FILTER ===
+                        topol_whale = SMC_LEVELS_MEMORY.get(tk)
+                        analysis_whale = LAST_KNOWN_ANALYSIS.get(tk)
+                        
+                        if not topol_whale or not analysis_whale:
+                            continue # Requiere SMC para validar
+                            
+                        rsi_w = analysis_whale.get('rsi', 50)
+                        w_sup = topol_whale['sup']
+                        w_res = topol_whale['res']
+                        
+                        if intra['vol_type'] == "Compra":
+                            # Solo compras en Oferta (<5% del soporte) y RSI < 35
+                            if cur_price > (w_sup * 1.05) or rsi_w > 35:
+                                continue # Ballena atrapada / FOMO temprano
+                            smart_msg = "\ud83d\udd25 <b>BALLENA DE ALTA CONVICCI\u00d3N DETECTADA:</b>\nEntrada institucional masiva en bloque SMC de demanda (Soporte) con agotamiento RSI.\n\u2696\ufe0f Probabilidad de \u00e9xito alcista: <b>ALTA</b>."
+                        else:
+                            # Solo ventas en Resistencia (>95% de resistencia) y RSI > 65
+                            if cur_price < (w_res * 0.95) or rsi_w < 65:
+                                continue # Venta prematura o toma de ganancia parcial
+                            smart_msg = "\ud83d\udd25 <b>BALLENA VENDEDORA DE ALTA CONVICCI\u00d3N:</b>\nSalida institucional masiva detectada en techo SMC con sobrecompra t\u00e9cnica.\n\u2696\ufe0f Probabilidad de reversi\u00f3n bajista: <b>ALTA</b>."
+                        # === FIN DE SMART MONEY FILTER ===
+                            
+                        whale_hash_id = f"WHL_SMART_{tk}_{valid_vol}"
 
                         if not check_and_add_seen_event(whale_hash_id):
-                            last_whale_alert[tk] = current_time # Registrar el envío s\u00f3lo si es nuevo
+                            last_whale_alert[tk] = current_time # Registrar el env\u00edo s\u00f3lo si es nuevo
                             whale_detected_count += 1
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
+                            
+                            if tk not in WHALE_HISTORY_DB:
+                                WHALE_HISTORY_DB[tk] = []
+                            
+                            WHALE_HISTORY_DB[tk].append({
+                                "type": intra['vol_type'],
+                                "vol_usd": float(vol_usd),
+                                "timestamp": now
+                            })
+                            
                             if is_crypto:
                                 vol_display = f"${valid_vol:,} USD"
                             else:
                                 vol_display = f"{valid_vol:,} unidades"
 
-                            print(f"DEBUG WHALE DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
+                            print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
 
-                            # === ALERTA ROJA: Ballena + Sentimiento negativo ===
-                            is_high_risk = tk in GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])
-                            neg_sentiment = GENESIS_RISK_CONTEXT.get('sentiment_global', 0) < -0.3
-                            is_massive = valid_vol > 100_000_000 if is_crypto else valid_vol > 5_000_000
-
-                            if is_high_risk or (neg_sentiment and is_massive):
-                                alert_msg = (
-                                    "\u2500" * 28 + "\n"
-                                    f"🚨 <b>ALERTA ROJA: BALLENA EN ENTORNO DE INESTABILIDAD</b> 🚨\n"
-                                    "\u2500" * 28 + "\n"
-                                    f"🐋 Bloque masivo en <b>{display_name}</b>: {vol_display}\n"
-                                    f"📊 Presión: {intra['vol_type']}\n"
-                                    f"🌍 Contexto: Sentimiento del mercado <b>NEGATIVO</b>\n"
-                                    f"⚠️ Movimiento de Ballena detectado en entorno de inestabilidad\n"
-                                    f"💡 <b>Recomendación:</b> Aumentar vigilancia sobre {display_name}{note}\n"
-                                    "\u2500" * 28
-                                )
-                                bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
-                            else:
-                                bot.send_message(CHAT_ID, f"---\n⚠️ *ALERTA DE BALLENA HFT*\n---\nBloque masivo cruzado en <b>{display_name}</b>: {vol_display}.\nPresión Institucional: {intra['vol_type']}{note}", parse_mode="HTML")
+                            bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}{note}"
+                            bot.send_message(CHAT_ID, bot_msg, parse_mode="HTML")
                 else:
                     if intra['avg_vol'] == 0:
                         print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
