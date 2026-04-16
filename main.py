@@ -634,6 +634,7 @@ WHALE_MEMORY = deque(maxlen=5)
 SMC_LEVELS_MEMORY = {}
 LAST_KNOWN_PRICES = {}  # Cache de último precio válido por ticker
 LAST_KNOWN_ANALYSIS = {}  # Cache de último análisis SMC completo por ticker
+last_whale_alert = {} # Memoria Anti-Spam para Ballenas
 
 # Tickers de respaldo para Brent Crude
 BRENT_FALLBACK_CHAIN = ["BZ=F", "CO=F", "BNO"]
@@ -1447,10 +1448,10 @@ def fetch_intraday_data(ticker):
         if avg_vol > 0 and latest_vol > 0:
             print(f"DEBUG INTRADAY {tk}: spike={latest_vol/avg_vol:.2f}x")
 
-    # PASO 4: Asegurar que avg_vol NUNCA sea 0
-    if avg_vol == 0:
-        print(f"DEBUG INTRADAY {tk}: SIN DATOS DE VOLUMEN. latest_vol={latest_vol:,.0f} | avg_vol=0 | Usando 1 para evitar error matematico")
-        avg_vol = 1
+    # PASO 4: Asegurar validez estad\u00edstica del Volumen
+    if avg_vol < 1000:
+        print(f"DEBUG INTRADAY {tk}: Ignorando activo por avg_vol muy bajo o inv\u00e1lido ({avg_vol}). Evita Spam.")
+        return None
 
     return {
         'ticker': tk,
@@ -2531,11 +2532,17 @@ def background_loop_proactivo():
                         print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
 
                     if spike >= whale_threshold:
+                        import time
+                        current_time = time.time()
+                        if tk in last_whale_alert and (current_time - last_whale_alert[tk]) < 7200:
+                            continue # Cooldown de 2 horas activo
+                    
                         rt = verify_1m_realtime_data(tk)
                         valid_vol = int(rt['vol']) if rt else int(intra['latest_vol'])
                         whale_hash_id = f"WHL_{tk}_{valid_vol}"
 
                         if not check_and_add_seen_event(whale_hash_id):
+                            last_whale_alert[tk] = current_time # Registrar el envío s\u00f3lo si es nuevo
                             whale_detected_count += 1
                             note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                             WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
