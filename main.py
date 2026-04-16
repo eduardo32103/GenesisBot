@@ -7,6 +7,7 @@ import requests
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
+from google import genai
 # yfinance ELIMINADO â€” Todo via FMP Pro
 import threading
 import time
@@ -341,12 +342,12 @@ def _restore_from_b64(b64_data):
             c = conn.cursor()
             for tk, info in portfolio.items():
                 c.execute('''
-                    INSERT INTO wallet (ticker, is_investment, amount_usd, entry_price, timestamp) 
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (ticker) DO UPDATE SET 
+                    INSERT INTO wallet (user_id, ticker, is_investment, amount_usd, entry_price, timestamp) 
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, ticker) DO UPDATE SET 
                     is_investment = EXCLUDED.is_investment, amount_usd = EXCLUDED.amount_usd, 
                     entry_price = EXCLUDED.entry_price, timestamp = EXCLUDED.timestamp
-                ''', (tk, int(info.get("is_investment", 0)), float(info.get("amount_usd", 0)), float(info.get("entry_price", 0)), info.get("timestamp", datetime.now().isoformat())))
+                ''', (int(CHAT_ID), tk, int(info.get("is_investment", 0)), float(info.get("amount_usd", 0)), float(info.get("entry_price", 0)), info.get("timestamp", datetime.now().isoformat())))
 
             rpnl = stats.get("realized_pnl", 0)
             if rpnl:
@@ -1435,6 +1436,7 @@ def fetch_and_analyze_stock(ticker):
         rs = ema_up / ema_down
         rsi_series = 100 - (100 / (1 + rs))
         rsi_series[ema_down == 0] = 100
+        latest_rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
         # MACD
         macd_line = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
@@ -2331,6 +2333,7 @@ def background_loop_proactivo():
                             print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
 
                         if spike >= whale_threshold:
+                            current_time = time.time()
                             if tk in last_whale_alert and (current_time - last_whale_alert[tk]) < 7200:
                                 continue # Cooldown de 2 horas activo
                         
@@ -2373,30 +2376,30 @@ def background_loop_proactivo():
                             
                             whale_hash_id = f"WHL_SMART_{tk}_{valid_vol}"
 
-                        if not check_and_add_seen_event(whale_hash_id):
-                            last_whale_alert[tk] = current_time # Registrar el env\u00edo s\u00f3lo si es nuevo
-                            whale_detected_count += 1
-                            note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
-                            WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
-                        
-                            if tk not in WHALE_HISTORY_DB:
-                                WHALE_HISTORY_DB[tk] = []
-                        
-                            WHALE_HISTORY_DB[tk].append({
-                                "type": intra['vol_type'],
-                                "vol_usd": float(vol_usd),
-                                "timestamp": now
-                            })
-                        
-                            if is_crypto:
-                                vol_display = f"${valid_vol:,} USD"
-                            else:
-                                vol_display = f"{valid_vol:,} unidades"
+                            if not check_and_add_seen_event(whale_hash_id):
+                                last_whale_alert[tk] = current_time # Registrar el env\u00edo s\u00f3lo si es nuevo
+                                whale_detected_count += 1
+                                note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
+                                WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
+                            
+                                if tk not in WHALE_HISTORY_DB:
+                                    WHALE_HISTORY_DB[tk] = []
+                            
+                                WHALE_HISTORY_DB[tk].append({
+                                    "type": intra['vol_type'],
+                                    "vol_usd": float(vol_usd),
+                                    "timestamp": now
+                                })
+                            
+                                if is_crypto:
+                                    vol_display = f"${valid_vol:,} USD"
+                                else:
+                                    vol_display = f"{valid_vol:,} unidades"
 
-                            print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
+                                print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
 
-                            bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}{note}"
-                            bot.send_message(CHAT_ID, bot_msg, parse_mode="HTML")
+                                bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}{note}"
+                                bot.send_message(CHAT_ID, bot_msg, parse_mode="HTML")
                         else:
                             if intra['avg_vol'] == 0:
                                 print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
