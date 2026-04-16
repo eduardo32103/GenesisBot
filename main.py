@@ -2636,7 +2636,7 @@ def background_loop_proactivo():
 @bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
 def test_whale(call):
     bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, "\ud83d\udc33 Buscando ballenas...")
+    bot.send_message(call.message.chat.id, "Reporte en mantenimiento")
 
 # ----------------- MAIN -----------------
 def main():
@@ -2655,7 +2655,7 @@ def main():
 
     # Polling con auto-reconexion
     print("DEBUG BOOT: Iniciando Telegram polling...")
-    print(">>> GENESIS HA REVIVIDO <<<")
+    print(">>> SISTEMA G\u00c9NESIS ACTIVO <<<")
     while True:
         try:
             print("\ud83d\ude80 GENESIS EST\u00c1 VIVO Y ESCUCHANDO...")
