@@ -12,6 +12,8 @@ from google import genai
 import threading
 import time
 import json
+import hashlib
+import unicodedata
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
@@ -37,6 +39,113 @@ else:
     logging.info(f"✅ FMP_API_KEY cargada correctamente ({len(os.environ.get('FMP_API_KEY'))} caracteres).")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+_MOJIBAKE_PATTERN = re.compile(r'(?:[ÃÂâðÅï]|[\u0080-\u00ff\u0152-\u0178\u2013-\u203a\u20ac\u2122]){2,}')
+_MOJIBAKE_REPLACEMENTS = {
+    "\xf0\u0178\u2018\x81\xef\xb8\x8f": "👁️",
+    "\xf0\u0178\x8f\xa6": "🏦",
+    "\xf0\u0178\xa7\xa0": "🧠",
+    "\xf0\u0178\x90\u2039": "🐋",
+    "\xf0\u0178\u0178\xa1": "🟡",
+    "\xe2\u20ac\xa2": "•",
+    "\xe2\u20ac\u201d": "—",
+    "\U0001f512\u201e": "🔒",
+    "\U0001f512\x8d": "🔍",
+    "\u26a0\ufe0f\x8f": "⚠️",
+    "\U0001f525\xb8": "🔥",
+    "\U0001f525\xb5": "💰",
+    "\U0001f534\xb4": "🔴",
+    "\U0001f310\u0160": "🌐",
+}
+
+
+def _decode_mojibake_segment(segment):
+    raw_bytes = bytearray()
+    for ch in segment:
+        codepoint = ord(ch)
+        if codepoint <= 255:
+            raw_bytes.append(codepoint)
+            continue
+        try:
+            raw_bytes.extend(ch.encode('cp1252'))
+        except Exception:
+            return segment
+
+    try:
+        return raw_bytes.decode('utf-8')
+    except Exception:
+        return segment
+
+
+def _clean_outgoing_text(text):
+    if not isinstance(text, str) or not text:
+        return text
+
+    backup_prefix = globals().get("BACKUP_PREFIX")
+    if backup_prefix and text.startswith(backup_prefix):
+        return text
+
+    cleaned = text
+    for _ in range(2):
+        updated = _MOJIBAKE_PATTERN.sub(lambda match: _decode_mojibake_segment(match.group(0)), cleaned)
+        if updated == cleaned:
+            break
+        cleaned = updated
+
+    for bad, good in _MOJIBAKE_REPLACEMENTS.items():
+        cleaned = cleaned.replace(bad, good)
+
+    for control_char in ("\u008f", "\u0090", "\u0081", "\u009d"):
+        cleaned = cleaned.replace(control_char, "")
+
+    return cleaned
+
+
+def _wrap_bot_text_methods():
+    original_send_message = bot.send_message
+    original_reply_to = bot.reply_to
+    original_edit_message_text = bot.edit_message_text
+    original_answer_callback_query = bot.answer_callback_query
+
+    def send_message_wrapper(*args, **kwargs):
+        args = list(args)
+        if len(args) >= 2:
+            args[1] = _clean_outgoing_text(args[1])
+        elif 'text' in kwargs:
+            kwargs['text'] = _clean_outgoing_text(kwargs['text'])
+        return original_send_message(*args, **kwargs)
+
+    def reply_to_wrapper(*args, **kwargs):
+        args = list(args)
+        if len(args) >= 2:
+            args[1] = _clean_outgoing_text(args[1])
+        elif 'text' in kwargs:
+            kwargs['text'] = _clean_outgoing_text(kwargs['text'])
+        return original_reply_to(*args, **kwargs)
+
+    def edit_message_text_wrapper(*args, **kwargs):
+        args = list(args)
+        if args:
+            args[0] = _clean_outgoing_text(args[0])
+        elif 'text' in kwargs:
+            kwargs['text'] = _clean_outgoing_text(kwargs['text'])
+        return original_edit_message_text(*args, **kwargs)
+
+    def answer_callback_query_wrapper(*args, **kwargs):
+        args = list(args)
+        if len(args) >= 2:
+            args[1] = _clean_outgoing_text(args[1])
+        elif 'text' in kwargs and kwargs['text'] is not None:
+            kwargs['text'] = _clean_outgoing_text(kwargs['text'])
+        return original_answer_callback_query(*args, **kwargs)
+
+    bot.send_message = send_message_wrapper
+    bot.reply_to = reply_to_wrapper
+    bot.edit_message_text = edit_message_text_wrapper
+    bot.answer_callback_query = answer_callback_query_wrapper
+
+
+_wrap_bot_text_methods()
 
 # --- BASE DE DATOS LOCAL/REMOTA (PostgreSQL) ---
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -322,9 +431,8 @@ def restore_state_from_telegram():
         logging.debug(f"Updates check failed: {e}")
 
     # === FUENTE 4: portfolio.json del repositorio/disco ===
-    # Si todo falla, no borrar la DB actual, simplemente decir que no hay backup remoto
-    logging.warning("⚠️ No se encontró NINGÚN respaldo en cloud. Cartera usará solo SQLite local.")
-    return False
+    logging.warning("No se encontró respaldo remoto. Intentando restauración local desde portfolio.json.")
+    return _restore_from_repo_json()
 
 def _restore_from_b64(b64_data):
     """Restaura la base de datos desde un string Base64"""
@@ -628,6 +736,7 @@ def reset_total_db():
         conn.commit()
     finally:
         pass # conn.close() delegado a pooling global
+    save_state_to_telegram()
     logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
 
 
@@ -1627,10 +1736,10 @@ def perform_deep_analysis(ticker):
         f"3. Realiza una fusión de perspectivas: cruza los niveles mecánicos de 'Smart Money Concepts' (Bloques de órdenes y vacíos de liquidez) con el indicador de Tendencia SMC.\n"
         f"4. Evalúa exhaustivamente si el precio actual sugiere que los algoritmos institucionales están acumulando en zona de demanda o distribuyendo en zona de oferta.\n"
         f"5. Combina el pulso macro de las noticias y detalla de qué manera afectan los niveles técnicos.\n\n"
-        f"FORMATO DE RESPUESTA EN GITHUB MARKDOWN:\n"
-        f"📊 **Análisis Smart Money (SMC):** [Profundiza sobre liquidez, imbalances y el order block actual]\n"
-        f"📰 **Contexto Macro / Institucional:** [Tu lectura de cómo el flujo de impacto altera la técnica]\n"
-        f"🎯 **VEREDICTO FINAL:** [COMPRAR / VENDER / MANTENER] + [Justificación institucional en 2 líneas]\n\n"
+        f"FORMATO DE RESPUESTA EN HTML SIMPLE PARA TELEGRAM:\n"
+        f"<b>📊 Análisis Smart Money (SMC):</b> [Profundiza sobre liquidez, imbalances y el order block actual]\n"
+        f"<b>📰 Contexto Macro / Institucional:</b> [Tu lectura de cómo el flujo de impacto altera la técnica]\n"
+        f"<b>🎯 Veredicto Final:</b> [COMPRAR / VENDER / MANTENER] + [Justificación institucional en 2 líneas]\n\n"
         f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
     )
 
@@ -1652,22 +1761,6 @@ def build_wallet_dashboard():
     investments = get_investments()
     realized_pnl = get_realized_pnl()
 
-    if not investments and realized_pnl == 0:
-        return ("---\\n💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎\\n---\\n"
-                "💧 <b>Capital Operativo Activo:</b> $0.00\\n"
-                "💰 <b>Ganancia Mensual Acumulada:</b> $0.00 USD\\n"
-                "📈 <b>Rendimiento M/M:</b> [0.00%]\\n"
-                "📊 <b>Estatus:</b> [⚪ SIN OPERACIONES]\\n"
-                "🎯 <b>Meta del Mes (10%):</b> [██████████] 0%\\n---")
-
-    if not investments and realized_pnl != 0:
-        return ("---\\n💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎\\n---\\n"
-                "💧 <b>Capital Operativo Activo:</b> $0.00\\n"
-                f"🔥 <b>Ganancia Mensual (Acumulado Ventas):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD\\n"
-                "📈 <b>Rendimiento M/M:</b> [0.00%]\\n"
-                "📊 <b>Estatus:</b> [⚪ SIN POSICIONES ABIERTAS]\\n"
-                "🎯 <b>Meta del Mes (10%):</b> [██████████] 0%\\n---")
-
     total_invested = 0.0
     total_current = 0.0
     details = []
@@ -1676,11 +1769,12 @@ def build_wallet_dashboard():
         init_amount = dt['amount_usd']
         entry_p = dt['entry_price']
         intra = fetch_intraday_data(tk)
+        safe_price = get_safe_ticker_price(tk) if not intra else None
 
         display_name = get_display_name(tk)
 
-        if intra:
-            live_price = intra['latest_price']
+        if intra or safe_price:
+            live_price = intra['latest_price'] if intra else safe_price['price']
             roi_percent = (live_price - entry_p) / entry_p if entry_p > 0 else 0
             curr_val = init_amount * (1 + roi_percent)
 
@@ -1688,15 +1782,16 @@ def build_wallet_dashboard():
             total_current += curr_val
 
             sign = "+" if roi_percent >= 0 else ""
-            details.append(f"• {display_name}: {sign}{roi_percent*100:.2f}% (${fmt_price(live_price)})")
+            icon = "🟢" if roi_percent >= 0 else "🔴"
+            details.append(f"{icon} <b>{display_name}</b> | {sign}{roi_percent*100:.2f}% | ${fmt_price(live_price)}")
         else:
             total_invested += init_amount
             total_current += init_amount
-            details.append(f"• {display_name}: ⏳ Mercado cerrado (entrada: ${fmt_price(entry_p)})")
+            details.append(f"⏳ <b>{display_name}</b> | Sin precio en vivo | Entrada ${fmt_price(entry_p)}")
 
     total_roi = (total_current - total_invested) / total_invested if total_invested > 0 else 0
     sign_roi = "+" if total_roi >= 0 else ""
-    status_icon = "🟢 EN GANANCIAS" if total_roi >= 0 else "🔴 EN PÉRDIDAS"
+    status_icon = "🟢 EN GANANCIA" if total_roi >= 0 else "🔴 EN PÉRDIDA"
 
     goal = 0.10
     progress_ratio = max(0, min(1, total_roi / goal))
@@ -1705,21 +1800,27 @@ def build_wallet_dashboard():
     empty_blocks = 10 - filled_blocks
     bar = "█" * filled_blocks + "░" * empty_blocks
     progress_text = f"{int(progress_ratio*100)}%"
+    total_current_display = total_current if investments else 0.0
+    total_invested_display = total_invested if investments else 0.0
 
-    report = []
-    report.append("---")
-    report.append("💎 <b>ESTADO GLOBAL DE TU WALLET</b> 💎")
-    report.append("---")
-    report.append(f"💧 <b>Rendimiento M/M (Activo):</b> [{sign_roi}{total_roi*100:.2f}%]")
-    report.append(f"📊 <b>Estatus:</b> [{status_icon}]")
-    report.append(f"🎯 <b>Meta del Mes (10%):</b> [{bar}] {progress_text}")
-    if realized_pnl != 0:
-        report.append(f"🔥 <b>Acumulado en Ventas (Mes):</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD")
-    report.append("---")
+    overview = [
+        f"💼 <b>Capital activo:</b> ${total_current_display:,.2f}",
+        f"🧾 <b>Capital invertido:</b> ${total_invested_display:,.2f}",
+        f"📈 <b>Rendimiento activo:</b> {sign_roi}{total_roi*100:.2f}%",
+        f"📊 <b>Estado:</b> {status_icon}",
+        f"🎯 <b>Meta mensual:</b> <code>{bar}</code> {progress_text}",
+        f"🔥 <b>Realizado del mes:</b> {'+' if realized_pnl>=0 else ''}${realized_pnl:,.2f} USD",
+    ]
+
     if details:
-        report.append("<i>(Detalle por activo)</i>")
-        report.extend(details)
-    return "\\n".join(report)
+        overview.append("")
+        overview.append("🧠 <b>Posiciones abiertas</b>")
+        overview.extend(details)
+    else:
+        overview.append("")
+        overview.append("⚪ <i>Sin posiciones abiertas en este momento.</i>")
+
+    return _make_card("WALLET GÉNESIS", overview, icon="💎")
 
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
@@ -1785,13 +1886,17 @@ def cmd_start(message):
     )
     
     bot.send_message(message.chat.id, "🔄 Inicializando Base de Operaciones...", reply_markup=reply_kbd)
-    
-    reply_text = """---
-🧠 <b>GÉNESIS 1.0 — TRADING INSTITUCIONAL</b> 🧠
----
-✅ Bot iniciado correctamente.
-📊 Radar: """ + str(len(tkrs)) + """ activos.
-🛡️ Persistencia activa. Tu cartera está segura."""
+
+    reply_text = _make_card(
+        "GÉNESIS 1.0",
+        [
+            "✅ Bot iniciado correctamente.",
+            f"📊 <b>Radar activo:</b> {len(tkrs)} activos",
+            "🛡️ <b>Persistencia:</b> cartera protegida y lista para operar",
+            "🎛️ Usa los botones de abajo o el panel flotante para navegar",
+        ],
+        icon="🧠"
+    )
     bot.reply_to(message, reply_text, reply_markup=markup, parse_mode="HTML")
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
@@ -1891,18 +1996,63 @@ def handle_photo(message):
         bot.edit_message_text("\u26a0\ufe0f Error de configuraci\u00f3n de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
 def _normalize_menu_text(text):
-    return (text or "").replace("\ufe0f", "").strip().lower()
+    cleaned = _clean_outgoing_text((text or "").replace("\ufe0f", ""))
+    normalized = unicodedata.normalize("NFKD", cleaned)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip().lower()
+
+
+def _make_card(title, lines, icon="🧠", footer=None):
+    message_lines = [f"{icon} <b>{title}</b>", "━━━━━━━━━━━━━━━━━━━━"]
+    message_lines.extend(lines)
+    if footer:
+        message_lines.extend(["━━━━━━━━━━━━━━━━━━━━", footer])
+    return "\n".join(line for line in message_lines if line is not None)
+
+
+def _stable_event_id(prefix, *parts):
+    payload = "||".join(str(part) for part in parts)
+    digest = hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]
+    return f"{prefix}_{digest}"
+
+
+def _refresh_smc_snapshot(tickers, force=False):
+    refreshed = 0
+    for raw_tk in tickers:
+        tk = remap_ticker(raw_tk)
+        cached = SMC_LEVELS_MEMORY.get(tk)
+        is_stale = True
+
+        if cached and isinstance(cached.get('update_date'), datetime):
+            is_stale = (datetime.now() - cached['update_date']).total_seconds() >= 3600
+
+        if not force and cached and not is_stale:
+            continue
+
+        analysis = fetch_and_analyze_stock(tk)
+        if analysis and isinstance(analysis, dict):
+            update_smc_memory(tk, analysis)
+            LAST_KNOWN_ANALYSIS[tk] = analysis
+            refreshed += 1
+
+    return refreshed
 
 
 def _send_super_radar_report(chat_id):
     try:
         tkrs = get_tracked_tickers()
         if not tkrs:
-            bot.send_message(chat_id, "✅ Tu radar está vacío.")
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", ["✅ Tu radar está vacío."], icon="🐋"), parse_mode="HTML")
             return
 
         api_key = os.environ.get("FMP_API_KEY")
-        syms = ",".join(tkrs)
+        symbol_map = {}
+        for raw_tk in tkrs:
+            tk = remap_ticker(raw_tk)
+            symbol_map[_get_fmp_symbol(tk)] = tk
+
+        syms = ",".join(symbol_map.keys())
         url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
 
         try:
@@ -1913,36 +2063,52 @@ def _send_super_radar_report(chat_id):
         except Exception:
             data = []
 
-        report = ["--- 🐋 <b>RADAR DE BALLENAS</b> ---"]
+        report = [
+            f"🛰️ <b>Activos rastreados:</b> {len(tkrs)}",
+            "📡 <b>Criterio:</b> volumen actual superior a 2x su promedio",
+            "",
+        ]
         ballenas_count = 0
 
         if isinstance(data, list):
             for q in data:
-                tk = q.get("symbol", "UNKNOWN")
-                vol = q.get("volume", 0)
-                avg_vol = q.get("avgVolume", 0)
-                price = q.get("price", 0)
-                change = q.get("changesPercentage", 0)
+                tk = symbol_map.get(q.get("symbol", "UNKNOWN"), q.get("symbol", "UNKNOWN"))
+                display_name = get_display_name(tk)
+                vol = float(q.get("volume", 0) or 0)
+                avg_vol = float(q.get("avgVolume", 0) or 0)
+                price = float(q.get("price", 0) or 0)
+                change = float(q.get("changesPercentage", 0) or 0)
 
                 if avg_vol > 0 and vol > (avg_vol * 2):
                     ballenas_count += 1
                     estado = "🟢 COMPRA MASIVA" if change > 0 else "🔴 VENTA MASIVA"
-                    report.append(f"🪙 <b>{tk}</b>: {estado}")
-                    report.append(f"   • Precio: ${price:.2f} ({change:+.2f}%)")
-                    report.append(f"   • Volumen Actual: {vol:,}")
-                    report.append(f"   • Promedio: {avg_vol:,} ({(vol / avg_vol):.1f}x)")
+                    report.append(f"🪙 <b>{display_name}</b> | {estado}")
+                    report.append(f"• Precio: ${fmt_price(price)} ({change:+.2f}%)")
+                    report.append(f"• Volumen: {vol:,.0f} vs promedio {avg_vol:,.0f} ({(vol / avg_vol):.1f}x)")
                     report.append("")
 
         if ballenas_count == 0:
-            bot.send_message(chat_id, "--- 🐋 RADAR DE BALLENAS ---\nMercado en calma. No hay movimientos institucionales de alto valor en este momento.\n---")
+            calm_report = [
+                "🌊 Mercado en calma.",
+                "No hay movimientos institucionales de alto valor en este momento.",
+            ]
+            if WHALE_MEMORY:
+                calm_report.extend(["", "🫧 <b>Últimas detecciones en memoria</b>"])
+                for whale in list(WHALE_MEMORY)[::-1][:3]:
+                    display_name = get_display_name(whale['ticker'])
+                    minutes_ago = int((datetime.now() - whale['timestamp']).total_seconds() / 60)
+                    calm_report.append(f"• {display_name} | {whale['type']} | hace {minutes_ago} min")
+
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", calm_report, icon="🐋"), parse_mode="HTML")
             return
 
-        bot.send_message(chat_id, "\n".join(report), parse_mode="HTML")
+        report.insert(2, f"🔥 <b>Señales activas:</b> {ballenas_count}")
+        bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", report, icon="🐋"), parse_mode="HTML")
 
     except Exception as e:
         print(f"ERROR RADAR: {e}")
         try:
-            bot.send_message(chat_id, f"⚠️ Error interno en radar: {e}")
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", [f"⚠️ Error interno en radar: {e}"], icon="🐋"), parse_mode="HTML")
         except Exception:
             pass
 
@@ -1960,21 +2126,23 @@ def _send_geopolitics_report(chat_id):
 
 
 def _send_smc_levels_report(chat_id):
-    report_lines = ["---", "🦅 <b>GÉNESIS: SMC / NIVELES CRÍTICOS</b>", "---"]
     tkrs = get_tracked_tickers()
 
     if not tkrs:
-        bot.send_message(chat_id, "Tu radar está vacío.", parse_mode="HTML")
+        bot.send_message(chat_id, _make_card("NIVELES SMC", ["Tu radar está vacío."], icon="🦅"), parse_mode="HTML")
         return
 
-    for raw_tk in tkrs:
-        tk = remap_ticker(raw_tk)
-        LAST_KNOWN_PRICES.pop(tk, None)
+    _refresh_smc_snapshot(tkrs, force=True)
+    report_lines = [
+        f"🛰️ <b>Activos analizados:</b> {len(tkrs)}",
+        "📘 <b>Lectura:</b> precio, soporte, resistencia y niveles tácticos actualizados",
+    ]
 
     for raw_tk in tkrs:
-        time.sleep(0.2)
         tk = remap_ticker(raw_tk)
-        analysis = fetch_and_analyze_stock(tk)
+        analysis = LAST_KNOWN_ANALYSIS.get(tk)
+        if not analysis:
+            analysis = fetch_and_analyze_stock(tk)
         d_name = get_display_name(tk)
 
         if analysis and isinstance(analysis, dict):
@@ -1990,25 +2158,23 @@ def _send_smc_levels_report(chat_id):
                 veredicto = "MANTENER ⚠️"
 
             report_lines.extend([
-                f"🏦 <b>RESEARCH: {d_name}</b>",
-                f"💰 <b>Precio:</b> ${fmt_price(precio)}",
-                f"📉 <b>Soporte (Piso):</b> ${fmt_price(soporte)}",
-                f"📈 <b>Resistencia (Techo):</b> ${fmt_price(resistencia)}",
                 "",
-                "🎯 <b>NIVELES TÁCTICOS:</b>",
-                f"   • 🟢 TP (Toma de ganancia): ${fmt_price(analysis.get('take_profit', 0))}",
-                f"   • 🔴 SL (Stop Loss): ${fmt_price(analysis.get('stop_loss', 0))}",
+                f"🏦 <b>{d_name}</b>",
+                f"• Precio: ${fmt_price(precio)}",
+                f"• Soporte: ${fmt_price(soporte)}",
+                f"• Resistencia: ${fmt_price(resistencia)}",
                 "",
-                f"⚖️ <b>VEREDICTO:</b> <b>{veredicto}</b>",
-                "---"
+                "🎯 <b>Niveles tácticos</b>",
+                f"• TP: ${fmt_price(analysis.get('take_profit', 0))}",
+                f"• SL: ${fmt_price(analysis.get('stop_loss', 0))}",
+                f"⚖️ <b>Veredicto:</b> <b>{veredicto}</b>",
             ])
         elif isinstance(analysis, str):
-            report_lines.extend([f"🏦 <b>RESEARCH: {d_name}</b>", f"• {analysis}", "---"])
+            report_lines.extend(["", f"🏦 <b>{d_name}</b>", f"• {analysis}"])
         else:
-            report_lines.extend([f"🏦 <b>{d_name}</b>", "• ⚠️ Niveles SMC no disponibles para este ticker en este momento", "---"])
+            report_lines.extend(["", f"🏦 <b>{d_name}</b>", "• ⚠️ Niveles SMC no disponibles en este momento"])
 
-    texto_smc = "\n".join(report_lines)
-    bot.send_message(chat_id, texto_smc, parse_mode="HTML")
+    bot.send_message(chat_id, _make_card("NIVELES SMC", report_lines, icon="🦅"), parse_mode="HTML")
 
 
 def _send_wallet_status(chat_id):
@@ -2020,6 +2186,7 @@ def handle_text(message):
     if str(message.chat.id) != str(CHAT_ID): return
     text = message.text.strip()
     normalized_text = _normalize_menu_text(text)
+    intent_text = normalized_text.upper()
 
     # Ignorar mensajes de backup del bot
     if text.startswith(BACKUP_PREFIX): return
@@ -2046,29 +2213,30 @@ def handle_text(message):
         return
 
     # === EXPRESIONES REGULARES INTELIGENTES NLP ===
-    if re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text):
-        match = re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text)
+    if re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text):
+        match = re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text)
         if match:
             tk = remap_ticker(match.group(1))
             display_name = get_display_name(tk)
-            bot.reply_to(message, f"🔒 Análisis Profundo Institucional en {display_name}...")
-            bot.send_message(message.chat.id, f"---\nðŸ¦ *RESEARCH: {display_name}*\n---\n{perform_deep_analysis(tk)}", parse_mode="HTML")
+            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name}...")
+            analysis_text = perform_deep_analysis(tk)
+            bot.send_message(message.chat.id, _make_card(f"RESEARCH: {display_name}", [analysis_text], icon="🏦"), parse_mode="HTML")
         return
 
-    if re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text):
-        match = re.search(r'(?i)\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Za-z0-9\-]+)', text)
+    if re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text):
+        match = re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text)
         if match:
              raw_input = match.group(1)
              tk = remap_ticker(raw_input)
              display_name = get_display_name(tk)
              if remove_ticker(tk):
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] ha sido borrado del radar.\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"✅ <b>{display_name}</b> ha sido borrado del radar.", "🛡️ El cambio quedó guardado en la persistencia blindada."], icon="🗂️"), parse_mode="HTML")
              else:
-                 bot.reply_to(message, f"⚠️ El activo {display_name} no residía en tu radar.")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"⚠️ El activo <b>{display_name}</b> no estaba en tu radar."], icon="🗂️"), parse_mode="HTML")
         return
 
-    if re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text):
-        match = re.search(r'(?i)\b(?:AGREGA|AÑADE|AGREGAR)\b\s+([A-Za-z0-9\-]+)', text)
+    if re.search(r'\b(?:AGREGA|ANADE|AGREGAR)\b\s+([A-Z0-9\-]+)', intent_text):
+        match = re.search(r'\b(?:AGREGA|ANADE|AGREGAR)\b\s+([A-Z0-9\-]+)', intent_text)
         if match:
              raw_input = match.group(1).upper()
              tk = remap_ticker(raw_input)
@@ -2076,42 +2244,56 @@ def handle_text(message):
 
              validation = get_safe_ticker_price(tk)
              if validation is None:
-                 bot.reply_to(message, "⚠️ Activo no encontrado en FMP. No se agregó.")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", ["⚠️ Activo no encontrado en FMP. No se agregó."], icon="🗂️"), parse_mode="HTML")
                  return
              res = add_ticker(tk)
              if res == "DB_ERROR":
-                 bot.reply_to(message, f"🚨 ERROR DE BASE DE DATOS: No se pudo conectar a Supabase. Revisa tu DATABASE_URL.")
+                 bot.reply_to(message, _make_card("ERROR DE BASE DE DATOS", ["No se pudo conectar a Supabase.", "Revisa tu DATABASE_URL."], icon="🚨"), parse_mode="HTML")
              elif res == True:
-                 bot.reply_to(message, f"---\n✅ *GESTIÓN DE CARTERA*\n---\n✅ [ {display_name} ] añadido al radar SMC.\n\n✅ Guardado directamente en Supabase (Sin cachés).", parse_mode="HTML")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"✅ <b>{display_name}</b> añadido al radar SMC.", "🛡️ Guardado directamente en Supabase."], icon="🗂️"), parse_mode="HTML")
              else:
-                 bot.reply_to(message, f"⚠️ El activo {display_name} ya existe en tu DB centralizada (Supabase).")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"⚠️ <b>{display_name}</b> ya existe en tu base centralizada."], icon="🗂️"), parse_mode="HTML")
         return
 
-    if re.search(r'(?i)\bCOMPR[EÉ]\b', text):
-        match = re.search(r'(?i)\bCOMPR[EÉ]\b\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Za-z0-9\-]+)', text)
+    if re.search(r'\bCOMPRE\b', intent_text):
+        match = re.search(r'\bCOMPRE\b\s+(?:DE\s+)?\$?(\d+(?:\.\d+)?)\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?([A-Z0-9\-]+)', intent_text)
         if match:
             amt = match.group(1)
             tk = remap_ticker(match.group(2))
             display_name = get_display_name(tk)
 
-            bot.reply_to(message, f"🔥¸ Consultando precio de fijación para {display_name}...")
+            bot.reply_to(message, f"🔥 Consultando precio de fijación para {display_name}...")
             intra = fetch_intraday_data(tk)
             if intra:
                 add_investment(tk, amt, intra['latest_price'])
-                bot.send_message(message.chat.id, f"---\n✅ *CAPITAL REGISTRADO*\n---\nâ€¢ Activo: {display_name}\nâ€¢ Capital Invertido: ${float(amt):,.2f} USD\nâ€¢ Entrada: ${fmt_price(intra['latest_price'])}\n\n✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie.", parse_mode="HTML")
+                bot.send_message(
+                    message.chat.id,
+                    _make_card(
+                        "CAPITAL REGISTRADO",
+                        [
+                            f"• Activo: <b>{display_name}</b>",
+                            f"• Capital invertido: ${float(amt):,.2f} USD",
+                            f"• Precio de entrada: ${fmt_price(intra['latest_price'])}",
+                            "",
+                            "🛡️ Guardado en Base de Datos Blindada.",
+                        ],
+                        icon="💰"
+                    ),
+                    parse_mode="HTML"
+                )
             else:
-                bot.reply_to(message, f"âŒ No pude fijar el precio real de {display_name} ahora. Mercado cerrado temporalmente.")
+                bot.reply_to(message, _make_card("CAPITAL REGISTRADO", [f"❌ No pude fijar el precio real de {display_name} ahora mismo."], icon="💰"), parse_mode="HTML")
         return
 
-    if re.search(r'(?i)\bVEND[IÃ]\b', text):
-        match = re.search(r'(?i)\bVEND[IÃ]\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Za-z0-9\-]+)', text)
+    if re.search(r'\bVENDI\b', intent_text):
+        match = re.search(r'\bVENDI\b\s+(?:TODO\s+)?(?:DE\s+)?\$?(?:\d+(?:\.\d+)?\s+(?:EN\s+|DE\s+|ACCIONES\s+DE\s+)?)?([A-Z0-9\-]+)', intent_text)
         if match:
             tk = remap_ticker(match.group(1))
             display_name = get_display_name(tk)
 
             investments = get_investments()
             if tk in investments:
-                bot.reply_to(message, f"🔥¸ Procesando cierre institucional para {display_name}...")
+                bot.reply_to(message, f"🔥 Procesando cierre institucional para {display_name}...")
                 entry = investments[tk]['entry_price']
                 amt = investments[tk]['amount_usd']
 
@@ -2127,18 +2309,22 @@ def handle_text(message):
                     close_investment(tk)
                     add_realized_pnl(prof)
 
-                    ans_str = (
-                        f"---\n✅ *GESTIÓN DE CARTERA: CIERRE*\n---\n"
-                        f"✅ [ {display_name} ] liquidado al precio de ${fmt_price(live_price)}\n"
-                        f"💰 <b>Capital Retirado:</b> ${final_usd:,.2f} USD\n"
-                        f"{icon} <b>Ganancia Mensual Sumada:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)\n\n"
-                        f"✅ Guardado en Base de Datos Blindada. Esta información no se borrará aunque el bot se reinicie."
+                    ans_str = _make_card(
+                        "CIERRE DE POSICIÓN",
+                        [
+                            f"✅ <b>{display_name}</b> liquidado a ${fmt_price(live_price)}",
+                            f"💰 <b>Capital retirado:</b> ${final_usd:,.2f} USD",
+                            f"{icon} <b>Resultado:</b> {sign}${prof:,.2f} USD ({sign}{roi*100:.2f}%)",
+                            "",
+                            "🛡️ El cierre quedó guardado en la persistencia blindada.",
+                        ],
+                        icon="📕"
                     )
                     bot.send_message(message.chat.id, ans_str, parse_mode="HTML")
                 else:
-                    bot.reply_to(message, f"âŒ No pude contactar al mercado para saldar la liquidación de {display_name}.")
+                    bot.reply_to(message, _make_card("CIERRE DE POSICIÓN", [f"❌ No pude contactar al mercado para liquidar {display_name}."], icon="📕"), parse_mode="HTML")
             else:
-                 bot.reply_to(message, f"⚠️ No tienes capital invertido en {display_name}. Usa 'Elimina {display_name}' para detener rastreo.")
+                 bot.reply_to(message, _make_card("CIERRE DE POSICIÓN", [f"⚠️ No tienes capital invertido en {display_name}.", f"Usa 'Elimina {display_name}' si quieres detener el rastreo."], icon="📕"), parse_mode="HTML")
         return
 
 
@@ -2174,7 +2360,7 @@ def verificar_noticias_cartera():
                 continue
 
             # Deduplicar con hash: no alertar la misma noticia dos veces
-            news_hash = f"SENTINEL_{tk}_{hash(title) % 100000}"
+            news_hash = _stable_event_id("SENTINEL", tk, title)
             if check_and_add_seen_event(news_hash):
                 continue  # Ya la vimos
 
@@ -2207,11 +2393,13 @@ def verificar_noticias_cartera():
                     continue
 
                 # Alerta que SÃ amerita atención
-                alert_msg = (
-                    f"---\n🚨 *CENTINELA GÉNESIS: ALERTA DE ACTIVO* 🚨\n---\n"
-                    f"📈 Activo: <b>{display_name}</b>\n"
-                    f"{res}\n"
-                    f"---"
+                alert_msg = _make_card(
+                    "CENTINELA GÉNESIS",
+                    [
+                        f"📈 <b>Activo:</b> {display_name}",
+                        res,
+                    ],
+                    icon="🚨"
                 )
                 bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
 
@@ -2273,6 +2461,9 @@ def monitor_proteccion_activos():
         # Obtener contexto SMC si está disponible
         smc_context = ""
         smc = SMC_LEVELS_MEMORY.get(tk)
+        if not smc:
+            _refresh_smc_snapshot([tk], force=True)
+            smc = SMC_LEVELS_MEMORY.get(tk)
         if smc:
             if current_price < smc.get('sup', 0):
                 smc_context = f"\n⚠️ Precio POR DEBAJO del Soporte SMC (${fmt_price(smc['sup'])}). Zona de riesgo."
@@ -2352,8 +2543,10 @@ def background_loop_proactivo():
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
     protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
     geo_refresh_counter = 0  # Contador para refrescar contexto geopolítico
+    smc_refresh_counter = 0  # Refresco periódico de niveles SMC
     _PROTECTION_INTERVAL = 10  # ~5 minutos (10 ticks * 30s)
     _GEO_REFRESH_INTERVAL = 20  # ~10 minutos (20 ticks * 30s)
+    _SMC_REFRESH_INTERVAL = 120  # ~60 minutos (120 ticks * 30s)
     loop_counter = 0  # Contador total de ciclos para heartbeat
     while True:
         try:
@@ -2363,6 +2556,7 @@ def background_loop_proactivo():
             sentinel_tick_counter += 1
             protection_tick_counter += 1
             geo_refresh_counter += 1
+            smc_refresh_counter += 1
             loop_counter += 1
 
             # === HEARTBEAT: log cada ciclo ===
@@ -2379,7 +2573,11 @@ def background_loop_proactivo():
             if unique_news:
                 ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
                 if ai_threat_evaluation:
-                     bot.send_message(CHAT_ID, f"---\n🚨 *VIGILANCIA GLOBAL ALTO RIESGO*\n---\n{ai_threat_evaluation}", parse_mode="HTML")
+                     bot.send_message(
+                         CHAT_ID,
+                         _make_card("VIGILANCIA GLOBAL", [ai_threat_evaluation], icon="🚨"),
+                         parse_mode="HTML"
+                     )
 
             # === REFRESCAR CONTEXTO GEOPOLÃTICO: cada ~10 minutos ===
             if geo_refresh_counter >= _GEO_REFRESH_INTERVAL:
@@ -2390,6 +2588,14 @@ def background_loop_proactivo():
                     print(f"DEBUG GEO REFRESH: Contexto actualizado. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
                 except Exception as e:
                     print(f"DEBUG GEO REFRESH ERROR: {e}")
+
+            if smc_refresh_counter >= _SMC_REFRESH_INTERVAL:
+                smc_refresh_counter = 0
+                try:
+                    refreshed = _refresh_smc_snapshot(tracked, force=True)
+                    print(f"DEBUG SMC REFRESH: {refreshed} niveles actualizados")
+                except Exception as e:
+                    logging.error(f"Error refrescando niveles SMC: {e}")
 
             # === MODO CENTINELA: verificar noticias de activos cada ~20 minutos ===
             if sentinel_tick_counter >= _SENTINEL_TICK_INTERVAL:
@@ -2432,6 +2638,13 @@ def background_loop_proactivo():
                     # Rupturas Doble Verificadas â€” SOLO si el precio es confiable
                     topol = SMC_LEVELS_MEMORY.get(tk)
                     analysis = LAST_KNOWN_ANALYSIS.get(tk)
+                    if price_is_reliable and (not topol or not analysis):
+                        fresh_analysis = fetch_and_analyze_stock(tk)
+                        if fresh_analysis and isinstance(fresh_analysis, dict):
+                            update_smc_memory(tk, fresh_analysis)
+                            LAST_KNOWN_ANALYSIS[tk] = fresh_analysis
+                            topol = SMC_LEVELS_MEMORY.get(tk)
+                            analysis = LAST_KNOWN_ANALYSIS.get(tk)
                     if topol and analysis and price_is_reliable:
                         rsi = analysis.get('rsi', 50)
                         avg_v = intra.get('avg_vol', 1)
@@ -2450,22 +2663,49 @@ def background_loop_proactivo():
                         if cur_price > topol['res']:
                             hash_brk = f"BRK_UP_{tk}_{topol['res']}"
                             if not check_and_add_seen_event(hash_brk):
-                                msg = f"\ud83d\ude80 <b>RUPTURA DE RESISTENCIA EN {display_name}</b>.\nImpulso alcista detectado en ${fmt_price(cur_price)}.\n\nðŸ§  {reason}\n\u2696\ufe0f <b>Veredicto:</b> COMPRAR / MANTENER."
-                                bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+                                msg = _make_card(
+                                    "RUPTURA DE RESISTENCIA",
+                                    [
+                                        f"📈 <b>Activo:</b> {display_name}",
+                                        f"💰 <b>Precio detectado:</b> ${fmt_price(cur_price)}",
+                                        f"🧠 {reason}",
+                                        "⚖️ <b>Veredicto:</b> COMPRAR / MANTENER",
+                                    ],
+                                    icon="🚀"
+                                )
+                                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
 
                         # L\u00f3gica 2: Ruptura Descendente
                         elif cur_price < topol['sup']:
                             hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
                             if not check_and_add_seen_event(hash_drp):
-                                msg = f"\u26a0\ufe0f <b>RUPTURA DE SOPORTE EN {display_name}</b>.\nPosible ca\u00edda detectada (perdi\u00f3 soporte de ${fmt_price(topol['sup'])} a ${fmt_price(cur_price)}).\n\nðŸ§  {reason}\n\u2696\ufe0f <b>Veredicto:</b> VENDER / CORTAR P\u00c9RDIDAS."
-                                bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+                                msg = _make_card(
+                                    "RUPTURA DE SOPORTE",
+                                    [
+                                        f"📉 <b>Activo:</b> {display_name}",
+                                        f"💰 <b>Soporte perdido:</b> ${fmt_price(topol['sup'])} → ${fmt_price(cur_price)}",
+                                        f"🧠 {reason}",
+                                        "⚖️ <b>Veredicto:</b> VENDER / CORTAR PÉRDIDAS",
+                                    ],
+                                    icon="⚠️"
+                                )
+                                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
                             
                         # L\u00f3gica 3: Zona de Acumulaci\u00f3n (Cerca del Soporte)
                         elif topol['sup'] <= cur_price <= (topol['sup'] * 1.015):
                             hash_acc = f"ACCUM_{tk}_{topol['sup']}"
                             if not check_and_add_seen_event(hash_acc):
-                                msg = f"\ud83d\udc8e <b>ZONA DE ACUMULACI\u00d3N en {display_name}</b>.\nLas instituciones est\u00e1n comprando aqu\u00ed (muy cerca del Order Block de ${fmt_price(topol['sup'])}).\n\nðŸ§  {reason}\n\u2696\ufe0f <b>Veredicto:</b> OPORTUNIDAD DE COMPRA."
-                                bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+                                msg = _make_card(
+                                    "ZONA DE ACUMULACIÓN",
+                                    [
+                                        f"💎 <b>Activo:</b> {display_name}",
+                                        f"💰 <b>Order block:</b> ${fmt_price(topol['sup'])}",
+                                        f"🧠 {reason}",
+                                        "⚖️ <b>Veredicto:</b> OPORTUNIDAD DE COMPRA",
+                                    ],
+                                    icon="💠"
+                                )
+                                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
 
                     # Ballenas â€” con cruce geopolítico GENESIS
                     # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
@@ -2563,139 +2803,24 @@ def background_loop_proactivo():
 def callback_super_radar(call):
     try:
         bot.answer_callback_query(call.id, text="🚀 Iniciando Radar Institucional...")
-    except:
+    except Exception:
         pass
-    
-    try:
-        tkrs = get_tracked_tickers()
-        if not tkrs:
-            bot.send_message(call.message.chat.id, "✅ Tu radar está vacío.")
-            return
-
-        import os
-        import requests
-        api_key = os.environ.get("FMP_API_KEY")
-        
-        syms = ",".join(tkrs)
-        url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
-        
-        try:
-            resp = requests.get(url, timeout=15)
-            if resp.status_code != 200:
-                raise ValueError(f"HTTP {resp.status_code}")
-            data = resp.json()
-        except:
-            data = []
-            
-        report = ["--- 🐋 <b>RADAR DE BALLENAS</b> ---"]
-        ballenas_count = 0
-        
-        if isinstance(data, list):
-            for q in data:
-                tk = q.get("symbol", "UNKNOWN")
-                vol = q.get("volume", 0)
-                avg_vol = q.get("avgVolume", 0)
-                price = q.get("price", 0)
-                change = q.get("changesPercentage", 0)
-                
-                if avg_vol > 0 and vol > (avg_vol * 2):
-                    ballenas_count += 1
-                    estado = "🟢 COMPRA MASIVA" if change > 0 else "🔴 VENTA MASIVA"
-                    report.append(f"🪙 <b>{tk}</b>: {estado}")
-                    report.append(f"   • Precio: ${price:.2f} ({change:+.2f}%)")
-                    report.append(f"   • Volumen Actual: {vol:,}")
-                    report.append(f"   • Promedio: {avg_vol:,} ({(vol/avg_vol):.1f}x)")
-                    report.append("")
-                
-        if ballenas_count == 0:
-            msg = """--- 🐋 RADAR DE BALLENAS ---
-Mercado en calma. No hay movimientos institucionales de alto valor en este momento.
----"""
-            bot.send_message(call.message.chat.id, msg)
-            return
-            
-        bot.send_message(call.message.chat.id, "\\n".join(report), parse_mode="HTML")
-        
-    except Exception as e:
-        print(f"ERROR RADAR: {e}")
-        try:
-            bot.send_message(call.message.chat.id, f"⚠️ Error interno en radar: {e}")
-        except:
-            pass
+    _send_super_radar_report(call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "geopolitics")
 def callback_geopolitics(call):
     bot.answer_callback_query(call.id, "🛡️ Generando Reporte Estratégico GÉNESIS...")
-    try:
-        report = generar_reporte_macro_manual()
-        if report:
-            bot.send_message(call.message.chat.id, report, parse_mode="HTML")
-        else:
-            bot.send_message(call.message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
-    except Exception as e:
-        import logging
-        logging.error(f"Error en Geopolítica: {e}")
-        bot.send_message(call.message.chat.id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+    _send_geopolitics_report(call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "smc_levels")
 def callback_smc(call):
     bot.answer_callback_query(call.id, "🦅 Forzando datos frescos y analizando niveles SMC...")
-    report_lines = ["---", "🦅 <b>GÉNESIS: SMC / NIVELES CRÍTICOS</b>", "---"]
-    tkrs = get_tracked_tickers()
-
-    if not tkrs:
-         bot.send_message(call.message.chat.id, "Tu radar está vacío.", parse_mode="HTML")
-         return
-
-    # REFRESH FORZADO: limpiar caché de precios
-    for raw_tk in tkrs:
-        tk = remap_ticker(raw_tk)
-        LAST_KNOWN_PRICES.pop(tk, None)
-
-    for raw_tk in tkrs:
-        import time
-        time.sleep(0.2)
-        tk = remap_ticker(raw_tk)
-        analysis = fetch_and_analyze_stock(tk)
-        d_name = get_display_name(tk)
-
-        if analysis and isinstance(analysis, dict):
-            precio = analysis['price']
-            soporte = analysis['smc_sup']
-            resistencia = analysis['smc_res']
-            
-            if precio < soporte:
-                veredicto = "COMPRA 🟢"
-            elif precio > resistencia:
-                veredicto = "VENTA 🔴"
-            else:
-                veredicto = "MANTENER ⚠️"
-
-            report_lines.extend([
-                f"🏦 <b>RESEARCH: {d_name}</b>",
-                f"💰 <b>Precio:</b> ${fmt_price(precio)}",
-                f"📉 <b>Soporte (Piso):</b> ${fmt_price(soporte)}",
-                f"📈 <b>Resistencia (Techo):</b> ${fmt_price(resistencia)}",
-                "",
-                "🎯 <b>NIVELES TÁCTICOS:</b>",
-                f"   • 🟢 TP (Toma de ganancia): ${fmt_price(analysis.get('take_profit', 0))}",
-                f"   • 🔴 SL (Stop Loss): ${fmt_price(analysis.get('stop_loss', 0))}",
-                "",
-                f"⚖️ <b>VEREDICTO:</b> <b>{veredicto}</b>",
-                "---"
-            ])
-        elif isinstance(analysis, str):
-            report_lines.extend([f"🏦 <b>RESEARCH: {d_name}</b>", f"• {analysis}", "---"])
-        else:
-            report_lines.extend([f"🏦 <b>{d_name}</b>", f"• ⚠️ Niveles SMC no disponibles para este ticker en este momento", "---"])
-
-    texto_smc = "\n".join(report_lines)
-    bot.send_message(call.message.chat.id, texto_smc, parse_mode="HTML")
+    _send_smc_levels_report(call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "wallet_status")
 def callback_wallet(call):
     bot.answer_callback_query(call.id, "💰 Extrayendo datos robustos y valuando métricas live...")
-    bot.send_message(call.message.chat.id, build_wallet_dashboard(), parse_mode="HTML")
+    _send_wallet_status(call.message.chat.id)
 
 # ----------------- MAIN -----------------
 def main():
