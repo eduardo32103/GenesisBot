@@ -1802,6 +1802,9 @@ def command_clear_all(message):
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
+    from telebot.types import ReplyKeyboardRemove
+    bot.send_message(message.chat.id, "🔄 Purgando terminal vieja...", reply_markup=ReplyKeyboardRemove())
+    
     restore_state_from_telegram()
     tkrs = get_tracked_tickers()
     
