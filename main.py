@@ -2655,13 +2655,13 @@ def main():
 
     # Polling con auto-reconexion
     print("DEBUG BOOT: Iniciando Telegram polling...")
-    print(">>> SISTEMA G\u00c9NESIS ACTIVO <<<")
+    print(">>> SISTEMA GENESIS ACTIVO <<<")
     while True:
         try:
-            print("\ud83d\ude80 GENESIS EST\u00c1 VIVO Y ESCUCHANDO...")
+            print("GENESIS ESTA VIVO Y ESCUCHANDO...")
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
-            print(f"\u274c TELEGRAM POLLING CAIDO: {e}")
+            print(f"X TELEGRAM POLLING CAIDO: {e}")
             print("DEBUG: Reconectando en 5 segundos...")
             import time
             time.sleep(5)
