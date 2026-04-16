@@ -2638,58 +2638,54 @@ def background_loop_proactivo():
 
 @bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
 def callback_whale(call):
-    bot.answer_callback_query(call.id, "📊 Cargando Radar...")
-    bot.send_message(call.message.chat.id, "🔎 Buscando movimientos de ballenas en las últimas 24h...")
-    
+    bot.answer_callback_query(call.id, "📊 Consultando datos institucionales...")
     try:
-        import datetime
-        now_t = datetime.datetime.now()
-        report = ["---", "🐋 BALANCE INSTITUCIONAL (24H) 🐋", "---"]
-        
-        total_net = 0
-        assets = []
-        
-        for tk, events in list(WHALE_HISTORY_DB.items()):
-            recent = [e for e in events if isinstance(e, dict) and 'timestamp' in e and (now_t - e['timestamp']).total_seconds() <= 86400]
-            WHALE_HISTORY_DB[tk] = recent 
-            if not recent: continue
-            
-            entradas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Compra"])
-            salidas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Venta"])
-            n_entradas = len([e for e in recent if e.get('type') == "Compra"])
-            n_salidas = len([e for e in recent if e.get('type') == "Venta"])
-            
-            neto = entradas - salidas
-            total_net += neto
-            
-            assets.append({'tk': tk, 'entradas': entradas, 'salidas': salidas, 'neto': neto, 'n_entradas': n_entradas, 'n_salidas': n_salidas})
-            
-        if not assets:
-            bot.send_message(call.message.chat.id, "✅ No se detectaron ballenas de alto valor en las últimas 24h.")
+        tkrs = get_tracked_tickers()
+        if not tkrs:
+            bot.send_message(call.message.chat.id, "✅ Tu radar está vacío.")
             return
 
-        assets.sort(key=lambda x: abs(x['neto']), reverse=True)
-        for a in assets:
-            t_name = get_display_name(a['tk'])
-            sign = "+" if a['neto'] > 0 else ""
-            pres = "Alcista 📈" if a['neto'] > 0 else "Bajista 📉"
-            report.extend([
-                f"🪙 {t_name} ({a['tk']}):",
-                f"• 🟢 ENTRADAS: ${a['entradas']:,.0f} (De {a['n_entradas']} ballenas)",
-                f"• 🔴 SALIDAS: ${a['salidas']:,.0f} (De {a['n_salidas']} ballenas)",
-                f"• 📊 NETO: {sign}${a['neto']:,.0f} {pres}",
-                ""
-            ])
-            
-        report.append("---")
-        report.append(f"TOTAL DINERO INSTITUCIONAL: ${total_net:,.0f}")
+        import os
+        import requests
+        api_key = os.environ.get("FMP_API_KEY")
         
-        bot.send_message(call.message.chat.id, "\n".join(report))
+        # FMP soporta batch separando los tickers por coma
+        syms = ",".join(tkrs)
+        url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
+        
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        
+        report = ["---", "🐋 <b>RADAR DE BALLENAS (EN VIVO)</b> 🐋", "---"]
+        ballenas_count = 0
+        
+        if isinstance(data, list):
+            for q in data:
+                tk = q.get("symbol", "UNKNOWN")
+                vol = q.get("volume", 0)
+                avg_vol = q.get("avgVolume", 0)
+                price = q.get("price", 0)
+                change = q.get("changesPercentage", 0)
+                
+                # Condición de ballena: Volumen es > 2x su volumen promedio
+                if avg_vol > 0 and vol > (avg_vol * 2):
+                    ballenas_count += 1
+                    estado = "🟢 COMPRA FUERTE" if change > 0 else "🔴 VENTA FUERTE"
+                    report.append(f"🪙 <b>{tk}</b>: {estado}")
+                    report.append(f"   • Precio: ${price:.2f} ({change:+.2f}%)")
+                    report.append(f"   • Volumen Actual: {vol:,}")
+                    report.append(f"   • Promedio: {avg_vol:,} ({(vol/avg_vol):.1f}x)")
+                    report.append("")
+                
+        if ballenas_count == 0:
+            bot.send_message(call.message.chat.id, "✅ No se detectan anomalías de volumen (ballenas) en vivo en tu radar.")
+            return
+            
+        bot.send_message(call.message.chat.id, "\n".join(report), parse_mode="HTML")
         
     except Exception as e:
         print(f"ERROR DENTRO DEL BOTÓN: {e}")
         bot.send_message(call.message.chat.id, "⚠️ Error generando el reporte interno de radar.")
-
 # ----------------- MAIN -----------------
 def main():
     logging.info("Iniciando GÃ©nesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
@@ -2721,3 +2717,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
