@@ -1468,6 +1468,7 @@ def fetch_intraday_data(ticker):
     latest_vol = float(fmp_data.get('volume', 0) or 0)
     avg_vol = float(fmp_data.get('avgVolume', 0) or 0)
     change = float(fmp_data.get('change', 0) or 0)
+    vol_side = "buy" if change >= 0 else "sell"
     
     vol_type = "Compra 🟢" if change >= 0 else "Venta 🔴"
 
@@ -1482,9 +1483,45 @@ def fetch_intraday_data(ticker):
         'ticker': tk,
         'latest_vol': latest_vol,
         'avg_vol': avg_vol,
+        'vol_side': vol_side,
         'vol_type': vol_type,
         'latest_price': price
     }
+
+
+def _is_winner_whale_setup(price, intra, topol=None, analysis=None):
+    """Filtro estricto: solo compras institucionales con estructura favorable."""
+    topol = topol or {}
+    analysis = analysis or {}
+    side = (intra or {}).get('vol_side')
+
+    if side != "buy":
+        return False, "Solo se permiten compras institucionales."
+
+    if 'sup' not in topol or 'res' not in topol:
+        return False, "Sin niveles SMC válidos."
+
+    support = float(topol.get('sup', 0) or 0)
+    resistance = float(topol.get('res', 0) or 0)
+    if support <= 0 or resistance <= 0 or price <= 0:
+        return False, "Niveles SMC inválidos."
+
+    if price > (support * 1.05):
+        return False, "Compra demasiado lejos del soporte."
+
+    rsi = float(analysis.get('rsi', 50) or 50)
+    if rsi >= 68:
+        return False, "RSI demasiado exigido para entrada."
+
+    stop_ref = support * 0.98
+    upside_pct = ((resistance - price) / price) * 100 if price > 0 else 0
+    downside_pct = ((price - stop_ref) / price) * 100 if price > 0 else 0
+    rr = (upside_pct / downside_pct) if downside_pct > 0 else 0
+
+    if upside_pct <= 0 or downside_pct <= 0 or rr < 1.20:
+        return False, "Relación beneficio/riesgo insuficiente."
+
+    return True, "Compra institucional en zona táctica de soporte."
 def fetch_and_analyze_stock(ticker):
     """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
     clean_ticker = str(ticker).strip().upper()
@@ -2408,6 +2445,102 @@ def _send_super_radar_report(chat_id):
             data = []
 
         report = [
+            "🛰️ <b>Radar institucional ganador</b>",
+            f"• Activos rastreados: {len(tkrs)}",
+            "• Filtro: solo compras institucionales, volumen >2x, soporte cercano y relación beneficio/riesgo favorable",
+            "",
+        ]
+        ballenas_count = 0
+
+        if isinstance(data, list):
+            for q in data:
+                tk = symbol_map.get(q.get("symbol", "UNKNOWN"), q.get("symbol", "UNKNOWN"))
+                display_name = get_display_name(tk)
+                vol = float(q.get("volume", 0) or 0)
+                avg_vol = float(q.get("avgVolume", 0) or 0)
+                price = float(q.get("price", 0) or 0)
+                change = float(q.get("changesPercentage", 0) or 0)
+
+                intra_snapshot = {
+                    "vol_side": "buy" if change >= 0 else "sell",
+                    "latest_vol": vol,
+                    "avg_vol": avg_vol,
+                }
+                analysis = LAST_KNOWN_ANALYSIS.get(tk)
+                if not analysis or not isinstance(analysis, dict):
+                    analysis = fetch_and_analyze_stock(tk)
+                    if analysis and isinstance(analysis, dict):
+                        LAST_KNOWN_ANALYSIS[tk] = analysis
+                        update_smc_memory(tk, analysis)
+                topol = SMC_LEVELS_MEMORY.get(tk, {})
+                is_winner_setup, winner_reason = _is_winner_whale_setup(
+                    price,
+                    intra_snapshot,
+                    topol,
+                    analysis if isinstance(analysis, dict) else {}
+                )
+
+                if avg_vol > 0 and vol > (avg_vol * 2) and is_winner_setup:
+                    ballenas_count += 1
+                    report.append(f"🪙 <b>{display_name}</b> | 🟢 COMPRA GANADORA")
+                    report.append(f"• Precio: ${fmt_price(price)} ({change:+.2f}%)")
+                    report.append(f"• Volumen: {vol:,.0f} vs promedio {avg_vol:,.0f} ({(vol / avg_vol):.1f}x)")
+                    if topol.get('sup') and topol.get('res'):
+                        report.append(f"• Soporte SMC: ${fmt_price(topol['sup'])} | Resistencia: ${fmt_price(topol['res'])}")
+                    report.append(f"• Lectura: {winner_reason}")
+                    report.append("")
+
+        if ballenas_count == 0:
+            calm_report = [
+                "🌊 Mercado en calma.",
+                "No hay compras institucionales ganadoras activas en este momento.",
+            ]
+            whale_memory_filtered = [w for w in list(WHALE_MEMORY)[::-1] if w.get('winner_only', False)]
+            if whale_memory_filtered:
+                calm_report.extend(["", "🫧 <b>Últimas detecciones en memoria</b>"])
+                for whale in whale_memory_filtered[:3]:
+                    display_name = get_display_name(whale['ticker'])
+                    minutes_ago = int((datetime.now() - whale['timestamp']).total_seconds() / 60)
+                    calm_report.append(f"• {display_name} | {whale['type']} | hace {minutes_ago} min")
+
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", calm_report, icon="🐋"), parse_mode="HTML")
+            return
+
+        report.insert(3, f"🔥 <b>Señales activas:</b> {ballenas_count}")
+        bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", report, icon="🐋"), parse_mode="HTML")
+        return
+
+    except Exception as e:
+        print(f"ERROR RADAR: {e}")
+        try:
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", [f"⚠️ Error interno en radar: {e}"], icon="🐋"), parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    try:
+        tkrs = get_tracked_tickers()
+        if not tkrs:
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", ["✅ Tu radar está vacío."], icon="🐋"), parse_mode="HTML")
+            return
+
+        api_key = os.environ.get("FMP_API_KEY")
+        symbol_map = {}
+        for raw_tk in tkrs:
+            tk = remap_ticker(raw_tk)
+            symbol_map[_get_fmp_symbol(tk)] = tk
+
+        syms = ",".join(symbol_map.keys())
+        url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
+
+        try:
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                raise ValueError(f"HTTP {resp.status_code}")
+            data = resp.json()
+        except Exception:
+            data = []
+
+        report = [
             f"🛰️ <b>Activos rastreados:</b> {len(tkrs)}",
             "📡 <b>Criterio:</b> volumen actual superior a 2x su promedio",
             "",
@@ -3109,6 +3242,10 @@ def background_loop_proactivo():
                             topol_whale = SMC_LEVELS_MEMORY.get(tk, {})
                             analysis_whale = LAST_KNOWN_ANALYSIS.get(tk, {})
                             rsi_w = analysis_whale.get('rsi', 50) if analysis_whale else 50
+                            smart_msg = None
+                            is_winner_setup, whale_reason = _is_winner_whale_setup(cur_price, intra, topol_whale, analysis_whale)
+                            if not is_winner_setup:
+                                continue
                             
                             try:
                                 # Solo si precio est\u00e1 en zonas SMC
@@ -3116,21 +3253,21 @@ def background_loop_proactivo():
                                     w_sup = topol_whale['sup']
                                     w_res = topol_whale['res']
                                     
-                                    if intra['vol_type'] == 'Compra' and cur_price > (w_sup * 1.05): continue # Ignora compras caras
-                                    if intra['vol_type'] == 'Venta' and cur_price < (w_res * 0.95): continue # Ignora ventas baratas
+                                    if intra.get('vol_side') == 'buy' and cur_price > (w_sup * 1.05): continue # Ignora compras caras
+                                    if intra.get('vol_side') == 'sell': continue # Modo ganador: bloquear ventas
                                     
-                                    if intra['vol_type'] == 'Compra':
-                                        smart_msg = "\ud83d\udd25 <b>BALLENA DE ALTA CONVICCI\u00d3N DETECTADA:</b>\nEntrada institucional en zona de soporte t\u00e9cnico.\nProbabilidad de \u00e9xito: ALTA."
+                                    if intra.get('vol_side') == 'buy':
+                                        smart_msg = "\ud83d\udd25 <b>BALLENA GANADORA DETECTADA:</b>\nCompra institucional en zona de soporte t\u00e9cnico.\nProbabilidad de \u00e9xito: ALTA."
                                     else:
-                                        smart_msg = "\ud83d\udd25 <b>BALLENA VENDEDORA DE ALTA CONVICCI\u00d3N:</b>\nSalida institucional en zona de resistencia t\u00e9cnica.\nProbabilidad de reversi\u00f3n bajista: ALTA."
+                                        continue
                                 else:
                                     continue # Si no tiene niveles validos, bloquear
                             except:
                                 pass # Si no hay datos SMC, que no rompa el c\u00f3digo
                                 
                             # Si pasa y no hay smart_msg, es porque pas\u00f3 el except pero se filtr\u00f3 mal, mejor asegurar
-                            if 'smart_msg' not in locals():
-                                smart_msg = "\ud83d\udd25 <b>BALLENA HFT DETECTADA.</b>"
+                            if smart_msg is None:
+                                continue
                             # === FIN DE SMART MONEY FILTER ===
                             
                             whale_hash_id = f"WHL_SMART_{tk}_{valid_vol}"
@@ -3139,13 +3276,14 @@ def background_loop_proactivo():
                                 last_whale_alert[tk] = current_time # Registrar el env\u00edo s\u00f3lo si es nuevo
                                 whale_detected_count += 1
                                 note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
-                                WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now})
+                                WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now, "winner_only": True, "reason": whale_reason})
                             
                                 if tk not in WHALE_HISTORY_DB:
                                     WHALE_HISTORY_DB[tk] = []
                             
                                 WHALE_HISTORY_DB[tk].append({
                                     "type": intra['vol_type'],
+                                    "winner_only": True,
                                     "vol_usd": float(vol_usd),
                                     "timestamp": now
                                 })
@@ -3157,7 +3295,7 @@ def background_loop_proactivo():
 
                                 print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
 
-                                bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}{note}"
+                                bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}\n\ud83e\udde0 Filtro ganador: {whale_reason}{note}"
                                 bot.send_message(CHAT_ID, bot_msg, parse_mode="HTML")
                         else:
                             if intra['avg_vol'] == 0:
