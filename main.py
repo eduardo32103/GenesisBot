@@ -2566,28 +2566,32 @@ def background_loop_proactivo():
                             min_elite_vol = 1_000_000
                             if vol_usd < min_elite_vol:
                                 continue # Filtro \u00c9lite Institucional ($1M USD Minimo)
-                            
                             # === INICIO DE SMART MONEY FILTER ===
-                            topol_whale = SMC_LEVELS_MEMORY.get(tk)
-                            analysis_whale = LAST_KNOWN_ANALYSIS.get(tk)
-                        
-                            if not topol_whale or not analysis_whale:
-                                continue # Requiere SMC para validar
+                            topol_whale = SMC_LEVELS_MEMORY.get(tk, {})
+                            analysis_whale = LAST_KNOWN_ANALYSIS.get(tk, {})
+                            rsi_w = analysis_whale.get('rsi', 50) if analysis_whale else 50
                             
-                            rsi_w = analysis_whale.get('rsi', 50)
-                            w_sup = topol_whale['sup']
-                            w_res = topol_whale['res']
-                        
-                            if intra['vol_type'] == "Compra":
-                                # Solo compras en Oferta (<2% del soporte) y RSI < 35
-                                if cur_price > (w_sup * 1.02) or rsi_w > 35:
-                                    continue # Ballena atrapada
-                                smart_msg = "\ud83d\udd25 <b>BALLENA DE ALTA CONVICCI\u00d3N DETECTADA:</b>\nEntrada institucional en zona de soporte t\u00e9cnico.\nProbabilidad de \u00e9xito: ALTA."
-                            else:
-                                # Solo ventas en Resistencia (>98% de resistencia) y RSI > 65
-                                if cur_price < (w_res * 0.98) or rsi_w < 65:
-                                    continue # Venta prematura
-                                smart_msg = "\ud83d\udd25 <b>BALLENA VENDEDORA DE ALTA CONVICCI\u00d3N:</b>\nSalida institucional en zona de resistencia t\u00e9cnica.\nProbabilidad de reversi\u00f3n bajista: ALTA."
+                            try:
+                                # Solo si precio est\u00e1 en zonas SMC
+                                if 'sup' in topol_whale and 'res' in topol_whale:
+                                    w_sup = topol_whale['sup']
+                                    w_res = topol_whale['res']
+                                    
+                                    if intra['vol_type'] == 'Compra' and cur_price > (w_sup * 1.05): continue # Ignora compras caras
+                                    if intra['vol_type'] == 'Venta' and cur_price < (w_res * 0.95): continue # Ignora ventas baratas
+                                    
+                                    if intra['vol_type'] == 'Compra':
+                                        smart_msg = "\ud83d\udd25 <b>BALLENA DE ALTA CONVICCI\u00d3N DETECTADA:</b>\nEntrada institucional en zona de soporte t\u00e9cnico.\nProbabilidad de \u00e9xito: ALTA."
+                                    else:
+                                        smart_msg = "\ud83d\udd25 <b>BALLENA VENDEDORA DE ALTA CONVICCI\u00d3N:</b>\nSalida institucional en zona de resistencia t\u00e9cnica.\nProbabilidad de reversi\u00f3n bajista: ALTA."
+                                else:
+                                    continue # Si no tiene niveles validos, bloquear
+                            except:
+                                pass # Si no hay datos SMC, que no rompa el c\u00f3digo
+                                
+                            # Si pasa y no hay smart_msg, es porque pas\u00f3 el except pero se filtr\u00f3 mal, mejor asegurar
+                            if 'smart_msg' not in locals():
+                                smart_msg = "\ud83d\udd25 <b>BALLENA HFT DETECTADA.</b>"
                             # === FIN DE SMART MONEY FILTER ===
                             
                             whale_hash_id = f"WHL_SMART_{tk}_{valid_vol}"
@@ -2649,7 +2653,7 @@ def main():
     print("DEBUG BOOT: Iniciando Telegram polling...")
     while True:
         try:
-            bot.polling(none_stop=True, timeout=60)
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
             print(f"\u274c TELEGRAM POLLING CAIDO: {e}")
             print("DEBUG: Reconectando en 5 segundos...")
