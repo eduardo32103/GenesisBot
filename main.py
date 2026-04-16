@@ -1,4 +1,5 @@
 import os, pg8000.dbapi, telebot
+import html
 import ssl
 import urllib.parse
 import logging
@@ -39,6 +40,11 @@ else:
     logging.info(f"✅ FMP_API_KEY cargada correctamente ({len(os.environ.get('FMP_API_KEY'))} caracteres).")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+MENU_GEOPOLITICS = "🌍 Geopolítica"
+MENU_WHALES = "🐋 Radar de Ballenas"
+MENU_SMC = "🦅 Niveles SMC"
+MENU_WALLET = "💼 Mi Wallet"
 
 _MOJIBAKE_PATTERN = re.compile(r'(?:[ÃÂâðÅï]|[\u0080-\u00ff\u0152-\u0178\u2013-\u203a\u20ac\u2122]){2,}')
 _MOJIBAKE_REPLACEMENTS = {
@@ -413,6 +419,9 @@ def restore_state_from_telegram():
             logging.info(f"Backup msg_id guardado en disco: {saved_id}")
         except Exception:
             pass
+
+    logging.info("Restauración remota segura agotada. Se omite get_updates para evitar conflictos 409 con polling.")
+    return _restore_from_repo_json()
 
     # === FUENTE 3: Updates recientes de Telegram ===
     try:
@@ -847,10 +856,23 @@ def _fetch_fmp_quote(tk):
                     volume = float(quote.get('volume', 0) or 0)
                     avg_volume = float(quote.get('avgVolume', 0) or 0)
                     change = float(quote.get('change', 0) or 0)
+                    changes_pct = float(quote.get('changesPercentage', 0) or 0)
                     pe = float(quote.get('pe', 0) or 0)
+                    market_cap = float(quote.get('marketCap', 0) or 0)
+                    name = quote.get('name') or quote.get('companyName') or ''
                     if price > 0:
                         logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
-                        return {'price': price, 'vol': volume, 'volume': volume, 'avgVolume': avg_volume, 'change': change, 'pe': pe}
+                        return {
+                            'price': price,
+                            'vol': volume,
+                            'volume': volume,
+                            'avgVolume': avg_volume,
+                            'change': change,
+                            'changesPercentage': changes_pct,
+                            'pe': pe,
+                            'marketCap': market_cap,
+                            'name': name,
+                        }
                     else:
                         print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
@@ -1649,7 +1671,313 @@ def analyze_breakout_gpt(ticker, level_type, price):
         logging.error(f"Fallo OpenAI breakout: {e}")
         return "Â¿Qué hacer? Esperar confirmación de volumen en la siguiente hora. 🎯 Confianza: 50%"
 
+def _safe_float(value, default=0.0):
+    try:
+        if value in (None, "", "None"):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_compact_money(value):
+    amount = _safe_float(value, 0.0)
+    if amount <= 0:
+        return "N/D"
+    abs_amount = abs(amount)
+    if abs_amount >= 1_000_000_000_000:
+        return f"${amount / 1_000_000_000_000:.2f}T"
+    if abs_amount >= 1_000_000_000:
+        return f"${amount / 1_000_000_000:.2f}B"
+    if abs_amount >= 1_000_000:
+        return f"${amount / 1_000_000:.2f}M"
+    if abs_amount >= 1_000:
+        return f"${amount / 1_000:.2f}K"
+    return f"${amount:,.0f}"
+
+
+def _escape_html(text):
+    return html.escape(str(text or ""), quote=False)
+
+
+def _truncate_text(text, limit=180):
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(clean) <= limit:
+        return clean
+    clipped = clean[:limit].rsplit(" ", 1)[0].strip()
+    return f"{clipped}..."
+
+
+def _fetch_fmp_profile(ticker):
+    if not FMP_API_KEY:
+        return None
+
+    tk = remap_ticker(ticker)
+    if _is_crypto_ticker(tk) or tk in {"BZ=F", "GC=F"}:
+        return None
+
+    safe_symbol = urllib.parse.quote(_get_fmp_symbol(tk))
+    url = f"https://financialmodelingprep.com/api/v3/profile/{safe_symbol}?apikey={FMP_API_KEY}"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return data[0]
+        if isinstance(data, dict) and data.get("symbol"):
+            return data
+    except Exception as e:
+        logging.debug(f"FMP profile error for {tk}: {e}")
+
+    return None
+
+
+def _fetch_fmp_ticker_news(ticker, limit=3):
+    if not FMP_API_KEY:
+        return []
+
+    tk = remap_ticker(ticker)
+    if tk in {"BZ=F", "GC=F"}:
+        return []
+
+    if _is_crypto_ticker(tk):
+        symbol = tk.replace("-USD", "") + "USD"
+    else:
+        symbol = _get_fmp_symbol(tk)
+
+    url = f"https://financialmodelingprep.com/stable/stock-news?symbol={urllib.parse.quote(symbol)}&limit={int(limit)}&apikey={FMP_API_KEY}"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logging.debug(f"FMP ticker news error for {tk}: {e}")
+        return []
+
+
+def _perform_deep_analysis_fmp(ticker):
+    tk = remap_ticker(ticker)
+    display_name = get_display_name(tk)
+
+    quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
+    tech = fetch_and_analyze_stock(tk)
+    if not isinstance(tech, dict):
+        tech = LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else None
+
+    if isinstance(tech, dict) and quote.get("price"):
+        tech["price"] = quote["price"]
+
+    price = _safe_float(quote.get("price") or ((tech or {}).get("price")))
+    if price <= 0:
+        fmp_sym = _get_fmp_symbol(tk)
+        diag = _escape_html(_FMP_LAST_ERROR.get(tk, "Sin información de error"))
+        key_len = len(FMP_API_KEY) if FMP_API_KEY else 0
+        return _make_card(
+            f"ANÁLISIS FMP | {display_name}",
+            [
+                "⚠️ No pude obtener un precio válido desde FMP.",
+                f"• Símbolo consultado: <code>{_escape_html(fmp_sym)}</code>",
+                f"• Diagnóstico: <code>{diag}</code>",
+                f"• API key detectada: {'Sí' if FMP_API_KEY else 'No'} ({key_len} chars)",
+                "🛡️ El análisis se bloqueó para evitar inventar datos.",
+            ],
+            icon="📉",
+            footer="Revisa FMP_API_KEY o el símbolo del activo."
+        )
+
+    profile = _fetch_fmp_profile(tk) or {}
+    news_items = _fetch_fmp_ticker_news(tk, limit=3)
+
+    company_name = profile.get("companyName") or quote.get("name") or display_name
+    sector = profile.get("sector") or "N/D"
+    industry = profile.get("industry") or "N/D"
+    description = _truncate_text(profile.get("description", ""), 170)
+
+    change_abs = _safe_float(quote.get("change"))
+    change_pct = _safe_float(quote.get("changesPercentage"))
+    if change_pct == 0 and price and (price - change_abs) > 0:
+        change_pct = (change_abs / (price - change_abs)) * 100
+
+    volume = _safe_float(quote.get("volume"))
+    avg_volume = _safe_float(quote.get("avgVolume"))
+    pe = _safe_float(quote.get("pe"))
+    beta = _safe_float(profile.get("beta"))
+    market_cap = _safe_float(profile.get("mktCap") or quote.get("marketCap"))
+
+    support = _safe_float((tech or {}).get("smc_sup"), price * 0.97)
+    resistance = _safe_float((tech or {}).get("smc_res"), price * 1.03)
+    order_block = _safe_float((tech or {}).get("order_block"), price)
+    take_profit = _safe_float((tech or {}).get("take_profit"), resistance)
+    stop_loss = _safe_float((tech or {}).get("stop_loss"), support * 0.98)
+    rsi = _safe_float((tech or {}).get("rsi"), 50.0)
+    macd_line = _safe_float((tech or {}).get("macd_line"))
+    macd_signal = _safe_float((tech or {}).get("macd_signal"))
+    rvol = _safe_float((tech or {}).get("rvol"), (volume / avg_volume) if avg_volume > 0 else 1.0)
+    smc_trend = str((tech or {}).get("smc_trend", "Neutral"))
+
+    reward_pct = ((take_profit - price) / price * 100) if price > 0 else 0.0
+    risk_pct = ((price - stop_loss) / price * 100) if price > 0 else 0.0
+    risk_reward = (reward_pct / risk_pct) if risk_pct > 0 else 0.0
+
+    bullish_reasons = []
+    bearish_reasons = []
+    score = 0
+
+    if "ALCISTA" in smc_trend.upper():
+        score += 2
+        bullish_reasons.append("tendencia SMC alcista")
+    elif "BAJISTA" in smc_trend.upper():
+        score -= 2
+        bearish_reasons.append("tendencia SMC bajista")
+
+    if macd_line >= macd_signal:
+        score += 1
+        bullish_reasons.append("MACD por encima de su señal")
+    else:
+        score -= 1
+        bearish_reasons.append("MACD por debajo de su señal")
+
+    if rsi <= 35:
+        score += 1
+        bullish_reasons.append("RSI en zona de rebote")
+    elif rsi >= 70:
+        score -= 2
+        bearish_reasons.append("RSI en sobrecompra")
+    elif rsi >= 60:
+        score -= 1
+        bearish_reasons.append("RSI algo exigido")
+    else:
+        bullish_reasons.append("RSI aún no está estirado")
+
+    if price <= support * 1.02:
+        score += 2
+        bullish_reasons.append("precio cerca de soporte institucional")
+    elif price >= resistance * 0.98:
+        score -= 2
+        bearish_reasons.append("precio demasiado cerca de resistencia")
+    elif price <= order_block * 1.02:
+        score += 1
+        bullish_reasons.append("cotiza sobre el order block")
+
+    if rvol >= 1.5 and change_pct >= 0:
+        score += 1
+        bullish_reasons.append(f"volumen acompaña ({rvol:.1f}x)")
+    elif rvol >= 1.5 and change_pct < 0:
+        score -= 1
+        bearish_reasons.append(f"presión vendedora con volumen ({rvol:.1f}x)")
+
+    if pe > 0 and pe <= 35:
+        score += 1
+        bullish_reasons.append(f"P/E razonable ({pe:.1f})")
+    elif pe >= 60:
+        score -= 1
+        bearish_reasons.append(f"valoración exigente (P/E {pe:.1f})")
+
+    if beta >= 1.7:
+        bearish_reasons.append(f"beta alta ({beta:.2f})")
+
+    translated_titles = []
+    raw_titles = [item.get("title", "").strip() for item in news_items if item.get("title")]
+    if raw_titles:
+        translated_titles = _translate_titles_to_spanish(raw_titles)
+        news_sentiment = sum(_infer_sentiment_from_title(title) for title in raw_titles) / len(raw_titles)
+    else:
+        news_sentiment = 0.0
+
+    news_signal = _classify_sentiment(news_sentiment)
+    if news_sentiment >= 0.25:
+        score += 1
+        bullish_reasons.append("titulares recientes con sesgo favorable")
+    elif news_sentiment <= -0.25:
+        score -= 1
+        bearish_reasons.append("titulares recientes con sesgo adverso")
+
+    if price <= stop_loss:
+        verdict = "VENTA DEFENSIVA"
+        thesis = "El precio ya perforó la zona táctica de defensa y ahora prima proteger capital."
+    elif score >= 4 and reward_pct >= 4 and risk_reward >= 1.3:
+        verdict = "COMPRA FACTIBLE"
+        thesis = "La estructura acompaña y el precio sigue en una zona donde la relación beneficio/riesgo todavía es razonable."
+    elif score <= -3 or price >= resistance * 0.99 or rsi >= 70:
+        verdict = "VENTA / REDUCIR"
+        thesis = "El activo se ve exigido o demasiado cerca de resistencia; tiene más sentido asegurar y esperar mejor reentrada."
+    elif score >= 2:
+        verdict = "MANTENER CON SESGO A COMPRA"
+        thesis = "La lectura es favorable, pero conviene exigir confirmación adicional antes de perseguir el precio."
+    else:
+        verdict = "ESPERAR MEJOR ENTRADA"
+        thesis = "Hay señales mixtas; lo más sano es no forzar una entrada hasta que el activo limpie estructura."
+
+    confidence = int(max(55, min(92, 56 + abs(score) * 7 + (4 if risk_reward >= 1.5 else 0))))
+
+    rr_text = f"{risk_reward:.2f}x" if risk_reward > 0 else "N/D"
+    pe_text = f"{pe:.1f}" if pe > 0 else "N/D"
+    beta_text = f"{beta:.2f}" if beta > 0 else "N/D"
+
+    lines = [
+        "🧾 <b>Resumen ejecutivo</b>",
+        f"• Empresa: <b>{_escape_html(company_name)}</b>",
+        f"• Sector: {_escape_html(sector)} | Industria: {_escape_html(industry)}",
+        f"• Precio actual: <b>${fmt_price(price)}</b> ({change_pct:+.2f}% hoy)",
+        f"• Capitalización: {_format_compact_money(market_cap)} | P/E: {pe_text} | Beta: {beta_text}",
+    ]
+
+    if description:
+        lines.append(f"• Negocio: {_escape_html(description)}")
+
+    lines.extend([
+        "",
+        "📊 <b>Lectura técnica FMP</b>",
+        f"• Tendencia SMC: <b>{_escape_html(smc_trend)}</b>",
+        f"• RSI: {rsi:.1f} | MACD: {macd_line:.3f} vs señal {macd_signal:.3f}",
+        f"• Soporte: ${fmt_price(support)} | Resistencia: ${fmt_price(resistance)}",
+        f"• Order block: ${fmt_price(order_block)} | Volumen relativo: {rvol:.2f}x",
+        f"• Objetivo táctico: ${fmt_price(take_profit)} | Stop táctico: ${fmt_price(stop_loss)}",
+    ])
+
+    if not tech:
+        lines.append("• Nota: FMP no devolvió histórico suficiente; esta lectura pesa más precio, volumen y noticias.")
+
+    lines.extend([
+        "",
+        "📰 <b>Contexto reciente</b>",
+        f"• Sesgo de noticias: {news_signal['icon']} {_escape_html(news_signal['label'])}",
+    ])
+
+    if translated_titles:
+        for title in translated_titles[:3]:
+            lines.append(f"• {_escape_html(_truncate_text(title, 105))}")
+    else:
+        lines.append("• Sin titulares recientes relevantes para este activo en FMP.")
+
+    lines.extend([
+        "",
+        "🎯 <b>Veredicto operativo</b>",
+        f"• Acción sugerida: <b>{verdict}</b>",
+        f"• Confianza del setup: <b>{confidence}%</b>",
+        f"• A favor: {_escape_html('; '.join(bullish_reasons[:3]) if bullish_reasons else 'Sin señales fuertes a favor')}",
+        f"• En contra: {_escape_html('; '.join(bearish_reasons[:3]) if bearish_reasons else 'Sin señales fuertes en contra')}",
+        f"• Relación beneficio/riesgo estimada: <b>{rr_text}</b>",
+        f"• Lectura final: {_escape_html(thesis)}",
+    ])
+
+    return _make_card(
+        f"ANÁLISIS FMP | {display_name}",
+        lines,
+        icon="📈",
+        footer="Análisis educativo, no asesoría financiera."
+    )
+
+
 def perform_deep_analysis(ticker):
+    return _perform_deep_analysis_fmp(ticker)
+
+    # Bloque legacy conservado debajo por compatibilidad temporal.
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
 
@@ -1999,8 +2327,24 @@ def _normalize_menu_text(text):
     cleaned = _clean_outgoing_text((text or "").replace("\ufe0f", ""))
     normalized = unicodedata.normalize("NFKD", cleaned)
     normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"[^a-zA-Z0-9\s]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip().lower()
+
+
+def _extract_analysis_ticker(intent_text):
+    patterns = [
+        r'\bANALIZA\b\s+(?:LA\s+ACCION\s+|EL\s+ACTIVO\s+|ACCIONES\s+DE\s+|DE\s+)?([A-Z0-9\-=]+)',
+        r'\bANALIZAR\b\s+(?:LA\s+ACCION\s+|EL\s+ACTIVO\s+|ACCIONES\s+DE\s+|DE\s+)?([A-Z0-9\-=]+)',
+        r'\bANALISIS\s+DE\s+([A-Z0-9\-=]+)',
+        r'\bREVISA\b\s+(?:LA\s+ACCION\s+|EL\s+ACTIVO\s+|DE\s+)?([A-Z0-9\-=]+)',
+        r'\bOPINAS\s+DE\s+([A-Z0-9\-=]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, intent_text)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _make_card(title, lines, icon="🧠", footer=None):
@@ -2190,6 +2534,35 @@ def handle_text(message):
 
     # Ignorar mensajes de backup del bot
     if text.startswith(BACKUP_PREFIX): return
+
+    if normalized_text in {"geopolitica", "geopolitics"}:
+        bot.reply_to(message, "🌍 Generando reporte estratégico GÉNESIS...")
+        _send_geopolitics_report(message.chat.id)
+        return
+
+    if normalized_text == "radar de ballenas":
+        bot.reply_to(message, "🐋 Activando Radar de Ballenas...")
+        _send_super_radar_report(message.chat.id)
+        return
+
+    if normalized_text == "niveles smc":
+        bot.reply_to(message, "🦅 Forzando datos frescos y analizando niveles SMC...")
+        _send_smc_levels_report(message.chat.id)
+        return
+
+    if normalized_text == "mi wallet":
+        bot.reply_to(message, "💼 Extrayendo datos robustos y valuando métricas live...")
+        _send_wallet_status(message.chat.id)
+        return
+
+    analysis_target = _extract_analysis_ticker(intent_text)
+    if analysis_target:
+        tk = remap_ticker(analysis_target)
+        display_name = get_display_name(tk)
+        bot.reply_to(message, f"📈 Consultando FMP y construyendo análisis integral para {display_name}...")
+        analysis_text = perform_deep_analysis(tk)
+        bot.send_message(message.chat.id, analysis_text, parse_mode="HTML")
+        return
 
     # === BOTONES MENÚ RÃPIDO ===
     if normalized_text in {"🛡 geopolítica", "geopolítica"}:
@@ -2809,6 +3182,12 @@ def callback_super_radar(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "geopolitics")
 def callback_geopolitics(call):
+    try:
+        bot.answer_callback_query(call.id, text="🌍 Generando Reporte Estratégico GÉNESIS...")
+    except Exception:
+        pass
+    _send_geopolitics_report(call.message.chat.id)
+    return
     bot.answer_callback_query(call.id, "🛡️ Generando Reporte Estratégico GÉNESIS...")
     _send_geopolitics_report(call.message.chat.id)
 
