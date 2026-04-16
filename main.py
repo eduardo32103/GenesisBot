@@ -2634,67 +2634,9 @@ def background_loop_proactivo():
             logging.error(f"Error HFT: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
-def whale_radar_callback(call):
-    print("DEBUG: Click detectado en Bot\u00f3n Ballenas")
-    try:
-        bot.answer_callback_query(call.id, text="\ud83d\ude80 Conectando con Radar...")
-        
-        def process_report():
-            try:
-                import datetime
-                now_t = datetime.datetime.now()
-                report = ["---", "\ud83d\udc33 <b>BALANCE INSTITUCIONAL (24H)</b> \ud83d\udc33", "---"]
-                
-                total_net = 0
-                assets = []
-                
-                for tk, events in list(WHALE_HISTORY_DB.items()):
-                    recent = [e for e in events if isinstance(e, dict) and 'timestamp' in e and (now_t - e['timestamp']).total_seconds() <= 86400]
-                    WHALE_HISTORY_DB[tk] = recent 
-                    if not recent: continue
-                    
-                    entradas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Compra"])
-                    salidas = sum([e.get('vol_usd', 0) for e in recent if e.get('type') == "Venta"])
-                    n_entradas = len([e for e in recent if e.get('type') == "Compra"])
-                    n_salidas = len([e for e in recent if e.get('type') == "Venta"])
-                    
-                    neto = entradas - salidas
-                    total_net += neto
-                    
-                    assets.append({'tk': tk, 'entradas': entradas, 'salidas': salidas, 'neto': neto, 'n_entradas': n_entradas, 'n_salidas': n_salidas})
-                    
-                if not assets:
-                    bot.send_message(call.message.chat.id, "\ud83d\udcca Sin movimientos institucionales de alto valor en las \u00faltimas 24h.")
-                    return
-
-                assets.sort(key=lambda x: abs(x['neto']), reverse=True)
-                for a in assets:
-                    t_name = get_display_name(a['tk'])
-                    sign = "+" if a['neto'] > 0 else ""
-                    pres = "Alcista \ud83d\udcc8" if a['neto'] > 0 else "Bajista \ud83d\udcc9"
-                    report.extend([
-                        f"\ud83e\ude99 <b>{t_name} ({a['tk']}):</b>",
-                        f"\u2022 \ud83d\udfe2 ENTRADAS: ${a['entradas']:,.0f} (De {a['n_entradas']} ballenas)",
-                        f"\u2022 \ud83d\udd34 SALIDAS: ${a['salidas']:,.0f} (De {a['n_salidas']} ballenas)",
-                        f"\u2022 \ud83d\udcca NETO: {sign}${a['neto']:,.0f} {pres}",
-                        ""
-                    ])
-                    
-                report.append("---")
-                report.append("TOTAL DINERO INSTITUCIONAL: <b>${:,.0f}</b>".format(total_net))
-                
-                bot.send_message(call.message.chat.id, "\n".join(report), parse_mode="HTML")
-                
-            except Exception as e:
-                print(f"ERROR DENTRO DEL PROCESO ASINCRONO: {e}")
-                bot.send_message(call.message.chat.id, "\u26a0\ufe0f Error generando el reporte interno de radar.")
-
-        import threading
-        threading.Thread(target=process_report, daemon=True).start()
-
-    except Exception as e:
-        print(f"ERROR DENTRO DEL BOT\u00d3N: {e}")
-        bot.send_message(call.message.chat.id, "\u26a0\ufe0f Error al procesar el radar.")
+def test_whale(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "\ud83d\udc33 Radar activo. Procesando flujo de 24h...")
 
 # ----------------- MAIN -----------------
 def main():
@@ -2715,6 +2657,7 @@ def main():
     print("DEBUG BOOT: Iniciando Telegram polling...")
     while True:
         try:
+            print("\ud83d\ude80 GENESIS EST\u00c1 VIVO Y ESCUCHANDO...")
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
             print(f"\u274c TELEGRAM POLLING CAIDO: {e}")
