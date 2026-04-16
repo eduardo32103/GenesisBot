@@ -1890,15 +1890,161 @@ def handle_photo(message):
         logging.error(f"Error de visión OpenAI: {e}")
         bot.edit_message_text("\u26a0\ufe0f Error de configuraci\u00f3n de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
+def _normalize_menu_text(text):
+    return (text or "").replace("\ufe0f", "").strip().lower()
+
+
+def _send_super_radar_report(chat_id):
+    try:
+        tkrs = get_tracked_tickers()
+        if not tkrs:
+            bot.send_message(chat_id, "✅ Tu radar está vacío.")
+            return
+
+        api_key = os.environ.get("FMP_API_KEY")
+        syms = ",".join(tkrs)
+        url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
+
+        try:
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                raise ValueError(f"HTTP {resp.status_code}")
+            data = resp.json()
+        except Exception:
+            data = []
+
+        report = ["--- 🐋 <b>RADAR DE BALLENAS</b> ---"]
+        ballenas_count = 0
+
+        if isinstance(data, list):
+            for q in data:
+                tk = q.get("symbol", "UNKNOWN")
+                vol = q.get("volume", 0)
+                avg_vol = q.get("avgVolume", 0)
+                price = q.get("price", 0)
+                change = q.get("changesPercentage", 0)
+
+                if avg_vol > 0 and vol > (avg_vol * 2):
+                    ballenas_count += 1
+                    estado = "🟢 COMPRA MASIVA" if change > 0 else "🔴 VENTA MASIVA"
+                    report.append(f"🪙 <b>{tk}</b>: {estado}")
+                    report.append(f"   • Precio: ${price:.2f} ({change:+.2f}%)")
+                    report.append(f"   • Volumen Actual: {vol:,}")
+                    report.append(f"   • Promedio: {avg_vol:,} ({(vol / avg_vol):.1f}x)")
+                    report.append("")
+
+        if ballenas_count == 0:
+            bot.send_message(chat_id, "--- 🐋 RADAR DE BALLENAS ---\nMercado en calma. No hay movimientos institucionales de alto valor en este momento.\n---")
+            return
+
+        bot.send_message(chat_id, "\n".join(report), parse_mode="HTML")
+
+    except Exception as e:
+        print(f"ERROR RADAR: {e}")
+        try:
+            bot.send_message(chat_id, f"⚠️ Error interno en radar: {e}")
+        except Exception:
+            pass
+
+
+def _send_geopolitics_report(chat_id):
+    try:
+        report = generar_reporte_macro_manual()
+        if report:
+            bot.send_message(chat_id, report, parse_mode="HTML")
+        else:
+            bot.send_message(chat_id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Error en Geopolítica: {e}")
+        bot.send_message(chat_id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+
+
+def _send_smc_levels_report(chat_id):
+    report_lines = ["---", "🦅 <b>GÉNESIS: SMC / NIVELES CRÍTICOS</b>", "---"]
+    tkrs = get_tracked_tickers()
+
+    if not tkrs:
+        bot.send_message(chat_id, "Tu radar está vacío.", parse_mode="HTML")
+        return
+
+    for raw_tk in tkrs:
+        tk = remap_ticker(raw_tk)
+        LAST_KNOWN_PRICES.pop(tk, None)
+
+    for raw_tk in tkrs:
+        time.sleep(0.2)
+        tk = remap_ticker(raw_tk)
+        analysis = fetch_and_analyze_stock(tk)
+        d_name = get_display_name(tk)
+
+        if analysis and isinstance(analysis, dict):
+            precio = analysis['price']
+            soporte = analysis['smc_sup']
+            resistencia = analysis['smc_res']
+
+            if precio < soporte:
+                veredicto = "COMPRA 🟢"
+            elif precio > resistencia:
+                veredicto = "VENTA 🔴"
+            else:
+                veredicto = "MANTENER ⚠️"
+
+            report_lines.extend([
+                f"🏦 <b>RESEARCH: {d_name}</b>",
+                f"💰 <b>Precio:</b> ${fmt_price(precio)}",
+                f"📉 <b>Soporte (Piso):</b> ${fmt_price(soporte)}",
+                f"📈 <b>Resistencia (Techo):</b> ${fmt_price(resistencia)}",
+                "",
+                "🎯 <b>NIVELES TÁCTICOS:</b>",
+                f"   • 🟢 TP (Toma de ganancia): ${fmt_price(analysis.get('take_profit', 0))}",
+                f"   • 🔴 SL (Stop Loss): ${fmt_price(analysis.get('stop_loss', 0))}",
+                "",
+                f"⚖️ <b>VEREDICTO:</b> <b>{veredicto}</b>",
+                "---"
+            ])
+        elif isinstance(analysis, str):
+            report_lines.extend([f"🏦 <b>RESEARCH: {d_name}</b>", f"• {analysis}", "---"])
+        else:
+            report_lines.extend([f"🏦 <b>{d_name}</b>", "• ⚠️ Niveles SMC no disponibles para este ticker en este momento", "---"])
+
+    texto_smc = "\n".join(report_lines)
+    bot.send_message(chat_id, texto_smc, parse_mode="HTML")
+
+
+def _send_wallet_status(chat_id):
+    bot.send_message(chat_id, build_wallet_dashboard(), parse_mode="HTML")
+
+
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_text(message):
     if str(message.chat.id) != str(CHAT_ID): return
     text = message.text.strip()
+    normalized_text = _normalize_menu_text(text)
 
     # Ignorar mensajes de backup del bot
     if text.startswith(BACKUP_PREFIX): return
 
     # === BOTONES MENÚ RÃPIDO ===
+    if normalized_text in {"🛡 geopolítica", "geopolítica"}:
+        bot.reply_to(message, "🛡️ Generando Reporte Estratégico GÉNESIS...")
+        _send_geopolitics_report(message.chat.id)
+        return
+
+    if normalized_text in {"🐋 radar de ballenas", "radar de ballenas"}:
+        bot.reply_to(message, "🐋 Activando Radar de Ballenas...")
+        _send_super_radar_report(message.chat.id)
+        return
+
+    if normalized_text in {"🦅 niveles smc", "niveles smc"}:
+        bot.reply_to(message, "🦅 Forzando datos frescos y analizando niveles SMC...")
+        _send_smc_levels_report(message.chat.id)
+        return
+
+    if normalized_text in {"💰 mi wallet", "mi wallet"}:
+        bot.reply_to(message, "💰 Extrayendo datos robustos y valuando métricas live...")
+        _send_wallet_status(message.chat.id)
+        return
+
     # === EXPRESIONES REGULARES INTELIGENTES NLP ===
     if re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text):
         match = re.search(r'(?i)\bANALIZA\b\s+([A-Za-z0-9\-]+)', text)
