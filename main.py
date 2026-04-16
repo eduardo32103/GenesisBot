@@ -12,7 +12,7 @@ import threading
 import time
 import json
 from collections import deque
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 
 # ConfiguraciÃ³n extendida de logs para Railway
@@ -1834,18 +1834,18 @@ def build_wallet_dashboard():
 
 @bot.message_handler(commands=['check_db'])
 def test_db(message):
-    print("â³ Intentando conectar con Supabase (Timeout de 5 segundos)...")
+    print("â ³ Intentando conectar con Supabase (Timeout de 5 segundos)...")
     try:
         conn = get_db_connection()
         if not conn:
-             print("âŒ ERROR DE RED O AUTENTICACIÃ“N: conn es None")
+             print("â Œ ERROR DE RED O AUTENTICACIÃ“N: conn es None")
              return
         c = conn.cursor()
         c.execute('SELECT version();')
         v = c.fetchone()[0]
         print(f"âœ… CONEXIÃ“N ESTABLECIDA\nPostgreSQL OK. Base de Datos en lÃ­nea y funcional.\n\nDetalle: {v}")
     except Exception as e:
-        print(f"âŒ ERROR DE RED O AUTENTICACIÃ“N\nSupabase ha rechazado la conexiÃ³n.\n\nLog TÃ©cnico: {e}")
+        print(f"â Œ ERROR DE RED O AUTENTICACIÃ“N\nSupabase ha rechazado la conexiÃ³n.\n\nLog TÃ©cnico: {e}")
 
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
@@ -1858,7 +1858,6 @@ def command_clear_all(message):
         c = conn.cursor()
         c.execute('TRUNCATE TABLE wallet')
         conn.commit()
-        bot.reply_to(message, "âš ï¸ ATENCIÃ“N: DB Supabase (Tabla: wallet) vacuada por completo.")
     except Exception as e:
         bot.reply_to(message, f"âŒ Fallo al limpiar DB: {e}")
     finally:
@@ -1867,14 +1866,18 @@ def command_clear_all(message):
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    # Auto-restaurar estado al arrancar
     restore_state_from_telegram()
     tkrs = get_tracked_tickers()
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.row(KeyboardButton("ðŸŒŽ GeopolÃ­tica"), KeyboardButton("ðŸ³ Radar Ballenas"))
-    markup.row(KeyboardButton("ðŸ“‰ SMC / Mi Cartera"), KeyboardButton("ðŸ’° Mi Wallet / Estado"))
-    bot.reply_to(message, f"---\nðŸ§  *GÃ‰NESIS 1.0 â€” TRADING INSTITUCIONAL* ðŸ§ \n---\nâœ… Bot iniciado correctamente.\nðŸ“Š {len(tkrs)} activos cargados en tu radar.\nðŸ›¡ï¸ Persistencia activa. Tu cartera estÃ¡ segura.", reply_markup=markup, parse_mode="HTML")
-
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(text="🛡️ Geopolítica", callback_data="geopolitics"),
+        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="whale_radar")
+    )
+    markup.add(
+        InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
+        InlineKeyboardButton(text="💰 Mi Wallet / Estado", callback_data="wallet_status")
+    )
+    bot.reply_to(message, f"---\n🧠 <b>GÉNESIS 1.0 — TRADING INSTITUCIONAL</b> 🧠\n---\n✅ Bot iniciado correctamente.\n📊 {len(tkrs)} activos cargados en tu radar.\n🛡️ Persistencia activa. Tu cartera está segura.", reply_markup=markup, parse_mode="HTML")
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
     """Comando oculto para resetear la ganancia mensual a $0.00"""
@@ -2634,8 +2637,8 @@ def background_loop_proactivo():
             logging.error(f"Error HFT: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
-def whale_radar_callback(call):
-    bot.answer_callback_query(call.id, "📊 Analizando flujo institucional...")
+def callback_whale(call):
+    bot.answer_callback_query(call.id, "📊 Cargando Radar...")
     bot.send_message(call.message.chat.id, "🔎 Buscando movimientos de ballenas en las últimas 24h...")
     
     try:
@@ -2718,4 +2721,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
