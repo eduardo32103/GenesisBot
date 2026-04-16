@@ -2655,7 +2655,7 @@ def main():
 
     # Polling con auto-reconexion
     print("DEBUG BOOT: Iniciando Telegram polling...")
-    print(">>> SISTEMA G\u00c9NESIS ONLINE SIN ERRORES <<<")
+    print(">>> SISTEMA G\u00c9NESIS ONLINE Y SIN ERRORES DE ESPACIOS <<<")
     while True:
         try:
             print("\ud83d\ude80 GENESIS EST\u00c1 VIVO Y ESCUCHANDO...")
