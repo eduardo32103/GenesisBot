@@ -1808,7 +1808,7 @@ def cmd_start(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton(text="🛡️ Geopolítica", callback_data="geopolitics"),
-        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="radar_institucional")
+        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="super_radar_24h")
     )
     markup.add(
         InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
@@ -1816,7 +1816,7 @@ def cmd_start(message):
     )
     
     reply_text = """---
-🐋 <b>GENESIS 1.0 - TRADING INSTITUCIONAL</b> 📈
+🧠 <b>GÉNESIS 1.0 — TRADING INSTITUCIONAL</b> 🧠
 ---
 ✅ Bot iniciado correctamente.
 📊 Radar: """ + str(len(tkrs)) + """ activos.
@@ -2580,10 +2580,10 @@ def background_loop_proactivo():
             print(f"DEBUG ERROR HFT LOOP: {e}")
             logging.error(f"Error HFT: {e}")
 
-@bot.callback_query_handler(func=lambda call: call.data == "radar_institucional")
-def callback_whale_radar(call):
+@bot.callback_query_handler(func=lambda call: call.data == "super_radar_24h")
+def callback_super_radar(call):
     try:
-        bot.answer_callback_query(call.id, "🐋 Conectando con Wall Street...")
+        bot.answer_callback_query(call.id, text="🚀 Iniciando Radar Institucional...")
     except:
         pass
     
@@ -2675,3 +2675,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
