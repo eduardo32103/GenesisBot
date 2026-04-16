@@ -2481,25 +2481,43 @@ def background_loop_proactivo():
                         price_is_reliable = False
 
                 # Rupturas Doble Verificadas — SOLO si el precio es confiable
+                # Rupturas Doble Verificadas — SOLO si el precio es confiable
                 topol = SMC_LEVELS_MEMORY.get(tk)
-                if topol and price_is_reliable:
-                    if cur_price > topol['res']:
-                        rt = verify_1m_realtime_data(tk)
-                        if rt and rt['price'] > topol['res'] and _sanity_check_price(tk, rt['price']):
-                           hash_brk = f"BRK_UP_{tk}_{topol['res']}"
-                           if not check_and_add_seen_event(hash_brk):
-                               print(f"DEBUG BREAKOUT: {display_name} ROMPIO RESISTENCIA en ${fmt_price(rt['price'])}")
-                               adv = analyze_breakout_gpt(tk, "Resistencia", rt['price'])
-                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA INMINENTE*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Resistencia en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                analysis = LAST_KNOWN_ANALYSIS.get(tk)
+                if topol and analysis and price_is_reliable:
+                    rsi = analysis.get('rsi', 50)
+                    avg_v = intra.get('avg_vol', 1)
+                    rvol = (intra.get('latest_vol', 1) / avg_v) if avg_v > 0 else 1
+                    
+                    if rsi < 35:
+                        reason = f"RSI en {rsi:.1f} indica sobreventa extrema."
+                    elif rsi > 65:
+                        reason = f"RSI en {rsi:.1f} se\u00f1ala sobrecompra (riesgo de recorte)."
+                    elif rvol >= 1.5:
+                        reason = f"Presi\u00f3n de volumen inusual ({rvol:.1f}x por encima de la media)."
+                    else:
+                        reason = f"La estructura SMC t\u00e9cnica dicta la fuerza de la zona."
 
+                    # L\u00f3gica 1: Ruptura Ascendente
+                    if cur_price > topol['res']:
+                        hash_brk = f"BRK_UP_{tk}_{topol['res']}"
+                        if not check_and_add_seen_event(hash_brk):
+                            msg = f"\ud83d\ude80 <b>RUPTURA DE RESISTENCIA EN {display_name}</b>.\nImpulso alcista detectado en ${fmt_price(cur_price)}.\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> COMPRAR / MANTENER."
+                            bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+
+                    # L\u00f3gica 2: Ruptura Descendente
                     elif cur_price < topol['sup']:
-                        rt = verify_1m_realtime_data(tk)
-                        if rt and rt['price'] < topol['sup'] and _sanity_check_price(tk, rt['price']):
-                           hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
-                           if not check_and_add_seen_event(hash_drp):
-                               print(f"DEBUG BREAKOUT: {display_name} ROMPIO SOPORTE en ${fmt_price(rt['price'])}")
-                               adv = analyze_breakout_gpt(tk, "Soporte", rt['price'])
-                               bot.send_message(CHAT_ID, f"---\n🚨 *ALERTA DE RUPTURA (DUMP)*\n---\n<b>{display_name}</b> cruzó quirúrgicamente Soporte en <b>${fmt_price(rt['price'])}</b>.\n\n🤖 *DECISIÓN IA:*\n{adv}", parse_mode="HTML")
+                        hash_drp = f"BRK_DWN_{tk}_{topol['sup']}"
+                        if not check_and_add_seen_event(hash_drp):
+                            msg = f"\u26a0\ufe0f <b>RUPTURA DE SOPORTE EN {display_name}</b>.\nPosible ca\u00edda detectada (perdi\u00f3 soporte de ${fmt_price(topol['sup'])} a ${fmt_price(cur_price)}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> VENDER / CORTAR P\u00c9RDIDAS."
+                            bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
+                            
+                    # L\u00f3gica 3: Zona de Acumulaci\u00f3n (Cerca del Soporte)
+                    elif topol['sup'] <= cur_price <= (topol['sup'] * 1.015):
+                        hash_acc = f"ACCUM_{tk}_{topol['sup']}"
+                        if not check_and_add_seen_event(hash_acc):
+                            msg = f"\ud83d\udc8e <b>ZONA DE ACUMULACI\u00d3N en {display_name}</b>.\nLas instituciones est\u00e1n comprando aqu\u00ed (muy cerca del Order Block de ${fmt_price(topol['sup'])}).\n\n🧠 {reason}\n\u2696\ufe0f <b>Veredicto:</b> OPORTUNIDAD DE COMPRA."
+                            bot.send_message(CHAT_ID, f"---\n{msg}\n---", parse_mode="HTML")
 
                 # Ballenas — con cruce geopolítico GENESIS
                 # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
