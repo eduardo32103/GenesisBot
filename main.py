@@ -1868,16 +1868,24 @@ def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
     restore_state_from_telegram()
     tkrs = get_tracked_tickers()
+    
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton(text="🛡️ Geopolítica", callback_data="geopolitics"),
-        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="whale_radar")
+        InlineKeyboardButton(text="GEOPOLITICA", callback_data="geopolitics"),
+        InlineKeyboardButton(text="RADAR DE BALLENAS", callback_data="whale_radar")
     )
     markup.add(
-        InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
-        InlineKeyboardButton(text="💰 Mi Wallet / Estado", callback_data="wallet_status")
+        InlineKeyboardButton(text="NIVELES SMC", callback_data="smc_levels"),
+        InlineKeyboardButton(text="MI WALLET", callback_data="wallet_status")
     )
-    bot.reply_to(message, f"---\n🧠 <b>GÉNESIS 1.0 — TRADING INSTITUCIONAL</b> 🧠\n---\n✅ Bot iniciado correctamente.\n📊 {len(tkrs)} activos cargados en tu radar.\n🛡️ Persistencia activa. Tu cartera está segura.", reply_markup=markup, parse_mode="HTML")
+    
+    reply_text = """---
+<b>GENESIS 1.0 - TRADING INSTITUCIONAL</b>
+---
+Bot iniciado.
+Radar: """ + str(len(tkrs)) + """ activos.
+Persistencia segura."""
+    bot.reply_to(message, reply_text, reply_markup=markup, parse_mode="HTML")
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
     """Comando oculto para resetear la ganancia mensual a $0.00"""
@@ -2637,26 +2645,34 @@ def background_loop_proactivo():
             logging.error(f"Error HFT: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "whale_radar")
-def callback_whale(call):
-    bot.answer_callback_query(call.id, "📊 Consultando datos institucionales...")
+def callback_whale_radar(call):
+    try:
+        bot.answer_callback_query(call.id, "Consultando datos institucionales...")
+    except:
+        pass
+    
     try:
         tkrs = get_tracked_tickers()
         if not tkrs:
-            bot.send_message(call.message.chat.id, "✅ Tu radar está vacío.")
+            bot.send_message(call.message.chat.id, "Tu radar esta vacio.")
             return
 
         import os
         import requests
         api_key = os.environ.get("FMP_API_KEY")
         
-        # FMP soporta batch separando los tickers por coma
         syms = ",".join(tkrs)
         url = f"https://financialmodelingprep.com/api/v3/quote/{syms}?apikey={api_key}"
         
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=15)
+        # Avoid json exception by checking status
+        if resp.status_code != 200:
+            bot.send_message(call.message.chat.id, "FMP API Blocked or Error: HTTP " + str(resp.status_code))
+            return
+            
         data = resp.json()
         
-        report = ["---", "🐋 <b>RADAR DE BALLENAS (EN VIVO)</b> 🐋", "---"]
+        report = ["---", "<b>RADAR DE BALLENAS (EN VIVO)</b>", "---"]
         ballenas_count = 0
         
         if isinstance(data, list):
@@ -2667,25 +2683,28 @@ def callback_whale(call):
                 price = q.get("price", 0)
                 change = q.get("changesPercentage", 0)
                 
-                # Condición de ballena: Volumen es > 2x su volumen promedio
                 if avg_vol > 0 and vol > (avg_vol * 2):
                     ballenas_count += 1
-                    estado = "🟢 COMPRA FUERTE" if change > 0 else "🔴 VENTA FUERTE"
-                    report.append(f"🪙 <b>{tk}</b>: {estado}")
-                    report.append(f"   • Precio: ${price:.2f} ({change:+.2f}%)")
-                    report.append(f"   • Volumen Actual: {vol:,}")
-                    report.append(f"   • Promedio: {avg_vol:,} ({(vol/avg_vol):.1f}x)")
+                    estado = "COMPRA MASIVA" if change > 0 else "VENTA MASIVA"
+                    report.append(f"<b>{tk}</b>: {estado}")
+                    report.append(f"   - Precio: ${price:.2f} ({change:+.2f}%)")
+                    report.append(f"   - Volumen Actual: {vol:,}")
+                    report.append(f"   - Promedio: {avg_vol:,} ({(vol/avg_vol):.1f}x)")
                     report.append("")
                 
         if ballenas_count == 0:
-            bot.send_message(call.message.chat.id, "✅ No se detectan anomalías de volumen (ballenas) en vivo en tu radar.")
+            bot.send_message(call.message.chat.id, "No se detectan anomalias de volumen en vivo en este momento.")
             return
             
-        bot.send_message(call.message.chat.id, "\n".join(report), parse_mode="HTML")
+        bot.send_message(call.message.chat.id, "\\n".join(report), parse_mode="HTML")
         
     except Exception as e:
-        print(f"ERROR DENTRO DEL BOTÓN: {e}")
-        bot.send_message(call.message.chat.id, "⚠️ Error generando el reporte interno de radar.")
+        print(f"ERROR RADAR: {e}")
+        try:
+            bot.send_message(call.message.chat.id, f"Error interno en boton radar: {e}")
+        except:
+            pass
+
 # ----------------- MAIN -----------------
 def main():
     logging.info("Iniciando GÃ©nesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
