@@ -15,9 +15,11 @@ import time
 import json
 import hashlib
 import unicodedata
+import math
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
+from PIL import Image, ImageDraw, ImageFont
 
 # Configuración extendida de logs para Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -2480,6 +2482,546 @@ def _count_whale_alerts_today():
         if isinstance(ts, datetime) and ts.date() == today and entry.get("alert_sent"):
             total += 1
     return total
+
+
+def _get_chart_font(size=16, bold=False):
+    candidates = [
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "Arial Bold.ttf" if bold else "Arial.ttf",
+        "arialbd.ttf" if bold else "arial.ttf",
+    ]
+    for font_name in candidates:
+        try:
+            return ImageFont.truetype(font_name, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _find_recent_pivots(values, mode="low", window=3, lookback=55, min_gap=6):
+    arr = [float(v) for v in list(values)]
+    if len(arr) < (window * 2 + 5):
+        return []
+
+    start = max(window, len(arr) - lookback)
+    pivots = []
+    for idx in range(start, len(arr) - window):
+        segment = arr[idx - window: idx + window + 1]
+        current = arr[idx]
+        condition = current <= min(segment) if mode == "low" else current >= max(segment)
+        if not condition:
+            continue
+
+        if not pivots:
+            pivots.append(idx)
+            continue
+
+        if idx - pivots[-1] < min_gap:
+            prev_idx = pivots[-1]
+            replace = current < arr[prev_idx] if mode == "low" else current > arr[prev_idx]
+            if replace:
+                pivots[-1] = idx
+        else:
+            pivots.append(idx)
+
+    return pivots[-2:]
+
+
+def _detect_divergence_signal(pack):
+    closes = pack.get("closes_full", [])
+    rsi = pack.get("rsi_full", [])
+    macd_hist = pack.get("macd_hist_full", [])
+    obv = pack.get("obv_full", [])
+    dates = pack.get("dates_full", [])
+    support = _safe_float(pack.get("support"))
+    resistance = _safe_float(pack.get("resistance"))
+    current_price = _safe_float(pack.get("price"))
+
+    result = {
+        "active": False,
+        "kind": None,
+        "confidence": 0,
+        "summary": "Sin divergencia operable de alta calidad.",
+        "signals": [],
+        "pivot_index": None,
+        "pivot_date": None,
+    }
+
+    if len(closes) < 30 or len(rsi) != len(closes) or len(macd_hist) != len(closes) or len(obv) != len(closes):
+        return result
+
+    def _zone_bonus(kind):
+        if kind == "bullish" and support > 0 and current_price <= support * 1.03:
+            return 8
+        if kind == "bearish" and resistance > 0 and current_price >= resistance * 0.97:
+            return 8
+        return 0
+
+    low_pivots = _find_recent_pivots(closes, mode="low")
+    if len(low_pivots) == 2:
+        i1, i2 = low_pivots
+        if closes[i2] < closes[i1] * 0.995:
+            signals = []
+            if rsi[i2] > rsi[i1] + 2.5:
+                signals.append("RSI")
+            if macd_hist[i2] > macd_hist[i1]:
+                signals.append("MACD")
+            if obv[i2] > obv[i1]:
+                signals.append("OBV")
+            if len(signals) >= 2:
+                confidence = min(92, 68 + len(signals) * 7 + _zone_bonus("bullish"))
+                result = {
+                    "active": True,
+                    "kind": "bullish",
+                    "confidence": confidence,
+                    "summary": f"Divergencia alcista confirmada por {', '.join(signals)}.",
+                    "signals": signals,
+                    "pivot_index": i2,
+                    "pivot_date": dates[i2] if i2 < len(dates) else None,
+                }
+
+    high_pivots = _find_recent_pivots(closes, mode="high")
+    if len(high_pivots) == 2:
+        i1, i2 = high_pivots
+        if closes[i2] > closes[i1] * 1.005:
+            signals = []
+            if rsi[i2] < rsi[i1] - 2.5:
+                signals.append("RSI")
+            if macd_hist[i2] < macd_hist[i1]:
+                signals.append("MACD")
+            if obv[i2] < obv[i1]:
+                signals.append("OBV")
+            if len(signals) >= 2:
+                confidence = min(92, 68 + len(signals) * 7 + _zone_bonus("bearish"))
+                bearish_result = {
+                    "active": True,
+                    "kind": "bearish",
+                    "confidence": confidence,
+                    "summary": f"Divergencia bajista confirmada por {', '.join(signals)}.",
+                    "signals": signals,
+                    "pivot_index": i2,
+                    "pivot_date": dates[i2] if i2 < len(dates) else None,
+                }
+                if bearish_result["confidence"] > result.get("confidence", 0):
+                    result = bearish_result
+
+    return result
+
+
+def _build_projection_series(pack):
+    closes = pack.get("closes", [])
+    if len(closes) < 8:
+        return []
+
+    current = float(closes[-1])
+    support = _safe_float(pack.get("support"), current * 0.96)
+    resistance = _safe_float(pack.get("resistance"), current * 1.04)
+    trend_score = 0
+    if _safe_float(pack.get("ema50")) >= _safe_float(pack.get("ema200")):
+        trend_score += 1
+    else:
+        trend_score -= 1
+    if _safe_float(pack.get("macd_line")) >= _safe_float(pack.get("macd_signal")):
+        trend_score += 1
+    else:
+        trend_score -= 1
+    if _safe_float(pack.get("rsi")) >= 55:
+        trend_score += 1
+    elif _safe_float(pack.get("rsi")) <= 45:
+        trend_score -= 1
+
+    divergence = pack.get("divergence") or {}
+    if divergence.get("active"):
+        trend_score += 1 if divergence.get("kind") == "bullish" else -1
+
+    recent_slope = (closes[-1] - closes[-6]) / 5 if len(closes) >= 6 else 0.0
+    if trend_score >= 2:
+        target = max(current + recent_slope * 7, min(resistance, current * 1.06))
+    elif trend_score <= -2:
+        target = min(current + recent_slope * 7, max(support, current * 0.94))
+    else:
+        mid = (support + resistance) / 2 if support > 0 and resistance > 0 else current
+        target = (current * 0.65) + (mid * 0.35)
+
+    projection = []
+    steps = 12
+    for step in range(1, steps + 1):
+        t = step / steps
+        eased = 1 - ((1 - t) ** 2)
+        curvature = math.sin(t * math.pi) * recent_slope * 1.2
+        projection.append(current + ((target - current) * eased) + curvature)
+    return projection
+
+
+def _build_chart_pack(ticker, candles=110):
+    tk = remap_ticker(ticker)
+    hist = _fetch_fmp_historical_eod(tk, limit=max(260, candles)) or []
+    if len(hist) < 60:
+        return None
+
+    hist = list(reversed(hist[:max(260, candles)]))
+    closes_full = [float(row.get("close", 0) or 0) for row in hist]
+    highs_full = [float(row.get("high", 0) or 0) for row in hist]
+    lows_full = [float(row.get("low", 0) or 0) for row in hist]
+    volumes_full = [float(row.get("volume", 0) or 0) for row in hist]
+    dates_full = [str(row.get("date") or row.get("label") or "") for row in hist]
+
+    closes = pd.Series(closes_full)
+    highs = pd.Series(highs_full)
+    lows = pd.Series(lows_full)
+    volumes = pd.Series(volumes_full)
+
+    delta = closes.diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+    ema_up = up.ewm(com=13, adjust=False).mean()
+    ema_down = down.ewm(com=13, adjust=False).mean()
+    rs = ema_up / ema_down.replace(0, pd.NA)
+    rsi_series = (100 - (100 / (1 + rs))).fillna(50)
+
+    macd_line = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
+    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = (macd_line - macd_signal).fillna(0)
+
+    ema50 = closes.ewm(span=50, adjust=False).mean()
+    ema200 = closes.ewm(span=200, adjust=False).mean()
+    sma50 = closes.rolling(window=50, min_periods=1).mean()
+    sma200 = closes.rolling(window=200, min_periods=1).mean()
+
+    bb_basis = closes.rolling(window=20, min_periods=1).mean()
+    bb_std = closes.rolling(window=20, min_periods=1).std().fillna(0)
+    bb_upper = bb_basis + (bb_std * 2)
+    bb_lower = bb_basis - (bb_std * 2)
+
+    obv_step = closes.diff().fillna(0).apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+    obv_series = (obv_step * volumes).cumsum()
+
+    recent_window = min(len(hist), 20)
+    support = float(lows.iloc[-recent_window:].min())
+    resistance = float(highs.iloc[-recent_window:].max())
+    fib_window = min(len(hist), 120)
+    fib_high = float(highs.iloc[-fib_window:].max())
+    fib_low = float(lows.iloc[-fib_window:].min())
+    fib_range = max(fib_high - fib_low, 0.0001)
+    fib_618 = fib_high - (fib_range * 0.618)
+    fib_650 = fib_high - (fib_range * 0.650)
+    golden_pocket_low = min(fib_650, fib_618)
+    golden_pocket_high = max(fib_650, fib_618)
+
+    pack = {
+        "ticker": tk,
+        "dates_full": dates_full,
+        "closes_full": closes_full,
+        "highs_full": highs_full,
+        "lows_full": lows_full,
+        "volumes_full": volumes_full,
+        "rsi_full": [float(v) for v in rsi_series.fillna(50).tolist()],
+        "macd_line_full": [float(v) for v in macd_line.fillna(0).tolist()],
+        "macd_signal_full": [float(v) for v in macd_signal.fillna(0).tolist()],
+        "macd_hist_full": [float(v) for v in macd_hist.fillna(0).tolist()],
+        "obv_full": [float(v) for v in obv_series.fillna(0).tolist()],
+        "ema50_full": [float(v) for v in ema50.fillna(method='bfill').fillna(0).tolist()],
+        "ema200_full": [float(v) for v in ema200.fillna(method='bfill').fillna(0).tolist()],
+        "bb_upper_full": [float(v) for v in bb_upper.fillna(0).tolist()],
+        "bb_lower_full": [float(v) for v in bb_lower.fillna(0).tolist()],
+        "bb_basis_full": [float(v) for v in bb_basis.fillna(0).tolist()],
+        "sma50": float(sma50.iloc[-1]),
+        "sma200": float(sma200.iloc[-1]),
+        "ema50": float(ema50.iloc[-1]),
+        "ema200": float(ema200.iloc[-1]),
+        "macd_line": float(macd_line.iloc[-1]),
+        "macd_signal": float(macd_signal.iloc[-1]),
+        "rsi": float(rsi_series.iloc[-1]),
+        "support": support,
+        "resistance": resistance,
+        "price": float(closes.iloc[-1]),
+        "golden_pocket_low": golden_pocket_low,
+        "golden_pocket_high": golden_pocket_high,
+        "fib_618": fib_618,
+    }
+
+    pack["divergence"] = _detect_divergence_signal(pack)
+    pack["projection"] = _build_projection_series(pack)
+
+    tail = candles
+    for key in ("dates_full", "closes_full", "highs_full", "lows_full", "volumes_full", "rsi_full",
+                "macd_line_full", "macd_signal_full", "macd_hist_full", "obv_full", "ema50_full",
+                "ema200_full", "bb_upper_full", "bb_lower_full", "bb_basis_full"):
+        trimmed_key = key.replace("_full", "")
+        pack[trimmed_key] = pack[key][-tail:]
+
+    return pack
+
+
+def _render_stock_analysis_chart(ticker, analysis=None):
+    pack = _build_chart_pack(ticker, candles=110)
+    if not pack:
+        return None, None
+
+    tk = remap_ticker(ticker)
+    display_name = get_display_name(tk)
+    analysis = analysis or (LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}
+    divergence = pack.get("divergence") or {}
+
+    img = Image.new("RGBA", (1480, 980), "#F4F1EA")
+    draw = ImageDraw.Draw(img, "RGBA")
+    font_title = _get_chart_font(30, bold=True)
+    font_sub = _get_chart_font(18, bold=False)
+    font_label = _get_chart_font(16, bold=False)
+    font_small = _get_chart_font(14, bold=False)
+    font_bold = _get_chart_font(18, bold=True)
+
+    panel_fill = (255, 255, 255, 240)
+    panel_border = "#D8D1C2"
+    main_panel = (50, 90, 960, 545)
+    volume_panel = (50, 560, 960, 690)
+    rsi_panel = (50, 710, 960, 820)
+    macd_panel = (50, 840, 960, 930)
+    side_panel = (1000, 90, 1430, 930)
+
+    for panel in (main_panel, volume_panel, rsi_panel, macd_panel, side_panel):
+        draw.rounded_rectangle(panel, radius=26, fill=panel_fill, outline=panel_border, width=2)
+
+    draw.text((58, 28), f"Análisis visual de {display_name}", fill="#10233E", font=font_title)
+    draw.text((60, 62), "Gráfico limpio con tendencia, indicadores, zonas tácticas y proyección educativa.", fill="#5A677D", font=font_sub)
+
+    def _draw_grid(panel, rows=4):
+        x1, y1, x2, y2 = panel
+        for idx in range(rows + 1):
+            y = y1 + ((y2 - y1) * idx / rows)
+            draw.line((x1 + 16, y, x2 - 16, y), fill="#ECE7DC", width=1)
+
+    for panel in (main_panel, volume_panel, rsi_panel, macd_panel):
+        _draw_grid(panel, rows=4)
+
+    def _map_series(values, panel, vmin=None, vmax=None, extra_right=0):
+        x1, y1, x2, y2 = panel
+        usable_x1, usable_x2 = x1 + 20, x2 - 20 - extra_right
+        usable_y1, usable_y2 = y1 + 16, y2 - 18
+        if vmin is None:
+            vmin = min(values)
+        if vmax is None:
+            vmax = max(values)
+        if vmax <= vmin:
+            vmax = vmin + 1
+        pts = []
+        total = max(len(values) - 1, 1)
+        for idx, value in enumerate(values):
+            x = usable_x1 + ((usable_x2 - usable_x1) * idx / total)
+            y = usable_y2 - (((float(value) - vmin) / (vmax - vmin)) * (usable_y2 - usable_y1))
+            pts.append((x, y))
+        return pts, usable_x2
+
+    closes = pack["closes"]
+    price_values = closes + pack["projection"]
+    price_min = min(min(pack["bb_lower"]), min(closes), pack["support"], pack["golden_pocket_low"]) * 0.985
+    price_max = max(max(pack["bb_upper"]), max(closes), pack["resistance"], pack["golden_pocket_high"]) * 1.015
+
+    close_pts, price_panel_end = _map_series(closes, main_panel, price_min, price_max, extra_right=120)
+    ema50_pts, _ = _map_series(pack["ema50"], main_panel, price_min, price_max, extra_right=120)
+    ema200_pts, _ = _map_series(pack["ema200"], main_panel, price_min, price_max, extra_right=120)
+    bb_upper_pts, _ = _map_series(pack["bb_upper"], main_panel, price_min, price_max, extra_right=120)
+    bb_lower_pts, _ = _map_series(pack["bb_lower"], main_panel, price_min, price_max, extra_right=120)
+
+    gp_top = _map_series([pack["golden_pocket_high"]] * len(closes), main_panel, price_min, price_max, extra_right=120)[0]
+    gp_bottom = _map_series([pack["golden_pocket_low"]] * len(closes), main_panel, price_min, price_max, extra_right=120)[0]
+    if gp_top and gp_bottom:
+        polygon = gp_top + list(reversed(gp_bottom))
+        draw.polygon(polygon, fill=(240, 196, 92, 55))
+
+    if len(bb_upper_pts) > 1 and len(bb_lower_pts) > 1:
+        band_polygon = bb_upper_pts + list(reversed(bb_lower_pts))
+        draw.polygon(band_polygon, fill=(125, 134, 158, 30))
+
+    for points, color, width in (
+        (bb_upper_pts, "#B7BDC9", 2),
+        (bb_lower_pts, "#B7BDC9", 2),
+        (ema200_pts, "#2A7E8C", 3),
+        (ema50_pts, "#E18D2B", 3),
+        (close_pts, "#132B45", 4),
+    ):
+        if len(points) > 1:
+            draw.line(points, fill=color, width=width, joint="curve")
+
+    proj_start = close_pts[-1] if close_pts else None
+    if proj_start and pack["projection"]:
+        projection_pts = [proj_start]
+        for idx, value in enumerate(pack["projection"], start=1):
+            x = price_panel_end + (idx * 8)
+            _, y_points = None, None
+            y = _map_series([value], (main_panel[0], main_panel[1], main_panel[2], main_panel[3]), price_min, price_max, extra_right=120)[0][0][1]
+            projection_pts.append((x, y))
+        proj_color = "#1B9C5A" if pack["projection"][-1] >= closes[-1] else "#C94D3F"
+        for idx in range(len(projection_pts) - 1):
+            if idx % 2 == 0:
+                draw.line((projection_pts[idx], projection_pts[idx + 1]), fill=proj_color, width=4)
+        draw.text((projection_pts[-1][0] - 16, projection_pts[-1][1] - 26), "Proyección", fill=proj_color, font=font_small)
+
+    for level, color, label in (
+        (pack["support"], "#1B9C5A", "Soporte"),
+        (pack["resistance"], "#C94D3F", "Resistencia"),
+    ):
+        level_pts, _ = _map_series([level] * len(closes), main_panel, price_min, price_max, extra_right=120)
+        if len(level_pts) > 1:
+            draw.line(level_pts, fill=color, width=2)
+            draw.text((main_panel[2] - 145, level_pts[-1][1] - 16), f"{label} ${fmt_price(level)}", fill=color, font=font_small)
+
+    if divergence.get("active") and divergence.get("pivot_index") is not None:
+        pivot_idx = int(divergence["pivot_index"])
+        tail_offset = len(pack["closes_full"]) - len(closes)
+        local_idx = pivot_idx - tail_offset
+        if 0 <= local_idx < len(close_pts):
+            px, py = close_pts[local_idx]
+            badge_color = "#1B9C5A" if divergence["kind"] == "bullish" else "#C94D3F"
+            draw.ellipse((px - 8, py - 8, px + 8, py + 8), fill=badge_color, outline="white", width=2)
+            draw.text((px + 14, py - 26), "Divergencia", fill=badge_color, font=font_small)
+
+    volume_max = max(max(pack["volumes"]), 1)
+    vol_x1, vol_y1, vol_x2, vol_y2 = volume_panel
+    usable_width = (vol_x2 - vol_x1) - 40
+    bar_width = max(3, int(usable_width / max(len(pack["volumes"]), 1)))
+    for idx, vol in enumerate(pack["volumes"]):
+        x = vol_x1 + 20 + idx * bar_width
+        h = ((vol / volume_max) * ((vol_y2 - vol_y1) - 28))
+        y = vol_y2 - 14 - h
+        color = "#1B9C5A" if idx == 0 or pack["closes"][idx] >= pack["closes"][max(idx - 1, 0)] else "#C94D3F"
+        draw.rectangle((x, y, x + max(bar_width - 1, 2), vol_y2 - 14), fill=color)
+
+    rsi_pts, _ = _map_series(pack["rsi"], rsi_panel, 0, 100)
+    if len(rsi_pts) > 1:
+        draw.line(rsi_pts, fill="#7B4B94", width=3)
+    for level, color in ((70, "#C94D3F"), (30, "#1B9C5A"), (50, "#8B95A7")):
+        level_pts, _ = _map_series([level] * len(pack["rsi"]), rsi_panel, 0, 100)
+        draw.line(level_pts, fill=color, width=1)
+
+    macd_vals = pack["macd_hist"]
+    macd_min = min(min(macd_vals), min(pack["macd_line"]), min(pack["macd_signal"]), 0)
+    macd_max = max(max(macd_vals), max(pack["macd_line"]), max(pack["macd_signal"]), 0)
+    macd_line_pts, _ = _map_series(pack["macd_line"], macd_panel, macd_min, macd_max)
+    macd_signal_pts, _ = _map_series(pack["macd_signal"], macd_panel, macd_min, macd_max)
+    zero_pts, _ = _map_series([0] * len(pack["macd_hist"]), macd_panel, macd_min, macd_max)
+    draw.line(zero_pts, fill="#8B95A7", width=1)
+    if len(macd_line_pts) > 1:
+        draw.line(macd_line_pts, fill="#1B5E8A", width=3)
+    if len(macd_signal_pts) > 1:
+        draw.line(macd_signal_pts, fill="#D9822B", width=3)
+    macd_x1, macd_y1, macd_x2, macd_y2 = macd_panel
+    macd_bar_w = max(3, int(((macd_x2 - macd_x1) - 40) / max(len(pack["macd_hist"]), 1)))
+    for idx, val in enumerate(pack["macd_hist"]):
+        x = macd_x1 + 20 + idx * macd_bar_w
+        zero_y = zero_pts[idx][1]
+        y = _map_series([val], macd_panel, macd_min, macd_max)[0][0][1]
+        draw.rectangle((x, min(y, zero_y), x + max(macd_bar_w - 1, 2), max(y, zero_y)), fill="#5A8F6A" if val >= 0 else "#C57266")
+
+    draw.text((main_panel[0] + 18, main_panel[1] + 12), "Precio + EMA + Bollinger + proyección", fill="#10233E", font=font_bold)
+    draw.text((volume_panel[0] + 18, volume_panel[1] + 10), "Volumen", fill="#10233E", font=font_bold)
+    draw.text((rsi_panel[0] + 18, rsi_panel[1] + 10), "RSI", fill="#10233E", font=font_bold)
+    draw.text((macd_panel[0] + 18, macd_panel[1] + 10), "MACD", fill="#10233E", font=font_bold)
+    draw.text((side_panel[0] + 24, side_panel[1] + 18), "Resumen visual", fill="#10233E", font=font_bold)
+
+    summary_lines = [
+        f"Activo: {display_name}",
+        f"Precio: ${fmt_price(pack['price'])}",
+        f"RSI: {pack['rsi']:.1f}",
+        f"MACD: {'alcista' if pack['macd_line'] >= pack['macd_signal'] else 'bajista'}",
+        f"EMA50 / EMA200: ${fmt_price(pack['ema50'])} / ${fmt_price(pack['ema200'])}",
+        f"Soporte / Resistencia: ${fmt_price(pack['support'])} / ${fmt_price(pack['resistance'])}",
+        f"Golden pocket: ${fmt_price(pack['golden_pocket_low'])} - ${fmt_price(pack['golden_pocket_high'])}",
+    ]
+    if divergence.get("active"):
+        summary_lines.extend([
+            "",
+            f"Divergencia: {'alcista' if divergence['kind'] == 'bullish' else 'bajista'}",
+            f"Fuerza: {divergence['confidence']}%",
+            f"Señales: {', '.join(divergence.get('signals', []))}",
+        ])
+    else:
+        summary_lines.extend(["", "Divergencia: sin señal operable fuerte"])
+
+    projection_hint = "alcista" if pack["projection"] and pack["projection"][-1] >= closes[-1] else "bajista"
+    summary_lines.extend([
+        "",
+        f"Proyección educativa: sesgo {projection_hint}",
+        "La línea punteada es un escenario probable, no una garantía.",
+    ])
+
+    y_cursor = side_panel[1] + 60
+    for line in summary_lines:
+        draw.text((side_panel[0] + 24, y_cursor), line, fill="#31425B", font=font_label)
+        y_cursor += 30 if line else 18
+
+    chart_dir = os.path.join(DATA_DIR, "charts")
+    os.makedirs(chart_dir, exist_ok=True)
+    chart_path = os.path.join(chart_dir, f"{tk}_{int(time.time())}.png")
+    img.convert("RGB").save(chart_path, format="PNG", optimize=True)
+
+    caption = _make_card(
+        f"GRÁFICO TÁCTICO | {display_name}",
+        [
+            f"• Sesgo visual: {'Alcista' if projection_hint == 'alcista' else 'Bajista'}",
+            f"• Divergencia: {divergence['summary'] if divergence.get('active') else 'Sin divergencia operable fuerte por ahora.'}",
+            "• La proyección punteada muestra un escenario probable con base en tendencia, estructura e indicadores.",
+        ],
+        icon="🖼️",
+        footer="Lectura educativa, clara y sin contaminación visual."
+    )
+    return chart_path, caption
+
+
+def _send_stock_analysis_with_chart(chat_id, ticker):
+    tk = remap_ticker(ticker)
+    analysis_text = perform_deep_analysis(tk)
+    bot.send_message(chat_id, analysis_text, parse_mode="HTML")
+
+    chart_path = None
+    try:
+        chart_path, chart_caption = _render_stock_analysis_chart(tk, LAST_KNOWN_ANALYSIS.get(tk))
+        if chart_path and os.path.exists(chart_path):
+            with open(chart_path, "rb") as chart_file:
+                bot.send_photo(chat_id, chart_file, caption=chart_caption, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Error generando gráfico táctico para {tk}: {e}")
+        bot.send_message(chat_id, _make_card("GRÁFICO TÁCTICO", ["No pude renderizar el gráfico visual en este momento, pero el análisis textual sí quedó listo."], icon="🖼️"), parse_mode="HTML")
+    finally:
+        if chart_path and os.path.exists(chart_path):
+            try:
+                os.remove(chart_path)
+            except Exception:
+                pass
+
+
+def _monitor_quality_divergences(tracked):
+    for raw_tk in tracked:
+        tk = remap_ticker(raw_tk)
+        pack = _build_chart_pack(tk, candles=110)
+        if not pack:
+            continue
+
+        divergence = pack.get("divergence") or {}
+        if not divergence.get("active") or divergence.get("confidence", 0) < 78:
+            continue
+
+        pivot_date = divergence.get("pivot_date") or datetime.now().strftime("%Y-%m-%d")
+        alert_hash = _stable_event_id("DIV", tk, divergence.get("kind"), pivot_date)
+        if check_and_add_seen_event(alert_hash):
+            continue
+
+        display_name = get_display_name(tk)
+        action = "vigilar rebote y confirmación" if divergence.get("kind") == "bullish" else "vigilar distribución y protección"
+        msg = _make_card(
+            "ALERTA DE DIVERGENCIA",
+            [
+                f"• Activo: <b>{display_name}</b>",
+                f"• Tipo: <b>{'Divergencia alcista' if divergence.get('kind') == 'bullish' else 'Divergencia bajista'}</b>",
+                f"• Confirmación: {', '.join(divergence.get('signals', []))}",
+                f"• Probabilidad táctica: <b>{divergence.get('confidence', 0)}%</b>",
+                f"• Zona clave: soporte ${fmt_price(pack.get('support', 0))} | resistencia ${fmt_price(pack.get('resistance', 0))}",
+                f"• Acción sugerida: {action}.",
+            ],
+            icon="⚡",
+            footer="Solo se envían divergencias de mayor calidad para evitar spam."
+        )
+        bot.send_message(CHAT_ID, msg, parse_mode="HTML")
 
 
 def _perform_deep_analysis_fmp(ticker):
