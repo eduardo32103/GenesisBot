@@ -75,6 +75,7 @@ def _decode_mojibake_segment(segment):
         if codepoint <= 255:
             raw_bytes.append(codepoint)
             continue
+        conn = None
         try:
             raw_bytes.extend(ch.encode('cp1252'))
         except Exception:
@@ -192,20 +193,25 @@ _BOT_RUNTIME_STAGE = "boot"
 _BOT_RUNTIME_NOTES = "inicio"
 _LAST_LOCK_DIAG = {"holder": None, "logged_at": 0.0}
 
-_global_db_conn = None
+_db_local = threading.local()
+_db_bootstrap_lock = threading.Lock()
 
 def get_db_connection():
-    global _global_db_conn
+    conn = getattr(_db_local, "conn", None)
     # Si ya hay conexión activa, verificarla
-    if _global_db_conn is not None:
+    if conn is not None:
         try:
-            c = _global_db_conn.cursor()
+            c = conn.cursor()
             c.execute("SELECT 1")
             c.fetchone()
-            return _global_db_conn
-        except:
+            return conn
+        except Exception:
             print("DEBUG DB: Conexión existente caída, reconectando...")
-            _global_db_conn = None
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _db_local.conn = None
 
     url = os.environ.get('DATABASE_URL')
     if not url:
@@ -214,6 +220,7 @@ def get_db_connection():
 
     # Reintentar 3 veces con backoff
     for attempt in range(1, 4):
+        conn = None
         try:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -221,7 +228,7 @@ def get_db_connection():
 
             r = urllib.parse.urlparse(url)
 
-            _global_db_conn = pg8000.dbapi.connect(
+            conn = pg8000.dbapi.connect(
                 user=r.username,
                 password=r.password,
                 host=r.hostname,
@@ -233,18 +240,25 @@ def get_db_connection():
             print(f"✅ Conexión exitosa a Supabase (intento {attempt}/3)")
 
             # Crear tablas si no existen
-            cr = _global_db_conn.cursor()
-            cr.execute("CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER DEFAULT 0, amount_usd REAL DEFAULT 0.0, entry_price REAL DEFAULT 0.0, timestamp TEXT, PRIMARY KEY (user_id, ticker))")
-            cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
-            cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
-            cr.execute("CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)")
-            _global_db_conn.commit()
+            with _db_bootstrap_lock:
+                cr = conn.cursor()
+                cr.execute("CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER DEFAULT 0, amount_usd REAL DEFAULT 0.0, entry_price REAL DEFAULT 0.0, timestamp TEXT, PRIMARY KEY (user_id, ticker))")
+                cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
+                cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
+                cr.execute("CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)")
+                conn.commit()
 
-            return _global_db_conn
+            _db_local.conn = conn
+            return conn
 
         except Exception as e:
             print(f"âŒ Error de conexión a Supabase (intento {attempt}/3): {e}")
-            _global_db_conn = None
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            _db_local.conn = None
             if attempt < 3:
                 wait = attempt * 2  # 2s, 4s
                 print(f"DEBUG DB: Reintentando en {wait}s...")
@@ -2822,6 +2836,15 @@ def _build_chart_pack(ticker, candles=110):
 
     hist = list(reversed(hist[:max(260, candles)]))
     closes_full = [_safe_float(row.get("close"), 0.0) for row in hist]
+    opens_full = []
+    prev_close = 0.0
+    for idx, row in enumerate(hist):
+        close_value = closes_full[idx] if idx < len(closes_full) else 0.0
+        open_value = _safe_float(row.get("open"), close_value if close_value > 0 else prev_close)
+        if open_value <= 0:
+            open_value = prev_close if prev_close > 0 else close_value
+        opens_full.append(open_value if open_value > 0 else close_value)
+        prev_close = close_value if close_value > 0 else open_value
     highs_full = [_safe_float(row.get("high"), 0.0) for row in hist]
     lows_full = [_safe_float(row.get("low"), 0.0) for row in hist]
     volumes_full = [_safe_float(row.get("volume"), 0.0) for row in hist]
@@ -2872,6 +2895,7 @@ def _build_chart_pack(ticker, candles=110):
     pack = {
         "ticker": tk,
         "dates_full": dates_full,
+        "opens_full": opens_full,
         "closes_full": closes_full,
         "highs_full": highs_full,
         "lows_full": lows_full,
@@ -2905,7 +2929,7 @@ def _build_chart_pack(ticker, candles=110):
     pack["projection"] = _build_projection_series(pack)
 
     tail = candles
-    for key in ("dates_full", "closes_full", "highs_full", "lows_full", "volumes_full", "rsi_full",
+    for key in ("dates_full", "opens_full", "closes_full", "highs_full", "lows_full", "volumes_full", "rsi_full",
                 "macd_line_full", "macd_signal_full", "macd_hist_full", "obv_full", "ema50_full",
                 "ema200_full", "bb_upper_full", "bb_lower_full", "bb_basis_full"):
         trimmed_key = key.replace("_full", "")
@@ -2944,6 +2968,15 @@ def _build_chart_pack_failsafe(ticker, analysis=None):
         closes = [max(0.01, price - (direction * step * (15 - idx))) for idx in range(16)]
         closes[-1] = price
 
+    opens = [closes[0]] + closes[:-1]
+    highs = []
+    lows = []
+    for open_value, close_value in zip(opens, closes):
+        candle_spread = max(price * 0.0035, abs(close_value - open_value) * 0.55, 0.01)
+        highs.append(max(open_value, close_value) + candle_spread)
+        lows.append(max(0.01, min(open_value, close_value) - candle_spread))
+    dates = [f"D-{len(closes) - idx - 1}" for idx in range(len(closes))]
+
     window = closes[-min(len(closes), 20):]
     base_support = min(window) if window else price * 0.97
     base_resistance = max(window) if window else price * 1.03
@@ -2969,7 +3002,11 @@ def _build_chart_pack_failsafe(ticker, analysis=None):
 
     pack = {
         "ticker": tk,
+        "dates": dates[-60:],
+        "opens": opens[-60:],
         "closes": closes[-60:],
+        "highs": highs[-60:],
+        "lows": lows[-60:],
         "support": support,
         "resistance": resistance,
         "price": price,
@@ -3500,6 +3537,398 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     return chart_path, caption
 
 
+def _render_stock_analysis_chart_v2(ticker, analysis=None):
+    tk = remap_ticker(ticker)
+    analysis = analysis or (LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}
+    try:
+        pack = _build_chart_pack(tk, candles=110)
+    except Exception:
+        logging.exception(f"Error construyendo chart pack principal para {tk}")
+        pack = None
+    if not pack:
+        pack = _build_chart_pack_failsafe(tk, analysis)
+    if not pack:
+        return None, None
+
+    display_name = get_display_name(tk)
+    divergence = pack.get("divergence") or {}
+
+    def _pack_scalar(key, default=0.0):
+        value = pack.get(key, default)
+        if isinstance(value, list):
+            value = value[-1] if value else default
+        return _safe_float(value, default)
+
+    def _pack_series(*keys, default=0.0):
+        for key in keys:
+            value = pack.get(key)
+            if isinstance(value, list) and value:
+                return _sanitize_numeric_series(value, default=default)
+        return []
+
+    closes = _pack_series("closes", "closes_series")
+    if len(closes) < 2:
+        return None, None
+
+    opens = _pack_series("opens", "opens_series", default=closes[0])
+    highs = _pack_series("highs", "highs_series", default=max(closes))
+    lows = _pack_series("lows", "lows_series", default=min(closes))
+    ema50_series = _pack_series("ema50_series", default=closes[-1])
+    ema200_series = _pack_series("ema200_series", default=closes[-1])
+    projection = _pack_series("projection", default=closes[-1])
+
+    hist_len = len(closes)
+    if len(opens) != hist_len:
+        opens = [closes[0]] + closes[:-1]
+    if len(highs) != hist_len:
+        highs = [max(opens[idx], closes[idx]) for idx in range(hist_len)]
+    if len(lows) != hist_len:
+        lows = [min(opens[idx], closes[idx]) for idx in range(hist_len)]
+    if len(ema50_series) != hist_len:
+        ema50_series = [_pack_scalar("ema50", closes[-1])] * hist_len
+    if len(ema200_series) != hist_len:
+        ema200_series = [_pack_scalar("ema200", closes[-1])] * hist_len
+
+    dates = pack.get("dates") or pack.get("dates_series") or []
+    if not isinstance(dates, list) or len(dates) != hist_len:
+        dates = [f"D-{hist_len - idx - 1}" for idx in range(hist_len)]
+
+    support = _pack_scalar("support")
+    resistance = _pack_scalar("resistance")
+    price_value = _pack_scalar("price", closes[-1])
+    rsi_value = _pack_scalar("rsi", 50.0)
+    macd_line_value = _pack_scalar("macd_line", 0.0)
+    macd_signal_value = _pack_scalar("macd_signal", 0.0)
+    ema50_value = _pack_scalar("ema50", price_value)
+    ema200_value = _pack_scalar("ema200", price_value)
+    golden_pocket_low = _pack_scalar("golden_pocket_low", min(support, price_value))
+    golden_pocket_high = _pack_scalar("golden_pocket_high", max(resistance, price_value))
+
+    projection_target = projection[-1] if projection else price_value
+    projection_delta_pct = ((projection_target - price_value) / price_value * 100) if price_value > 0 else 0.0
+    if abs(projection_delta_pct) < 0.45:
+        projection_hint = "lateral"
+        projection_color = "#B8860B"
+        direction_arrow = "→"
+        direction_label = "Consolidación probable"
+    elif projection_target >= closes[-1]:
+        projection_hint = "alcista"
+        projection_color = "#18925A"
+        direction_arrow = "↑"
+        direction_label = "Subida probable"
+    else:
+        projection_hint = "bajista"
+        projection_color = "#C94D3F"
+        direction_arrow = "↓"
+        direction_label = "Caída probable"
+    projection_delta_text = f"{projection_delta_pct:+.2f}%"
+
+    orientation_score = 0
+    orientation_score += 1 if projection_hint == "alcista" else (-1 if projection_hint == "bajista" else 0)
+    orientation_score += 1 if macd_line_value >= macd_signal_value else -1
+    orientation_score += 1 if ema50_value >= ema200_value else -1
+    if rsi_value >= 58:
+        orientation_score += 1
+    elif rsi_value <= 42:
+        orientation_score -= 1
+    if divergence.get("active"):
+        orientation_score += 1 if divergence.get("kind") == "bullish" else -1
+    orientation_confidence = int(max(58, min(92, 61 + abs(orientation_score) * 6 + min(abs(projection_delta_pct) * 1.2, 9))))
+
+    macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
+    ema_bias = "alcista" if ema50_value >= ema200_value else "bajista"
+    divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
+    timeframe_label = "Diaria (1D)"
+    candles_used = len(closes)
+    future_label = f"+{len(projection)} sesiones" if projection else "Sin proyección"
+
+    def _format_chart_date(raw):
+        text = str(raw or "").strip()
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            return f"{text[5:7]}/{text[8:10]}"
+        return text[:10] or "Hoy"
+
+    def _axis_number(value):
+        return fmt_price(value).replace(".", ",")
+
+    img = Image.new("RGBA", (1600, 960), "#F4F0E8")
+    draw = ImageDraw.Draw(img, "RGBA")
+    font_title = _get_chart_font(30, bold=True)
+    font_sub = _get_chart_font(18, bold=False)
+    font_label = _get_chart_font(16, bold=False)
+    font_small = _get_chart_font(14, bold=False)
+    font_bold = _get_chart_font(18, bold=True)
+    font_metric = _get_chart_font(20, bold=True)
+    font_badge = _get_chart_font(24, bold=True)
+
+    main_panel = (44, 118, 1162, 848)
+    side_panel = (1188, 118, 1556, 848)
+    for panel in (main_panel, side_panel):
+        draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
+
+    draw.text((54, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
+    draw.text((56, 64), "Velas japonesas confirmadas + escenario probable trazado con el motor institucional.", fill="#5D687A", font=font_sub)
+
+    def _draw_chip(x, y, text, fill, text_fill="#10233E"):
+        bbox = draw.textbbox((0, 0), text, font=font_small)
+        width = (bbox[2] - bbox[0]) + 24
+        draw.rounded_rectangle((x, y, x + width, y + 30), radius=14, fill=fill)
+        draw.text((x + 12, y + 7), text, fill=text_fill, font=font_small)
+        return x + width + 10
+
+    chip_x = 56
+    chip_y = 88
+    chip_x = _draw_chip(chip_x, chip_y, f"Temporalidad: {timeframe_label}", (223, 232, 243, 255))
+    chip_x = _draw_chip(chip_x, chip_y, "Velas japonesas", (241, 233, 220, 255))
+    chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} velas", (236, 232, 223, 255))
+    chip_x = _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)))
+    _draw_chip(chip_x, chip_y, f"Orientación: {direction_arrow} {projection_hint}", (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)), "#0F5132" if projection_hint == "alcista" else ("#842029" if projection_hint == "bajista" else "#7A5A00"))
+
+    x1, y1, x2, y2 = main_panel
+    axis_width = 120
+    chart_x1 = x1 + 30
+    chart_x2 = x2 - axis_width - 22
+    axis_x1 = chart_x2 + 10
+    axis_x2 = x2 - 18
+    chart_y1 = y1 + 56
+    chart_y2 = y2 - 76
+    draw.rounded_rectangle((axis_x1, y1 + 18, axis_x2, y2 - 18), radius=22, fill=(234, 237, 241, 255))
+
+    total_slots = hist_len + max(len(projection), 1)
+    slot_width = max((chart_x2 - chart_x1) / max(total_slots, 1), 6)
+    hist_positions = [chart_x1 + (slot_width * (idx + 0.5)) for idx in range(hist_len)]
+    future_positions = [chart_x1 + (slot_width * (hist_len + idx + 0.5)) for idx in range(len(projection))]
+    split_x = chart_x1 + (slot_width * hist_len)
+
+    projected_opens = []
+    projected_highs = []
+    projected_lows = []
+    if projection:
+        prev_close = closes[-1]
+        projection_band = max(abs(resistance - support), abs(projection_target - price_value), price_value * 0.018, 0.01)
+        for idx, close_value in enumerate(projection):
+            open_value = prev_close
+            band = max(price_value * 0.0045, projection_band * (0.10 + (idx / max(len(projection), 1)) * 0.06))
+            projected_opens.append(open_value)
+            projected_highs.append(max(open_value, close_value) + band)
+            projected_lows.append(max(0.01, min(open_value, close_value) - band))
+            prev_close = close_value
+
+    price_candidates = list(highs) + list(lows) + [support, resistance, golden_pocket_low, golden_pocket_high, price_value]
+    price_candidates.extend([value for value in projected_highs + projected_lows + projection if value > 0])
+    price_candidates = [value for value in price_candidates if value > 0]
+    price_min = min(price_candidates) * 0.985
+    price_max = max(price_candidates) * 1.015
+    if price_max <= price_min:
+        price_max = price_min + 1
+
+    def _map_price(value):
+        return chart_y2 - (((float(value) - price_min) / (price_max - price_min)) * (chart_y2 - chart_y1))
+
+    hist_zone = (chart_x1, y1 + 18, split_x, y2 - 18)
+    proj_zone = (split_x, y1 + 18, chart_x2, y2 - 18)
+    draw.rounded_rectangle(hist_zone, radius=24, fill=(223, 232, 243, 115))
+    draw.rounded_rectangle(proj_zone, radius=24, fill=(223, 242, 231, 142) if projection_hint == "alcista" else ((249, 230, 227, 142) if projection_hint == "bajista" else (250, 241, 214, 142)))
+
+    for idx in range(7):
+        y_level = chart_y1 + ((chart_y2 - chart_y1) * idx / 6)
+        draw.line((chart_x1, y_level, axis_x2, y_level), fill="#E6DFD3", width=1)
+        value = price_max - ((price_max - price_min) * idx / 6)
+        draw.text((axis_x1 + 18, y_level - 10), _axis_number(value), fill="#94A0AF", font=font_small)
+
+    for idx in range(6):
+        x_level = chart_x1 + ((chart_x2 - chart_x1) * idx / 5)
+        draw.line((x_level, chart_y1, x_level, chart_y2), fill=(233, 227, 218, 155), width=1)
+
+    draw.line((split_x, chart_y1 - 8, split_x, chart_y2 + 8), fill="#BEC7D4", width=2)
+    draw.text((chart_x1 + 8, y1 + 20), "Tramo real", fill="#10233E", font=font_bold)
+    draw.text((split_x + 18, y1 + 20), "Escenario probable", fill=projection_color, font=font_bold)
+    draw.text((split_x + 18, y1 + 46), f"{direction_arrow} {direction_label} {projection_delta_text}", fill=projection_color, font=font_badge)
+    draw.text((split_x + 18, y1 + 78), f"Confianza visual: {orientation_confidence}%", fill=projection_color, font=font_metric)
+
+    if golden_pocket_high > golden_pocket_low > 0:
+        gp_top = _map_price(golden_pocket_high)
+        gp_bottom = _map_price(golden_pocket_low)
+        draw.rounded_rectangle((chart_x1 + 6, gp_top, split_x - 10, gp_bottom), radius=18, fill=(240, 196, 92, 46), outline=(230, 170, 54, 120), width=1)
+        draw.text((chart_x1 + 12, gp_top + 8), "Golden pocket", fill="#A56B00", font=font_small)
+
+    def _draw_series_line(values, positions, color):
+        points = [(positions[idx], _map_price(values[idx])) for idx in range(min(len(values), len(positions)))]
+        if len(points) > 1:
+            draw.line(points, fill=color, width=3, joint="curve")
+
+    _draw_series_line(ema200_series, hist_positions, "#2A7E8C")
+    _draw_series_line(ema50_series, hist_positions, "#E18D2B")
+
+    candle_body_width = max(5, min(11, int(slot_width * 0.56)))
+
+    def _draw_candle(x_pos, open_value, high_value, low_value, close_value, body_fill, wick_fill, outline_fill=None):
+        y_open = _map_price(open_value)
+        y_close = _map_price(close_value)
+        y_high = _map_price(high_value)
+        y_low = _map_price(low_value)
+        draw.line((x_pos, y_high, x_pos, y_low), fill=wick_fill, width=2)
+        top = min(y_open, y_close)
+        bottom = max(y_open, y_close)
+        if abs(bottom - top) < 2:
+            bottom = top + 2
+        draw.rounded_rectangle((x_pos - candle_body_width / 2, top, x_pos + candle_body_width / 2, bottom), radius=3, fill=body_fill, outline=outline_fill or body_fill, width=1)
+
+    for idx, x_pos in enumerate(hist_positions):
+        candle_fill = "#1F8A5B" if closes[idx] >= opens[idx] else "#C94D3F"
+        _draw_candle(x_pos, opens[idx], highs[idx], lows[idx], closes[idx], candle_fill, candle_fill)
+
+    current_line_y = _map_price(price_value)
+    draw.line((chart_x1, current_line_y, axis_x1 - 6, current_line_y), fill=(19, 43, 69, 115), width=2)
+
+    def _draw_reference_line(level, color):
+        if level <= 0:
+            return
+        y_level = _map_price(level)
+        for x_start in range(int(chart_x1), int(chart_x2), 16):
+            draw.line((x_start, y_level, min(x_start + 8, chart_x2), y_level), fill=color, width=2)
+
+    _draw_reference_line(support, "#2BA86F")
+    _draw_reference_line(resistance, "#D85C4B")
+
+    placed_axis_y = []
+    def _axis_marker(level, fill, text_fill="white", label=None):
+        if level <= 0:
+            return
+        y_level = _map_price(level)
+        for existing_y in placed_axis_y:
+            if abs(existing_y - y_level) < 28:
+                y_level = existing_y + 30
+        y_level = min(max(chart_y1 + 8, y_level), chart_y2 - 26)
+        placed_axis_y.append(y_level)
+        text = _axis_number(level)
+        if label:
+            text = f"{label} {text}"
+        bbox = draw.textbbox((0, 0), text, font=font_bold)
+        width = (bbox[2] - bbox[0]) + 18
+        left = axis_x2 - width - 8
+        draw.rounded_rectangle((left, y_level - 15, left + width, y_level + 15), radius=10, fill=fill)
+        draw.text((left + 9, y_level - 10), text, fill=text_fill, font=font_bold)
+
+    _axis_marker(resistance, "#D85C4B", label="R")
+    _axis_marker(price_value, "#132B45")
+    _axis_marker(support, "#2BA86F", label="S")
+
+    if projection and future_positions:
+        center_points = [(hist_positions[-1], _map_price(closes[-1]))]
+        for idx, x_pos in enumerate(future_positions):
+            close_value = projection[idx]
+            open_value = projected_opens[idx]
+            high_value = projected_highs[idx]
+            low_value = projected_lows[idx]
+            if projection_hint == "alcista":
+                body_fill = (24, 146, 90, 115)
+                wick_fill = (24, 146, 90, 145)
+            elif projection_hint == "bajista":
+                body_fill = (201, 77, 63, 115)
+                wick_fill = (201, 77, 63, 145)
+            else:
+                body_fill = (184, 134, 11, 110)
+                wick_fill = (184, 134, 11, 145)
+            _draw_candle(x_pos, open_value, high_value, low_value, close_value, body_fill, wick_fill, outline_fill=projection_color)
+            center_points.append((x_pos, _map_price(close_value)))
+
+        band_top = [(future_positions[idx], _map_price(projected_highs[idx])) for idx in range(len(future_positions))]
+        band_bottom = [(future_positions[idx], _map_price(projected_lows[idx])) for idx in range(len(future_positions))]
+        draw.polygon(band_top + list(reversed(band_bottom)), fill=(24, 146, 90, 26) if projection_hint == "alcista" else ((201, 77, 63, 26) if projection_hint == "bajista" else (184, 134, 11, 22)))
+        for idx in range(len(center_points) - 1):
+            if idx % 2 == 0:
+                draw.line((center_points[idx], center_points[idx + 1]), fill=projection_color, width=4)
+        end_x, end_y = center_points[-1]
+        prev_x, prev_y = center_points[-2] if len(center_points) > 1 else center_points[-1]
+        arrow_angle = math.atan2(end_y - prev_y, end_x - prev_x)
+        arrow_len = 20
+        left_x = end_x - (arrow_len * math.cos(arrow_angle - math.pi / 6))
+        left_y = end_y - (arrow_len * math.sin(arrow_angle - math.pi / 6))
+        right_x = end_x - (arrow_len * math.cos(arrow_angle + math.pi / 6))
+        right_y = end_y - (arrow_len * math.sin(arrow_angle + math.pi / 6))
+        draw.polygon([(end_x, end_y), (left_x, left_y), (right_x, right_y)], fill=projection_color)
+        draw.text((end_x - 126, end_y - 54), f"{direction_arrow} {direction_label}", fill=projection_color, font=font_small)
+        draw.text((end_x - 74, end_y - 30), projection_delta_text, fill=projection_color, font=font_metric)
+        _axis_marker(projection_target, projection_color, label="OBJ")
+
+    last_x = hist_positions[-1]
+    last_y = _map_price(closes[-1])
+    draw.ellipse((last_x - 6, last_y - 6, last_x + 6, last_y + 6), fill="#132B45", outline="white", width=2)
+
+    draw.text((chart_x1 + 6, chart_y2 + 22), _format_chart_date(dates[0]), fill="#6D7888", font=font_small)
+    draw.text((max(chart_x1 + 220, split_x - 26), chart_y2 + 22), _format_chart_date(dates[-1]), fill="#10233E", font=font_small)
+    draw.text((chart_x2 - 134, chart_y2 + 22), future_label, fill=projection_color, font=font_small)
+
+    draw.text((side_panel[0] + 22, side_panel[1] + 18), "Lectura visual", fill="#10233E", font=font_bold)
+
+    def _wrap_draw_text(text, font, max_width):
+        words = str(text or "").split()
+        if not words:
+            return [""]
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            trial = f"{current} {word}"
+            bbox = draw.textbbox((0, 0), trial, font=font)
+            if (bbox[2] - bbox[0]) <= max_width:
+                current = trial
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
+
+    def _draw_section(y_cursor, title, lines):
+        draw.text((side_panel[0] + 22, y_cursor), title, fill="#10233E", font=font_metric)
+        y_cursor += 30
+        for line in lines:
+            for wrapped_line in _wrap_draw_text(line, font_label, side_panel[2] - side_panel[0] - 46):
+                draw.text((side_panel[0] + 22, y_cursor), wrapped_line, fill="#31425B", font=font_label)
+                y_cursor += 22
+        y_cursor += 10
+        draw.line((side_panel[0] + 22, y_cursor, side_panel[2] - 22, y_cursor), fill="#ECE6D9", width=1)
+        return y_cursor + 16
+
+    sidebar_y = side_panel[1] + 54
+    sidebar_y = _draw_section(sidebar_y, "Orientación", [
+        f"Escenario base: {direction_arrow} {direction_label}.",
+        f"Confianza visual estimada: {orientation_confidence}%.",
+        f"Ruta probable: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+    ])
+    sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
+        f"Precio actual: ${fmt_price(price_value)}",
+        f"Soporte principal: ${fmt_price(support)}",
+        f"Resistencia principal: ${fmt_price(resistance)}",
+        f"Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
+    ])
+    sidebar_y = _draw_section(sidebar_y, "Motor técnico", [
+        f"RSI: {rsi_value:.1f}",
+        f"MACD: {macd_bias}",
+        f"EMA50/EMA200: sesgo {ema_bias}",
+        f"Divergencia: {divergence_text}",
+    ])
+    _draw_section(sidebar_y, "Cómo leerlo", [
+        "Las velas sólidas muestran el precio confirmado.",
+        "Las velas translúcidas muestran la trayectoria más probable, no precio garantizado.",
+        "El eje derecho replica la referencia rápida de niveles, al estilo TradingView.",
+    ])
+
+    chart_path = _save_chart_image(img, tk)
+    caption = _make_card(
+        f"GRÁFICO TÁCTICO | {display_name}",
+        [
+            f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used}",
+            f"• Orientación probable: {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
+            f"• Ruta esperada: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• Divergencia: {divergence_text}",
+        ],
+        icon="🖼️",
+        footer="Velas confirmadas + escenario probable del motor institucional."
+    )
+    return chart_path, caption
+
+
 def _send_stock_analysis_with_chart(chat_id, ticker):
     tk = remap_ticker(ticker)
     analysis_text = None
@@ -3531,7 +3960,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker):
     chart_path = None
     chart_caption = None
     try:
-        chart_path, chart_caption = _render_stock_analysis_chart(tk, LAST_KNOWN_ANALYSIS.get(tk))
+        chart_path, chart_caption = _render_stock_analysis_chart_v2(tk, LAST_KNOWN_ANALYSIS.get(tk))
     except Exception:
         logging.exception(f"Error generando gráfico táctico para {tk}")
         bot.send_message(
