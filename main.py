@@ -3008,26 +3008,78 @@ def _render_stock_analysis_chart(ticker, analysis=None):
             value = value[-1] if value else default
         return _safe_float(value, default)
 
-    img = Image.new("RGBA", (1460, 860), "#F4F1EA")
+    closes = _sanitize_numeric_series(pack.get("closes", []))
+    projection = _sanitize_numeric_series(pack.get("projection", []), default=closes[-1] if closes else 0.0)
+    if len(closes) < 2:
+        return None, None
+    support = _pack_scalar("support")
+    resistance = _pack_scalar("resistance")
+    price_value = _pack_scalar("price", closes[-1] if closes else 0.0)
+    rsi_value = _pack_scalar("rsi", 50.0)
+    macd_line_value = _pack_scalar("macd_line", 0.0)
+    macd_signal_value = _pack_scalar("macd_signal", 0.0)
+    ema50_value = _pack_scalar("ema50", price_value)
+    ema200_value = _pack_scalar("ema200", price_value)
+
+    dates = pack.get("dates") or pack.get("dates_series") or []
+    if not isinstance(dates, list):
+        dates = []
+
+    timeframe_label = "Diaria (1D)"
+    candles_used = len(closes)
+    horizon_sessions = len(projection)
+    projection_target = projection[-1] if projection else price_value
+    projection_hint = "alcista" if projection and projection_target >= closes[-1] else "bajista"
+    projection_color = "#18925A" if projection_hint == "alcista" else "#C94D3F"
+    macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
+    ema_bias = "positiva" if ema50_value >= ema200_value else "presión bajista"
+    divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
+
+    def _format_chart_date(raw):
+        text = str(raw or "").strip()
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            return f"{text[5:7]}/{text[8:10]}"
+        return text[:10] or "Hoy"
+
+    start_label = _format_chart_date(dates[0]) if dates else "Inicio"
+    now_label = _format_chart_date(dates[-1]) if dates else "Actual"
+    future_label = f"+{horizon_sessions} sesiones" if horizon_sessions > 0 else "Sin proyección"
+
+    img = Image.new("RGBA", (1520, 920), "#F4F0E8")
     draw = ImageDraw.Draw(img, "RGBA")
-    font_title = _get_chart_font(30, bold=True)
+    font_title = _get_chart_font(31, bold=True)
     font_sub = _get_chart_font(18, bold=False)
     font_label = _get_chart_font(16, bold=False)
     font_small = _get_chart_font(14, bold=False)
     font_bold = _get_chart_font(19, bold=True)
+    font_metric = _get_chart_font(17, bold=True)
 
-    main_panel = (50, 105, 1045, 790)
-    side_panel = (1080, 105, 1410, 790)
+    main_panel = (46, 118, 1110, 836)
+    side_panel = (1140, 118, 1470, 836)
     for panel in (main_panel, side_panel):
-        draw.rounded_rectangle(panel, radius=28, fill=(255, 255, 255, 242), outline="#D8D1C2", width=2)
+        draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
-    draw.text((58, 28), f"Ruta táctica de {display_name}", fill="#10233E", font=font_title)
-    draw.text((60, 64), "Tramo real del precio y trayectoria proyectada a partir de la lectura técnica interna.", fill="#5A677D", font=font_sub)
+    draw.text((56, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
+    draw.text((58, 64), "Precio confirmado en temporalidad diaria y escenario probable generado con el motor institucional.", fill="#5D687A", font=font_sub)
+
+    def _draw_chip(x, y, text, fill, text_fill="#10233E"):
+        bbox = draw.textbbox((0, 0), text, font=font_small)
+        width = (bbox[2] - bbox[0]) + 24
+        height = 30
+        draw.rounded_rectangle((x, y, x + width, y + height), radius=14, fill=fill)
+        draw.text((x + 12, y + 7), text, fill=text_fill, font=font_small)
+        return x + width + 10
+
+    chip_x = 58
+    chip_y = 88
+    chip_x = _draw_chip(chip_x, chip_y, f"Temporalidad: {timeframe_label}", (223, 232, 243, 255))
+    chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} sesiones", (236, 232, 223, 255))
+    _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
 
     def _map_series(values, panel, vmin=None, vmax=None, extra_right=0):
         x1, y1, x2, y2 = panel
-        usable_x1, usable_x2 = x1 + 26, x2 - 26 - extra_right
-        usable_y1, usable_y2 = y1 + 28, y2 - 30
+        usable_x1, usable_x2 = x1 + 28, x2 - 28 - extra_right
+        usable_y1, usable_y2 = y1 + 46, y2 - 74
         if vmin is None:
             vmin = min(values)
         if vmax is None:
@@ -3040,104 +3092,170 @@ def _render_stock_analysis_chart(ticker, analysis=None):
             x = usable_x1 + ((usable_x2 - usable_x1) * idx / total)
             y = usable_y2 - (((float(value) - vmin) / (vmax - vmin)) * (usable_y2 - usable_y1))
             pts.append((x, y))
-        return pts, usable_x2
+        return pts, usable_x2, usable_y1, usable_y2
 
-    x1, y1, x2, y2 = main_panel
-    for idx in range(6):
-        y = y1 + ((y2 - y1) * idx / 5)
-        draw.line((x1 + 18, y, x2 - 18, y), fill="#ECE7DC", width=1)
-
-    closes = _sanitize_numeric_series(pack.get("closes", []))
-    projection = _sanitize_numeric_series(pack.get("projection", []), default=closes[-1] if closes else 0.0)
-    if len(closes) < 2:
-        return None, None
     combined = closes + projection if projection else closes
     price_min = min(combined) * 0.97
     price_max = max(combined) * 1.03
+    close_pts, price_panel_end, usable_y1, usable_y2 = _map_series(closes, main_panel, price_min, price_max, extra_right=132)
+    if len(close_pts) < 2:
+        return None, None
 
-    close_pts, price_panel_end = _map_series(closes, main_panel, price_min, price_max, extra_right=110)
+    x1, y1, x2, y2 = main_panel
+    split_x = close_pts[-1][0]
+    hist_zone = (x1 + 18, y1 + 18, split_x, y2 - 18)
+    proj_zone = (split_x, y1 + 18, x2 - 18, y2 - 18)
+    draw.rounded_rectangle(hist_zone, radius=24, fill=(223, 232, 243, 128))
+    draw.rounded_rectangle(proj_zone, radius=24, fill=(223, 242, 231, 148) if projection_hint == "alcista" else (249, 230, 227, 148))
+
+    for idx in range(6):
+        y = usable_y1 + ((usable_y2 - usable_y1) * idx / 5)
+        draw.line((x1 + 22, y, x2 - 22, y), fill="#ECE6D9", width=1)
+
+    draw.text((x1 + 28, y1 + 16), "Tramo confirmado", fill="#10233E", font=font_bold)
+    draw.text((split_x + 18, y1 + 16), "Escenario probable", fill=projection_color, font=font_bold)
+
+    for value in (price_max, (price_max + price_min) / 2, price_min):
+        y_val = _map_series([value], main_panel, price_min, price_max, extra_right=132)[0][0][1]
+        draw.text((x2 - 102, y_val - 10), f"${fmt_price(value)}", fill="#738196", font=font_small)
+
     if len(close_pts) > 1:
-        draw.line(close_pts, fill="#132B45", width=5)
+        draw.line(close_pts, fill="#132B45", width=6)
+        for offset in (1, 2):
+            shifted = [(x, y + offset) for x, y in close_pts]
+            draw.line(shifted, fill=(19, 43, 69, 28), width=7 - offset)
 
-    last_price = closes[-1]
-    proj_color = "#1B9C5A" if projection and projection[-1] >= last_price else "#C94D3F"
-    if close_pts:
-        px, py = close_pts[-1]
-        draw.ellipse((px - 6, py - 6, px + 6, py + 6), fill="#132B45")
-
+    projection_pts = []
     if close_pts and projection:
+        band_size = max(abs(projection_target - price_value), abs(resistance - price_value), abs(price_value - support), price_value * 0.012)
+        upper_band_pts = [close_pts[-1]]
+        lower_band_pts = [close_pts[-1]]
         projection_pts = [close_pts[-1]]
+
         for idx, value in enumerate(projection, start=1):
-            x = price_panel_end + (idx * 10)
-            y = _map_series([value], main_panel, price_min, price_max, extra_right=110)[0][0][1]
+            x = price_panel_end + (idx * 11)
+            y = _map_series([value], main_panel, price_min, price_max, extra_right=132)[0][0][1]
+            spread = max(price_value * 0.005, band_size * (0.16 + (idx / max(len(projection), 1)) * 0.12))
+            y_up = _map_series([value + spread], main_panel, price_min, price_max, extra_right=132)[0][0][1]
+            y_down = _map_series([value - spread], main_panel, price_min, price_max, extra_right=132)[0][0][1]
             projection_pts.append((x, y))
+            upper_band_pts.append((x, y_up))
+            lower_band_pts.append((x, y_down))
+
+        draw.polygon(upper_band_pts + list(reversed(lower_band_pts)), fill=(24, 146, 90, 32) if projection_hint == "alcista" else (201, 77, 63, 32))
         for idx in range(len(projection_pts) - 1):
             if idx % 2 == 0:
-                draw.line((projection_pts[idx], projection_pts[idx + 1]), fill=proj_color, width=5)
+                draw.line((projection_pts[idx], projection_pts[idx + 1]), fill=projection_color, width=6)
+
         lx, ly = projection_pts[-1]
-        draw.ellipse((lx - 7, ly - 7, lx + 7, ly + 7), fill=proj_color)
-        draw.text((lx - 72, ly - 32), "Trayectoria", fill=proj_color, font=font_small)
+        draw.ellipse((lx - 8, ly - 8, lx + 8, ly + 8), fill=projection_color)
+        draw.text((lx - 88, ly - 34), "Ruta proyectada", fill=projection_color, font=font_small)
 
-    split_x = close_pts[-1][0] if close_pts else (x1 + x2) / 2
-    draw.line((split_x, y1 + 20, split_x, y2 - 20), fill="#B9C1D0", width=2)
-    draw.text((x1 + 24, y2 - 24), "Precio real", fill="#10233E", font=font_bold)
-    draw.text((split_x + 16, y2 - 24), "Escenario proyectado", fill=proj_color, font=font_bold)
+    px, py = close_pts[-1]
+    draw.ellipse((px - 7, py - 7, px + 7, py + 7), fill="#132B45", outline="white", width=2)
 
-    support = _pack_scalar("support")
-    resistance = _pack_scalar("resistance")
-    price_value = _pack_scalar("price", closes[-1] if closes else 0.0)
-    rsi_value = _pack_scalar("rsi", 50.0)
-    macd_line_value = _pack_scalar("macd_line", 0.0)
-    macd_signal_value = _pack_scalar("macd_signal", 0.0)
-    ema50_value = _pack_scalar("ema50", price_value)
-    ema200_value = _pack_scalar("ema200", price_value)
-    for level, color in ((support, "#1B9C5A"), (resistance, "#C94D3F")):
-        if level > 0:
-            pts, _ = _map_series([level] * len(closes), main_panel, price_min, price_max, extra_right=110)
-            if len(pts) > 1:
-                draw.line(pts, fill=color, width=2)
+    def _draw_price_tag(anchor_x, anchor_y, text, fill, text_fill="white", align="right"):
+        bbox = draw.textbbox((0, 0), text, font=font_small)
+        tag_w = (bbox[2] - bbox[0]) + 18
+        tag_h = 24
+        if align == "right":
+            x_left = max(x1 + 24, anchor_x - tag_w - 12)
+        else:
+            x_left = min(x2 - tag_w - 24, anchor_x + 12)
+        y_top = min(max(y1 + 54, anchor_y - 12), y2 - 46)
+        draw.rounded_rectangle((x_left, y_top, x_left + tag_w, y_top + tag_h), radius=10, fill=fill)
+        draw.text((x_left + 9, y_top + 5), text, fill=text_fill, font=font_small)
 
-    summary_lines = [
-        f"Activo: {display_name}",
-        f"Precio actual: ${fmt_price(price_value)}",
-        f"Sesgo: {'alcista' if proj_color == '#1B9C5A' else 'bajista'}",
-        f"Soporte clave: ${fmt_price(support)}",
-        f"Resistencia clave: ${fmt_price(resistance)}",
-    ]
-    if divergence.get("active"):
-        summary_lines.extend([
-            "",
-            f"Divergencia: {'alcista' if divergence['kind'] == 'bullish' else 'bajista'}",
-            f"Fuerza: {divergence.get('confidence', 0)}%",
-        ])
-    else:
-        summary_lines.extend(["", "Divergencia: sin señal fuerte"])
+    _draw_price_tag(px, py, f"Ahora ${fmt_price(price_value)}", "#132B45")
+    if projection_pts:
+        lx, ly = projection_pts[-1]
+        _draw_price_tag(lx, ly, f"Objetivo ${fmt_price(projection_target)}", projection_color)
 
-    summary_lines.extend([
-        "",
-        f"RSI backend: {rsi_value:.1f}",
-        f"MACD backend: {'alcista' if macd_line_value >= macd_signal_value else 'bajista'}",
-        f"EMA50/EMA200 backend: {'positiva' if ema50_value >= ema200_value else 'presión bajista'}",
+    def _draw_reference_line(level, color, label):
+        if level <= 0:
+            return
+        pts, _, _, _ = _map_series([level] * len(closes), main_panel, price_min, price_max, extra_right=132)
+        if len(pts) < 2:
+            return
+        for idx in range(0, len(pts) - 1, 2):
+            draw.line((pts[idx], pts[min(idx + 1, len(pts) - 1)]), fill=color, width=2)
+        _draw_price_tag(x2 - 30, pts[-1][1], f"{label} ${fmt_price(level)}", color)
+
+    _draw_reference_line(support, "#18925A", "Soporte")
+    _draw_reference_line(resistance, "#C94D3F", "Resistencia")
+
+    draw.line((split_x, y1 + 20, split_x, y2 - 20), fill="#BEC7D4", width=2)
+    draw.text((x1 + 30, y2 - 44), start_label, fill="#6D7888", font=font_small)
+    draw.text((max(x1 + 220, split_x - 22), y2 - 44), now_label, fill="#10233E", font=font_small)
+    draw.text((x2 - 160, y2 - 44), future_label, fill=projection_color, font=font_small)
+
+    draw.text((side_panel[0] + 22, side_panel[1] + 18), "Lectura visual", fill="#10233E", font=font_bold)
+
+    def _wrap_draw_text(text, font, max_width):
+        words = str(text or "").split()
+        if not words:
+            return [""]
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            trial = f"{current} {word}"
+            bbox = draw.textbbox((0, 0), trial, font=font)
+            if (bbox[2] - bbox[0]) <= max_width:
+                current = trial
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
+
+    def _draw_section(y_cursor, title, lines):
+        draw.text((side_panel[0] + 22, y_cursor), title, fill="#10233E", font=font_metric)
+        y_cursor += 28
+        for line in lines:
+            wrapped_lines = _wrap_draw_text(line, font_label, side_panel[2] - side_panel[0] - 46)
+            for wrapped_line in wrapped_lines:
+                draw.text((side_panel[0] + 22, y_cursor), wrapped_line, fill="#31425B", font=font_label)
+                y_cursor += 22
+        y_cursor += 10
+        draw.line((side_panel[0] + 22, y_cursor, side_panel[2] - 22, y_cursor), fill="#ECE6D9", width=1)
+        return y_cursor + 14
+
+    sidebar_y = side_panel[1] + 54
+    sidebar_y = _draw_section(sidebar_y, "Contexto", [
+        f"Temporalidad: {timeframe_label}",
+        f"Histórico analizado: {candles_used} sesiones",
+        f"Horizonte proyectado: {future_label}",
+        f"Sesgo proyectado: {projection_hint}",
     ])
-
-    draw.text((side_panel[0] + 22, side_panel[1] + 20), "Lectura condensada", fill="#10233E", font=font_bold)
-    y_cursor = side_panel[1] + 64
-    for line in summary_lines:
-        draw.text((side_panel[0] + 22, y_cursor), line, fill="#31425B", font=font_label)
-        y_cursor += 31 if line else 18
+    sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
+        f"Precio actual: ${fmt_price(price_value)}",
+        f"Soporte principal: ${fmt_price(support)}",
+        f"Resistencia principal: ${fmt_price(resistance)}",
+        f"Objetivo probable: ${fmt_price(projection_target)}",
+    ])
+    sidebar_y = _draw_section(sidebar_y, "Motor interno", [
+        f"RSI: {rsi_value:.1f}",
+        f"MACD: {macd_bias}",
+        f"EMA50/EMA200: {ema_bias}",
+        f"Divergencia: {divergence_text}",
+    ])
+    draw.text((side_panel[0] + 22, sidebar_y), "Indicadores usados", fill="#10233E", font=font_metric)
+    indicators_text = "RSI, MACD, EMA 50/200, SMC, Fibonacci, golden pocket, Bollinger, Donchian, OBV y divergencias."
+    wrapped_indicators = "\n".join(_wrap_draw_text(indicators_text, font_label, side_panel[2] - side_panel[0] - 46))
+    draw.multiline_text((side_panel[0] + 22, sidebar_y + 30), wrapped_indicators, fill="#31425B", font=font_label, spacing=6)
 
     chart_path = _save_chart_image(img, tk)
 
-    projection_hint = "alcista" if projection and projection[-1] >= closes[-1] else "bajista"
     caption = _make_card(
         f"GRÁFICO TÁCTICO | {display_name}",
         [
-            f"• Tramo real: muestra el recorrido confirmado hasta ahora.",
-            f"• Trayectoria proyectada: sesgo {projection_hint} calculado con la lectura interna de indicadores.",
-            f"• Divergencia: {divergence['summary'] if divergence.get('active') else 'Sin divergencia operable fuerte por ahora.'}",
+            f"• Temporalidad: {timeframe_label} | Histórico: {candles_used} sesiones",
+            f"• Tramo real: precio confirmado hasta {now_label}.",
+            f"• Escenario proyectado: sesgo {projection_hint} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
-        footer="Visual limpio: precio real + escenario probable."
+        footer="Gráfico claro: precio actual + ruta probable calculada con el motor institucional."
     )
     return chart_path, caption
 
