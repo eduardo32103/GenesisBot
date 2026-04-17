@@ -308,14 +308,14 @@ def _format_geopolitics_news_for_ai(news_items, wallet_tickers):
             sentiment = (item.get("sentiment") or {}).get("label", "Neutral")
             affected = item.get("affected_tickers") or []
             affected_names = ", ".join(get_display_name(tk) for tk in affected) if affected else "Sin cruce directo"
-            lines.append(f"{idx}. {title} | Fuente: {source} | Sentimiento: {sentiment} | Wallet: {affected_names}")
+            lines.append(f"{idx}. {title} | Fuente: {source} | Sentimiento: {sentiment} | Cartera: {affected_names}")
         else:
             title = str(item or "").strip()
             if not title:
                 continue
             affected = _extract_mentioned_tickers_plus(title, wallet_tickers)
             affected_names = ", ".join(get_display_name(tk) for tk in affected) if affected else "Sin cruce directo"
-            lines.append(f"{idx}. {title} | Wallet: {affected_names}")
+            lines.append(f"{idx}. {title} | Cartera: {affected_names}")
     return "\n".join(lines)
 
 
@@ -1660,6 +1660,46 @@ def _translate_titles_to_spanish(titles):
     return [_quick_translate_financial(t) for t in titles]
 
 
+def _translate_titles_to_spanish_v2(titles):
+    """Versión limpia y robusta para traducir titulares financieros al español."""
+    if not titles:
+        return titles
+
+    if OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            numbered = "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
+            prompt = (
+                "Traduce estos titulares financieros al ESPAÑOL con lenguaje natural y profesional de mercados.\n"
+                "Mantén intactos nombres propios, empresas, países y tickers.\n"
+                "Devuelve SOLO las traducciones numeradas, una por línea, sin comentarios adicionales.\n\n"
+                f"{numbered}"
+            )
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1200
+            ).choices[0].message.content.strip()
+
+            translated = []
+            for line in res.split('\n'):
+                line = line.strip()
+                if line and line[0].isdigit():
+                    clean = re.sub(r'^\d+[\.\)]\s*', '', line)
+                    if clean:
+                        translated.append(clean)
+
+            if len(translated) >= max(1, int(len(titles) * 0.6)):
+                while len(translated) < len(titles):
+                    translated.append(_quick_translate_financial(titles[len(translated)]))
+                return translated
+        except Exception as e:
+            logging.debug(f"Error en traducción batch OpenAI v2: {e}")
+
+    return [_quick_translate_financial(t) for t in titles]
+
+
 def genesis_strategic_report(manual=True):
     """REPORTE ESTRATÉGICO UNIFICADO GÉNESIS
     Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA
@@ -1691,7 +1731,7 @@ def genesis_strategic_report(manual=True):
 
     # === PASO 1.5: Traducir títulos al español ===
     titles_to_translate = [n['title'] for n in news_data]
-    translated = _translate_titles_to_spanish(titles_to_translate)
+    translated = _translate_titles_to_spanish_v2(titles_to_translate)
     for i, news in enumerate(news_data):
         if i < len(translated) and translated[i]:
             news['title_es'] = translated[i]
@@ -1815,7 +1855,7 @@ def genesis_strategic_report(manual=True):
             prompt = (
                 f"Eres GÉNESIS, un sistema de inteligencia estratégica de mercados financieros.\n\n"
                 f"NOTICIAS DEL DÃA CON SENTIMIENTO:\n{sentiments_str}\n\n"
-                f"WALLET DE EDUARDO: {wallet_str}\n\n"
+                f"CARTERA DE EDUARDO: {wallet_str}\n\n"
                 f"SENTIMIENTO GLOBAL: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
                 f"INSTRUCCIONES OBLIGATORIAS:\n"
                 f"1. Redacta TODO en ESPAÑOL con vocabulario financiero profesional.\n"
@@ -2720,8 +2760,8 @@ def _build_chart_pack(ticker, candles=110):
         "macd_signal_full": [float(v) for v in macd_signal.fillna(0).tolist()],
         "macd_hist_full": [float(v) for v in macd_hist.fillna(0).tolist()],
         "obv_full": [float(v) for v in obv_series.fillna(0).tolist()],
-        "ema50_full": [float(v) for v in ema50.fillna(method='bfill').fillna(0).tolist()],
-        "ema200_full": [float(v) for v in ema200.fillna(method='bfill').fillna(0).tolist()],
+        "ema50_full": [float(v) for v in ema50.bfill().fillna(0).tolist()],
+        "ema200_full": [float(v) for v in ema200.bfill().fillna(0).tolist()],
         "bb_upper_full": [float(v) for v in bb_upper.fillna(0).tolist()],
         "bb_lower_full": [float(v) for v in bb_lower.fillna(0).tolist()],
         "bb_basis_full": [float(v) for v in bb_basis.fillna(0).tolist()],
@@ -3231,7 +3271,7 @@ def _perform_deep_analysis_fmp(ticker):
     translated_titles = []
     raw_titles = [item.get("title", "").strip() for item in news_items if item.get("title")]
     if raw_titles:
-        translated_titles = _translate_titles_to_spanish(raw_titles)
+        translated_titles = _translate_titles_to_spanish_v2(raw_titles)
         news_sentiment = sum(_infer_sentiment_from_title(title) for title in raw_titles) / len(raw_titles)
     else:
         news_sentiment = 0.0
@@ -3604,7 +3644,7 @@ def cmd_reset_total(message):
         "💧 Capital Operativo: <b>$0.00</b>\n"
         "💰 Ganancia Mensual: <b>$0.00 USD</b>\n"
         "📈 Rendimiento: <b>0.00%</b>\n\n"
-        "✅ Wallet limpia. Los activos en tu radar siguen activos para monitoreo SMC."
+        "✅ Cartera limpia. Los activos en tu radar siguen activos para monitoreo SMC."
     ), parse_mode="HTML")
 
 
@@ -3658,14 +3698,14 @@ def handle_photo(message):
         client = OpenAI(api_key=OPENAI_API_KEY)
         prompt = (
             "Eres Visión GÉNESIS, un analista técnico institucional. Este análisis es educativo y no constituye asesoría financiera.\n\n"
-            "Analiza SOLO lo que sea realmente visible en la imagen. No inventes datos, niveles ni indicadores. Si algo no se distingue con claridad, escribe exactamente: No visible.\n"
+            "Analiza SOLO lo que sea realmente visible en la imagen. No inventes datos, niveles ni indicadores.\n"
             "Mantén un tono profesional, claro y fácil de entender para una persona no experta, pero con criterio serio de mesa institucional.\n"
             "Debes evaluar, si se ven en la imagen: estructura SMC, liquidez, BOS, CHoCH, order blocks, RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian, OBV y divergencias.\n"
             "No expliques teoría. Entrega lectura operativa.\n\n"
             "Responde EXACTAMENTE en ESPAÑOL con este formato:\n"
             "📊 CONTEXTO TÉCNICO: [tendencia actual, estructura y liquidez en 2 o 3 líneas].\n"
-            "📐 INDICADORES: RSI [lectura o No visible]; MACD [lectura o No visible]; Volumen [lectura o No visible]; EMA50/EMA200 [lectura o No visible]; SMA50/SMA200 [lectura o No visible]; Fibonacci/golden pocket [lectura o No visible]; Bollinger [lectura o No visible]; Donchian [lectura o No visible]; OBV [lectura o No visible].\n"
-            "⚡ DIVERGENCIAS: [Divergencia alcista / Divergencia bajista / No detectada / No visible] - [explicación breve y accionable].\n"
+            "📐 INDICADORES CONFIRMADOS: [menciona SOLO los indicadores que realmente logres leer o inferir con suficiente claridad en la imagen. Ejemplo de estilo: RSI 61 con momentum alcista; MACD cruzado al alza; volumen creciente; EMA50 sobre EMA200. Si la imagen no permite una lectura seria de indicadores, escribe: Sin indicadores confiables para esta imagen.]\n"
+            "⚡ DIVERGENCIAS: [solo si detectas una divergencia con suficiente claridad. Si no hay una lectura confiable, escribe: Sin divergencias claras.]\n"
             "🎯 NIVELES CLAVE: [soportes, resistencias, order blocks y zonas tácticas con precios si se alcanzan a leer].\n"
             "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [motivo técnico directo].\n"
             "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Alcista / Neutral / Bajista / Fuerte Bajista / Esperar Confirmación] - [justificación breve].\n"
@@ -3821,8 +3861,8 @@ def _send_super_radar_report(chat_id):
             f"🛰️ <b>Activos rastreados:</b> {len(tkrs)}",
             f"📥 <b>Entradas 24h:</b> {len(buys_24h)} | Capital: {_format_compact_money(buy_cap)}",
             f"📤 <b>Salidas 24h:</b> {len(sells_24h)} | Capital: {_format_compact_money(sell_cap)}",
-            "🎯 <b>Push:</b> solo ballenas premium/ganadoras (máx. 3 al día)",
-            "🧠 <b>Radar 24h:</b> muestra entradas y salidas detectadas aunque no hayan sido push",
+            "🎯 <b>Alertas:</b> se envían todas las ballenas élite/ganadoras que pasen filtro",
+            "🧠 <b>Radar 24h:</b> muestra entradas y salidas detectadas aunque no hayan sido enviadas como alerta",
         ]
 
         if buys_24h:
@@ -3830,7 +3870,7 @@ def _send_super_radar_report(chat_id):
             for item in buys_24h[:4]:
                 display_name = get_display_name(item['ticker'])
                 minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
-                quality = "premium" if item.get("winner_only") else "flujo detectado"
+                quality = "élite" if item.get("winner_only") else "flujo detectado"
                 lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | {quality} | hace {minutes_ago} min")
 
         if sells_24h:
@@ -3841,7 +3881,7 @@ def _send_super_radar_report(chat_id):
                 lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | distribución | hace {minutes_ago} min")
 
         if alerted_premium:
-            lines.extend(["", "🔥 <b>Premium enviadas como alerta</b>"])
+            lines.extend(["", "🔥 <b>Alertas élite enviadas</b>"])
             for item in alerted_premium[:3]:
                 display_name = get_display_name(item['ticker'])
                 minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
@@ -3876,7 +3916,7 @@ def _send_super_radar_report(chat_id):
             f"🛰️ <b>Activos rastreados:</b> {len(tkrs)}",
             f"📥 <b>Entradas 24h:</b> {len(buys_24h)} | Capital: {_format_compact_money(buy_cap)}",
             f"📤 <b>Salidas 24h:</b> {len(sells_24h)} | Capital: {_format_compact_money(sell_cap)}",
-            f"🎯 <b>Modo de alertas push:</b> solo ballenas premium/ganadoras (máx. 3 al día)",
+            f"🎯 <b>Modo de alertas:</b> se envían todas las ballenas élite/ganadoras que pasen filtro",
         ]
 
         if buys_24h:
@@ -3884,7 +3924,7 @@ def _send_super_radar_report(chat_id):
             for item in buys_24h[:4]:
                 display_name = get_display_name(item['ticker'])
                 minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
-                quality = "premium" if item.get("winner_only") else "flujo detectado"
+                quality = "élite" if item.get("winner_only") else "flujo detectado"
                 lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | {quality} | hace {minutes_ago} min")
 
         if sells_24h:
@@ -3896,7 +3936,7 @@ def _send_super_radar_report(chat_id):
 
         premium_recent = [item for item in history_24h if item.get("winner_only")]
         if premium_recent:
-            lines.extend(["", "🔥 <b>Últimas premium detectadas</b>"])
+            lines.extend(["", "🔥 <b>Últimas élite detectadas</b>"])
             for item in premium_recent[:3]:
                 display_name = get_display_name(item['ticker'])
                 minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
@@ -3911,7 +3951,7 @@ def _send_super_radar_report(chat_id):
 
         alerted_premium = [item for item in history_24h if item.get("alert_sent")]
         if alerted_premium:
-            lines.extend(["", "🔥 <b>Premium enviadas como alerta</b>"])
+            lines.extend(["", "🔥 <b>Alertas élite enviadas</b>"])
             for item in alerted_premium[:3]:
                 display_name = get_display_name(item['ticker'])
                 minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
@@ -4826,11 +4866,6 @@ def background_loop_proactivo():
                             is_winner_setup, whale_reason = _is_winner_whale_setup(cur_price, intra, topol_whale, analysis_whale)
                             if not is_winner_setup:
                                 continue
-                            if _count_whale_alerts_today() >= 3:
-                                if flow_event is not None:
-                                    flow_event["winner_only"] = True
-                                continue
-                            
                             try:
                                 # Solo si precio est\u00e1 en zonas SMC
                                 if 'sup' in topol_whale and 'res' in topol_whale:
