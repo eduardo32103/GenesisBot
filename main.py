@@ -3049,6 +3049,10 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     projection_target = projection[-1] if projection else price_value
     projection_hint = "alcista" if projection and projection_target >= closes[-1] else "bajista"
     projection_color = "#18925A" if projection_hint == "alcista" else "#C94D3F"
+    direction_arrow = "↑" if projection_hint == "alcista" else "↓"
+    direction_label = "Subida probable" if projection_hint == "alcista" else "Caída probable"
+    projection_delta_pct = ((projection_target - price_value) / price_value * 100) if price_value > 0 else 0.0
+    projection_delta_text = f"{projection_delta_pct:+.2f}%"
     macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
     ema_bias = "positiva" if ema50_value >= ema200_value else "presión bajista"
     divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
@@ -3092,7 +3096,8 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     chip_y = 88
     chip_x = _draw_chip(chip_x, chip_y, f"Temporalidad: {timeframe_label}", (223, 232, 243, 255))
     chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} sesiones", (236, 232, 223, 255))
-    _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
+    chip_x = _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
+    _draw_chip(chip_x, chip_y, f"Dirección: {direction_arrow} {projection_hint}", (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
 
     def _map_series(values, panel, vmin=None, vmax=None, extra_right=0):
         x1, y1, x2, y2 = panel
@@ -3132,6 +3137,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
 
     draw.text((x1 + 28, y1 + 16), "Tramo confirmado", fill="#10233E", font=font_bold)
     draw.text((split_x + 18, y1 + 16), "Escenario probable", fill=projection_color, font=font_bold)
+    draw.text((split_x + 18, y1 + 42), f"{direction_arrow} {direction_label} {projection_delta_text}", fill=projection_color, font=font_metric)
 
     for value in (price_max, (price_max + price_min) / 2, price_min):
         y_val = _map_series([value], main_panel, price_min, price_max, extra_right=132)[0][0][1]
@@ -3166,8 +3172,18 @@ def _render_stock_analysis_chart(ticker, analysis=None):
                 draw.line((projection_pts[idx], projection_pts[idx + 1]), fill=projection_color, width=6)
 
         lx, ly = projection_pts[-1]
+        sx, sy = close_pts[-1]
+        draw.line((sx, sy, lx, ly), fill=projection_color, width=3)
+        arrow_angle = math.atan2(ly - sy, lx - sx)
+        arrow_len = 18
+        left_x = lx - (arrow_len * math.cos(arrow_angle - math.pi / 6))
+        left_y = ly - (arrow_len * math.sin(arrow_angle - math.pi / 6))
+        right_x = lx - (arrow_len * math.cos(arrow_angle + math.pi / 6))
+        right_y = ly - (arrow_len * math.sin(arrow_angle + math.pi / 6))
+        draw.polygon([(lx, ly), (left_x, left_y), (right_x, right_y)], fill=projection_color)
         draw.ellipse((lx - 8, ly - 8, lx + 8, ly + 8), fill=projection_color)
-        draw.text((lx - 88, ly - 34), "Ruta proyectada", fill=projection_color, font=font_small)
+        draw.text((lx - 132, ly - 56), f"{direction_arrow} {direction_label}", fill=projection_color, font=font_small)
+        draw.text((lx - 92, ly - 34), f"{projection_delta_text}", fill=projection_color, font=font_metric)
 
     px, py = close_pts[-1]
     draw.ellipse((px - 7, py - 7, px + 7, py + 7), fill="#132B45", outline="white", width=2)
@@ -3243,7 +3259,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"Temporalidad: {timeframe_label}",
         f"Histórico analizado: {candles_used} sesiones",
         f"Horizonte proyectado: {future_label}",
-        f"Sesgo proyectado: {projection_hint}",
+        f"Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text})",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
         f"Precio actual: ${fmt_price(price_value)}",
@@ -3269,7 +3285,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         [
             f"• Temporalidad: {timeframe_label} | Histórico: {candles_used} sesiones",
             f"• Tramo real: precio confirmado hasta {now_label}.",
-            f"• Escenario proyectado: sesgo {projection_hint} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text}) hacia ${fmt_price(projection_target)} en {future_label}.",
             f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
