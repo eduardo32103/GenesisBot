@@ -111,6 +111,7 @@ def _clean_outgoing_text(text):
 
 def _wrap_bot_text_methods():
     original_send_message = bot.send_message
+    original_send_photo = bot.send_photo
     original_reply_to = bot.reply_to
     original_edit_message_text = bot.edit_message_text
     original_answer_callback_query = bot.answer_callback_query
@@ -122,6 +123,14 @@ def _wrap_bot_text_methods():
         elif 'text' in kwargs:
             kwargs['text'] = _clean_outgoing_text(kwargs['text'])
         return original_send_message(*args, **kwargs)
+
+    def send_photo_wrapper(*args, **kwargs):
+        args = list(args)
+        if len(args) >= 3 and isinstance(args[2], str):
+            args[2] = _clean_outgoing_text(args[2])
+        elif 'caption' in kwargs and kwargs['caption'] is not None:
+            kwargs['caption'] = _clean_outgoing_text(kwargs['caption'])
+        return original_send_photo(*args, **kwargs)
 
     def reply_to_wrapper(*args, **kwargs):
         args = list(args)
@@ -148,6 +157,7 @@ def _wrap_bot_text_methods():
         return original_answer_callback_query(*args, **kwargs)
 
     bot.send_message = send_message_wrapper
+    bot.send_photo = send_photo_wrapper
     bot.reply_to = reply_to_wrapper
     bot.edit_message_text = edit_message_text_wrapper
     bot.answer_callback_query = answer_callback_query_wrapper
@@ -2359,9 +2369,20 @@ def _safe_float(value, default=0.0):
     try:
         if value in (None, "", "None"):
             return default
-        return float(value)
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return default
+        return numeric
     except (TypeError, ValueError):
         return default
+
+
+def _sanitize_numeric_series(values, default=0.0):
+    cleaned = []
+    for value in list(values or []):
+        numeric = _safe_float(value, default)
+        cleaned.append(float(numeric))
+    return cleaned
 
 
 def _format_compact_money(value):
@@ -2757,10 +2778,10 @@ def _build_chart_pack(ticker, candles=110):
         return None
 
     hist = list(reversed(hist[:max(260, candles)]))
-    closes_full = [float(row.get("close", 0) or 0) for row in hist]
-    highs_full = [float(row.get("high", 0) or 0) for row in hist]
-    lows_full = [float(row.get("low", 0) or 0) for row in hist]
-    volumes_full = [float(row.get("volume", 0) or 0) for row in hist]
+    closes_full = [_safe_float(row.get("close"), 0.0) for row in hist]
+    highs_full = [_safe_float(row.get("high"), 0.0) for row in hist]
+    lows_full = [_safe_float(row.get("low"), 0.0) for row in hist]
+    volumes_full = [_safe_float(row.get("volume"), 0.0) for row in hist]
     dates_full = [str(row.get("date") or row.get("label") or "") for row in hist]
 
     closes = pd.Series(closes_full)
@@ -2899,15 +2920,17 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         y = y1 + ((y2 - y1) * idx / 5)
         draw.line((x1 + 18, y, x2 - 18, y), fill="#ECE7DC", width=1)
 
-    closes = pack["closes"]
-    projection = pack["projection"]
+    closes = _sanitize_numeric_series(pack.get("closes", []))
+    projection = _sanitize_numeric_series(pack.get("projection", []), default=closes[-1] if closes else 0.0)
+    if len(closes) < 2:
+        return None, None
     combined = closes + projection if projection else closes
     price_min = min(combined) * 0.97
     price_max = max(combined) * 1.03
 
     close_pts, price_panel_end = _map_series(closes, main_panel, price_min, price_max, extra_right=110)
     if len(close_pts) > 1:
-        draw.line(close_pts, fill="#132B45", width=5, joint="curve")
+        draw.line(close_pts, fill="#132B45", width=5)
 
     last_price = closes[-1]
     proj_color = "#1B9C5A" if projection and projection[-1] >= last_price else "#C94D3F"
@@ -3199,14 +3222,55 @@ def _send_stock_analysis_with_chart(chat_id, ticker):
     bot.send_message(chat_id, analysis_text, parse_mode="HTML")
 
     chart_path = None
+    chart_caption = None
     try:
         chart_path, chart_caption = _render_stock_analysis_chart(tk, LAST_KNOWN_ANALYSIS.get(tk))
-        if chart_path and os.path.exists(chart_path):
+    except Exception:
+        logging.exception(f"Error generando gráfico táctico para {tk}")
+        bot.send_message(
+            chat_id,
+            _make_card(
+                "GRÁFICO TÁCTICO",
+                ["No pude generar el gráfico visual en este momento, pero el análisis textual sí quedó listo."],
+                icon="🖼️"
+            ),
+            parse_mode="HTML"
+        )
+        return
+
+    if not chart_path or not os.path.exists(chart_path):
+        bot.send_message(
+            chat_id,
+            _make_card(
+                "GRÁFICO TÁCTICO",
+                ["No encontré un archivo de gráfico válido para enviarlo, aunque el análisis textual sí quedó listo."],
+                icon="🖼️"
+            ),
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        with open(chart_path, "rb") as chart_file:
+            bot.send_photo(chat_id, chart_file, caption=chart_caption, parse_mode="HTML")
+    except Exception:
+        logging.exception(f"Error enviando gráfico táctico con caption para {tk}")
+        try:
             with open(chart_path, "rb") as chart_file:
-                bot.send_photo(chat_id, chart_file, caption=chart_caption, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"Error generando gráfico táctico para {tk}: {e}")
-        bot.send_message(chat_id, _make_card("GRÁFICO TÁCTICO", ["No pude renderizar el gráfico visual en este momento, pero el análisis textual sí quedó listo."], icon="🖼️"), parse_mode="HTML")
+                bot.send_photo(chat_id, chart_file)
+            if chart_caption:
+                bot.send_message(chat_id, chart_caption, parse_mode="HTML")
+        except Exception:
+            logging.exception(f"Error enviando gráfico táctico sin caption para {tk}")
+            bot.send_message(
+                chat_id,
+                _make_card(
+                    "GRÁFICO TÁCTICO",
+                    ["No pude enviar el gráfico visual en este momento, pero el análisis textual sí quedó listo."],
+                    icon="🖼️"
+                ),
+                parse_mode="HTML"
+            )
     finally:
         if chart_path and os.path.exists(chart_path):
             try:
