@@ -2810,13 +2810,42 @@ def _build_projection_series(pack):
         trend_score += 1 if divergence.get("kind") == "bullish" else -1
 
     recent_slope = (closes[-1] - closes[-6]) / 5 if len(closes) >= 6 else 0.0
+    visual_floor = max(current * 0.012, 0.08 if current < 20 else 0.18)
+    range_size = max(abs(resistance - support), visual_floor * 1.8)
+
     if trend_score >= 2:
-        target = max(current + recent_slope * 7, min(resistance, current * 1.06))
+        bullish_candidate = max(current + recent_slope * 7, resistance, current + visual_floor)
+        target = max(bullish_candidate, current + visual_floor)
     elif trend_score <= -2:
-        target = min(current + recent_slope * 7, max(support, current * 0.94))
+        bearish_candidate = min(current + recent_slope * 7, support, current - visual_floor)
+        target = min(bearish_candidate, current - visual_floor)
     else:
         mid = (support + resistance) / 2 if support > 0 and resistance > 0 else current
-        target = (current * 0.65) + (mid * 0.35)
+        drift_sign = 0
+        if mid > current:
+            drift_sign = 1
+        elif mid < current:
+            drift_sign = -1
+        elif recent_slope > 0:
+            drift_sign = 1
+        elif recent_slope < 0:
+            drift_sign = -1
+        else:
+            drift_sign = 1 if _safe_float(pack.get("ema50")) >= _safe_float(pack.get("ema200")) else -1
+
+        target = (current * 0.62) + (mid * 0.38)
+        if abs(target - current) < (visual_floor * 0.55):
+            target = current + (drift_sign * visual_floor)
+
+    max_extension = range_size * 0.9
+    if target > current:
+        target = min(target, current + max_extension)
+        if abs(target - current) < visual_floor:
+            target = current + visual_floor
+    else:
+        target = max(target, current - max_extension)
+        if abs(target - current) < visual_floor:
+            target = current - visual_floor
 
     projection = []
     steps = 12
@@ -2824,7 +2853,12 @@ def _build_projection_series(pack):
         t = step / steps
         eased = 1 - ((1 - t) ** 2)
         curvature = math.sin(t * math.pi) * recent_slope * 1.2
-        projection.append(current + ((target - current) * eased) + curvature)
+        projected_value = current + ((target - current) * eased) + curvature
+        if target > current and projected_value < current:
+            projected_value = current + ((target - current) * max(t * 0.55, 0.15))
+        elif target < current and projected_value > current:
+            projected_value = current + ((target - current) * max(t * 0.55, 0.15))
+        projection.append(projected_value)
     return projection
 
 
