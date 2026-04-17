@@ -12,6 +12,7 @@ from google import genai
 # yfinance ELIMINADO â€” Todo via FMP Pro
 import threading
 import time
+import tempfile
 import json
 import hashlib
 import unicodedata
@@ -1178,11 +1179,13 @@ def _fetch_fmp_news(limit=10):
         try:
             url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=5)
-            logging.info(f"LOG FMP [stable/stock-news {ticker}]: Status {resp.status_code}")
             if resp.status_code == 200:
+                logging.info(f"LOG FMP [stable/stock-news {ticker}]: Status 200")
                 data = resp.json()
                 if isinstance(data, list):
                     all_news.extend(data)
+            else:
+                logging.debug(f"FMP stock-news {ticker}: HTTP {resp.status_code}")
             if len(all_news) >= limit:
                 break
         except Exception as e:
@@ -2161,8 +2164,10 @@ def fetch_and_analyze_stock(ticker):
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
             
         def _get_fallback_smc():
-            latest_price = safe_check['price']
-            pe = safe_check.get('pe', 0.0)
+            latest_price = _safe_float(safe_check.get('price'), 0.0)
+            if latest_price <= 0:
+                latest_price = 1.0
+            pe = _safe_float(safe_check.get('pe'), 0.0)
             return {
                 'ticker': tk, 'price': latest_price, 'rsi': 50.0, 'macd_line': 0.0, 'macd_signal': 0.0, 
                 'smc_sup': latest_price * 0.95, 'smc_res': latest_price * 1.05, 'smc_trend': "Alcista (\u26a0\ufe0f)", 
@@ -2187,13 +2192,13 @@ def fetch_and_analyze_stock(ticker):
         # FMP viene en orden reciente-primero, revertir para cálculos
         hist = list(reversed(hist[:260]))  # Hasta 260 días para cálculos más institucionales (SMA/EMA 200, Fibonacci, Bollinger, Donchian)
 
-        closes = pd.Series([float(d.get('close', 0)) for d in hist])
-        volumes = pd.Series([float(d.get('volume', 0) or 0) for d in hist])
-        highs = pd.Series([float(d.get('high', 0) or 0) for d in hist])
-        lows = pd.Series([float(d.get('low', 0) or 0) for d in hist])
+        closes = pd.Series([_safe_float(d.get('close'), 0.0) for d in hist])
+        volumes = pd.Series([_safe_float(d.get('volume'), 0.0) for d in hist])
+        highs = pd.Series([_safe_float(d.get('high'), 0.0) for d in hist])
+        lows = pd.Series([_safe_float(d.get('low'), 0.0) for d in hist])
 
         if len(closes) < 15:
-            print(f"DEBUG SMC: closes length {len(closes)} < 15 para {safe_ticker}")
+            print(f"DEBUG SMC: closes length {len(closes)} < 15 para {tk}")
             return _get_fallback_smc()
 
         # RSI
@@ -2239,10 +2244,21 @@ def fetch_and_analyze_stock(ticker):
 
         # Extracci\u00f3n directa del array reverso (de m\u00e1s viejo a m\u00e1s nuevo)
         recent_month_data = hist[-20:] # los \u00faltimos 20 d\u00edas de la lista invertida (los m\u00e1s recientes cronol\u00f3gicamente)
-        
-        smc_res = float(max([float(d.get('high', 0)) for d in recent_month_data])) if recent_month_data else latest_price
-        smc_sup = float(min([float(d.get('low', float('inf'))) for d in recent_month_data])) if recent_month_data else latest_price
-        latest_price = float(recent_month_data[-1].get('close', latest_price)) if recent_month_data else latest_price
+
+        latest_price = _safe_float(
+            recent_month_data[-1].get('close') if recent_month_data else safe_check.get('price'),
+            _safe_float(safe_check.get('price'), 0.0)
+        )
+        if latest_price <= 0:
+            latest_price = float(closes.iloc[-1]) if not closes.empty else 1.0
+
+        recent_highs = [_safe_float(d.get('high'), latest_price) for d in recent_month_data]
+        recent_lows = [_safe_float(d.get('low'), latest_price) for d in recent_month_data]
+        recent_highs = [value for value in recent_highs if value > 0]
+        recent_lows = [value for value in recent_lows if value > 0]
+
+        smc_res = max(recent_highs) if recent_highs else latest_price * 1.03
+        smc_sup = min(recent_lows) if recent_lows else latest_price * 0.97
 
         fib_window = min(len(hist), 120)
         fib_high = float(highs.iloc[-fib_window:].max()) if fib_window > 0 else latest_price
@@ -2871,14 +2887,108 @@ def _build_chart_pack(ticker, candles=110):
     return pack
 
 
+def _build_chart_pack_failsafe(ticker, analysis=None):
+    tk = remap_ticker(ticker)
+    analysis = analysis if isinstance(analysis, dict) else {}
+    if not analysis and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
+        analysis = LAST_KNOWN_ANALYSIS.get(tk) or {}
+
+    quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
+    hist = _fetch_fmp_historical_eod(tk, limit=90) or []
+    closes = []
+
+    if isinstance(hist, list) and hist:
+        hist = list(reversed(hist[:90]))
+        closes = [_safe_float(row.get("close"), 0.0) for row in hist]
+        closes = [value for value in closes if value > 0]
+
+    price = _safe_float(quote.get("price") or analysis.get("price") or (closes[-1] if closes else 0.0), 0.0)
+    if price <= 0:
+        return None
+
+    if len(closes) < 12:
+        change_pct = _safe_float(quote.get("changesPercentage"), 0.0)
+        direction = -1 if change_pct < 0 else 1
+        step = max(price * 0.0025, 0.01)
+        closes = [max(0.01, price - (direction * step * (15 - idx))) for idx in range(16)]
+        closes[-1] = price
+
+    window = closes[-min(len(closes), 20):]
+    base_support = min(window) if window else price * 0.97
+    base_resistance = max(window) if window else price * 1.03
+    support = _safe_float(analysis.get("smc_sup"), base_support * 0.995)
+    resistance = _safe_float(analysis.get("smc_res"), base_resistance * 1.005)
+
+    if support <= 0:
+        support = base_support if base_support > 0 else price * 0.97
+    if resistance <= 0:
+        resistance = base_resistance if base_resistance > 0 else price * 1.03
+    if resistance <= support:
+        support = min(base_support, price) * 0.97
+        resistance = max(base_resistance, price) * 1.03
+
+    ema50 = _safe_float(analysis.get("ema50"), sum(window[-10:]) / max(min(len(window), 10), 1))
+    ema200 = _safe_float(analysis.get("ema200"), sum(closes) / max(len(closes), 1))
+    rsi = _safe_float(analysis.get("rsi"), 55.0 if closes[-1] >= closes[0] else 45.0)
+    macd_line = _safe_float(analysis.get("macd_line"), closes[-1] - closes[-3] if len(closes) >= 3 else 0.0)
+    macd_signal = _safe_float(analysis.get("macd_signal"), (closes[-2] - closes[-4]) if len(closes) >= 4 else macd_line * 0.7)
+    divergence = analysis.get("divergence") if isinstance(analysis.get("divergence"), dict) else {}
+    if not divergence:
+        divergence = {"active": False, "summary": "Sin divergencia operable fuerte por ahora."}
+
+    pack = {
+        "ticker": tk,
+        "closes": closes[-60:],
+        "support": support,
+        "resistance": resistance,
+        "price": price,
+        "rsi": rsi,
+        "macd_line": macd_line,
+        "macd_signal": macd_signal,
+        "ema50": ema50,
+        "ema200": ema200,
+        "divergence": divergence,
+    }
+    pack["projection"] = _sanitize_numeric_series(_build_projection_series(pack), default=price)
+    return pack
+
+
+def _save_chart_image(img, ticker):
+    tk = remap_ticker(ticker)
+    chart_dirs = [
+        os.path.join(DATA_DIR, "charts"),
+        os.path.join(os.getcwd(), "charts"),
+        os.path.join(tempfile.gettempdir(), "genesis_charts"),
+    ]
+    last_error = None
+
+    for chart_dir in chart_dirs:
+        try:
+            os.makedirs(chart_dir, exist_ok=True)
+            chart_path = os.path.join(chart_dir, f"{tk}_{int(time.time())}.png")
+            img.convert("RGB").save(chart_path, format="PNG", optimize=True)
+            return chart_path
+        except Exception as exc:
+            last_error = exc
+            logging.warning(f"No pude guardar el gráfico de {tk} en {chart_dir}: {exc}")
+
+    raise last_error or OSError("No encontré una ruta válida para guardar el gráfico.")
+
+
 def _render_stock_analysis_chart(ticker, analysis=None):
-    pack = _build_chart_pack(ticker, candles=110)
+    tk = remap_ticker(ticker)
+    analysis = analysis or (LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}
+    try:
+        pack = _build_chart_pack(tk, candles=110)
+    except Exception:
+        logging.exception(f"Error construyendo chart pack principal para {tk}")
+        pack = None
+    if not pack:
+        pack = _build_chart_pack_failsafe(tk, analysis)
     if not pack:
         return None, None
 
-    tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
-    analysis = analysis or (LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}
     divergence = pack.get("divergence") or {}
 
     img = Image.new("RGBA", (1460, 860), "#F4F1EA")
@@ -2993,10 +3103,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         draw.text((side_panel[0] + 22, y_cursor), line, fill="#31425B", font=font_label)
         y_cursor += 31 if line else 18
 
-    chart_dir = os.path.join(DATA_DIR, "charts")
-    os.makedirs(chart_dir, exist_ok=True)
-    chart_path = os.path.join(chart_dir, f"{tk}_{int(time.time())}.png")
-    img.convert("RGB").save(chart_path, format="PNG", optimize=True)
+    chart_path = _save_chart_image(img, tk)
 
     projection_hint = "alcista" if projection and projection[-1] >= closes[-1] else "bajista"
     caption = _make_card(
@@ -3218,8 +3325,27 @@ def _render_stock_analysis_chart(ticker, analysis=None):
 
 def _send_stock_analysis_with_chart(chat_id, ticker):
     tk = remap_ticker(ticker)
-    analysis_text = perform_deep_analysis(tk)
-    bot.send_message(chat_id, analysis_text, parse_mode="HTML")
+    analysis_text = None
+    try:
+        analysis_text = perform_deep_analysis(tk)
+    except Exception:
+        logging.exception(f"Error generando análisis textual para {tk}")
+        analysis_text = _make_card(
+            f"ANÁLISIS FMP | {get_display_name(tk)}",
+            [
+                "⚠️ El análisis textual profundo falló en esta ejecución.",
+                "• Activé el modo de contingencia para no bloquear la gráfica.",
+                "• Reintenta en unos segundos si quieres refrescar el contexto completo.",
+            ],
+            icon="📉",
+            footer="El gráfico táctico se intentará enviar de todas formas."
+        )
+
+    if analysis_text:
+        try:
+            bot.send_message(chat_id, analysis_text, parse_mode="HTML")
+        except Exception:
+            logging.exception(f"Error enviando análisis textual para {tk}")
 
     chart_path = None
     chart_caption = None
@@ -3327,7 +3453,11 @@ def _perform_deep_analysis_fmp(ticker):
     display_name = get_display_name(tk)
 
     quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
-    tech = fetch_and_analyze_stock(tk)
+    try:
+        tech = fetch_and_analyze_stock(tk)
+    except Exception:
+        logging.exception(f"Fallo fetch_and_analyze_stock para {tk}")
+        tech = None
     if not isinstance(tech, dict):
         tech = LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else None
 
@@ -3354,7 +3484,13 @@ def _perform_deep_analysis_fmp(ticker):
 
     profile = _fetch_fmp_profile(tk) or {}
     news_items = _fetch_fmp_ticker_news(tk, limit=5)
-    chart_pack = _build_chart_pack(tk, candles=110) or {}
+    try:
+        chart_pack = _build_chart_pack(tk, candles=110) or {}
+    except Exception:
+        logging.exception(f"Fallo _build_chart_pack para {tk} durante el análisis")
+        chart_pack = {}
+    if not chart_pack:
+        chart_pack = _build_chart_pack_failsafe(tk, tech) or {}
     divergence = chart_pack.get("divergence") or {}
     projection = chart_pack.get("projection") or []
 
