@@ -236,6 +236,67 @@ def init_db():
 
 init_db()
 
+def gpt_advanced_geopolitics_v2(news_list, manual=False):
+    if not news_list or not OPENAI_API_KEY:
+        return None
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    news_text = "\n".join([f"- {n}" for n in news_list])
+    wallet_tickers = ", ".join(get_display_name(tk) for tk in get_tracked_tickers()) or "Sin activos en radar"
+
+    try:
+        if manual:
+            prompt = (
+                "Eres GÉNESIS, un analista macro y geopolítico enfocado en mercados financieros.\n\n"
+                f"Wallet vigilada: {wallet_tickers}\n\n"
+                f"Titulares recientes:\n{news_text}\n\n"
+                "Responde en ESPAÑOL con este formato exacto:\n"
+                "🌍 RESUMEN: [2-3 líneas con lo que realmente importa hoy].\n"
+                "🎯 IMPACTO EN WALLET: [qué activos o sectores de la wallet podrían verse afectados y por qué].\n"
+                "⚠️ RIESGO PRIORITARIO: [evento dominante + dirección probable del impacto].\n"
+                "🧭 ACCIÓN TÁCTICA: [Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad] - [razón breve]."
+            )
+        else:
+            prompt = (
+                "Eres GÉNESIS, un centinela de riesgo macro para una wallet accionaria.\n\n"
+                f"Wallet vigilada: {wallet_tickers}\n\n"
+                f"Titulares recientes:\n{news_text}\n\n"
+                "Tu tarea es decidir si alguno de estos titulares amerita una alerta push inmediata.\n"
+                "Si NO hay un evento con impacto operativo alto, responde EXACTAMENTE: TRANQUILIDAD\n"
+                "Si SÍ lo hay, responde EXACTAMENTE en una sola línea y en español:\n"
+                "⚠️ ALERTA GEOPOLÍTICA: [evento clave]. Impacto probable: [sector/mercado]. Wallet afectada: [tickers o sectores de la wallet]. Acción sugerida: [Vigilar/Reducir/Aprovechar]."
+            )
+
+        prompt = (
+            "Actúa como un analista técnico institucional. Este análisis es educativo y no es asesoría financiera.\n\n"
+            "Debes analizar la gráfica con enfoque Smart Money Concepts y, SI Y SOLO SI SON VISIBLES, incorporar estos indicadores: RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian y OBV.\n"
+            "Si un indicador no se ve o no puede leerse con claridad, escribe exactamente: No visible. No inventes datos.\n"
+            "No expliques teoría; entrega lectura operativa.\n\n"
+            "Responde exactamente en este formato:\n"
+            "📊 CONTEXTO TÉCNICO: [tendencia, estructura, liquidez, BOS/CHoCH/FVG/OB si son visibles].\n"
+            "📐 INDICADORES: RSI [lectura o No visible]; MACD [lectura o No visible]; Volumen [lectura o No visible]; EMA50/EMA200 [lectura o No visible]; SMA50/SMA200 [lectura o No visible]; Fibonacci/golden pocket [lectura o No visible]; Bollinger [lectura o No visible]; Donchian [lectura o No visible]; OBV [lectura o No visible].\n"
+            "🎯 NIVELES CLAVE: [soportes, resistencias, order blocks, golden pocket y niveles exactos si se pueden leer].\n"
+            "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [razón técnica directa].\n"
+            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Alcista / Neutral / Bajista / Fuerte Bajista / Esperar Confirmación] - [justificación breve y operable]."
+        )
+
+        res = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600
+        ).choices[0].message.content.strip()
+
+        if not manual and res.strip().upper() == "TRANQUILIDAD":
+            return None
+
+        return res
+    except Exception as e:
+        logging.debug(f"gpt_advanced_geopolitics_v2 error: {e}")
+        return None
+
+
 # =====================================================================
 # PERSISTENCIA REAL: TELEGRAM COMO BASE DE DATOS
 # El bot guarda el estado completo de la cartera como un mensaje
@@ -938,6 +999,57 @@ def verify_1m_realtime_data(ticker):
 
 
 def _fetch_fmp_news(limit=10):
+    if not FMP_API_KEY:
+        return []
+
+    all_news = []
+
+    try:
+        url = f"https://financialmodelingprep.com/stable/news/all?limit={limit}&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        logging.info(f"LOG FMP [stable/news/all]: Status {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return data[:limit]
+    except Exception as e:
+        logging.debug(f"FMP stable/news/all error: {e}")
+
+    try:
+        url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        logging.info(f"LOG FMP [stable/news]: Status {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return data[:limit]
+    except Exception as e:
+        logging.debug(f"FMP stable/news error: {e}")
+
+    default_tickers = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "BTCUSD"]
+    for ticker in default_tickers:
+        try:
+            url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    all_news.extend(data)
+            if len(all_news) >= limit:
+                break
+        except Exception as e:
+            logging.debug(f"FMP stock-news fallback error for {ticker}: {e}")
+
+    unique = []
+    seen = set()
+    for article in all_news:
+        title = (article.get('title') or '').strip().lower()
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        unique.append(article)
+
+    return unique[:limit]
     print("📰 Noticias: No disponibles temporalmente")
     return []
 
@@ -967,6 +1079,9 @@ def check_geopolitical_news():
                                 "embargo", "explosion", "guerra", "ataque", "tensión", "misil",
                                 "sanciones", "rates", "fed", "trump", "powell", "crash", "recession",
                                 "tariff", "default", "crisis"]
+        HIGH_IMPACT_KEYWORDS.extend(["tariffs", "inflation", "cpi", "ppi", "yield", "yields",
+                                     "china", "taiwan", "iran", "israel", "opec", "oil",
+                                     "export control", "chips", "jobs", "treasury"])
         news_alerts = []
 
         fmp_news = _fetch_fmp_news(15)
@@ -1002,11 +1117,25 @@ def gpt_advanced_geopolitics(news_list, manual=False):
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
     news_text = "\n".join([f"- {n}" for n in news_list])
+    wallet_tickers = ", ".join(get_display_name(tk) for tk in get_tracked_tickers()) or "Sin activos en radar"
     if manual:
         prompt = f"Titulares globales:\n{news_text}\nHaz un resumen y dime qué movería el mercado hoy. RESPONDE ESTRICTAMENTE EN ESPAÑOL."
     else:
         prompt = (f"Titulares recientes:\n{news_text}\nAnaliza si hay algo de nivel 'Alto Impacto' (>2%). Si no lo hay, responde 'TRANQUILIDAD'.\nSi lo hay: '⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Acción/Sector]'\nRESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL.")
     try:
+        prompt = (
+            "Actúa como un analista técnico institucional. Este análisis es educativo y no es asesoría financiera.\n\n"
+            "Debes evaluar la gráfica usando, SI Y SOLO SI SON VISIBLES en la imagen: RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian y OBV.\n"
+            "Si un indicador no es visible o no se puede leer con suficiente claridad, debes decir 'No visible' y NO inventarlo.\n"
+            "Mantén enfoque Smart Money Concepts y comportamiento institucional. No expliques teoría.\n\n"
+            "Responde exactamente en este formato:\n"
+            "📊 CONTEXTO TÉCNICO: [Tendencia, estructura, liquidez, BOS/CHoCH/FVG/OB si son visibles].\n"
+            "📐 INDICADORES: [RSI / MACD / Volumen / EMA-SMA / Fibonacci-golden pocket / Bollinger / Donchian / OBV. Para cada uno: lectura concreta o 'No visible'].\n"
+            "🎯 NIVELES CLAVE: [Soportes, resistencias, order blocks, golden pocket y niveles relevantes con precios exactos si pueden leerse].\n"
+            "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [razón directa].\n"
+            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Alcista / Neutral / Bajista / Fuerte Bajista / Esperar Confirmación] - [justificación breve y operable]."
+        )
+
         res = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
@@ -1048,6 +1177,61 @@ def _classify_sentiment(score):
         return {'label': 'Neutral', 'icon': 'ðŸŸ¡', 'bull_pct': 50, 'bear_pct': 50, 'raw': s}
 
 
+_PROFILE_ALIAS_CACHE = {}
+
+
+def _get_ticker_aliases(ticker):
+    tk = remap_ticker(ticker)
+    cached = _PROFILE_ALIAS_CACHE.get(tk)
+    if cached:
+        return cached
+
+    clean_tk = tk.replace('-USD', '').replace('=F', '').upper()
+    aliases = {clean_tk, get_display_name(tk).upper()}
+
+    manual_aliases = {
+        'BTC': ['BITCOIN', 'BTC', 'CRYPTO', 'CRYPTOCURRENCY'],
+        'ETH': ['ETHEREUM', 'ETH'],
+        'SOL': ['SOLANA'],
+        'NVDA': ['NVIDIA', 'GPU', 'AI CHIP', 'SEMICONDUCTOR', 'SEMICONDUCTORS'],
+        'AMD': ['ADVANCED MICRO DEVICES', 'CHIP', 'SEMICONDUCTOR', 'SEMICONDUCTORS'],
+        'TSM': ['TSMC', 'TAIWAN SEMICONDUCTOR', 'SEMICONDUCTOR', 'SEMICONDUCTORS'],
+        'MARA': ['MARATHON', 'BITCOIN MINER', 'MINER'],
+        'COIN': ['COINBASE', 'CRYPTO EXCHANGE'],
+        'PLTR': ['PALANTIR', 'DEFENSE SOFTWARE'],
+        'IONQ': ['IONQ', 'QUANTUM', 'QUANTUM COMPUTING'],
+        'GC': ['GOLD', 'ORO', 'BULLION'],
+        'BZ': ['BRENT', 'OIL', 'PETROLEO', 'PETRÓLEO', 'CRUDE'],
+        'XRP': ['RIPPLE'],
+    }
+    for key, items in manual_aliases.items():
+        if key in clean_tk:
+            aliases.update(items)
+
+    profile = _fetch_fmp_profile(tk) or {}
+    for field in [profile.get("companyName", ""), profile.get("sector", ""), profile.get("industry", "")]:
+        upper_field = str(field or "").upper()
+        if upper_field:
+            aliases.add(upper_field)
+        for token in re.split(r"[^A-Z0-9]+", upper_field):
+            if len(token) >= 4 and token not in {"INC", "CORP", "LTD", "PLC", "HOLDINGS", "GROUP", "CLASS", "COMMON"}:
+                aliases.add(token)
+
+    sector_text = f"{profile.get('sector', '')} {profile.get('industry', '')}".upper()
+    if "TECH" in sector_text or "SOFTWARE" in sector_text:
+        aliases.update(["AI", "CLOUD", "SOFTWARE", "BIG TECH"])
+    if "SEMICON" in sector_text:
+        aliases.update(["CHIPS", "CHIP", "SEMIS", "EXPORT CONTROLS"])
+    if "ENERGY" in sector_text or "OIL" in sector_text:
+        aliases.update(["OIL", "CRUDE", "GAS", "OPEC"])
+    if "BANK" in sector_text or "FINANCIAL" in sector_text:
+        aliases.update(["BANKS", "YIELDS", "RATES", "CREDIT"])
+
+    clean_aliases = sorted({alias.strip().upper() for alias in aliases if str(alias).strip()})
+    _PROFILE_ALIAS_CACHE[tk] = clean_aliases
+    return clean_aliases
+
+
 def _extract_mentioned_tickers(text, wallet_tickers):
     """Detecta qué tickers de la wallet se mencionan en un texto"""
     mentioned = []
@@ -1068,6 +1252,19 @@ def _extract_mentioned_tickers(text, wallet_tickers):
 
         for alias in aliases:
             if alias in text_upper:
+                if tk not in mentioned:
+                    mentioned.append(tk)
+                break
+    return mentioned
+
+
+def _extract_mentioned_tickers_plus(text, wallet_tickers):
+    """Versión ampliada: detecta tickers por nombre, sector, industria y aliases."""
+    mentioned = []
+    text_upper = (text or "").upper()
+    for tk in wallet_tickers:
+        for alias in _get_ticker_aliases(tk):
+            if alias and alias in text_upper:
                 if tk not in mentioned:
                     mentioned.append(tk)
                 break
@@ -1311,7 +1508,7 @@ def genesis_strategic_report(manual=True):
     general_news = []     # Noticias generales del mercado
 
     for news in news_data:
-        mentioned = _extract_mentioned_tickers(news['title'], wallet_tickers)
+        mentioned = _extract_mentioned_tickers_plus(news['title'], wallet_tickers)
         if news['symbol']:
             # También buscar por symbol explícito de FMP
             for tk in wallet_tickers:
@@ -1451,6 +1648,157 @@ def generar_reporte_macro_manual():
 
 
 def fetch_intraday_data(ticker):
+    """Obtiene snapshot intradía desde FMP y reconstuye avg volume cuando FMP lo devuelve en cero."""
+    tk = remap_ticker(ticker)
+
+    if not FMP_API_KEY:
+        return None
+
+    fmp_data = _fetch_fmp_quote(tk)
+    if not fmp_data:
+        return None
+
+    price = _safe_float(fmp_data.get('price'))
+    if price <= 0:
+        return None
+
+    latest_vol = _safe_float(fmp_data.get('volume'))
+    quote_avg_vol = _safe_float(fmp_data.get('avgVolume'))
+    change = _safe_float(fmp_data.get('change'))
+    vol_side = "buy" if change >= 0 else "sell"
+    vol_type = "Compra 🟢" if vol_side == "buy" else "Venta 🔴"
+
+    avg_vol = quote_avg_vol if quote_avg_vol > 0 else 0.0
+
+    if avg_vol <= 0:
+        try:
+            fmp_sym = _get_fmp_symbol(tk)
+            if _is_crypto_ticker(tk):
+                fmp_sym = tk.replace('-USD', '') + 'USD'
+
+            url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{urllib.parse.quote(fmp_sym)}?apikey={FMP_API_KEY}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                raw = resp.json()
+                hist = []
+                if isinstance(raw, dict) and isinstance(raw.get('historical'), list):
+                    hist = raw['historical']
+                elif isinstance(raw, list):
+                    hist = raw
+
+                recent_vols = []
+                for day in hist[:20]:
+                    v = float(day.get('volume', 0) or 0)
+                    if v > 0:
+                        recent_vols.append(v)
+                if recent_vols:
+                    avg_vol = sum(recent_vols) / len(recent_vols)
+        except Exception as e:
+            logging.debug(f"fetch_intraday_data historical avg_vol error para {tk}: {e}")
+
+    if avg_vol <= 0 and latest_vol > 0:
+        avg_vol = latest_vol
+
+    if avg_vol <= 0 and latest_vol <= 0:
+        print(f"DEBUG INTRADAY {tk}: Ignorando activo por avg_vol ({avg_vol}) y latest_vol ({latest_vol}).")
+        return None
+
+    if avg_vol > 0 and latest_vol > 0:
+        print(f"DEBUG INTRADAY {tk}: spike={(latest_vol/avg_vol):.2f}x (vol: {latest_vol:,.0f} / avg_vol: {avg_vol:,.0f})")
+
+    return {
+        'ticker': tk,
+        'latest_vol': latest_vol,
+        'avg_vol': avg_vol,
+        'vol_side': vol_side,
+        'vol_type': vol_type,
+        'latest_price': price
+    }
+
+    tk = remap_ticker(ticker)
+
+    if not FMP_API_KEY:
+        return None
+
+    fmp_data = _fetch_fmp_quote(tk)
+    if not fmp_data:
+        return None
+
+    price = fmp_data.get('price')
+    if not price:
+        return None
+
+    latest_vol = float(fmp_data.get('volume', 0) or 0)
+    quote_avg_vol = float(fmp_data.get('avgVolume', 0) or 0)
+    change = float(fmp_data.get('change', 0) or 0)
+    vol_side = "buy" if change >= 0 else "sell"
+    vol_type = "Compra institucional" if vol_side == "buy" else "Venta institucional"
+
+    avg_vol = 0.0
+    if manual:
+        prompt = (
+            f"Titulares globales:\n{news_text}\n\n"
+            f"Wallet vigilada: {wallet_tickers}\n\n"
+            f"Haz un resumen macro accionable y explica qué titulares pueden afectar DIRECTAMENTE a esta wallet. "
+            f"Si un titular pega a un activo o sector de la wallet, nómbralo de forma explícita. "
+            f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
+        )
+    else:
+        prompt = (
+            f"Titulares recientes:\n{news_text}\n\n"
+            f"Wallet vigilada: {wallet_tickers}\n\n"
+            f"Analiza si hay algo de nivel 'Alto Impacto' (>2%) con efecto directo o indirecto en la wallet. "
+            f"Si no lo hay, responde 'TRANQUILIDAD'.\n"
+            f"Si lo hay, responde en una sola línea con este formato:\n"
+            f"⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Activo/Sector de la wallet] - Acción sugerida [Vigilar/Reducir/Aprovechar]\n"
+            f"RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
+        )
+
+    try:
+        fmp_sym = _get_fmp_symbol(tk)
+        if _is_crypto_ticker(tk):
+            fmp_sym = tk.replace('-USD', '') + 'USD'
+
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{urllib.parse.quote(fmp_sym)}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            raw = resp.json()
+            hist = []
+            if isinstance(raw, dict) and isinstance(raw.get('historical'), list):
+                hist = raw['historical']
+            elif isinstance(raw, list):
+                hist = raw
+            recent_vols = []
+            for day in hist[:20]:
+                v = float(day.get('volume', 0) or 0)
+                if v > 0:
+                    recent_vols.append(v)
+            if recent_vols:
+                avg_vol = sum(recent_vols) / len(recent_vols)
+    except Exception as e:
+        logging.debug(f"fetch_intraday_data historical avg_vol error para {tk}: {e}")
+
+    if avg_vol <= 0 and quote_avg_vol > 0:
+        avg_vol = quote_avg_vol
+
+    if avg_vol <= 0 and latest_vol > 0:
+        avg_vol = latest_vol
+
+    if avg_vol < 1000 and latest_vol <= 0:
+        print(f"DEBUG INTRADAY {tk}: Ignorando activo por avg_vol ({avg_vol}) y latest_vol ({latest_vol}).")
+        return None
+
+    if avg_vol > 0 and latest_vol > 0:
+        print(f"DEBUG INTRADAY {tk}: spike={(latest_vol/avg_vol):.2f}x (vol: {latest_vol:,.0f} / avg_vol: {avg_vol:,.0f})")
+
+    return {
+        'ticker': tk,
+        'latest_vol': latest_vol,
+        'avg_vol': avg_vol,
+        'vol_side': vol_side,
+        'vol_type': vol_type,
+        'latest_price': price
+    }
     """Obtiene precio + volumen de FMP quote directo, ignorando endpoints Legacy."""
     tk = remap_ticker(ticker)
 
@@ -1540,7 +1888,14 @@ def fetch_and_analyze_stock(ticker):
                 'ticker': tk, 'price': latest_price, 'rsi': 50.0, 'macd_line': 0.0, 'macd_signal': 0.0, 
                 'smc_sup': latest_price * 0.95, 'smc_res': latest_price * 1.05, 'smc_trend': "Alcista (\u26a0\ufe0f)", 
                 'order_block': latest_price, 'take_profit': latest_price * 1.05, 'stop_loss': latest_price * 0.95 * 0.98,
-                'rvol': 1.0, 'pe': pe
+                'rvol': 1.0, 'pe': pe,
+                'sma50': latest_price, 'sma200': latest_price, 'ema50': latest_price, 'ema200': latest_price,
+                'bb_upper': latest_price * 1.03, 'bb_lower': latest_price * 0.97, 'bb_basis': latest_price,
+                'donchian_upper': latest_price * 1.03, 'donchian_lower': latest_price * 0.97, 'donchian_mid': latest_price,
+                'obv': 0.0, 'obv_trend': "Neutral",
+                'fib_high': latest_price * 1.05, 'fib_low': latest_price * 0.95,
+                'fib_382': latest_price * 1.031, 'fib_500': latest_price, 'fib_618': latest_price * 0.969,
+                'golden_pocket_low': latest_price * 0.965, 'golden_pocket_high': latest_price * 0.972,
             }
 
         # Obtener historial diario de FMP
@@ -1586,10 +1941,12 @@ def fetch_and_analyze_stock(ticker):
             return _get_fallback_smc()
 
         # FMP viene en orden reciente-primero, revertir para cálculos
-        hist = list(reversed(hist[:100]))  # Últimos 100 días max para cálculos limpios y rápidos
+        hist = list(reversed(hist[:260]))  # Hasta 260 días para cálculos más institucionales (SMA/EMA 200, Fibonacci, Bollinger, Donchian)
 
         closes = pd.Series([float(d.get('close', 0)) for d in hist])
         volumes = pd.Series([float(d.get('volume', 0) or 0) for d in hist])
+        highs = pd.Series([float(d.get('high', 0) or 0) for d in hist])
+        lows = pd.Series([float(d.get('low', 0) or 0) for d in hist])
 
         if len(closes) < 15:
             print(f"DEBUG SMC: closes length {len(closes)} < 15 para {safe_ticker}")
@@ -1610,12 +1967,49 @@ def fetch_and_analyze_stock(ticker):
         macd_line = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
         macd_signal = macd_line.ewm(span=9, adjust=False).mean()
 
+        sma50 = float(closes.rolling(window=50, min_periods=1).mean().iloc[-1])
+        sma200 = float(closes.rolling(window=200, min_periods=1).mean().iloc[-1])
+        ema50 = float(closes.ewm(span=50, adjust=False).mean().iloc[-1])
+        ema200 = float(closes.ewm(span=200, adjust=False).mean().iloc[-1])
+
+        bb_basis_series = closes.rolling(window=20, min_periods=1).mean()
+        bb_std_series = closes.rolling(window=20, min_periods=1).std().fillna(0)
+        bb_basis = float(bb_basis_series.iloc[-1])
+        bb_upper = float((bb_basis_series + (bb_std_series * 2)).iloc[-1])
+        bb_lower = float((bb_basis_series - (bb_std_series * 2)).iloc[-1])
+
+        donchian_upper = float(highs.rolling(window=20, min_periods=1).max().iloc[-1])
+        donchian_lower = float(lows.rolling(window=20, min_periods=1).min().iloc[-1])
+        donchian_mid = (donchian_upper + donchian_lower) / 2
+
+        obv_step = closes.diff().fillna(0).apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        obv_series = (obv_step * volumes).cumsum()
+        obv_value = float(obv_series.iloc[-1]) if not obv_series.empty else 0.0
+        obv_reference = float(obv_series.iloc[-5]) if len(obv_series) >= 5 else 0.0
+        if obv_value > obv_reference:
+            obv_trend = "Ascendente"
+        elif obv_value < obv_reference:
+            obv_trend = "Descendente"
+        else:
+            obv_trend = "Neutral"
+
         # Extracci\u00f3n directa del array reverso (de m\u00e1s viejo a m\u00e1s nuevo)
         recent_month_data = hist[-20:] # los \u00faltimos 20 d\u00edas de la lista invertida (los m\u00e1s recientes cronol\u00f3gicamente)
         
         smc_res = float(max([float(d.get('high', 0)) for d in recent_month_data])) if recent_month_data else latest_price
         smc_sup = float(min([float(d.get('low', float('inf'))) for d in recent_month_data])) if recent_month_data else latest_price
         latest_price = float(recent_month_data[-1].get('close', latest_price)) if recent_month_data else latest_price
+
+        fib_window = min(len(hist), 120)
+        fib_high = float(highs.iloc[-fib_window:].max()) if fib_window > 0 else latest_price
+        fib_low = float(lows.iloc[-fib_window:].min()) if fib_window > 0 else latest_price
+        fib_range = max(fib_high - fib_low, 0.0001)
+        fib_382 = fib_high - (fib_range * 0.382)
+        fib_500 = fib_high - (fib_range * 0.500)
+        fib_618 = fib_high - (fib_range * 0.618)
+        fib_650 = fib_high - (fib_range * 0.650)
+        golden_pocket_low = min(fib_650, fib_618)
+        golden_pocket_high = max(fib_650, fib_618)
         
         smc_trend = "Alcista \ud83d\udfe2" if latest_price > closes.ewm(span=20).mean().iloc[-1] else "Bajista \ud83d\udd34"
         
@@ -1648,7 +2042,26 @@ def fetch_and_analyze_stock(ticker):
             'take_profit': take_profit,
             'stop_loss': stop_loss,
             'rvol': rvol,
-            'pe': pe
+            'pe': pe,
+            'sma50': sma50,
+            'sma200': sma200,
+            'ema50': ema50,
+            'ema200': ema200,
+            'bb_upper': bb_upper,
+            'bb_lower': bb_lower,
+            'bb_basis': bb_basis,
+            'donchian_upper': donchian_upper,
+            'donchian_lower': donchian_lower,
+            'donchian_mid': donchian_mid,
+            'obv': obv_value,
+            'obv_trend': obv_trend,
+            'fib_high': fib_high,
+            'fib_low': fib_low,
+            'fib_382': fib_382,
+            'fib_500': fib_500,
+            'fib_618': fib_618,
+            'golden_pocket_low': golden_pocket_low,
+            'golden_pocket_high': golden_pocket_high,
         }
         LAST_KNOWN_ANALYSIS[tk] = result
         return result
@@ -1797,6 +2210,133 @@ def _fetch_fmp_ticker_news(ticker, limit=3):
         return []
 
 
+def _evaluate_news_materiality(title, body=""):
+    text = f"{title or ''} {body or ''}".lower()
+
+    positive_weights = {
+        "merger": 4, "merge": 4, "merges": 4, "acquisition": 4, "acquire": 4, "partnership": 3, "partner": 3,
+        "joint venture": 3, "business combination": 4, "contract": 3, "deal": 3, "approval": 3, "approved": 3,
+        "fda": 3, "phase 3": 3, "phase iii": 3, "license": 2, "licensing": 2,
+        "wins": 2, "award": 2, "buyback": 3, "beats": 3, "beat": 3, "guidance raised": 4,
+        "raises guidance": 4, "investment": 2, "funding": 2, "expands": 2, "launch": 1,
+        "surge": 2, "record": 2, "breakout": 2, "secures": 3, "signs": 2, "selected": 2,
+        "strategic": 1, "commercial": 2, "exclusive": 2,
+    }
+    negative_weights = {
+        "offering": 4, "dilution": 4, "dilutive": 4, "lawsuit": 3, "investigation": 4,
+        "probe": 3, "downgrade": 3, "misses": 3, "miss": 3, "guidance cut": 4,
+        "cuts guidance": 4, "bankruptcy": 5, "fraud": 5, "delay": 2, "recall": 2,
+        "antitrust": 3, "hack": 3, "breach": 3, "default": 4, "layoffs": 2, "slump": 2,
+        "sanction": 3, "tariff": 3, "crash": 4, "plunge": 3, "falls": 2, "terminated": 4,
+        "delisting": 5, "restatement": 4, "resigns": 3, "resignation": 3, "chapter 11": 5,
+    }
+    neutral_noise = ["conference", "interview", "watch", "price prediction", "recap", "live updates"]
+
+    if any(noise in text for noise in neutral_noise):
+        return {"material": False, "direction": "neutral", "score": 0, "impact": "Bajo", "reason": "Titular de bajo valor operativo."}
+
+    pos_score = sum(weight for key, weight in positive_weights.items() if key in text)
+    neg_score = sum(weight for key, weight in negative_weights.items() if key in text)
+    net_score = pos_score - neg_score
+    abs_score = abs(net_score)
+
+    if abs_score < 2:
+        return {"material": False, "direction": "neutral", "score": net_score, "impact": "Bajo", "reason": "Sin catalizador claro todavía."}
+
+    direction = "bullish" if net_score > 0 else "bearish"
+    impact = "Alto" if abs_score >= 4 else "Medio"
+    reason = "Catalizador corporativo relevante." if impact == "Alto" else "Noticia potencialmente operable."
+    return {"material": True, "direction": direction, "score": net_score, "impact": impact, "reason": reason}
+
+
+def _build_tracked_news_alert(tk, article):
+    title = (article.get('title') or '').strip()
+    body = (article.get('text') or article.get('content') or '').strip()
+    site = (article.get('site') or article.get('source') or 'Fuente no disponible').strip()
+    published = (article.get('publishedDate') or article.get('date') or '').strip()
+    article_url = (article.get('url') or article.get('link') or '').strip()
+    signal = _evaluate_news_materiality(title, body)
+    if not signal.get("material"):
+        return None
+
+    display_name = get_display_name(tk)
+    analysis = LAST_KNOWN_ANALYSIS.get(tk)
+    if not analysis or not isinstance(analysis, dict):
+        analysis = fetch_and_analyze_stock(tk)
+        if analysis and isinstance(analysis, dict):
+            LAST_KNOWN_ANALYSIS[tk] = analysis
+            update_smc_memory(tk, analysis)
+
+    lines = [
+        f"📰 <b>Activo:</b> {display_name}",
+        f"• <b>Titular:</b> {_escape_html(_truncate_text(title, 180))}",
+        f"• <b>Lectura:</b> {'Alcista' if signal['direction'] == 'bullish' else 'Bajista'} | Impacto {signal['impact']}",
+    ]
+
+    if analysis and isinstance(analysis, dict):
+        price = analysis.get('price', 0)
+        support = analysis.get('smc_sup', 0)
+        resistance = analysis.get('smc_res', 0)
+        rsi = analysis.get('rsi', 50)
+        lines.append(f"• <b>Precio:</b> ${fmt_price(price)} | RSI {rsi:.1f}")
+        lines.append(f"• <b>Soporte:</b> ${fmt_price(support)} | <b>Resistencia:</b> ${fmt_price(resistance)}")
+
+    if analysis and isinstance(analysis, dict):
+        macd_line = _safe_float(analysis.get('macd_line'))
+        macd_signal = _safe_float(analysis.get('macd_signal'))
+        macd_bias = "alcista" if macd_line >= macd_signal else "bajista"
+        gp_low = _safe_float(analysis.get('golden_pocket_low'))
+        gp_high = _safe_float(analysis.get('golden_pocket_high'))
+        lines.append(f"• <b>MACD:</b> {macd_bias}")
+        if gp_low > 0 and gp_high > 0:
+            lines.append(f"• <b>Golden pocket:</b> ${fmt_price(gp_low)} - ${fmt_price(gp_high)}")
+
+    if signal['direction'] == 'bullish':
+        suggestion = "Vigilar para compra o aumento de exposición si confirma estructura."
+    else:
+        suggestion = "Vigilar riesgo y proteger ganancias si rompe soporte."
+
+    source_line = f"â€¢ <b>Fuente:</b> {_escape_html(site)}"
+    if article_url:
+        safe_url = html.escape(article_url, quote=True)
+        source_line = f'â€¢ <b>Fuente:</b> <a href="{safe_url}">{_escape_html(site)}</a>'
+    if published:
+        source_line += f" | {_escape_html(published)}"
+    source_line = source_line.replace("Ã¢â‚¬Â¢ ", "• ")
+    lines.append(source_line)
+
+    lines.extend([
+        f"• <b>Racional:</b> {signal['reason']}",
+        f"• <b>Acción sugerida:</b> {suggestion}",
+        f"• <b>Fuente:</b> {_escape_html(site)}" + (f" | {_escape_html(published)}" if published else ""),
+    ])
+
+    return _make_card("CENTINELA GÉNESIS", lines, icon="🚨")
+
+
+def _iter_whale_history_entries(hours=24):
+    cutoff = datetime.now() - timedelta(hours=hours)
+    entries = []
+    for tk, rows in WHALE_HISTORY_DB.items():
+        for row in rows:
+            ts = row.get("timestamp")
+            if isinstance(ts, datetime) and ts >= cutoff:
+                enriched = dict(row)
+                enriched["ticker"] = tk
+                entries.append(enriched)
+    return sorted(entries, key=lambda item: item.get("timestamp"), reverse=True)
+
+
+def _count_whale_alerts_today():
+    today = datetime.now().date()
+    total = 0
+    for entry in _iter_whale_history_entries(hours=48):
+        ts = entry.get("timestamp")
+        if isinstance(ts, datetime) and ts.date() == today and entry.get("alert_sent"):
+            total += 1
+    return total
+
+
 def _perform_deep_analysis_fmp(ticker):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
@@ -1828,7 +2368,7 @@ def _perform_deep_analysis_fmp(ticker):
         )
 
     profile = _fetch_fmp_profile(tk) or {}
-    news_items = _fetch_fmp_ticker_news(tk, limit=3)
+    news_items = _fetch_fmp_ticker_news(tk, limit=5)
 
     company_name = profile.get("companyName") or quote.get("name") or display_name
     sector = profile.get("sector") or "N/D"
@@ -1856,6 +2396,22 @@ def _perform_deep_analysis_fmp(ticker):
     macd_signal = _safe_float((tech or {}).get("macd_signal"))
     rvol = _safe_float((tech or {}).get("rvol"), (volume / avg_volume) if avg_volume > 0 else 1.0)
     smc_trend = str((tech or {}).get("smc_trend", "Neutral"))
+    sma50 = _safe_float((tech or {}).get("sma50"), price)
+    sma200 = _safe_float((tech or {}).get("sma200"), price)
+    ema50 = _safe_float((tech or {}).get("ema50"), price)
+    ema200 = _safe_float((tech or {}).get("ema200"), price)
+    bb_upper = _safe_float((tech or {}).get("bb_upper"), price * 1.03)
+    bb_lower = _safe_float((tech or {}).get("bb_lower"), price * 0.97)
+    bb_basis = _safe_float((tech or {}).get("bb_basis"), price)
+    donchian_upper = _safe_float((tech or {}).get("donchian_upper"), resistance)
+    donchian_lower = _safe_float((tech or {}).get("donchian_lower"), support)
+    donchian_mid = _safe_float((tech or {}).get("donchian_mid"), price)
+    obv_trend = str((tech or {}).get("obv_trend", "Neutral"))
+    fib_382 = _safe_float((tech or {}).get("fib_382"), resistance)
+    fib_500 = _safe_float((tech or {}).get("fib_500"), price)
+    fib_618 = _safe_float((tech or {}).get("fib_618"), support)
+    golden_pocket_low = _safe_float((tech or {}).get("golden_pocket_low"), fib_618)
+    golden_pocket_high = _safe_float((tech or {}).get("golden_pocket_high"), fib_618)
 
     reward_pct = ((take_profit - price) / price * 100) if price > 0 else 0.0
     risk_pct = ((price - stop_loss) / price * 100) if price > 0 else 0.0
@@ -1864,6 +2420,20 @@ def _perform_deep_analysis_fmp(ticker):
     bullish_reasons = []
     bearish_reasons = []
     score = 0
+
+    if price >= ema50 and ema50 >= ema200:
+        score += 1
+        bullish_reasons.append("precio sostiene EMA50/EMA200")
+    elif price <= ema50 and ema50 <= ema200:
+        score -= 1
+        bearish_reasons.append("precio bajo EMA50/EMA200")
+
+    if sma50 >= sma200:
+        score += 1
+        bullish_reasons.append("SMA50 por encima de SMA200")
+    else:
+        score -= 1
+        bearish_reasons.append("SMA50 por debajo de SMA200")
 
     if "ALCISTA" in smc_trend.upper():
         score += 2
@@ -1900,6 +2470,31 @@ def _perform_deep_analysis_fmp(ticker):
     elif price <= order_block * 1.02:
         score += 1
         bullish_reasons.append("cotiza sobre el order block")
+
+    if golden_pocket_low <= price <= golden_pocket_high:
+        score += 1
+        bullish_reasons.append("precio dentro del golden pocket")
+
+    if price <= bb_lower:
+        score += 1
+        bullish_reasons.append("precio en banda baja de Bollinger")
+    elif price >= bb_upper:
+        score -= 1
+        bearish_reasons.append("precio en banda alta de Bollinger")
+
+    if price <= donchian_lower * 1.01:
+        score += 1
+        bullish_reasons.append("precio cerca del piso Donchian")
+    elif price >= donchian_upper * 0.99:
+        score -= 1
+        bearish_reasons.append("precio cerca del techo Donchian")
+
+    if "ASC" in obv_trend.upper():
+        score += 1
+        bullish_reasons.append("OBV con acumulación")
+    elif "DESC" in obv_trend.upper():
+        score -= 1
+        bearish_reasons.append("OBV con distribución")
 
     if rvol >= 1.5 and change_pct >= 0:
         score += 1
@@ -1976,6 +2571,14 @@ def _perform_deep_analysis_fmp(ticker):
         f"• Order block: ${fmt_price(order_block)} | Volumen relativo: {rvol:.2f}x",
         f"• Objetivo táctico: ${fmt_price(take_profit)} | Stop táctico: ${fmt_price(stop_loss)}",
     ])
+
+    lines.append(f"• EMA50/EMA200: ${fmt_price(ema50)} / ${fmt_price(ema200)}")
+    lines.append(f"• SMA50/SMA200: ${fmt_price(sma50)} / ${fmt_price(sma200)}")
+    lines.append(f"• Fibonacci 0.382/0.5/0.618: ${fmt_price(fib_382)} / ${fmt_price(fib_500)} / ${fmt_price(fib_618)}")
+    lines.append(f"• Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}")
+    lines.append(f"• Bollinger: baja ${fmt_price(bb_lower)} | media ${fmt_price(bb_basis)} | alta ${fmt_price(bb_upper)}")
+    lines.append(f"• Donchian: piso ${fmt_price(donchian_lower)} | medio ${fmt_price(donchian_mid)} | techo ${fmt_price(donchian_upper)}")
+    lines.append(f"• OBV: <b>{_escape_html(obv_trend)}</b>")
 
     if not tech:
         lines.append("• Nota: FMP no devolvió histórico suficiente; esta lectura pesa más precio, volumen y noticias.")
@@ -2427,6 +3030,131 @@ def _send_super_radar_report(chat_id):
             bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", ["✅ Tu radar está vacío."], icon="🐋"), parse_mode="HTML")
             return
 
+        history_24h = _iter_whale_history_entries(hours=24)
+        buys_24h = [item for item in history_24h if item.get("direction") == "buy"]
+        sells_24h = [item for item in history_24h if item.get("direction") == "sell"]
+        alerted_premium = [item for item in history_24h if item.get("alert_sent")]
+        buy_cap = sum(float(item.get("vol_usd", 0) or 0) for item in buys_24h)
+        sell_cap = sum(float(item.get("vol_usd", 0) or 0) for item in sells_24h)
+
+        lines = [
+            f"🛰️ <b>Activos rastreados:</b> {len(tkrs)}",
+            f"📥 <b>Entradas 24h:</b> {len(buys_24h)} | Capital: {_format_compact_money(buy_cap)}",
+            f"📤 <b>Salidas 24h:</b> {len(sells_24h)} | Capital: {_format_compact_money(sell_cap)}",
+            "🎯 <b>Push:</b> solo ballenas premium/ganadoras (máx. 3 al día)",
+            "🧠 <b>Radar 24h:</b> muestra entradas y salidas detectadas aunque no hayan sido push",
+        ]
+
+        if buys_24h:
+            lines.extend(["", "🐳 <b>Entradas institucionales 24h</b>"])
+            for item in buys_24h[:4]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                quality = "premium" if item.get("winner_only") else "flujo detectado"
+                lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | {quality} | hace {minutes_ago} min")
+
+        if sells_24h:
+            lines.extend(["", "🧨 <b>Salidas institucionales 24h</b>"])
+            for item in sells_24h[:4]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | distribución | hace {minutes_ago} min")
+
+        if alerted_premium:
+            lines.extend(["", "🔥 <b>Premium enviadas como alerta</b>"])
+            for item in alerted_premium[:3]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | hace {minutes_ago} min")
+
+        if not buys_24h and not sells_24h:
+            lines.extend(["", "🌊 Mercado en calma.", "Sin flujos institucionales relevantes guardados en las últimas 24 horas."])
+
+        bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", lines, icon="🐋"), parse_mode="HTML")
+        return
+    except Exception as e:
+        print(f"ERROR RADAR: {e}")
+        try:
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", [f"⚠️ Error interno en radar: {e}"], icon="🐋"), parse_mode="HTML")
+        except Exception:
+            pass
+        return
+
+    try:
+        tkrs = get_tracked_tickers()
+        if not tkrs:
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", ["✅ Tu radar está vacío."], icon="🐋"), parse_mode="HTML")
+            return
+
+        history_24h = _iter_whale_history_entries(hours=24)
+        buys_24h = [item for item in history_24h if item.get("direction") == "buy"]
+        sells_24h = [item for item in history_24h if item.get("direction") == "sell"]
+        buy_cap = sum(float(item.get("vol_usd", 0) or 0) for item in buys_24h)
+        sell_cap = sum(float(item.get("vol_usd", 0) or 0) for item in sells_24h)
+
+        lines = [
+            f"🛰️ <b>Activos rastreados:</b> {len(tkrs)}",
+            f"📥 <b>Entradas 24h:</b> {len(buys_24h)} | Capital: {_format_compact_money(buy_cap)}",
+            f"📤 <b>Salidas 24h:</b> {len(sells_24h)} | Capital: {_format_compact_money(sell_cap)}",
+            f"🎯 <b>Modo de alertas push:</b> solo ballenas premium/ganadoras (máx. 3 al día)",
+        ]
+
+        if buys_24h:
+            lines.extend(["", "🐳 <b>Entradas institucionales 24h</b>"])
+            for item in buys_24h[:4]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                quality = "premium" if item.get("winner_only") else "flujo detectado"
+                lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | {quality} | hace {minutes_ago} min")
+
+        if sells_24h:
+            lines.extend(["", "🧨 <b>Salidas institucionales 24h</b>"])
+            for item in sells_24h[:4]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | distribución | hace {minutes_ago} min")
+
+        premium_recent = [item for item in history_24h if item.get("winner_only")]
+        if premium_recent:
+            lines.extend(["", "🔥 <b>Últimas premium detectadas</b>"])
+            for item in premium_recent[:3]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                lines.append(f"• {display_name} | {item.get('type', 'Compra')} | {_format_compact_money(item.get('vol_usd', 0))} | hace {minutes_ago} min")
+
+        if sells_24h:
+            lines.extend(["", "🧨 <b>Presión vendedora 24h</b>"])
+            for item in sells_24h[:3]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                lines.append(f"• {display_name} | {item.get('type', 'Venta')} | {_format_compact_money(item.get('vol_usd', 0))} | hace {minutes_ago} min")
+
+        alerted_premium = [item for item in history_24h if item.get("alert_sent")]
+        if alerted_premium:
+            lines.extend(["", "🔥 <b>Premium enviadas como alerta</b>"])
+            for item in alerted_premium[:3]:
+                display_name = get_display_name(item['ticker'])
+                minutes_ago = int((datetime.now() - item['timestamp']).total_seconds() / 60)
+                lines.append(f"• {display_name} | {_format_compact_money(item.get('vol_usd', 0))} | hace {minutes_ago} min")
+
+        if not premium_recent and not sells_24h:
+            lines.extend(["", "🌊 Mercado en calma.", "Sin flujos institucionales relevantes guardados en las últimas 24 horas."])
+
+        bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", lines, icon="🐋"), parse_mode="HTML")
+        return
+    except Exception as e:
+        print(f"ERROR RADAR: {e}")
+        try:
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", [f"⚠️ Error interno en radar: {e}"], icon="🐋"), parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    try:
+        tkrs = get_tracked_tickers()
+        if not tkrs:
+            bot.send_message(chat_id, _make_card("RADAR DE BALLENAS", ["✅ Tu radar está vacío."], icon="🐋"), parse_mode="HTML")
+            return
+
         api_key = os.environ.get("FMP_API_KEY")
         symbol_map = {}
         for raw_tk in tkrs:
@@ -2835,7 +3563,40 @@ def handle_text(message):
 
 
 # ----------------- MODO CENTINELA: VIGILANCIA DE NOTICIAS POR ACTIVO -----------------
-_SENTINEL_TICK_INTERVAL = 40  # Cada 40 ticks de 30s = ~20 minutos
+_SENTINEL_TICK_INTERVAL = 4  # Cada 4 ticks de 30s = ~2 minutos
+
+
+def verificar_noticias_cartera_v2():
+    tkrs = get_tracked_tickers()
+    if not tkrs or not FMP_API_KEY:
+        return
+
+    for raw_tk in tkrs:
+        tk = remap_ticker(raw_tk)
+        try:
+            news_list = _fetch_fmp_ticker_news(tk, limit=6)
+        except Exception as e:
+            logging.debug(f"Sentinel fetch error for {tk}: {e}")
+            continue
+
+        for article in news_list[:6]:
+            title = (article.get('title') or '').strip()
+            if not title:
+                continue
+
+            published = (article.get('publishedDate') or article.get('date') or '').strip()
+            news_hash = _stable_event_id("SENTINEL", tk, title, published[:16])
+            if check_and_add_seen_event(news_hash):
+                continue
+
+            alert_msg = _build_tracked_news_alert(tk, article)
+            if not alert_msg:
+                continue
+
+            try:
+                bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+            except Exception as e:
+                logging.debug(f"Sentinel alert send error for {tk}: {e}")
 
 def verificar_noticias_cartera():
     """Vigila noticias específicas de los activos en la cartera de Eduardo"""
@@ -2852,7 +3613,7 @@ def verificar_noticias_cartera():
             fmp_sym = _get_fmp_symbol(tk)
             if _is_crypto_ticker(tk):
                 fmp_sym = tk.replace('-USD', '') + 'USD'
-            url = f"https://financialmodelingprep.com/stable/stock-news?symbol={fmp_sym}&limit=3&apikey={FMP_API_KEY}"
+            url = f"https://financialmodelingprep.com/stable/stock-news?symbol={fmp_sym}&limit=5&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=10)
             news_list = resp.json() if resp.status_code == 200 else []
             if not isinstance(news_list, list):
@@ -2860,7 +3621,7 @@ def verificar_noticias_cartera():
         except Exception:
             continue
 
-        for article in news_list[:3]:  # Solo las 3 más recientes
+        for article in news_list[:5]:
             title = article.get('title', '')
             if not title:
                 continue
@@ -2869,6 +3630,16 @@ def verificar_noticias_cartera():
             news_hash = _stable_event_id("SENTINEL", tk, title)
             if check_and_add_seen_event(news_hash):
                 continue  # Ya la vimos
+
+            alert_msg = _build_tracked_news_alert(tk, article)
+            if not alert_msg:
+                continue
+
+            try:
+                bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+            except Exception as e:
+                logging.debug(f"Sentinel alert send error for {tk}: {e}")
+            continue
 
             # Pasar por GPT para análisis de riesgo
             if not GEMINI_API_KEY:
@@ -3077,7 +3848,7 @@ def background_loop_proactivo():
                     unique_news.append(n_title)
 
             if unique_news:
-                ai_threat_evaluation = gpt_advanced_geopolitics(unique_news, manual=False)
+                ai_threat_evaluation = gpt_advanced_geopolitics_v2(unique_news, manual=False)
                 if ai_threat_evaluation:
                      bot.send_message(
                          CHAT_ID,
@@ -3107,7 +3878,7 @@ def background_loop_proactivo():
             if sentinel_tick_counter >= _SENTINEL_TICK_INTERVAL:
                 sentinel_tick_counter = 0
                 try:
-                    verificar_noticias_cartera()
+                    verificar_noticias_cartera_v2()
                 except Exception as e:
                     logging.error(f"Error en Centinela de Noticias: {e}")
 
@@ -3238,6 +4009,27 @@ def background_loop_proactivo():
                             min_elite_vol = 1_000_000
                             if vol_usd < min_elite_vol:
                                 continue # Filtro \u00c9lite Institucional ($1M USD Minimo)
+                            whale_direction = intra.get('vol_side', 'buy')
+                            flow_hash_id = _stable_event_id(
+                                "WHL_FLOW",
+                                tk,
+                                whale_direction,
+                                int(vol_usd / 50000),
+                                now.strftime("%Y-%m-%d-%H")
+                            )
+                            flow_event = None
+                            if not check_and_add_seen_event(flow_hash_id):
+                                if tk not in WHALE_HISTORY_DB:
+                                    WHALE_HISTORY_DB[tk] = []
+                                flow_event = {
+                                    "type": intra['vol_type'],
+                                    "direction": whale_direction,
+                                    "winner_only": False,
+                                    "alert_sent": False,
+                                    "vol_usd": float(vol_usd),
+                                    "timestamp": now,
+                                }
+                                WHALE_HISTORY_DB[tk].append(flow_event)
                             # === INICIO DE SMART MONEY FILTER ===
                             topol_whale = SMC_LEVELS_MEMORY.get(tk, {})
                             analysis_whale = LAST_KNOWN_ANALYSIS.get(tk, {})
@@ -3245,6 +4037,10 @@ def background_loop_proactivo():
                             smart_msg = None
                             is_winner_setup, whale_reason = _is_winner_whale_setup(cur_price, intra, topol_whale, analysis_whale)
                             if not is_winner_setup:
+                                continue
+                            if _count_whale_alerts_today() >= 3:
+                                if flow_event is not None:
+                                    flow_event["winner_only"] = True
                                 continue
                             
                             try:
@@ -3277,17 +4073,10 @@ def background_loop_proactivo():
                                 whale_detected_count += 1
                                 note = "\n<i>[Confirmando volumen institucional...]</i>" if not rt or rt['vol'] < intra['latest_vol'] else ""
                                 WHALE_MEMORY.append({"ticker": tk, "vol_approx": valid_vol, "type": intra['vol_type'], "timestamp": now, "winner_only": True, "reason": whale_reason})
-                            
-                                if tk not in WHALE_HISTORY_DB:
-                                    WHALE_HISTORY_DB[tk] = []
-                            
-                                WHALE_HISTORY_DB[tk].append({
-                                    "type": intra['vol_type'],
-                                    "winner_only": True,
-                                    "vol_usd": float(vol_usd),
-                                    "timestamp": now
-                                })
-                            
+                                if flow_event is not None:
+                                    flow_event["winner_only"] = True
+                                    flow_event["alert_sent"] = True
+                             
                                 if is_crypto:
                                     vol_display = f"${valid_vol:,} USD"
                                 else:
