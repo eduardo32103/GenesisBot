@@ -1146,33 +1146,29 @@ def _fetch_fmp_news(limit=10):
 
     all_news = []
 
-    try:
-        url = f"https://financialmodelingprep.com/stable/news/all?limit={limit}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=8)
-        logging.info(f"LOG FMP [stable/news/all]: Status {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and data:
-                return data[:limit]
-    except Exception as e:
-        logging.debug(f"FMP stable/news/all error: {e}")
-
-    try:
-        url = f"https://financialmodelingprep.com/stable/news?limit={limit}&apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=8)
-        logging.info(f"LOG FMP [stable/news]: Status {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and data:
-                return data[:limit]
-    except Exception as e:
-        logging.debug(f"FMP stable/news error: {e}")
+    tracked = [remap_ticker(tk) for tk in get_tracked_tickers()]
+    tracked_symbols = []
+    for tk in tracked:
+        if _is_crypto_ticker(tk):
+            tracked_symbols.append(tk.replace("-USD", "") + "USD")
+        elif tk not in {"BZ=F", "GC=F"}:
+            tracked_symbols.append(_get_fmp_symbol(tk))
 
     default_tickers = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "BTCUSD"]
-    for ticker in default_tickers:
+    symbols = []
+    seen = set()
+    for ticker in tracked_symbols + default_tickers:
+        safe_ticker = str(ticker or "").strip().upper()
+        if not safe_ticker or safe_ticker in seen:
+            continue
+        seen.add(safe_ticker)
+        symbols.append(safe_ticker)
+
+    for ticker in symbols:
         try:
             url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=5)
+            logging.info(f"LOG FMP [stable/stock-news {ticker}]: Status {resp.status_code}")
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
@@ -2354,19 +2350,29 @@ def _fetch_fmp_profile(ticker):
         return None
 
     safe_symbol = urllib.parse.quote(_get_fmp_symbol(tk))
-    url = f"https://financialmodelingprep.com/api/v3/profile/{safe_symbol}?apikey={FMP_API_KEY}"
+    urls = [
+        f"https://financialmodelingprep.com/stable/profile?symbol={safe_symbol}&apikey={FMP_API_KEY}",
+        f"https://financialmodelingprep.com/api/v3/profile/{safe_symbol}?apikey={FMP_API_KEY}",
+        f"https://financialmodelingprep.com/stable/sec-profile?symbol={safe_symbol}&apikey={FMP_API_KEY}",
+    ]
 
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        if isinstance(data, list) and data:
-            return data[0]
-        if isinstance(data, dict) and data.get("symbol"):
-            return data
-    except Exception as e:
-        logging.debug(f"FMP profile error for {tk}: {e}")
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            if isinstance(data, list) and data:
+                row = data[0]
+            elif isinstance(data, dict):
+                row = data
+            else:
+                continue
+
+            if row:
+                return row
+        except Exception as e:
+            logging.debug(f"FMP profile error for {tk} en {url}: {e}")
 
     return None
 
@@ -2981,7 +2987,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     projection_hint = "alcista" if pack["projection"] and pack["projection"][-1] >= closes[-1] else "bajista"
     summary_lines.extend([
         "",
-        f"Proyección educativa: sesgo {projection_hint}",
+        f"Proyección táctica: sesgo {projection_hint}",
         "La línea punteada es un escenario probable, no una garantía.",
     ])
 
@@ -3003,7 +3009,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
             "• La proyección punteada muestra un escenario probable con base en tendencia, estructura e indicadores.",
         ],
         icon="🖼️",
-        footer="Lectura educativa, clara y sin contaminación visual."
+        footer="Lectura institucional, clara y sin contaminación visual."
     )
     return chart_path, caption
 
@@ -3109,10 +3115,28 @@ def _perform_deep_analysis_fmp(ticker):
     divergence = chart_pack.get("divergence") or {}
     projection = chart_pack.get("projection") or []
 
-    company_name = profile.get("companyName") or quote.get("name") or display_name
-    sector = profile.get("sector") or "N/D"
-    industry = profile.get("industry") or "N/D"
-    description = _truncate_text(profile.get("description", ""), 170)
+    company_name = profile.get("companyName") or profile.get("companyNameLong") or quote.get("name") or display_name
+    sector = (
+        profile.get("sector")
+        or profile.get("sectorTitle")
+        or profile.get("sicSector")
+        or profile.get("exchangeSector")
+        or "No disponible"
+    )
+    industry = (
+        profile.get("industry")
+        or profile.get("industryTitle")
+        or profile.get("sicIndustry")
+        or profile.get("exchangeIndustry")
+        or "No disponible"
+    )
+    description = _truncate_text(
+        profile.get("description")
+        or profile.get("companyDescription")
+        or profile.get("businessAddressDescription")
+        or "",
+        170
+    )
 
     change_abs = _safe_float(quote.get("change"))
     change_pct = _safe_float(quote.get("changesPercentage"))
@@ -3121,8 +3145,8 @@ def _perform_deep_analysis_fmp(ticker):
 
     volume = _safe_float(quote.get("volume"))
     avg_volume = _safe_float(quote.get("avgVolume"))
-    pe = _safe_float(quote.get("pe"))
-    beta = _safe_float(profile.get("beta"))
+    pe = _safe_float(quote.get("pe") or profile.get("pe") or profile.get("priceEarningsRatio"))
+    beta = _safe_float(profile.get("beta") or quote.get("beta") or profile.get("betaValue"))
     market_cap = _safe_float(profile.get("mktCap") or quote.get("marketCap"))
 
     support = _safe_float((tech or {}).get("smc_sup"), price * 0.97)
@@ -3303,8 +3327,8 @@ def _perform_deep_analysis_fmp(ticker):
     confidence = int(max(55, min(92, 56 + abs(score) * 7 + (4 if risk_reward >= 1.5 else 0))))
 
     rr_text = f"{risk_reward:.2f}x" if risk_reward > 0 else "N/D"
-    pe_text = f"{pe:.1f}" if pe > 0 else "N/D"
-    beta_text = f"{beta:.2f}" if beta > 0 else "N/D"
+    pe_text = f"{pe:.1f}" if pe > 0 else "No disponible"
+    beta_text = f"{beta:.2f}" if beta > 0 else "No disponible"
 
     lines = [
         "🧾 <b>Resumen ejecutivo</b>",
@@ -3338,7 +3362,7 @@ def _perform_deep_analysis_fmp(ticker):
         lines.append(f"• Divergencia: {_escape_html(divergence.get('summary', 'Señal confirmada'))} <b>({int(divergence.get('confidence', 0))}%)</b>")
     else:
         lines.append("• Divergencia: sin señal de alta calidad por ahora")
-    lines.append(f"• Proyección educativa: sesgo <b>{projection_bias}</b> hacia ${fmt_price(projection_target)}")
+    lines.append(f"• Proyección táctica: sesgo <b>{projection_bias}</b> hacia ${fmt_price(projection_target)}")
 
     if not tech:
         lines.append("• Nota: FMP no devolvió histórico suficiente; esta lectura pesa más precio, volumen y noticias.")
@@ -3370,7 +3394,7 @@ def _perform_deep_analysis_fmp(ticker):
         f"ANÁLISIS FMP | {display_name}",
         lines,
         icon="📈",
-        footer="Análisis educativo, no asesoría financiera."
+        footer="Análisis institucional con datos FMP."
     )
 
 
@@ -3697,7 +3721,7 @@ def handle_photo(message):
 
         client = OpenAI(api_key=OPENAI_API_KEY)
         prompt = (
-            "Eres Visión GÉNESIS, un analista técnico institucional. Este análisis es educativo y no constituye asesoría financiera.\n\n"
+            "Eres Visión GÉNESIS, un analista técnico institucional.\n\n"
             "Analiza SOLO lo que sea realmente visible en la imagen. No inventes datos, niveles ni indicadores.\n"
             "Mantén un tono profesional, claro y fácil de entender para una persona no experta, pero con criterio serio de mesa institucional.\n"
             "Debes evaluar, si se ven en la imagen: estructura SMC, liquidez, BOS, CHoCH, order blocks, RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian, OBV y divergencias.\n"
@@ -3734,7 +3758,7 @@ def handle_photo(message):
                 "REPORTE VISUAL GÉNESIS",
                 report_lines,
                 icon="👁️",
-                footer="Lectura educativa basada solo en lo visible en la imagen."
+                footer="Lectura institucional basada en lo visible en la imagen."
             ),
             chat_id=message.chat.id,
             message_id=msg.message_id,
@@ -4951,9 +4975,34 @@ def callback_wallet(call):
     bot.answer_callback_query(call.id, "💰 Extrayendo datos robustos y valuando métricas live...")
     _send_wallet_status(call.message.chat.id)
 
+def _acquire_bot_leader_lock():
+    """Evita que más de una instancia del bot consuma getUpdates al mismo tiempo."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            logging.warning("No se pudo verificar el candado de líder; continuaré sin lock.")
+            return True
+
+        cursor = conn.cursor()
+        cursor.execute("SELECT pg_try_advisory_lock(%s)", (987654321,))
+        row = cursor.fetchone()
+        acquired = bool(row and row[0])
+        if acquired:
+            logging.info("Candado de líder adquirido: esta instancia controlará Telegram.")
+        else:
+            logging.warning("Otra instancia de GÉNESIS ya está controlando Telegram; esta quedará en espera.")
+        return acquired
+    except Exception as e:
+        logging.warning(f"No pude adquirir el candado de líder: {e}")
+        return True
+
 # ----------------- MAIN -----------------
 def main():
     logging.info("Iniciando Génesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
+    if not _acquire_bot_leader_lock():
+        while True:
+            time.sleep(60)
+
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
     
