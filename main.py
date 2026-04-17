@@ -183,10 +183,10 @@ INSTANCE_PID = os.getpid()
 INSTANCE_BOOT_TS = int(time.time())
 INSTANCE_ID = f"{INSTANCE_HOSTNAME}:{INSTANCE_PID}:{INSTANCE_BOOT_TS}"
 BOT_LOCK_NAME = "telegram_leader"
-BOT_LOCK_STALE_SECONDS = 75
+BOT_LOCK_STALE_SECONDS = int(os.environ.get("BOT_LOCK_STALE_SECONDS", "20"))
 BOT_LOCK_HEARTBEAT_SECONDS = int(os.environ.get("BOT_LOCK_HEARTBEAT_SECONDS", "10"))
 BOT_LOCK_GUARD_SECONDS = int(os.environ.get("BOT_LOCK_GUARD_SECONDS", "5"))
-BOT_LOCK_FORCE_AFTER_SECONDS = int(os.environ.get("BOT_LOCK_FORCE_AFTER_SECONDS", "45"))
+BOT_LOCK_FORCE_AFTER_SECONDS = int(os.environ.get("BOT_LOCK_FORCE_AFTER_SECONDS", "12"))
 _BOT_LEADER_ACTIVE = False
 _BOT_RUNTIME_STAGE = "boot"
 _BOT_RUNTIME_NOTES = "inicio"
@@ -5631,6 +5631,14 @@ def _acquire_bot_leader_lock():
                 heartbeat_age,
                 holder_notes or "sin notas",
             )
+            if holder_host and str(holder_host) != str(INSTANCE_HOSTNAME):
+                logging.error(
+                    "Diagnóstico Telegram: hay al menos dos hosts activos intentando operar el bot | self_host=%s | holder_host=%s | self=%s | holder=%s",
+                    INSTANCE_HOSTNAME,
+                    holder_host,
+                    INSTANCE_ID,
+                    holder_id,
+                )
             _LAST_LOCK_DIAG = {"holder": holder_summary, "logged_at": time.time()}
         return False
     except Exception as e:
@@ -5849,7 +5857,7 @@ def _log_telegram_boot_diagnostics():
         logging.warning(f"Telegram getWebhookInfo falló: {e}")
 
 
-def _wait_for_bot_leader_lock(retry_seconds=20):
+def _wait_for_bot_leader_lock(retry_seconds=5):
     """Reintenta hasta tomar el control de Telegram sin dejar al contenedor en espera infinita."""
     waiting_logged = False
     wait_started = time.time()
@@ -5866,6 +5874,16 @@ def _wait_for_bot_leader_lock(retry_seconds=20):
             waiting_logged = True
 
         waited = time.time() - wait_started
+        remaining = max(BOT_LOCK_FORCE_AFTER_SECONDS - int(waited), 0)
+        if int(waited) == 0 or int(waited) % 5 == 0:
+            snapshot = _get_bot_lock_snapshot() or {}
+            logging.warning(
+                "Esperando takeover de Telegram | self=%s | holder=%s | etapa=%s | faltan=%ss para takeover forzado",
+                INSTANCE_ID,
+                snapshot.get("instance_id", "sin_holder"),
+                snapshot.get("stage", "desconocida"),
+                remaining,
+            )
         if not force_attempted and waited >= BOT_LOCK_FORCE_AFTER_SECONDS:
             force_attempted = True
             reason = f"espera de {int(waited)}s sin obtener Telegram"
