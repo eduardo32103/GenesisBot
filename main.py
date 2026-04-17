@@ -5520,12 +5520,26 @@ def _acquire_bot_leader_lock():
         logging.warning(f"No pude adquirir el candado de líder: {e}")
         return True
 
+
+def _wait_for_bot_leader_lock(retry_seconds=20):
+    """Reintenta hasta tomar el control de Telegram sin dejar al contenedor en espera infinita."""
+    waiting_logged = False
+    while True:
+        if _acquire_bot_leader_lock():
+            if waiting_logged:
+                logging.info("GÉNESIS recuperó el control de Telegram y continuará con el arranque.")
+            return True
+
+        if not waiting_logged:
+            logging.warning("Esta instancia reintentará el control de Telegram automáticamente hasta quedar activa.")
+            waiting_logged = True
+
+        time.sleep(retry_seconds)
+
 # ----------------- MAIN -----------------
 def main():
     logging.info("Iniciando Génesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
-    if not _acquire_bot_leader_lock():
-        while True:
-            time.sleep(60)
+    _wait_for_bot_leader_lock()
 
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
