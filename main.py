@@ -46,7 +46,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 MENU_GEOPOLITICS = "🌍 Geopolítica"
 MENU_WHALES = "🐋 Radar de Ballenas"
 MENU_SMC = "🦅 Niveles SMC"
-MENU_WALLET = "💼 Mi Wallet"
+MENU_WALLET = "💼 Mi Cartera"
 
 _MOJIBAKE_PATTERN = re.compile(r'(?:[ÃÂâðÅï]|[\u0080-\u00ff\u0152-\u0178\u2013-\u203a\u20ac\u2122]){2,}')
 _MOJIBAKE_REPLACEMENTS = {
@@ -252,23 +252,23 @@ def gpt_advanced_geopolitics_v2(news_list, manual=False):
         if manual:
             prompt = (
                 "Eres GÉNESIS, un analista macro y geopolítico enfocado en mercados financieros.\n\n"
-                f"Wallet vigilada: {wallet_tickers}\n\n"
+                f"Cartera vigilada: {wallet_tickers}\n\n"
                 f"Titulares recientes:\n{news_text}\n\n"
                 "Responde en ESPAÑOL con este formato exacto:\n"
                 "🌍 RESUMEN: [2-3 líneas con lo que realmente importa hoy].\n"
-                "🎯 IMPACTO EN WALLET: [qué activos o sectores de la wallet podrían verse afectados y por qué].\n"
+                "🎯 IMPACTO EN CARTERA: [qué activos o sectores de la cartera podrían verse afectados y por qué].\n"
                 "⚠️ RIESGO PRIORITARIO: [evento dominante + dirección probable del impacto].\n"
                 "🧭 ACCIÓN TÁCTICA: [Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad] - [razón breve]."
             )
         else:
             prompt = (
-                "Eres GÉNESIS, un centinela de riesgo macro para una wallet accionaria.\n\n"
-                f"Wallet vigilada: {wallet_tickers}\n\n"
+                "Eres GÉNESIS, un centinela de riesgo macro para una cartera accionaria.\n\n"
+                f"Cartera vigilada: {wallet_tickers}\n\n"
                 f"Titulares recientes:\n{news_text}\n\n"
                 "Tu tarea es decidir si alguno de estos titulares amerita una alerta push inmediata.\n"
                 "Si NO hay un evento con impacto operativo alto, responde EXACTAMENTE: TRANQUILIDAD\n"
                 "Si SÍ lo hay, responde EXACTAMENTE en una sola línea y en español:\n"
-                "⚠️ ALERTA GEOPOLÍTICA: [evento clave]. Impacto probable: [sector/mercado]. Wallet afectada: [tickers o sectores de la wallet]. Acción sugerida: [Vigilar/Reducir/Aprovechar]."
+                "⚠️ ALERTA GEOPOLÍTICA: [evento clave]. Impacto probable: [sector/mercado]. Cartera afectada: [tickers o sectores de la cartera]. Acción sugerida: [Vigilar/Reducir/Aprovechar]."
             )
 
         prompt = (
@@ -334,7 +334,7 @@ def gpt_advanced_geopolitics_v3(news_items, manual=False):
         if manual:
             prompt = (
                 "Eres GÉNESIS, un analista macro-geopolítico de mercados que piensa como mesa institucional.\n\n"
-                f"Wallet vigilada: {wallet_names}\n\n"
+                f"Cartera vigilada: {wallet_names}\n\n"
                 f"Noticias más influyentes ahora:\n{news_text}\n\n"
                 "Analiza únicamente con fundamento y sin relleno. Debes conectar cada noticia con sectores, liquidez, tasas, commodities, defensa, energía, semiconductores, cripto o growth si aplica.\n"
                 "Responde EXACTAMENTE en este formato:\n"
@@ -342,7 +342,7 @@ def gpt_advanced_geopolitics_v3(news_items, manual=False):
                 "1. [noticia más influyente + por qué importa al mercado]\n"
                 "2. [segunda noticia + por qué importa]\n"
                 "3. [tercera noticia + por qué importa]\n"
-                "🎯 IMPACTO EN MI WALLET:\n"
+                "🎯 IMPACTO EN MI CARTERA:\n"
                 "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
                 "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
                 "🛡️ PROTECCIÓN GÉNESIS:\n"
@@ -353,13 +353,13 @@ def gpt_advanced_geopolitics_v3(news_items, manual=False):
             )
         else:
             prompt = (
-                "Eres GÉNESIS, un centinela de riesgo macro para una wallet accionaria.\n\n"
-                f"Wallet vigilada: {wallet_names}\n\n"
+                "Eres GÉNESIS, un centinela de riesgo macro para una cartera accionaria.\n\n"
+                f"Cartera vigilada: {wallet_names}\n\n"
                 f"Noticias recientes:\n{news_text}\n\n"
-                "Debes decidir si existe una alerta geopolítica realmente operable para la wallet.\n"
+                "Debes decidir si existe una alerta geopolítica realmente operable para la cartera.\n"
                 "Si NO hay catalizador con impacto alto y accionable, responde EXACTAMENTE: TRANQUILIDAD\n"
                 "Si SÍ lo hay, responde EXACTAMENTE en una sola línea y en español:\n"
-                "⚠️ ALERTA GEOPOLÍTICA: [evento clave]. Wallet afectada: [tickers/sectores]. Sesgo: [alcista/bajista/mixto]. Probabilidad: [X]%. Acción sugerida: [Vigilar/Reducir/Aprovechar]."
+                "⚠️ ALERTA GEOPOLÍTICA: [evento clave]. Cartera afectada: [tickers/sectores]. Sesgo: [alcista/bajista/mixto]. Probabilidad: [X]%. Acción sugerida: [Vigilar/Reducir/Aprovechar]."
             )
 
         res = client.chat.completions.create(
@@ -1592,7 +1592,7 @@ def _translate_titles_to_spanish(titles):
             )
             prompt = (
                 "Eres GÉNESIS, un analista macro-geopolítico de mercados que piensa como mesa institucional y protege el capital.\n\n"
-                f"Wallet vigilada: {wallet_str or 'Sin activos en radar'}\n"
+                f"Cartera vigilada: {wallet_str or 'Sin activos en radar'}\n"
                 f"Sentimiento global actual: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
                 f"Noticias más influyentes ahora:\n{influential_str}\n\n"
                 "Tu trabajo es razonar con fundamento, no resumir por resumir. Debes conectar los titulares con tasas, petróleo, defensa, cadenas de suministro, chips, growth, cripto, liquidez y rotación sectorial cuando aplique.\n"
@@ -1601,7 +1601,7 @@ def _translate_titles_to_spanish(titles):
                 "1. [evento dominante + por qué mueve al mercado]\n"
                 "2. [segundo evento + por qué importa]\n"
                 "3. [tercer evento + por qué importa]\n"
-                "🎯 IMPACTO EN MI WALLET:\n"
+                "🎯 IMPACTO EN MI CARTERA:\n"
                 "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
                 "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
                 "🛡️ PROTECCIÓN GÉNESIS:\n"
@@ -1612,7 +1612,7 @@ def _translate_titles_to_spanish(titles):
             )
             prompt = (
                 "Eres GÉNESIS, un analista macro-geopolítico de mercados que piensa como mesa institucional y protege el capital.\n\n"
-                f"Wallet vigilada: {wallet_str or 'Sin activos en radar'}\n"
+                f"Cartera vigilada: {wallet_str or 'Sin activos en radar'}\n"
                 f"Sentimiento global actual: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
                 f"Noticias más influyentes ahora:\n{influential_str}\n\n"
                 "Tu trabajo es razonar con fundamento, no resumir por resumir. Debes conectar los titulares con tasas, petróleo, defensa, cadenas de suministro, chips, growth, cripto, liquidez y rotación sectorial cuando aplique.\n"
@@ -1621,7 +1621,7 @@ def _translate_titles_to_spanish(titles):
                 "1. [evento dominante + por qué mueve al mercado]\n"
                 "2. [segundo evento + por qué importa]\n"
                 "3. [tercer evento + por qué importa]\n"
-                "🎯 IMPACTO EN MI WALLET:\n"
+                "🎯 IMPACTO EN MI CARTERA:\n"
                 "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
                 "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
                 "🛡️ PROTECCIÓN GÉNESIS:\n"
@@ -1920,19 +1920,19 @@ def fetch_intraday_data(ticker):
     if manual:
         prompt = (
             f"Titulares globales:\n{news_text}\n\n"
-            f"Wallet vigilada: {wallet_tickers}\n\n"
-            f"Haz un resumen macro accionable y explica qué titulares pueden afectar DIRECTAMENTE a esta wallet. "
-            f"Si un titular pega a un activo o sector de la wallet, nómbralo de forma explícita. "
+            f"Cartera vigilada: {wallet_tickers}\n\n"
+            f"Haz un resumen macro accionable y explica qué titulares pueden afectar DIRECTAMENTE a esta cartera. "
+            f"Si un titular pega a un activo o sector de la cartera, nómbralo de forma explícita. "
             f"RESPONDE ESTRICTAMENTE EN ESPAÑOL."
         )
     else:
         prompt = (
             f"Titulares recientes:\n{news_text}\n\n"
-            f"Wallet vigilada: {wallet_tickers}\n\n"
-            f"Analiza si hay algo de nivel 'Alto Impacto' (>2%) con efecto directo o indirecto en la wallet. "
+            f"Cartera vigilada: {wallet_tickers}\n\n"
+            f"Analiza si hay algo de nivel 'Alto Impacto' (>2%) con efecto directo o indirecto en la cartera. "
             f"Si no lo hay, responde 'TRANQUILIDAD'.\n"
             f"Si lo hay, responde en una sola línea con este formato:\n"
-            f"⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Activo/Sector de la wallet] - Acción sugerida [Vigilar/Reducir/Aprovechar]\n"
+            f"⚠️ ALERTA URGENTE: [Resumen] - Impacto en [Activo/Sector de la cartera] - Acción sugerida [Vigilar/Reducir/Aprovechar]\n"
             f"RESPONDE ESTRICTA Y ÚNICAMENTE EN ESPAÑOL."
         )
 
@@ -2991,6 +2991,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker):
 
 
 def _monitor_quality_divergences(tracked):
+    candidates = []
     for raw_tk in tracked:
         tk = remap_ticker(raw_tk)
         pack = _build_chart_pack(tk, candles=110)
@@ -3000,6 +3001,13 @@ def _monitor_quality_divergences(tracked):
         divergence = pack.get("divergence") or {}
         if not divergence.get("active") or divergence.get("confidence", 0) < 78:
             continue
+
+        candidates.append((int(divergence.get("confidence", 0)), tk, pack, divergence))
+
+    alerts_sent = 0
+    for _, tk, pack, divergence in sorted(candidates, key=lambda item: item[0], reverse=True):
+        if alerts_sent >= 2:
+            break
 
         pivot_date = divergence.get("pivot_date") or datetime.now().strftime("%Y-%m-%d")
         alert_hash = _stable_event_id("DIV", tk, divergence.get("kind"), pivot_date)
@@ -3022,6 +3030,7 @@ def _monitor_quality_divergences(tracked):
             footer="Solo se envían divergencias de mayor calidad para evitar spam."
         )
         bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+        alerts_sent += 1
 
 
 def _perform_deep_analysis_fmp(ticker):
@@ -3056,6 +3065,9 @@ def _perform_deep_analysis_fmp(ticker):
 
     profile = _fetch_fmp_profile(tk) or {}
     news_items = _fetch_fmp_ticker_news(tk, limit=5)
+    chart_pack = _build_chart_pack(tk, candles=110) or {}
+    divergence = chart_pack.get("divergence") or {}
+    projection = chart_pack.get("projection") or []
 
     company_name = profile.get("companyName") or quote.get("name") or display_name
     sector = profile.get("sector") or "N/D"
@@ -3099,6 +3111,13 @@ def _perform_deep_analysis_fmp(ticker):
     fib_618 = _safe_float((tech or {}).get("fib_618"), support)
     golden_pocket_low = _safe_float((tech or {}).get("golden_pocket_low"), fib_618)
     golden_pocket_high = _safe_float((tech or {}).get("golden_pocket_high"), fib_618)
+    projection_target = float(projection[-1]) if projection else price
+    if projection and projection_target >= price * 1.005:
+        projection_bias = "alcista"
+    elif projection and projection_target <= price * 0.995:
+        projection_bias = "bajista"
+    else:
+        projection_bias = "neutral"
 
     reward_pct = ((take_profit - price) / price * 100) if price > 0 else 0.0
     risk_pct = ((price - stop_loss) / price * 100) if price > 0 else 0.0
@@ -3183,6 +3202,15 @@ def _perform_deep_analysis_fmp(ticker):
         score -= 1
         bearish_reasons.append("OBV con distribución")
 
+    if divergence.get("active"):
+        divergence_signals = ", ".join(divergence.get("signals", [])) or "señales internas"
+        if divergence.get("kind") == "bullish":
+            score += 1
+            bullish_reasons.append(f"divergencia alcista validada por {divergence_signals}")
+        else:
+            score -= 1
+            bearish_reasons.append(f"divergencia bajista validada por {divergence_signals}")
+
     if rvol >= 1.5 and change_pct >= 0:
         score += 1
         bullish_reasons.append(f"volumen acompaña ({rvol:.1f}x)")
@@ -3266,6 +3294,11 @@ def _perform_deep_analysis_fmp(ticker):
     lines.append(f"• Bollinger: baja ${fmt_price(bb_lower)} | media ${fmt_price(bb_basis)} | alta ${fmt_price(bb_upper)}")
     lines.append(f"• Donchian: piso ${fmt_price(donchian_lower)} | medio ${fmt_price(donchian_mid)} | techo ${fmt_price(donchian_upper)}")
     lines.append(f"• OBV: <b>{_escape_html(obv_trend)}</b>")
+    if divergence.get("active"):
+        lines.append(f"• Divergencia: {_escape_html(divergence.get('summary', 'Señal confirmada'))} <b>({int(divergence.get('confidence', 0))}%)</b>")
+    else:
+        lines.append("• Divergencia: sin señal de alta calidad por ahora")
+    lines.append(f"• Proyección educativa: sesgo <b>{projection_bias}</b> hacia ${fmt_price(projection_target)}")
 
     if not tech:
         lines.append("• Nota: FMP no devolvió histórico suficiente; esta lectura pesa más precio, volumen y noticias.")
@@ -3475,7 +3508,7 @@ def build_wallet_dashboard():
         overview.append("")
         overview.append("⚪ <i>Sin posiciones abiertas en este momento.</i>")
 
-    return _make_card("WALLET GÉNESIS", overview, icon="💎")
+    return _make_card("CARTERA GÉNESIS", overview, icon="💎")
 
 
 # ----------------- CONTROLADORES TELEBOT (NLP & ACCIONES DIRECTAS) -----------------
@@ -3525,7 +3558,7 @@ def cmd_start(message):
     )
     markup.add(
         InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
-        InlineKeyboardButton(text="💰 Mi Wallet", callback_data="wallet_status")
+        InlineKeyboardButton(text="💼 Mi Cartera", callback_data="wallet_status")
     )
 
     # 2. REPLY KEYBOARD (Botones fijos abajo)
@@ -3537,7 +3570,7 @@ def cmd_start(message):
     )
     reply_kbd.add(
         KeyboardButton("🦅 Niveles SMC"),
-        KeyboardButton("💰 Mi Wallet")
+        KeyboardButton("💼 Mi Cartera")
     )
     
     bot.send_message(message.chat.id, "🔄 Inicializando Base de Operaciones...", reply_markup=reply_kbd)
@@ -3612,6 +3645,66 @@ from openai import OpenAI
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
+    msg = bot.reply_to(message, "👁️ Analizando gráfica con Visión GÉNESIS y lectura técnica avanzada...")
+    try:
+        if not OPENAI_API_KEY:
+            bot.edit_message_text("⚠️ Error de configuración del modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
+            return
+
+        file_info = bot.get_file(message.photo[-1].file_id)
+        image_bytes = bot.download_file(file_info.file_path)
+        base_img = base64.b64encode(image_bytes).decode('utf-8')
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        prompt = (
+            "Eres Visión GÉNESIS, un analista técnico institucional. Este análisis es educativo y no constituye asesoría financiera.\n\n"
+            "Analiza SOLO lo que sea realmente visible en la imagen. No inventes datos, niveles ni indicadores. Si algo no se distingue con claridad, escribe exactamente: No visible.\n"
+            "Mantén un tono profesional, claro y fácil de entender para una persona no experta, pero con criterio serio de mesa institucional.\n"
+            "Debes evaluar, si se ven en la imagen: estructura SMC, liquidez, BOS, CHoCH, order blocks, RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian, OBV y divergencias.\n"
+            "No expliques teoría. Entrega lectura operativa.\n\n"
+            "Responde EXACTAMENTE en ESPAÑOL con este formato:\n"
+            "📊 CONTEXTO TÉCNICO: [tendencia actual, estructura y liquidez en 2 o 3 líneas].\n"
+            "📐 INDICADORES: RSI [lectura o No visible]; MACD [lectura o No visible]; Volumen [lectura o No visible]; EMA50/EMA200 [lectura o No visible]; SMA50/SMA200 [lectura o No visible]; Fibonacci/golden pocket [lectura o No visible]; Bollinger [lectura o No visible]; Donchian [lectura o No visible]; OBV [lectura o No visible].\n"
+            "⚡ DIVERGENCIAS: [Divergencia alcista / Divergencia bajista / No detectada / No visible] - [explicación breve y accionable].\n"
+            "🎯 NIVELES CLAVE: [soportes, resistencias, order blocks y zonas tácticas con precios si se alcanzan a leer].\n"
+            "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [motivo técnico directo].\n"
+            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Alcista / Neutral / Bajista / Fuerte Bajista / Esperar Confirmación] - [justificación breve].\n"
+            "🧭 PLAN TÁCTICO: [qué confirmación esperar, dónde protegerse y qué invalidaría la idea]."
+        )
+
+        res = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base_img}"}}
+                ]}
+            ],
+            max_tokens=950
+        )
+
+        vision_report = res.choices[0].message.content.strip()
+        report_lines = []
+        for raw_line in vision_report.splitlines():
+            cleaned_line = raw_line.strip()
+            report_lines.append(_escape_html(cleaned_line) if cleaned_line else "")
+
+        bot.edit_message_text(
+            _make_card(
+                "REPORTE VISUAL GÉNESIS",
+                report_lines,
+                icon="👁️",
+                footer="Lectura educativa basada solo en lo visible en la imagen."
+            ),
+            chat_id=message.chat.id,
+            message_id=msg.message_id,
+            parse_mode="HTML"
+        )
+        return
+    except Exception as e:
+        logging.error(f"Error de visión OpenAI: {e}")
+        bot.edit_message_text("⚠️ No pude completar el análisis visual en este momento.", chat_id=message.chat.id, message_id=msg.message_id)
+        return
     msg = bot.reply_to(message, "ðŸ‘ï¸ Analizando gráfica con GÉNESIS Vision (GPT-4o OpenAI)...")
     try:
         if not OPENAI_API_KEY:
@@ -4098,8 +4191,8 @@ def handle_text(message):
         _send_smc_levels_report(message.chat.id)
         return
 
-    if normalized_text == "mi wallet":
-        bot.reply_to(message, "💼 Extrayendo datos robustos y valuando métricas live...")
+    if normalized_text in {"mi cartera", "mi wallet"}:
+        bot.reply_to(message, "💼 Extrayendo datos robustos y valuando métricas en vivo...")
         _send_wallet_status(message.chat.id)
         return
 
@@ -4107,9 +4200,8 @@ def handle_text(message):
     if analysis_target:
         tk = remap_ticker(analysis_target)
         display_name = get_display_name(tk)
-        bot.reply_to(message, f"📈 Consultando FMP y construyendo análisis integral para {display_name}...")
-        analysis_text = perform_deep_analysis(tk)
-        bot.send_message(message.chat.id, analysis_text, parse_mode="HTML")
+        bot.reply_to(message, f"📈 Consultando FMP y construyendo un análisis integral en español para {display_name}...")
+        _send_stock_analysis_with_chart(message.chat.id, tk)
         return
 
     # === BOTONES MENÚ RÃPIDO ===
@@ -4128,8 +4220,8 @@ def handle_text(message):
         _send_smc_levels_report(message.chat.id)
         return
 
-    if normalized_text in {"💰 mi wallet", "mi wallet"}:
-        bot.reply_to(message, "💰 Extrayendo datos robustos y valuando métricas live...")
+    if normalized_text in {"💼 mi cartera", "💼 mi wallet", "💰 mi cartera", "💰 mi wallet", "mi cartera", "mi wallet"}:
+        bot.reply_to(message, "💼 Extrayendo datos robustos y valuando métricas en vivo...")
         _send_wallet_status(message.chat.id)
         return
 
@@ -4139,9 +4231,8 @@ def handle_text(message):
         if match:
             tk = remap_ticker(match.group(1))
             display_name = get_display_name(tk)
-            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name}...")
-            analysis_text = perform_deep_analysis(tk)
-            bot.send_message(message.chat.id, _make_card(f"RESEARCH: {display_name}", [analysis_text], icon="🏦"), parse_mode="HTML")
+            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name} con gráfico táctico...")
+            _send_stock_analysis_with_chart(message.chat.id, tk)
         return
 
     if re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text):
@@ -4511,6 +4602,8 @@ def background_loop_proactivo():
     _PROTECTION_INTERVAL = 10  # ~5 minutos (10 ticks * 30s)
     _GEO_REFRESH_INTERVAL = 20  # ~10 minutos (20 ticks * 30s)
     _SMC_REFRESH_INTERVAL = 120  # ~60 minutos (120 ticks * 30s)
+    divergence_tick_counter = 0  # Divergencias de alta calidad cada ~20 min
+    _DIVERGENCE_INTERVAL = 40  # ~20 minutos (40 ticks * 30s)
     loop_counter = 0  # Contador total de ciclos para heartbeat
     while True:
         try:
@@ -4521,6 +4614,7 @@ def background_loop_proactivo():
             protection_tick_counter += 1
             geo_refresh_counter += 1
             smc_refresh_counter += 1
+            divergence_tick_counter += 1
             loop_counter += 1
 
             # === HEARTBEAT: log cada ciclo ===
@@ -4576,6 +4670,13 @@ def background_loop_proactivo():
                     monitor_proteccion_activos()
                 except Exception as e:
                     logging.error(f"Error en Monitor de Protección: {e}")
+
+            if divergence_tick_counter >= _DIVERGENCE_INTERVAL:
+                divergence_tick_counter = 0
+                try:
+                    _monitor_quality_divergences(tracked)
+                except Exception as e:
+                    logging.error(f"Error en Monitor de Divergencias: {e}")
 
             # === ESCANEO DE ACTIVOS: precios, rupturas, ballenas ===
             whale_scan_count = 0
