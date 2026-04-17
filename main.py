@@ -5533,7 +5533,6 @@ def main():
     # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
     print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
     try:
-        import time
         bot.delete_webhook(drop_pending_updates=True)
         time.sleep(1)
     except Exception as e:
@@ -5555,7 +5554,6 @@ def main():
                 except Exception:
                     pass
             print(f"DEBUG: Reconectando en {wait_seconds} segundos...")
-            import time
             time.sleep(wait_seconds)
             print("DEBUG: Reintentando polling...")
 
