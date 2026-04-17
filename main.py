@@ -1696,6 +1696,46 @@ def _translate_titles_to_spanish_v2(titles):
     return [_quick_translate_financial(t) for t in titles]
 
 
+_TEXT_TRANSLATION_CACHE = {}
+
+
+def _translate_text_to_spanish(text, max_chars=420):
+    """Traduce descripciones cortas al español con fallback local."""
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw:
+        return ""
+
+    raw = raw[:max_chars]
+    cache_key = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    cached = _TEXT_TRANSLATION_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    translated = _quick_translate_financial(raw)
+    if OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            prompt = (
+                "Traduce este texto corporativo al español con tono profesional de mercados.\n"
+                "Mantén intactos nombres propios, marcas, países y tickers.\n"
+                "Devuelve solo la traducción final.\n\n"
+                f"{raw}"
+            )
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=260
+            ).choices[0].message.content.strip()
+            if res:
+                translated = res
+        except Exception as e:
+            logging.debug(f"Error traduciendo descripción al español: {e}")
+
+    _TEXT_TRANSLATION_CACHE[cache_key] = translated
+    return translated
+
+
 def genesis_strategic_report(manual=True):
     """REPORTE ESTRATÉGICO UNIFICADO GÉNESIS
     Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA
@@ -1790,6 +1830,12 @@ def genesis_strategic_report(manual=True):
                     break
 
             lines.append(f"📰 <b>Noticia:</b> {news['title_es'][:140]}")
+            source_name = _escape_html(news.get('source') or "Fuente")
+            source_url = html.escape((news.get('url') or '').strip(), quote=True)
+            if source_url:
+                lines.append(f'🌍 <b>Fuente:</b> <a href="{source_url}">{source_name}</a>')
+            else:
+                lines.append(f"🌍 <b>Fuente:</b> {source_name}")
             lines.append(f"🎯 <b>Activos afectados:</b> {affected}")
             lines.append(f"{s['icon']} <b>Riesgo:</b> {s['bull_pct']}% Alcista / {s['bear_pct']}% Bajista ({s['label']})")
             if whale_note:
@@ -1808,8 +1854,13 @@ def genesis_strategic_report(manual=True):
     top_general = sorted(general_news, key=lambda x: abs(x['sentiment']['raw']), reverse=True)[:3]
     for news in top_general:
         s = news['sentiment']
-        src = f" ({news['source']})" if news['source'] else ""
-        lines.append(f"{s['icon']} {news['title_es'][:120]}{src}")
+        source_name = _escape_html(news.get('source') or "Fuente")
+        source_url = html.escape((news.get('url') or '').strip(), quote=True)
+        if source_url:
+            lines.append(f'{s["icon"]} <a href="{source_url}">{_escape_html(news["title_es"][:120])}</a> ({source_name})')
+        else:
+            src = f" ({source_name})" if news.get('source') else ""
+            lines.append(f"{s['icon']} {_escape_html(news['title_es'][:120])}{src}")
     if not top_general:
         lines.append("â˜• Sin noticias macro relevantes.")
 
@@ -2809,6 +2860,134 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     analysis = analysis or (LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}
     divergence = pack.get("divergence") or {}
 
+    img = Image.new("RGBA", (1460, 860), "#F4F1EA")
+    draw = ImageDraw.Draw(img, "RGBA")
+    font_title = _get_chart_font(30, bold=True)
+    font_sub = _get_chart_font(18, bold=False)
+    font_label = _get_chart_font(16, bold=False)
+    font_small = _get_chart_font(14, bold=False)
+    font_bold = _get_chart_font(19, bold=True)
+
+    main_panel = (50, 105, 1045, 790)
+    side_panel = (1080, 105, 1410, 790)
+    for panel in (main_panel, side_panel):
+        draw.rounded_rectangle(panel, radius=28, fill=(255, 255, 255, 242), outline="#D8D1C2", width=2)
+
+    draw.text((58, 28), f"Ruta táctica de {display_name}", fill="#10233E", font=font_title)
+    draw.text((60, 64), "Tramo real del precio y trayectoria proyectada a partir de la lectura técnica interna.", fill="#5A677D", font=font_sub)
+
+    def _map_series(values, panel, vmin=None, vmax=None, extra_right=0):
+        x1, y1, x2, y2 = panel
+        usable_x1, usable_x2 = x1 + 26, x2 - 26 - extra_right
+        usable_y1, usable_y2 = y1 + 28, y2 - 30
+        if vmin is None:
+            vmin = min(values)
+        if vmax is None:
+            vmax = max(values)
+        if vmax <= vmin:
+            vmax = vmin + 1
+        pts = []
+        total = max(len(values) - 1, 1)
+        for idx, value in enumerate(values):
+            x = usable_x1 + ((usable_x2 - usable_x1) * idx / total)
+            y = usable_y2 - (((float(value) - vmin) / (vmax - vmin)) * (usable_y2 - usable_y1))
+            pts.append((x, y))
+        return pts, usable_x2
+
+    x1, y1, x2, y2 = main_panel
+    for idx in range(6):
+        y = y1 + ((y2 - y1) * idx / 5)
+        draw.line((x1 + 18, y, x2 - 18, y), fill="#ECE7DC", width=1)
+
+    closes = pack["closes"]
+    projection = pack["projection"]
+    combined = closes + projection if projection else closes
+    price_min = min(combined) * 0.97
+    price_max = max(combined) * 1.03
+
+    close_pts, price_panel_end = _map_series(closes, main_panel, price_min, price_max, extra_right=110)
+    if len(close_pts) > 1:
+        draw.line(close_pts, fill="#132B45", width=5, joint="curve")
+
+    last_price = closes[-1]
+    proj_color = "#1B9C5A" if projection and projection[-1] >= last_price else "#C94D3F"
+    if close_pts:
+        px, py = close_pts[-1]
+        draw.ellipse((px - 6, py - 6, px + 6, py + 6), fill="#132B45")
+
+    if close_pts and projection:
+        projection_pts = [close_pts[-1]]
+        for idx, value in enumerate(projection, start=1):
+            x = price_panel_end + (idx * 10)
+            y = _map_series([value], main_panel, price_min, price_max, extra_right=110)[0][0][1]
+            projection_pts.append((x, y))
+        for idx in range(len(projection_pts) - 1):
+            if idx % 2 == 0:
+                draw.line((projection_pts[idx], projection_pts[idx + 1]), fill=proj_color, width=5)
+        lx, ly = projection_pts[-1]
+        draw.ellipse((lx - 7, ly - 7, lx + 7, ly + 7), fill=proj_color)
+        draw.text((lx - 72, ly - 32), "Trayectoria", fill=proj_color, font=font_small)
+
+    split_x = close_pts[-1][0] if close_pts else (x1 + x2) / 2
+    draw.line((split_x, y1 + 20, split_x, y2 - 20), fill="#B9C1D0", width=2)
+    draw.text((x1 + 24, y2 - 24), "Precio real", fill="#10233E", font=font_bold)
+    draw.text((split_x + 16, y2 - 24), "Escenario proyectado", fill=proj_color, font=font_bold)
+
+    support = _safe_float(pack.get("support"))
+    resistance = _safe_float(pack.get("resistance"))
+    for level, color in ((support, "#1B9C5A"), (resistance, "#C94D3F")):
+        if level > 0:
+            pts, _ = _map_series([level] * len(closes), main_panel, price_min, price_max, extra_right=110)
+            if len(pts) > 1:
+                draw.line(pts, fill=color, width=2)
+
+    summary_lines = [
+        f"Activo: {display_name}",
+        f"Precio actual: ${fmt_price(pack['price'])}",
+        f"Sesgo: {'alcista' if proj_color == '#1B9C5A' else 'bajista'}",
+        f"Soporte clave: ${fmt_price(support)}",
+        f"Resistencia clave: ${fmt_price(resistance)}",
+    ]
+    if divergence.get("active"):
+        summary_lines.extend([
+            "",
+            f"Divergencia: {'alcista' if divergence['kind'] == 'bullish' else 'bajista'}",
+            f"Fuerza: {divergence.get('confidence', 0)}%",
+        ])
+    else:
+        summary_lines.extend(["", "Divergencia: sin señal fuerte"])
+
+    summary_lines.extend([
+        "",
+        f"RSI backend: {pack['rsi']:.1f}",
+        f"MACD backend: {'alcista' if pack['macd_line'] >= pack['macd_signal'] else 'bajista'}",
+        f"EMA50/EMA200 backend: {'positiva' if pack['ema50'] >= pack['ema200'] else 'presión bajista'}",
+    ])
+
+    draw.text((side_panel[0] + 22, side_panel[1] + 20), "Lectura condensada", fill="#10233E", font=font_bold)
+    y_cursor = side_panel[1] + 64
+    for line in summary_lines:
+        draw.text((side_panel[0] + 22, y_cursor), line, fill="#31425B", font=font_label)
+        y_cursor += 31 if line else 18
+
+    chart_dir = os.path.join(DATA_DIR, "charts")
+    os.makedirs(chart_dir, exist_ok=True)
+    chart_path = os.path.join(chart_dir, f"{tk}_{int(time.time())}.png")
+    img.convert("RGB").save(chart_path, format="PNG", optimize=True)
+
+    projection_hint = "alcista" if projection and projection[-1] >= closes[-1] else "bajista"
+    caption = _make_card(
+        f"GRÁFICO TÁCTICO | {display_name}",
+        [
+            f"• Tramo real: muestra el recorrido confirmado hasta ahora.",
+            f"• Trayectoria proyectada: sesgo {projection_hint} calculado con la lectura interna de indicadores.",
+            f"• Divergencia: {divergence['summary'] if divergence.get('active') else 'Sin divergencia operable fuerte por ahora.'}",
+        ],
+        icon="🖼️",
+        footer="Visual limpio: precio real + escenario probable."
+    )
+    return chart_path, caption
+
     img = Image.new("RGBA", (1480, 980), "#F4F1EA")
     draw = ImageDraw.Draw(img, "RGBA")
     font_title = _get_chart_font(30, bold=True)
@@ -3130,13 +3309,13 @@ def _perform_deep_analysis_fmp(ticker):
         or profile.get("exchangeIndustry")
         or "No disponible"
     )
-    description = _truncate_text(
+    description_raw = (
         profile.get("description")
         or profile.get("companyDescription")
         or profile.get("businessAddressDescription")
-        or "",
-        170
+        or ""
     )
+    description = _truncate_text(_translate_text_to_spanish(description_raw, max_chars=420), 190)
 
     change_abs = _safe_float(quote.get("change"))
     change_pct = _safe_float(quote.get("changesPercentage"))
@@ -3617,7 +3796,7 @@ def cmd_start(message):
     # 1. INLINE KEYBOARD (Flotante)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton(text="🛡️ Geopolítica", callback_data="geopolitics"),
+        InlineKeyboardButton(text="🌍 Geopolítica", callback_data="geopolitics"),
         InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="super_radar_24h")
     )
     markup.add(
@@ -3629,7 +3808,7 @@ def cmd_start(message):
     from telebot.types import ReplyKeyboardMarkup, KeyboardButton
     reply_kbd = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     reply_kbd.add(
-        KeyboardButton("🛡️ Geopolítica"),
+        KeyboardButton("🌍 Geopolítica"),
         KeyboardButton("🐋 Radar de Ballenas")
     )
     reply_kbd.add(
@@ -4269,8 +4448,8 @@ def handle_text(message):
         return
 
     # === BOTONES MENÚ RÃPIDO ===
-    if normalized_text in {"🛡 geopolítica", "geopolítica"}:
-        bot.reply_to(message, "🛡️ Generando Reporte Estratégico GÉNESIS...")
+    if normalized_text in {"🌍 geopolítica", "🛡 geopolítica", "geopolítica"}:
+        bot.reply_to(message, "🌍 Generando Reporte Estratégico GÉNESIS...")
         _send_geopolitics_report(message.chat.id)
         return
 
@@ -4962,7 +5141,7 @@ def callback_geopolitics(call):
         pass
     _send_geopolitics_report(call.message.chat.id)
     return
-    bot.answer_callback_query(call.id, "🛡️ Generando Reporte Estratégico GÉNESIS...")
+    bot.answer_callback_query(call.id, "🌍 Generando Reporte Estratégico GÉNESIS...")
     _send_geopolitics_report(call.message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "smc_levels")
@@ -5024,9 +5203,15 @@ def main():
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
             print(f"X TELEGRAM POLLING CAIDO: {e}")
-            print("DEBUG: Reconectando en 5 segundos...")
+            wait_seconds = 30 if "409" in str(e) else 5
+            if "409" in str(e):
+                try:
+                    bot.delete_webhook(drop_pending_updates=False)
+                except Exception:
+                    pass
+            print(f"DEBUG: Reconectando en {wait_seconds} segundos...")
             import time
-            time.sleep(5)
+            time.sleep(wait_seconds)
             print("DEBUG: Reintentando polling...")
 
 if __name__ == "__main__":
