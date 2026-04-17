@@ -173,6 +173,22 @@ RAM_WALLET = {}
 RAM_PNL = 0.0
 DATA_DIR = os.environ.get('DATA_DIR', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
+INSTANCE_HOSTNAME = (
+    os.environ.get("RAILWAY_REPLICA_ID")
+    or os.environ.get("HOSTNAME")
+    or os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    or "local"
+)
+INSTANCE_PID = os.getpid()
+INSTANCE_BOOT_TS = int(time.time())
+INSTANCE_ID = f"{INSTANCE_HOSTNAME}:{INSTANCE_PID}:{INSTANCE_BOOT_TS}"
+BOT_LOCK_NAME = "telegram_leader"
+BOT_LOCK_STALE_SECONDS = 75
+BOT_LOCK_HEARTBEAT_SECONDS = 15
+_BOT_LEADER_ACTIVE = False
+_BOT_RUNTIME_STAGE = "boot"
+_BOT_RUNTIME_NOTES = "inicio"
+_LAST_LOCK_DIAG = {"holder": None, "logged_at": 0.0}
 
 _global_db_conn = None
 
@@ -219,6 +235,7 @@ def get_db_connection():
             cr.execute("CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER DEFAULT 0, amount_usd REAL DEFAULT 0.0, entry_price REAL DEFAULT 0.0, timestamp TEXT, PRIMARY KEY (user_id, ticker))")
             cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
             cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
+            cr.execute("CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)")
             _global_db_conn.commit()
 
             return _global_db_conn
@@ -241,6 +258,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS wallet (user_id BIGINT, ticker TEXT, is_investment INTEGER, amount_usd REAL, entry_price REAL, timestamp TEXT, PRIMARY KEY (user_id, ticker));''')
         c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)''')
         conn.commit()
         pass # conn.close() delegado a pooling global
     except Exception as e:
@@ -5500,31 +5518,182 @@ def callback_wallet(call):
     _send_wallet_status(call.message.chat.id)
 
 def _acquire_bot_leader_lock():
-    """Evita que más de una instancia del bot consuma getUpdates al mismo tiempo."""
+    """Lease diagnosticable de liderazgo para Telegram."""
+    global _LAST_LOCK_DIAG
     try:
         conn = get_db_connection()
         if not conn:
             logging.warning("No se pudo verificar el candado de líder; continuaré sin lock.")
             return True
 
+        now = datetime.utcnow()
+        now_iso = now.isoformat()
+        cutoff_iso = (now - timedelta(seconds=BOT_LOCK_STALE_SECONDS)).isoformat()
+        notes = (_BOT_RUNTIME_NOTES or "")[:240]
         cursor = conn.cursor()
-        cursor.execute("SELECT pg_try_advisory_lock(%s)", (987654321,))
+        cursor.execute(
+            """
+            INSERT INTO runtime_locks
+                (lock_name, instance_id, hostname, pid, started_at, claimed_at, last_heartbeat, stage, notes)
+            VALUES
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (lock_name) DO UPDATE
+            SET
+                instance_id = EXCLUDED.instance_id,
+                hostname = EXCLUDED.hostname,
+                pid = EXCLUDED.pid,
+                started_at = EXCLUDED.started_at,
+                claimed_at = EXCLUDED.claimed_at,
+                last_heartbeat = EXCLUDED.last_heartbeat,
+                stage = EXCLUDED.stage,
+                notes = EXCLUDED.notes
+            WHERE
+                runtime_locks.instance_id = EXCLUDED.instance_id
+                OR runtime_locks.last_heartbeat IS NULL
+                OR runtime_locks.last_heartbeat < %s
+            RETURNING instance_id, hostname, pid, started_at, claimed_at, last_heartbeat, stage, notes
+            """,
+            (
+                BOT_LOCK_NAME,
+                INSTANCE_ID,
+                INSTANCE_HOSTNAME,
+                INSTANCE_PID,
+                now_iso,
+                now_iso,
+                now_iso,
+                _BOT_RUNTIME_STAGE,
+                notes,
+                cutoff_iso,
+            )
+        )
         row = cursor.fetchone()
-        acquired = bool(row and row[0])
-        if acquired:
-            logging.info("Candado de líder adquirido: esta instancia controlará Telegram.")
-        else:
-            logging.warning("Otra instancia de GÉNESIS ya está controlando Telegram; esta quedará en espera.")
-        return acquired
+        conn.commit()
+
+        if row and row[0] == INSTANCE_ID:
+            logging.info(f"Candado de líder adquirido por {INSTANCE_ID}; esta instancia controlará Telegram.")
+            return True
+
+        cursor.execute(
+            "SELECT instance_id, hostname, pid, started_at, claimed_at, last_heartbeat, stage, notes FROM runtime_locks WHERE lock_name=%s",
+            (BOT_LOCK_NAME,)
+        )
+        holder = cursor.fetchone()
+        conn.commit()
+
+        holder_id = holder[0] if holder else "desconocido"
+        holder_host = holder[1] if holder and len(holder) > 1 else "?"
+        holder_pid = holder[2] if holder and len(holder) > 2 else "?"
+        holder_last_heartbeat = holder[5] if holder and len(holder) > 5 else None
+        holder_stage = holder[6] if holder and len(holder) > 6 else "?"
+        holder_notes = holder[7] if holder and len(holder) > 7 else ""
+
+        heartbeat_age = "desconocida"
+        try:
+            if holder_last_heartbeat:
+                heartbeat_age = f"{int((now - datetime.fromisoformat(str(holder_last_heartbeat))).total_seconds())}s"
+        except Exception:
+            heartbeat_age = str(holder_last_heartbeat)
+
+        holder_summary = f"{holder_id}|{holder_stage}|{heartbeat_age}|{holder_notes}"
+        should_log = (
+            _LAST_LOCK_DIAG.get("holder") != holder_summary
+            or (time.time() - float(_LAST_LOCK_DIAG.get("logged_at", 0.0))) >= 60
+        )
+        if should_log:
+            logging.warning(
+                "Telegram ocupado por otra instancia | holder=%s | host=%s | pid=%s | etapa=%s | heartbeat=%s | notas=%s",
+                holder_id,
+                holder_host,
+                holder_pid,
+                holder_stage,
+                heartbeat_age,
+                holder_notes or "sin notas",
+            )
+            _LAST_LOCK_DIAG = {"holder": holder_summary, "logged_at": time.time()}
+        return False
     except Exception as e:
         logging.warning(f"No pude adquirir el candado de líder: {e}")
         return True
+
+
+def _update_bot_runtime_lock(stage=None, notes=None, heartbeat=False):
+    global _BOT_RUNTIME_STAGE, _BOT_RUNTIME_NOTES
+    if stage is not None:
+        _BOT_RUNTIME_STAGE = str(stage)
+    if notes is not None:
+        _BOT_RUNTIME_NOTES = str(notes)[:240]
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        cursor = conn.cursor()
+        params = [_BOT_RUNTIME_STAGE, _BOT_RUNTIME_NOTES]
+        if heartbeat:
+            cursor.execute(
+                """
+                UPDATE runtime_locks
+                SET stage=%s, notes=%s, last_heartbeat=%s
+                WHERE lock_name=%s AND instance_id=%s
+                """,
+                (_BOT_RUNTIME_STAGE, _BOT_RUNTIME_NOTES, datetime.utcnow().isoformat(), BOT_LOCK_NAME, INSTANCE_ID)
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE runtime_locks
+                SET stage=%s, notes=%s
+                WHERE lock_name=%s AND instance_id=%s
+                """,
+                (_BOT_RUNTIME_STAGE, _BOT_RUNTIME_NOTES, BOT_LOCK_NAME, INSTANCE_ID)
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        logging.debug(f"No pude actualizar runtime_locks: {e}")
+        return False
+
+
+def _bot_leader_heartbeat_loop():
+    while _BOT_LEADER_ACTIVE:
+        _update_bot_runtime_lock(heartbeat=True)
+        time.sleep(BOT_LOCK_HEARTBEAT_SECONDS)
+
+
+def _start_bot_leader_heartbeat():
+    global _BOT_LEADER_ACTIVE
+    if _BOT_LEADER_ACTIVE:
+        return
+    _BOT_LEADER_ACTIVE = True
+    threading.Thread(target=_bot_leader_heartbeat_loop, daemon=True).start()
+
+
+def _log_telegram_boot_diagnostics():
+    try:
+        me = bot.get_me()
+        logging.info(f"Telegram getMe OK | id={getattr(me, 'id', '?')} | username=@{getattr(me, 'username', '?')}")
+    except Exception as e:
+        logging.warning(f"Telegram getMe falló: {e}")
+
+    try:
+        info = bot.get_webhook_info()
+        logging.info(
+            "Telegram webhook info | url=%s | pending_updates=%s | last_error_date=%s | last_error_message=%s",
+            getattr(info, 'url', '') or 'none',
+            getattr(info, 'pending_update_count', '?'),
+            getattr(info, 'last_error_date', '?'),
+            getattr(info, 'last_error_message', '') or 'none',
+        )
+    except Exception as e:
+        logging.warning(f"Telegram getWebhookInfo falló: {e}")
 
 
 def _wait_for_bot_leader_lock(retry_seconds=20):
     """Reintenta hasta tomar el control de Telegram sin dejar al contenedor en espera infinita."""
     waiting_logged = False
     while True:
+        _update_bot_runtime_lock(stage="esperando_lock", notes=f"reintento en {retry_seconds}s", heartbeat=False)
         if _acquire_bot_leader_lock():
             if waiting_logged:
                 logging.info("GÉNESIS recuperó el control de Telegram y continuará con el arranque.")
@@ -5539,7 +5708,9 @@ def _wait_for_bot_leader_lock(retry_seconds=20):
 # ----------------- MAIN -----------------
 def main():
     logging.info("Iniciando Génesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
+    _update_bot_runtime_lock(stage="boot", notes="arranque inicial", heartbeat=False)
     _wait_for_bot_leader_lock()
+    _update_bot_runtime_lock(stage="boot", notes="lock adquirido", heartbeat=False)
 
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
@@ -5547,19 +5718,26 @@ def main():
     # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
     print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
     try:
+        _update_bot_runtime_lock(stage="boot", notes="limpiando webhook", heartbeat=False)
         bot.delete_webhook(drop_pending_updates=True)
         time.sleep(1)
     except Exception as e:
         print(f"DEBUG BOOT: Webhook clear error (ignorado): {e}")
+        _update_bot_runtime_lock(stage="boot", notes=f"webhook clear error: {e}", heartbeat=False)
 
     # Polling con auto-reconexion
+    _log_telegram_boot_diagnostics()
+    _update_bot_runtime_lock(stage="boot", notes="diagnóstico telegram completado", heartbeat=False)
+    _start_bot_leader_heartbeat()
     print("DEBUG BOOT: Iniciando Telegram polling...")
     print(">>> SISTEMA GENESIS ACTIVO <<<")
     while True:
         try:
+            _update_bot_runtime_lock(stage="polling", notes="infinity_polling activo", heartbeat=True)
             print("GENESIS ESTA VIVO Y ESCUCHANDO...")
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
+            _update_bot_runtime_lock(stage="polling_error", notes=str(e)[:240], heartbeat=True)
             print(f"X TELEGRAM POLLING CAIDO: {e}")
             wait_seconds = 30 if "409" in str(e) else 5
             if "409" in str(e):
@@ -5567,6 +5745,7 @@ def main():
                     bot.delete_webhook(drop_pending_updates=False)
                 except Exception:
                     pass
+            _log_telegram_boot_diagnostics()
             print(f"DEBUG: Reconectando en {wait_seconds} segundos...")
             time.sleep(wait_seconds)
             print("DEBUG: Reintentando polling...")
