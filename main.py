@@ -2862,6 +2862,79 @@ def _build_projection_series(pack):
     return projection
 
 
+def _ensure_projection_has_direction(pack, projection, current=None, steps=12):
+    closes = pack.get("closes") or pack.get("closes_series") or []
+    raw_current = current if current is not None else (closes[-1] if closes else pack.get("price"))
+    base_current = _safe_float(raw_current, 0.0)
+    if base_current <= 0:
+        base_current = _safe_float(pack.get("price") or (closes[-1] if closes else 0.0), 0.0)
+    if base_current <= 0:
+        return _sanitize_numeric_series(projection or [], default=0.0)
+
+    projection = _sanitize_numeric_series(projection or [], default=base_current)
+    current = base_current
+    target = _safe_float(projection[-1] if projection else current, current)
+    support = _safe_float(pack.get("support"), current * 0.97)
+    resistance = _safe_float(pack.get("resistance"), current * 1.03)
+    visual_floor = max(current * 0.02, 0.18 if current < 20 else 0.35)
+
+    if abs(target - current) >= visual_floor:
+        return projection
+
+    direction_score = 0
+    ema50 = _safe_float(pack.get("ema50"), current)
+    ema200 = _safe_float(pack.get("ema200"), current)
+    macd_line = _safe_float(pack.get("macd_line"), 0.0)
+    macd_signal = _safe_float(pack.get("macd_signal"), 0.0)
+    rsi = _safe_float(pack.get("rsi"), 50.0)
+    divergence = pack.get("divergence") or {}
+
+    direction_score += 1 if ema50 >= ema200 else -1
+    direction_score += 1 if macd_line >= macd_signal else -1
+    if rsi >= 56:
+        direction_score += 1
+    elif rsi <= 44:
+        direction_score -= 1
+    if divergence.get("active"):
+        direction_score += 1 if divergence.get("kind") == "bullish" else -1
+    if len(closes) >= 5:
+        slope = closes[-1] - closes[-5]
+        if slope > 0:
+            direction_score += 1
+        elif slope < 0:
+            direction_score -= 1
+
+    if direction_score == 0:
+        midpoint = ((support + resistance) / 2) if support > 0 and resistance > 0 else current
+        direction_score = 1 if current <= midpoint else -1
+
+    direction_sign = 1 if direction_score > 0 else -1
+    corridor = max(abs(resistance - support), visual_floor * 1.6)
+    move_size = max(visual_floor, corridor * 0.38)
+
+    if direction_sign > 0:
+        anchor = max(resistance, current + move_size, target)
+        target = max(anchor, current + visual_floor)
+    else:
+        anchor = min(support, current - move_size, target)
+        target = min(anchor, current - visual_floor)
+
+    recent_slope = (closes[-1] - closes[-6]) / 5 if len(closes) >= 6 else 0.0
+    adjusted_projection = []
+    total_steps = max(int(steps), len(projection) if projection else 0, 12)
+    for step in range(1, total_steps + 1):
+        t = step / total_steps
+        eased = 1 - ((1 - t) ** 2)
+        curvature = math.sin(t * math.pi) * recent_slope * 0.9
+        projected_value = current + ((target - current) * eased) + curvature
+        if direction_sign > 0 and projected_value <= current:
+            projected_value = current + max((target - current) * max(t * 0.65, 0.18), visual_floor * 0.22)
+        elif direction_sign < 0 and projected_value >= current:
+            projected_value = current - max((current - target) * max(t * 0.65, 0.18), visual_floor * 0.22)
+        adjusted_projection.append(projected_value)
+    return adjusted_projection
+
+
 def _build_chart_pack(ticker, candles=110):
     tk = remap_ticker(ticker)
     hist = _fetch_fmp_historical_eod(tk, limit=max(260, candles)) or []
@@ -2960,7 +3033,7 @@ def _build_chart_pack(ticker, candles=110):
     }
 
     pack["divergence"] = _detect_divergence_signal(pack)
-    pack["projection"] = _build_projection_series(pack)
+    pack["projection"] = _ensure_projection_has_direction(pack, _build_projection_series(pack), current=pack.get("price"), steps=12)
 
     tail = candles
     for key in ("dates_full", "opens_full", "closes_full", "highs_full", "lows_full", "volumes_full", "rsi_full",
@@ -3051,7 +3124,10 @@ def _build_chart_pack_failsafe(ticker, analysis=None):
         "ema200": ema200,
         "divergence": divergence,
     }
-    pack["projection"] = _sanitize_numeric_series(_build_projection_series(pack), default=price)
+    pack["projection"] = _sanitize_numeric_series(
+        _ensure_projection_has_direction(pack, _build_projection_series(pack), current=price, steps=12),
+        default=price
+    )
     return pack
 
 
@@ -3630,6 +3706,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     support = _pack_scalar("support")
     resistance = _pack_scalar("resistance")
     price_value = _pack_scalar("price", closes[-1])
+    projection = _ensure_projection_has_direction(pack, projection, current=price_value, steps=max(len(projection), 12))
     rsi_value = _pack_scalar("rsi", 50.0)
     macd_line_value = _pack_scalar("macd_line", 0.0)
     macd_signal_value = _pack_scalar("macd_signal", 0.0)
@@ -4167,7 +4244,7 @@ def _perform_deep_analysis_fmp(ticker):
     if not chart_pack:
         chart_pack = _build_chart_pack_failsafe(tk, tech) or {}
     divergence = chart_pack.get("divergence") or {}
-    projection = chart_pack.get("projection") or []
+    projection = _ensure_projection_has_direction(chart_pack, chart_pack.get("projection") or [], current=chart_pack.get("price"), steps=12)
 
     company_name = profile.get("companyName") or profile.get("companyNameLong") or quote.get("name") or display_name
     sector = (
