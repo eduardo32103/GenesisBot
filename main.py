@@ -297,6 +297,84 @@ def gpt_advanced_geopolitics_v2(news_list, manual=False):
         return None
 
 
+def _format_geopolitics_news_for_ai(news_items, wallet_tickers):
+    lines = []
+    for idx, item in enumerate(news_items, start=1):
+        if isinstance(item, dict):
+            title = item.get("title_es") or item.get("title") or ""
+            source = item.get("source") or item.get("site") or "Fuente no disponible"
+            sentiment = (item.get("sentiment") or {}).get("label", "Neutral")
+            affected = item.get("affected_tickers") or []
+            affected_names = ", ".join(get_display_name(tk) for tk in affected) if affected else "Sin cruce directo"
+            lines.append(f"{idx}. {title} | Fuente: {source} | Sentimiento: {sentiment} | Wallet: {affected_names}")
+        else:
+            title = str(item or "").strip()
+            if not title:
+                continue
+            affected = _extract_mentioned_tickers_plus(title, wallet_tickers)
+            affected_names = ", ".join(get_display_name(tk) for tk in affected) if affected else "Sin cruce directo"
+            lines.append(f"{idx}. {title} | Wallet: {affected_names}")
+    return "\n".join(lines)
+
+
+def gpt_advanced_geopolitics_v3(news_items, manual=False):
+    if not news_items or not OPENAI_API_KEY:
+        return None
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    wallet_tickers = get_tracked_tickers()
+    wallet_names = ", ".join(get_display_name(tk) for tk in wallet_tickers) or "Sin activos en radar"
+    news_text = _format_geopolitics_news_for_ai(news_items, wallet_tickers)
+
+    try:
+        if manual:
+            prompt = (
+                "Eres GÉNESIS, un analista macro-geopolítico de mercados que piensa como mesa institucional.\n\n"
+                f"Wallet vigilada: {wallet_names}\n\n"
+                f"Noticias más influyentes ahora:\n{news_text}\n\n"
+                "Analiza únicamente con fundamento y sin relleno. Debes conectar cada noticia con sectores, liquidez, tasas, commodities, defensa, energía, semiconductores, cripto o growth si aplica.\n"
+                "Responde EXACTAMENTE en este formato:\n"
+                "🌍 CATALIZADORES CLAVE:\n"
+                "1. [noticia más influyente + por qué importa al mercado]\n"
+                "2. [segunda noticia + por qué importa]\n"
+                "3. [tercera noticia + por qué importa]\n"
+                "🎯 IMPACTO EN MI WALLET:\n"
+                "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
+                "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
+                "🛡️ PROTECCIÓN GÉNESIS:\n"
+                "• [riesgo principal a vigilar]\n"
+                "• [qué confirmación invalidaría el escenario]\n"
+                "• [acción táctica sugerida para proteger capital]\n"
+                "⚖️ VEREDICTO FINAL: [Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad] | Confianza [X]% | [tesis final en 2 líneas]."
+            )
+        else:
+            prompt = (
+                "Eres GÉNESIS, un centinela de riesgo macro para una wallet accionaria.\n\n"
+                f"Wallet vigilada: {wallet_names}\n\n"
+                f"Noticias recientes:\n{news_text}\n\n"
+                "Debes decidir si existe una alerta geopolítica realmente operable para la wallet.\n"
+                "Si NO hay catalizador con impacto alto y accionable, responde EXACTAMENTE: TRANQUILIDAD\n"
+                "Si SÍ lo hay, responde EXACTAMENTE en una sola línea y en español:\n"
+                "⚠️ ALERTA GEOPOLÍTICA: [evento clave]. Wallet afectada: [tickers/sectores]. Sesgo: [alcista/bajista/mixto]. Probabilidad: [X]%. Acción sugerida: [Vigilar/Reducir/Aprovechar]."
+            )
+
+        res = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=700
+        ).choices[0].message.content.strip()
+
+        if not manual and res.strip().upper() == "TRANQUILIDAD":
+            return None
+
+        return res
+    except Exception as e:
+        logging.debug(f"gpt_advanced_geopolitics_v3 error: {e}")
+        return None
+
+
 # =====================================================================
 # PERSISTENCIA REAL: TELEGRAM COMO BASE DE DATOS
 # El bot guarda el estado completo de la cartera como un mensaje
@@ -949,6 +1027,68 @@ def _fetch_fmp_quote(tk):
     _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
     logging.warning(f"FMP falló para {tk}. Activo no localizado.")
     return None
+
+
+def _parse_fmp_historical_payload(raw):
+    hist = []
+    if isinstance(raw, list):
+        hist = raw
+    elif isinstance(raw, dict):
+        for key in ("historical", "data", "results", "prices"):
+            if isinstance(raw.get(key), list):
+                hist = raw[key]
+                break
+
+    cleaned = []
+    for row in hist:
+        if not isinstance(row, dict):
+            continue
+        if row.get("date") or row.get("label"):
+            cleaned.append(row)
+
+    cleaned.sort(key=lambda item: str(item.get("date") or item.get("label") or ""), reverse=True)
+    return cleaned
+
+
+def _fetch_fmp_historical_eod(ticker, limit=None):
+    tk = remap_ticker(ticker)
+    if not FMP_API_KEY:
+        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
+        return None
+
+    symbol = _get_fmp_symbol(tk)
+    if _is_crypto_ticker(tk):
+        symbol = tk.replace("-USD", "") + "USD"
+
+    safe_symbol = urllib.parse.quote(str(symbol).strip().upper())
+    endpoints = [
+        ("stable", f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={safe_symbol}&apikey={FMP_API_KEY}"),
+        ("legacy", f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?apikey={FMP_API_KEY}"),
+    ]
+
+    last_status = None
+    for endpoint_name, url in endpoints:
+        try:
+            resp = requests.get(url, timeout=10)
+            last_status = resp.status_code
+            logging.debug(f"FMP historical {endpoint_name} status {resp.status_code} para {tk}")
+            if resp.status_code != 200:
+                continue
+
+            hist = _parse_fmp_historical_payload(resp.json())
+            if hist:
+                return hist[:int(limit)] if limit else hist
+        except Exception as e:
+            logging.debug(f"FMP historical {endpoint_name} error para {tk}: {e}")
+
+    if last_status in (401, 403):
+        _FMP_LAST_ERROR[tk] = f"Histórico FMP no disponible para {tk}: HTTP {last_status}"
+        logging.warning(f"FMP histórico restringido para {tk} (HTTP {last_status}). Se usará fallback local.")
+    else:
+        _FMP_LAST_ERROR[tk] = f"Histórico FMP no disponible para {tk}"
+    return None
+
+
 def _sanity_check_price(tk, new_price):
     """Verifica que el precio no sea basura (desviación >50% vs último conocido)"""
     if tk in LAST_KNOWN_PRICES:
@@ -1083,14 +1223,27 @@ def check_geopolitical_news():
                                      "china", "taiwan", "iran", "israel", "opec", "oil",
                                      "export control", "chips", "jobs", "treasury"])
         news_alerts = []
+        wallet_tickers = get_tracked_tickers()
 
-        fmp_news = _fetch_fmp_news(15)
+        fmp_news = _fetch_fmp_news_with_sentiment(18)
         if fmp_news:
+            ranked_news = []
             for article in fmp_news:
                 title = article.get('title', '') or article.get('text', '') or ''
-                if title and any(re.search(rf"\b{kw}\b", title, re.IGNORECASE) for kw in HIGH_IMPACT_KEYWORDS):
-                    news_alerts.append(title)
-                    if len(news_alerts) >= 5: break
+                if not title:
+                    continue
+
+                title_upper = title.upper()
+                keyword_hit = any(kw.upper() in title_upper for kw in HIGH_IMPACT_KEYWORDS)
+                wallet_hit = bool(_extract_mentioned_tickers_plus(title, wallet_tickers))
+                magnitude = abs((article.get('sentiment') or {}).get('raw', 0.0))
+                score = magnitude + (1.5 if keyword_hit else 0) + (1.5 if wallet_hit else 0)
+                if score <= 0:
+                    continue
+                ranked_news.append((score, title))
+
+            for _, title in sorted(ranked_news, key=lambda item: item[0], reverse=True)[:5]:
+                news_alerts.append(title)
 
         if not news_alerts:
             try:
@@ -1435,6 +1588,46 @@ def _translate_titles_to_spanish(titles):
                 f"Devuelve SOLO las traducciones numeradas, sin explicaciones.\n\n"
                 f"{numbered}"
             )
+            prompt = (
+                "Eres GÉNESIS, un analista macro-geopolítico de mercados que piensa como mesa institucional y protege el capital.\n\n"
+                f"Wallet vigilada: {wallet_str or 'Sin activos en radar'}\n"
+                f"Sentimiento global actual: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
+                f"Noticias más influyentes ahora:\n{influential_str}\n\n"
+                "Tu trabajo es razonar con fundamento, no resumir por resumir. Debes conectar los titulares con tasas, petróleo, defensa, cadenas de suministro, chips, growth, cripto, liquidez y rotación sectorial cuando aplique.\n"
+                "Responde EXACTAMENTE en este formato:\n"
+                "🌍 CATALIZADORES CLAVE:\n"
+                "1. [evento dominante + por qué mueve al mercado]\n"
+                "2. [segundo evento + por qué importa]\n"
+                "3. [tercer evento + por qué importa]\n"
+                "🎯 IMPACTO EN MI WALLET:\n"
+                "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
+                "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
+                "🛡️ PROTECCIÓN GÉNESIS:\n"
+                "• [riesgo principal a vigilar]\n"
+                "• [qué confirmación invalidaría el escenario]\n"
+                "• [acción táctica sugerida para proteger capital]\n"
+                "⚖️ VEREDICTO FINAL: [Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad] | Confianza [X]% | [tesis final en 2 líneas]."
+            )
+            prompt = (
+                "Eres GÉNESIS, un analista macro-geopolítico de mercados que piensa como mesa institucional y protege el capital.\n\n"
+                f"Wallet vigilada: {wallet_str or 'Sin activos en radar'}\n"
+                f"Sentimiento global actual: {global_risk['label']} ({avg_sentiment:.2f})\n\n"
+                f"Noticias más influyentes ahora:\n{influential_str}\n\n"
+                "Tu trabajo es razonar con fundamento, no resumir por resumir. Debes conectar los titulares con tasas, petróleo, defensa, cadenas de suministro, chips, growth, cripto, liquidez y rotación sectorial cuando aplique.\n"
+                "Responde EXACTAMENTE en este formato:\n"
+                "🌍 CATALIZADORES CLAVE:\n"
+                "1. [evento dominante + por qué mueve al mercado]\n"
+                "2. [segundo evento + por qué importa]\n"
+                "3. [tercer evento + por qué importa]\n"
+                "🎯 IMPACTO EN MI WALLET:\n"
+                "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
+                "• [ticker/sector] -> [alcista/bajista/mixto] | probabilidad [X]% | [mecánica del impacto]\n"
+                "🛡️ PROTECCIÓN GÉNESIS:\n"
+                "• [riesgo principal a vigilar]\n"
+                "• [qué confirmación invalidaría el escenario]\n"
+                "• [acción táctica sugerida para proteger capital]\n"
+                "⚖️ VEREDICTO FINAL: [Mantener / Vigilar de cerca / Reducir exposición / Aprovechar oportunidad] | Confianza [X]% | [tesis final en 2 líneas]."
+            )
             res = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
@@ -1612,6 +1805,8 @@ def genesis_strategic_report(manual=True):
             all_titles = [n['title_es'] for n in (wallet_alerts + top_general)[:6]]
             wallet_str = ", ".join([get_display_name(tk) for tk in wallet_tickers])
             sentiments_str = "\n".join([f"- {n['title_es'][:60]} ({n['sentiment']['label']})" for n in news_data[:5]])
+            influential_news = sorted(news_data, key=lambda x: abs(x['sentiment']['raw']), reverse=True)[:5]
+            influential_str = _format_geopolitics_news_for_ai(influential_news, wallet_tickers)
 
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
@@ -1630,8 +1825,9 @@ def genesis_strategic_report(manual=True):
             res = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=500
+                max_tokens=700
             ).choices[0].message.content.strip()
+            res = gpt_advanced_geopolitics_v3(influential_news, manual=True) or res
 
             lines.append("")
             lines.append("ðŸ§  <b>ANÃLISIS IA GÉNESIS:</b>")
@@ -1671,30 +1867,14 @@ def fetch_intraday_data(ticker):
     avg_vol = quote_avg_vol if quote_avg_vol > 0 else 0.0
 
     if avg_vol <= 0:
-        try:
-            fmp_sym = _get_fmp_symbol(tk)
-            if _is_crypto_ticker(tk):
-                fmp_sym = tk.replace('-USD', '') + 'USD'
-
-            url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{urllib.parse.quote(fmp_sym)}?apikey={FMP_API_KEY}"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                raw = resp.json()
-                hist = []
-                if isinstance(raw, dict) and isinstance(raw.get('historical'), list):
-                    hist = raw['historical']
-                elif isinstance(raw, list):
-                    hist = raw
-
-                recent_vols = []
-                for day in hist[:20]:
-                    v = float(day.get('volume', 0) or 0)
-                    if v > 0:
-                        recent_vols.append(v)
-                if recent_vols:
-                    avg_vol = sum(recent_vols) / len(recent_vols)
-        except Exception as e:
-            logging.debug(f"fetch_intraday_data historical avg_vol error para {tk}: {e}")
+        hist = _fetch_fmp_historical_eod(tk, limit=20) or []
+        recent_vols = []
+        for day in hist[:20]:
+            v = float(day.get('volume', 0) or 0)
+            if v > 0:
+                recent_vols.append(v)
+        if recent_vols:
+            avg_vol = sum(recent_vols) / len(recent_vols)
 
     if avg_vol <= 0 and latest_vol > 0:
         avg_vol = latest_vol
@@ -1898,46 +2078,11 @@ def fetch_and_analyze_stock(ticker):
                 'golden_pocket_low': latest_price * 0.965, 'golden_pocket_high': latest_price * 0.972,
             }
 
-        # Obtener historial diario de FMP
-        fmp_sym = _get_fmp_symbol(tk)
-        if _is_crypto_ticker(tk):
-            fmp_sym = tk.replace('-USD', '') + 'USD'
-        
-        import urllib.parse
-        ticker_clean = "".join(c for c in str(fmp_sym) if ord(c) < 128).strip().upper()
-        safe_ticker = urllib.parse.quote(ticker_clean)
-        
-        print(f"DEBUG: Enviando petici\u00f3n SMC para: {safe_ticker}")
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_ticker}?apikey={FMP_API_KEY}"
-        
-        try:
-            resp = requests.get(url, timeout=5)
-            print(f"DEBUG SMC: Ticker {safe_ticker} | Status: {resp.status_code}")
-        except UnicodeEncodeError as e:
-            print(f"ERROR CR\u00cdTICO SMC (Unicode): El ticker {safe_ticker} tiene caracteres ocultos. {e}")
-            return _get_fallback_smc()
-        except Exception as e:
-            print(f"ERROR CR\u00cdTICO SMC (Red): {e}")
-            return _get_fallback_smc()
-        
-        if resp.status_code != 200:
-            print(f"CR\u00cdTICO: Error o Acceso denegado al ticker {safe_ticker}. HTTP {resp.status_code}")
-            return _get_fallback_smc()
+        hist = _fetch_fmp_historical_eod(tk, limit=260) or []
+        print(f"DEBUG SMC: Histórico recibido para {tk}: {len(hist)} velas")
 
-        raw = resp.json()
-        hist = []
-        if isinstance(raw, list):
-            hist = raw
-        elif isinstance(raw, dict):
-            if 'historical' in raw:
-                hist = raw['historical']
-            elif 'historicalStockList' in raw:
-                hist = raw['historicalStockList']
-                if hist and isinstance(hist[0], dict) and 'historical' in hist[0]:
-                    hist = hist[0]['historical']
-        
         if not hist or not isinstance(hist, list) or len(hist) < 5:
-            print(f"DEBUG SMC: El ticker {safe_ticker} no devolvi\u00f3 indicadores.")
+            logging.warning(f"SMC fallback para {tk}: histórico FMP insuficiente o no disponible.")
             return _get_fallback_smc()
 
         # FMP viene en orden reciente-primero, revertir para cálculos
@@ -3848,7 +3993,7 @@ def background_loop_proactivo():
                     unique_news.append(n_title)
 
             if unique_news:
-                ai_threat_evaluation = gpt_advanced_geopolitics_v2(unique_news, manual=False)
+                ai_threat_evaluation = gpt_advanced_geopolitics_v3(unique_news, manual=False)
                 if ai_threat_evaluation:
                      bot.send_message(
                          CHAT_ID,
