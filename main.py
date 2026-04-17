@@ -3635,12 +3635,43 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
         orientation_score += 1 if divergence.get("kind") == "bullish" else -1
     orientation_confidence = int(max(58, min(92, 61 + abs(orientation_score) * 6 + min(abs(projection_delta_pct) * 1.2, 9))))
 
+    if orientation_score >= 3:
+        orientation_summary = "ALCISTA CLARA"
+    elif orientation_score >= 1:
+        orientation_summary = "ALCISTA MODERADA"
+    elif orientation_score <= -3:
+        orientation_summary = "BAJISTA CLARA"
+    elif orientation_score <= -1:
+        orientation_summary = "BAJISTA MODERADA"
+    else:
+        orientation_summary = "LATERAL / MIXTA"
+
     macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
     ema_bias = "alcista" if ema50_value >= ema200_value else "bajista"
     divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
     timeframe_label = "Diaria (1D)"
     candles_used = len(closes)
     future_label = f"+{len(projection)} sesiones" if projection else "Sin proyección"
+    ema50_context = "precio por encima de la media rapida" if price_value >= ema50_value else "precio por debajo de la media rapida"
+    ema200_context = "precio sobre la tendencia de fondo" if price_value >= ema200_value else "precio bajo la tendencia de fondo"
+    if rsi_value >= 70:
+        rsi_context = "sobrecompra; puede haber toma de ganancias"
+    elif rsi_value >= 58:
+        rsi_context = "momentum alcista sano"
+    elif rsi_value <= 35:
+        rsi_context = "sobreventa; posible rebote si confirma"
+    elif rsi_value <= 42:
+        rsi_context = "momentum fragil"
+    else:
+        rsi_context = "zona neutral"
+    macd_gap = macd_line_value - macd_signal_value
+    macd_context = f"linea por {'encima' if macd_gap >= 0 else 'debajo'} de la senal ({macd_gap:+.3f})"
+    orientation_drivers = [
+        f"EMA50 ${fmt_price(ema50_value)}: media de 50 velas; {ema50_context}.",
+        f"EMA200 ${fmt_price(ema200_value)}: media de 200 velas; {ema200_context}.",
+        f"RSI {rsi_value:.1f}: {rsi_context}.",
+        f"MACD {macd_line_value:.3f} vs senal {macd_signal_value:.3f}: {macd_context}.",
+    ]
 
     def _format_chart_date(raw):
         text = str(raw or "").strip()
@@ -3682,7 +3713,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     chip_x = _draw_chip(chip_x, chip_y, "Velas japonesas", (241, 233, 220, 255))
     chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} velas", (236, 232, 223, 255))
     chip_x = _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)))
-    _draw_chip(chip_x, chip_y, f"Orientación: {direction_arrow} {projection_hint}", (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)), "#0F5132" if projection_hint == "alcista" else ("#842029" if projection_hint == "bajista" else "#7A5A00"))
+    _draw_chip(chip_x, chip_y, f"Orientación final: {orientation_summary}", (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)), "#0F5132" if projection_hint == "alcista" else ("#842029" if projection_hint == "bajista" else "#7A5A00"))
 
     x1, y1, x2, y2 = main_panel
     axis_width = 120
@@ -3892,6 +3923,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
 
     sidebar_y = side_panel[1] + 54
     sidebar_y = _draw_section(sidebar_y, "Orientación", [
+        f"Lectura dominante: {orientation_summary}.",
         f"Escenario base: {direction_arrow} {direction_label}.",
         f"Confianza visual estimada: {orientation_confidence}%.",
         f"Ruta probable: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
@@ -3902,11 +3934,9 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
         f"Resistencia principal: ${fmt_price(resistance)}",
         f"Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
     ])
-    sidebar_y = _draw_section(sidebar_y, "Motor técnico", [
-        f"RSI: {rsi_value:.1f}",
-        f"MACD: {macd_bias}",
-        f"EMA50/EMA200: sesgo {ema_bias}",
+    sidebar_y = _draw_section(sidebar_y, "Motor técnico", orientation_drivers + [
         f"Divergencia: {divergence_text}",
+        f"Lectura de medias: EMA50/EMA200 con sesgo {ema_bias}.",
     ])
     _draw_section(sidebar_y, "Cómo leerlo", [
         "Las velas sólidas muestran el precio confirmado.",
@@ -3919,8 +3949,9 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
         f"GRÁFICO TÁCTICO | {display_name}",
         [
             f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used}",
-            f"• Orientación probable: {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
+            f"• Orientación probable: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
             f"• Ruta esperada: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• EMA50 ${fmt_price(ema50_value)} | EMA200 ${fmt_price(ema200_value)} | RSI {rsi_value:.1f} | MACD {macd_bias}.",
             f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
@@ -4315,9 +4346,47 @@ def _perform_deep_analysis_fmp(ticker):
 
     confidence = int(max(55, min(92, 56 + abs(score) * 7 + (4 if risk_reward >= 1.5 else 0))))
 
+    if projection_bias == "alcista" and score >= 3:
+        orientation_label = "ALCISTA CLARA"
+        orientation_arrow = "↑"
+    elif projection_bias == "alcista" or score >= 1:
+        orientation_label = "ALCISTA MODERADA"
+        orientation_arrow = "↑"
+    elif projection_bias == "bajista" and score <= -3:
+        orientation_label = "BAJISTA CLARA"
+        orientation_arrow = "↓"
+    elif projection_bias == "bajista" or score <= -1:
+        orientation_label = "BAJISTA MODERADA"
+        orientation_arrow = "↓"
+    else:
+        orientation_label = "LATERAL / MIXTA"
+        orientation_arrow = "→"
+
+    orientation_confidence = int(max(57, min(93, 58 + abs(score) * 6 + (5 if projection_bias != "neutral" else 0))))
+    orientation_reason_pool = bullish_reasons if orientation_arrow == "↑" else bearish_reasons
+    if orientation_arrow == "→":
+        orientation_reason_pool = []
+    orientation_reason_text = "; ".join(orientation_reason_pool[:3]) if orientation_reason_pool else "el setup esta mixto y conviene esperar confirmacion adicional"
+
     rr_text = f"{risk_reward:.2f}x" if risk_reward > 0 else "N/D"
     pe_text = f"{pe:.1f}" if pe > 0 else "No disponible"
     beta_text = f"{beta:.2f}" if beta > 0 else "No disponible"
+
+    if rsi >= 70:
+        rsi_read = "sobrecompra; el impulso esta fuerte pero ya exigido"
+    elif rsi >= 58:
+        rsi_read = "momentum alcista sano"
+    elif rsi <= 35:
+        rsi_read = "sobreventa; puede rebotar si confirma"
+    elif rsi <= 42:
+        rsi_read = "momentum debil"
+    else:
+        rsi_read = "zona neutral"
+
+    ema50_read = "precio por encima de la EMA50" if price >= ema50 else "precio por debajo de la EMA50"
+    ema200_read = "precio por encima de la EMA200" if price >= ema200 else "precio por debajo de la EMA200"
+    sma_read = "SMA50 arriba de SMA200" if sma50 >= sma200 else "SMA50 debajo de SMA200"
+    macd_read = "cruce alcista" if macd_line >= macd_signal else "cruce bajista"
 
     lines = [
         "🧾 <b>Resumen ejecutivo</b>",
@@ -4332,6 +4401,11 @@ def _perform_deep_analysis_fmp(ticker):
 
     lines.extend([
         "",
+        "🧭 <b>Orientacion probable de la accion</b>",
+        f"• Lectura principal: <b>{orientation_arrow} {orientation_label}</b>",
+        f"• Confianza estimada: <b>{orientation_confidence}%</b>",
+        f"• Que sostiene esta lectura: {_escape_html(orientation_reason_text)}",
+        "",
         "📊 <b>Lectura técnica FMP</b>",
         f"• Tendencia SMC: <b>{_escape_html(smc_trend)}</b>",
         f"• RSI: {rsi:.1f} | MACD: {macd_line:.3f} vs señal {macd_signal:.3f}",
@@ -4340,18 +4414,21 @@ def _perform_deep_analysis_fmp(ticker):
         f"• Objetivo táctico: ${fmt_price(take_profit)} | Stop táctico: ${fmt_price(stop_loss)}",
     ])
 
-    lines.append(f"• EMA50/EMA200: ${fmt_price(ema50)} / ${fmt_price(ema200)}")
-    lines.append(f"• SMA50/SMA200: ${fmt_price(sma50)} / ${fmt_price(sma200)}")
+    lines.append(f"• EMA50: ${fmt_price(ema50)} - media exponencial de las ultimas 50 velas; {ema50_read}.")
+    lines.append(f"• EMA200: ${fmt_price(ema200)} - media exponencial de fondo; {ema200_read}.")
+    lines.append(f"• SMA50/SMA200: ${fmt_price(sma50)} / ${fmt_price(sma200)} - {sma_read}.")
+    lines.append(f"• RSI (14): {rsi:.1f} - {rsi_read}.")
+    lines.append(f"• MACD: linea {macd_line:.3f} vs señal {macd_signal:.3f} - {macd_read}.")
     lines.append(f"• Fibonacci 0.382/0.5/0.618: ${fmt_price(fib_382)} / ${fmt_price(fib_500)} / ${fmt_price(fib_618)}")
-    lines.append(f"• Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}")
-    lines.append(f"• Bollinger: baja ${fmt_price(bb_lower)} | media ${fmt_price(bb_basis)} | alta ${fmt_price(bb_upper)}")
-    lines.append(f"• Donchian: piso ${fmt_price(donchian_lower)} | medio ${fmt_price(donchian_mid)} | techo ${fmt_price(donchian_upper)}")
+    lines.append(f"• Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)} - zona donde el precio suele reaccionar.")
+    lines.append(f"• Bollinger: baja ${fmt_price(bb_lower)} | media ${fmt_price(bb_basis)} | alta ${fmt_price(bb_upper)} - mide si el precio esta estirado o comprimido.")
+    lines.append(f"• Donchian: piso ${fmt_price(donchian_lower)} | medio ${fmt_price(donchian_mid)} | techo ${fmt_price(donchian_upper)} - rango reciente de ruptura.")
     lines.append(f"• OBV: <b>{_escape_html(obv_trend)}</b>")
     if divergence.get("active"):
         lines.append(f"• Divergencia: {_escape_html(divergence.get('summary', 'Señal confirmada'))} <b>({int(divergence.get('confidence', 0))}%)</b>")
     else:
         lines.append("• Divergencia: sin señal de alta calidad por ahora")
-    lines.append(f"• Proyección táctica: sesgo <b>{projection_bias}</b> hacia ${fmt_price(projection_target)}")
+    lines.append(f"• Proyección táctica: sesgo <b>{projection_bias}</b> hacia ${fmt_price(projection_target)}.")
 
     if not tech:
         lines.append("• Nota: FMP no devolvió histórico suficiente; esta lectura pesa más precio, volumen y noticias.")
