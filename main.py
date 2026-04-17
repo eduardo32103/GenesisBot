@@ -2429,6 +2429,13 @@ def _truncate_text(text, limit=180):
     return f"{clipped}..."
 
 
+def _strip_html_for_telegram(text):
+    raw = re.sub(r"<[^>]+>", "", str(text or ""))
+    raw = html.unescape(raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
 def _fetch_fmp_profile(ticker):
     if not FMP_API_KEY:
         return None
@@ -2882,7 +2889,11 @@ def _build_chart_pack(ticker, candles=110):
                 "macd_line_full", "macd_signal_full", "macd_hist_full", "obv_full", "ema50_full",
                 "ema200_full", "bb_upper_full", "bb_lower_full", "bb_basis_full"):
         trimmed_key = key.replace("_full", "")
-        pack[trimmed_key] = pack[key][-tail:]
+        trimmed_values = pack[key][-tail:]
+        if trimmed_key in pack:
+            pack[f"{trimmed_key}_series"] = trimmed_values
+        else:
+            pack[trimmed_key] = trimmed_values
 
     return pack
 
@@ -2991,6 +3002,12 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     display_name = get_display_name(tk)
     divergence = pack.get("divergence") or {}
 
+    def _pack_scalar(key, default=0.0):
+        value = pack.get(key, default)
+        if isinstance(value, list):
+            value = value[-1] if value else default
+        return _safe_float(value, default)
+
     img = Image.new("RGBA", (1460, 860), "#F4F1EA")
     draw = ImageDraw.Draw(img, "RGBA")
     font_title = _get_chart_font(30, bold=True)
@@ -3066,8 +3083,14 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     draw.text((x1 + 24, y2 - 24), "Precio real", fill="#10233E", font=font_bold)
     draw.text((split_x + 16, y2 - 24), "Escenario proyectado", fill=proj_color, font=font_bold)
 
-    support = _safe_float(pack.get("support"))
-    resistance = _safe_float(pack.get("resistance"))
+    support = _pack_scalar("support")
+    resistance = _pack_scalar("resistance")
+    price_value = _pack_scalar("price", closes[-1] if closes else 0.0)
+    rsi_value = _pack_scalar("rsi", 50.0)
+    macd_line_value = _pack_scalar("macd_line", 0.0)
+    macd_signal_value = _pack_scalar("macd_signal", 0.0)
+    ema50_value = _pack_scalar("ema50", price_value)
+    ema200_value = _pack_scalar("ema200", price_value)
     for level, color in ((support, "#1B9C5A"), (resistance, "#C94D3F")):
         if level > 0:
             pts, _ = _map_series([level] * len(closes), main_panel, price_min, price_max, extra_right=110)
@@ -3076,7 +3099,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
 
     summary_lines = [
         f"Activo: {display_name}",
-        f"Precio actual: ${fmt_price(pack['price'])}",
+        f"Precio actual: ${fmt_price(price_value)}",
         f"Sesgo: {'alcista' if proj_color == '#1B9C5A' else 'bajista'}",
         f"Soporte clave: ${fmt_price(support)}",
         f"Resistencia clave: ${fmt_price(resistance)}",
@@ -3092,9 +3115,9 @@ def _render_stock_analysis_chart(ticker, analysis=None):
 
     summary_lines.extend([
         "",
-        f"RSI backend: {pack['rsi']:.1f}",
-        f"MACD backend: {'alcista' if pack['macd_line'] >= pack['macd_signal'] else 'bajista'}",
-        f"EMA50/EMA200 backend: {'positiva' if pack['ema50'] >= pack['ema200'] else 'presión bajista'}",
+        f"RSI backend: {rsi_value:.1f}",
+        f"MACD backend: {'alcista' if macd_line_value >= macd_signal_value else 'bajista'}",
+        f"EMA50/EMA200 backend: {'positiva' if ema50_value >= ema200_value else 'presión bajista'}",
     ])
 
     draw.text((side_panel[0] + 22, side_panel[1] + 20), "Lectura condensada", fill="#10233E", font=font_bold)
@@ -3346,6 +3369,10 @@ def _send_stock_analysis_with_chart(chat_id, ticker):
             bot.send_message(chat_id, analysis_text, parse_mode="HTML")
         except Exception:
             logging.exception(f"Error enviando análisis textual para {tk}")
+            try:
+                bot.send_message(chat_id, _strip_html_for_telegram(analysis_text))
+            except Exception:
+                logging.exception(f"Error enviando análisis textual en modo plano para {tk}")
 
     chart_path = None
     chart_caption = None
