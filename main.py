@@ -424,14 +424,14 @@ def _format_geopolitics_news_for_ai(news_items, wallet_tickers):
     lines = []
     for idx, item in enumerate(news_items, start=1):
         if isinstance(item, dict):
-            title = item.get("title_es") or item.get("title") or ""
+            title = _headline_in_spanish(item.get("title"), item.get("title_es"))
             source = item.get("source") or item.get("site") or "Fuente no disponible"
             sentiment = (item.get("sentiment") or {}).get("label", "Neutral")
             affected = item.get("affected_tickers") or []
             affected_names = ", ".join(get_display_name(tk) for tk in affected) if affected else "Sin cruce directo"
             lines.append(f"{idx}. {title} | Fuente: {source} | Sentimiento: {sentiment} | Cartera: {affected_names}")
         else:
-            title = str(item or "").strip()
+            title = _headline_in_spanish(item, "")
             if not title:
                 continue
             affected = _extract_mentioned_tickers_plus(title, wallet_tickers)
@@ -462,7 +462,7 @@ def genesis_strategic_report_v2(manual=True):
         "bias_label": geo_verdict.get("action", "macro mixto"),
         "probability": geo_verdict.get("confidence", 60),
         "summary": geo_verdict.get("dominant_risk", "Sin catalizador macro dominante por ahora."),
-        "headline": top_items[0].get("title_es") if top_items else "",
+        "headline": _headline_in_spanish(top_items[0].get("title"), top_items[0].get("title_es")) if top_items else "",
         "items": [],
     }
 
@@ -475,7 +475,7 @@ def genesis_strategic_report_v2(manual=True):
     ]
 
     for article in top_items[:3]:
-        title = _escape_html(_truncate_text(article.get("title_es") or article.get("title") or "", 130))
+        title = _escape_html(_truncate_text(_headline_in_spanish(article.get("title"), article.get("title_es")), 130))
         source_name = _escape_html(article.get("source") or "Fuente")
         source_url = html.escape((article.get("url") or "").strip(), quote=True)
         if source_url:
@@ -2108,6 +2108,67 @@ def _translate_text_to_spanish(text, max_chars=420):
     return translated
 
 
+_ENGLISH_MARKET_TITLE_MARKERS = (
+    "the", "after", "amid", "with", "from", "into", "over", "market", "markets",
+    "stocks", "shares", "stock", "oil", "rates", "tariffs", "war", "cuts",
+    "surge", "falls", "rise", "outlook", "earnings", "revenue", "profit",
+    "opens", "says", "could", "will", "may",
+)
+
+
+def _normalize_headline_compare(text):
+    raw = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not raw:
+        return ""
+    normalized = unicodedata.normalize("NFKD", raw)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _looks_english_market_title(text):
+    sample = _normalize_headline_compare(text)
+    if not sample:
+        return False
+    padded = f" {sample} "
+    hits = 0
+    for marker in _ENGLISH_MARKET_TITLE_MARKERS:
+        marker_norm = _normalize_headline_compare(marker)
+        if marker_norm and f" {marker_norm} " in padded:
+            hits += 1
+            if hits >= 2:
+                return True
+    return False
+
+
+def _headline_in_spanish(title, title_es=""):
+    raw_title = re.sub(r"\s+", " ", str(title or "")).strip()
+    candidate = re.sub(r"\s+", " ", str(title_es or "")).strip()
+    if not raw_title:
+        return candidate
+
+    raw_norm = _normalize_headline_compare(raw_title)
+    cand_norm = _normalize_headline_compare(candidate)
+    if not candidate:
+        candidate = raw_title
+        cand_norm = raw_norm
+
+    if cand_norm == raw_norm or _looks_english_market_title(candidate):
+        quick_candidate = _quick_translate_financial(raw_title)
+        quick_norm = _normalize_headline_compare(quick_candidate)
+        if quick_candidate and (quick_norm != raw_norm or not _looks_english_market_title(quick_candidate)):
+            candidate = quick_candidate
+            cand_norm = quick_norm
+
+    if (cand_norm == raw_norm or _looks_english_market_title(candidate)) and OPENAI_API_KEY:
+        refined = _translate_text_to_spanish(raw_title, max_chars=220)
+        refined_norm = _normalize_headline_compare(refined)
+        if refined and (refined_norm != raw_norm or not _looks_english_market_title(refined)):
+            candidate = refined
+
+    return candidate or raw_title
+
+
 _TRUSTED_NEWS_SOURCES = {
     "reuters": 2.0,
     "bloomberg": 1.95,
@@ -2554,7 +2615,14 @@ def _collect_geopolitical_market_snapshot(limit=8, force_refresh=False):
         and isinstance(last_update, datetime)
         and (datetime.now() - last_update).total_seconds() < 480
     ):
-        return cached_items[:limit]
+        sanitized_cached = []
+        for item in cached_items[:limit]:
+            if isinstance(item, dict):
+                item["title_es"] = _headline_in_spanish(item.get("title"), item.get("title_es"))
+                sanitized_cached.append(item)
+            else:
+                sanitized_cached.append(item)
+        return sanitized_cached
 
     wallet_tickers = get_tracked_tickers()
     profile_map = {tk: (_fetch_fmp_profile(tk) or {}) for tk in wallet_tickers}
@@ -2617,7 +2685,8 @@ def _collect_geopolitical_market_snapshot(limit=8, force_refresh=False):
         else:
             recency_score = 0.35
 
-        title_es = translated_titles[idx] if idx < len(translated_titles) else _quick_translate_financial(title)
+        translated_candidate = translated_titles[idx] if idx < len(translated_titles) else ""
+        title_es = _headline_in_spanish(title, translated_candidate)
         enriched_item = {
             "title": title,
             "title_es": title_es,
@@ -2793,7 +2862,7 @@ def _format_geopolitics_push_message(news_items):
         return None
     lines = []
     for article in news_items[:2]:
-        title = _escape_html(_truncate_text(article.get("title_es") or article.get("title") or "", 120))
+        title = _escape_html(_truncate_text(_headline_in_spanish(article.get("title"), article.get("title_es")), 120))
         source_name = _escape_html(article.get("source") or "Fuente")
         source_url = html.escape((article.get("url") or "").strip(), quote=True)
         lines.append(f"• <b>{title}</b>")
