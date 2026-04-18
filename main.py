@@ -4314,6 +4314,10 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
     ema_bias = "positiva" if ema50_value >= ema200_value else "presión bajista"
     divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
+    macro_bias_label = str(macro_context.get("bias_label") or ("macro favorable" if macro_score > 0.7 else ("macro adverso" if macro_score < -0.7 else "macro mixto")))
+    macro_probability = int(macro_context.get("probability") or max(58, min(92, 60 + abs(macro_score) * 7)))
+    macro_summary = str(macro_context.get("summary") or "Sin catalizador macro dominante por ahora.")
+    macro_headline = str(macro_context.get("headline") or "")
 
     def _format_chart_date(raw):
         text = str(raw or "").strip()
@@ -4777,6 +4781,9 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
 
     display_name = get_display_name(tk)
     divergence = pack.get("divergence") or {}
+    macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
+    macro_score = _safe_float(macro_context.get("score"), _safe_float(analysis.get("macro_score"), pack.get("macro_score", 0.0)))
+    pack["macro_score"] = macro_score
 
     def _pack_scalar(key, default=0.0):
         value = pack.get(key, default)
@@ -5206,6 +5213,33 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     return chart_path, caption
 
 
+def _render_stock_analysis_chart_safe(ticker, analysis=None, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    render_errors = []
+    render_attempts = [
+        ("principal", lambda: _render_stock_analysis_chart_v2(tk, analysis, timeframe=timeframe)),
+        ("respaldo", lambda: _render_stock_analysis_chart(tk, analysis)),
+    ]
+
+    for renderer_name, renderer in render_attempts:
+        try:
+            chart_path, chart_caption = renderer()
+            if chart_path and os.path.exists(chart_path):
+                if renderer_name != "principal":
+                    logging.warning(f"Gráfico táctico de {tk} generado con renderer de respaldo.")
+                return chart_path, chart_caption
+            render_errors.append(f"{renderer_name}: sin archivo válido")
+            logging.warning(f"Renderer {renderer_name} no produjo un archivo de gráfico válido para {tk}.")
+        except Exception as exc:
+            render_errors.append(f"{renderer_name}: {type(exc).__name__}: {exc}")
+            logging.exception(f"Error generando gráfico táctico con renderer {renderer_name} para {tk}")
+
+    logging.error(
+        f"Fallo total al generar gráfico táctico para {tk} | detalle={' | '.join(render_errors) if render_errors else 'sin detalle'}"
+    )
+    return None, None
+
+
 def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
     tf = _normalize_chart_timeframe(timeframe)
@@ -5238,7 +5272,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     chart_path = None
     chart_caption = None
     try:
-        chart_path, chart_caption = _render_stock_analysis_chart_v2(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
+        chart_path, chart_caption = _render_stock_analysis_chart_safe(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
     except Exception:
         logging.exception(f"Error generando gráfico táctico para {tk}")
         bot.send_message(
