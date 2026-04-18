@@ -1156,6 +1156,126 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
     return None
 
 
+def _normalize_chart_timeframe(value, default="1D"):
+    text = str(value or "").upper().strip().replace(" ", "")
+    if text in {"1H", "1HR", "1HORA", "1HOUR", "60M", "60MIN", "60MINUTES"}:
+        return "1H"
+    if text in {"4H", "4HR", "4HORAS", "4HOUR", "240M", "240MIN"}:
+        return "4H"
+    if text in {"1D", "1DIA", "1DAY", "DAILY", "DIARIA", "DIARIO"}:
+        return "1D"
+    return default
+
+
+def _parse_fmp_datetime(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        pass
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _aggregate_intraday_rows(rows, group_hours=4, limit=None):
+    if not rows:
+        return []
+
+    ascending_rows = list(reversed(rows))
+    aggregated = []
+    current_bucket = None
+    current_key = None
+
+    for row in ascending_rows:
+        dt = _parse_fmp_datetime(row.get("date") or row.get("label"))
+        if dt is None:
+            continue
+
+        bucket_dt = dt.replace(hour=(dt.hour // group_hours) * group_hours, minute=0, second=0, microsecond=0)
+        bucket_key = bucket_dt.isoformat(sep=" ")
+
+        open_value = _safe_float(row.get("open"), _safe_float(row.get("close")))
+        close_value = _safe_float(row.get("close"), open_value)
+        high_value = _safe_float(row.get("high"), max(open_value, close_value))
+        low_value = _safe_float(row.get("low"), min(open_value, close_value))
+        volume_value = _safe_float(row.get("volume"), 0.0)
+
+        if current_key != bucket_key:
+            if current_bucket:
+                aggregated.append(current_bucket)
+            current_key = bucket_key
+            current_bucket = {
+                "date": bucket_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "open": open_value,
+                "high": high_value,
+                "low": low_value,
+                "close": close_value,
+                "volume": volume_value,
+            }
+            continue
+
+        current_bucket["high"] = max(_safe_float(current_bucket.get("high")), high_value, open_value, close_value)
+        current_bucket["low"] = min(value for value in (_safe_float(current_bucket.get("low")), low_value, open_value, close_value) if value > 0)
+        current_bucket["close"] = close_value
+        current_bucket["volume"] = _safe_float(current_bucket.get("volume"), 0.0) + volume_value
+
+    if current_bucket:
+        aggregated.append(current_bucket)
+
+    aggregated.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
+    return aggregated[:int(limit)] if limit else aggregated
+
+
+def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
+    tk = remap_ticker(ticker)
+    if not FMP_API_KEY:
+        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
+        return None
+
+    symbol = _get_fmp_symbol(tk)
+    if _is_crypto_ticker(tk):
+        symbol = tk.replace("-USD", "") + "USD"
+
+    safe_symbol = urllib.parse.quote(str(symbol).strip().upper())
+    now_utc = datetime.now(timezone.utc)
+    days_back = 18 if interval == "1hour" else 10
+    from_date = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    to_date = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    endpoints = [
+        ("legacy", f"https://financialmodelingprep.com/api/v3/historical-chart/{interval}/{safe_symbol}?from={from_date}&to={to_date}&apikey={FMP_API_KEY}"),
+    ]
+
+    last_status = None
+    for endpoint_name, url in endpoints:
+        try:
+            resp = requests.get(url, timeout=12)
+            last_status = resp.status_code
+            logging.debug(f"FMP intraday {interval} {endpoint_name} status {resp.status_code} para {tk}")
+            if resp.status_code != 200:
+                continue
+
+            hist = _parse_fmp_historical_payload(resp.json())
+            if hist:
+                return hist[:int(limit)] if limit else hist
+        except Exception as exc:
+            logging.debug(f"FMP intraday {interval} {endpoint_name} error para {tk}: {exc}")
+
+    if last_status in (401, 403):
+        _FMP_LAST_ERROR[tk] = f"Histórico intradía FMP no disponible para {tk}: HTTP {last_status}"
+    else:
+        _FMP_LAST_ERROR[tk] = f"Histórico intradía FMP no disponible para {tk}"
+    return None
+
+
 def _sanity_check_price(tk, new_price):
     """Verifica que el precio no sea basura (desviación >50% vs último conocido)"""
     if tk in LAST_KNOWN_PRICES:
@@ -3061,13 +3181,39 @@ def _merge_live_quote_into_eod_history(ticker, hist_rows):
     return hist_rows, meta
 
 
-def _build_chart_pack(ticker, candles=110):
+def _build_chart_pack(ticker, candles=110, timeframe="1D"):
     tk = remap_ticker(ticker)
-    hist = _fetch_fmp_historical_eod(tk, limit=max(260, candles)) or []
+    tf = _normalize_chart_timeframe(timeframe)
+    hist_meta = {
+        "timeframe_label": "Diaria (1D)",
+        "source_label": "FMP EOD",
+        "session_label": "Cierres confirmados",
+        "live_candle": False,
+    }
+
+    if tf == "1H":
+        hist = _fetch_fmp_intraday_history(tk, interval="1hour", limit=max(320, candles + 40)) or []
+        hist_meta.update({
+            "timeframe_label": "Intradía (1H)",
+            "source_label": "FMP histórico 1H",
+            "session_label": "Velas horarias",
+        })
+    elif tf == "4H":
+        raw_intraday = _fetch_fmp_intraday_history(tk, interval="1hour", limit=max(960, (candles * 4) + 80)) or []
+        hist = _aggregate_intraday_rows(raw_intraday, group_hours=4, limit=max(320, candles + 40))
+        hist_meta.update({
+            "timeframe_label": "Intradía (4H)",
+            "source_label": "FMP 1H agregado a 4H",
+            "session_label": "Velas de cuatro horas",
+        })
+    else:
+        hist = _fetch_fmp_historical_eod(tk, limit=max(260, candles)) or []
+
     if len(hist) < 60:
         return None
 
-    hist, hist_meta = _merge_live_quote_into_eod_history(tk, hist)
+    if tf == "1D":
+        hist, hist_meta = _merge_live_quote_into_eod_history(tk, hist)
 
     hist = list(reversed(hist[:max(260, candles)]))
     closes_full = [_safe_float(row.get("close"), 0.0) for row in hist]
@@ -3181,8 +3327,9 @@ def _build_chart_pack(ticker, candles=110):
     return pack
 
 
-def _build_chart_pack_failsafe(ticker, analysis=None):
+def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
     tk = remap_ticker(ticker)
+    tf = _normalize_chart_timeframe(timeframe)
     analysis = analysis if isinstance(analysis, dict) else {}
     if not analysis and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
         analysis = LAST_KNOWN_ANALYSIS.get(tk) or {}
@@ -3241,7 +3388,7 @@ def _build_chart_pack_failsafe(ticker, analysis=None):
 
     pack = {
         "ticker": tk,
-        "timeframe_label": "Diaria (1D) estimada",
+        "timeframe_label": "Diaria (1D) estimada" if tf == "1D" else (f"Intradía ({tf}) estimada"),
         "source_label": "FMP fallback",
         "session_label": "Modo de contingencia visual",
         "live_candle": False,
@@ -3783,16 +3930,16 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     return chart_path, caption
 
 
-def _render_stock_analysis_chart_v2(ticker, analysis=None):
+def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     tk = remap_ticker(ticker)
     analysis = analysis or (LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}
     try:
-        pack = _build_chart_pack(tk, candles=110)
+        pack = _build_chart_pack(tk, candles=110, timeframe=timeframe)
     except Exception:
         logging.exception(f"Error construyendo chart pack principal para {tk}")
         pack = None
     if not pack:
-        pack = _build_chart_pack_failsafe(tk, analysis)
+        pack = _build_chart_pack_failsafe(tk, analysis, timeframe=timeframe)
     if not pack:
         return None, None
 
@@ -3900,7 +4047,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     source_label = pack.get("source_label") or "FMP EOD"
     session_label = pack.get("session_label") or "Cierres confirmados"
     candles_used = len(closes)
-    future_label = f"+{len(projection)} sesiones" if projection else "Sin proyección"
+    candle_unit = "velas" if ("1H" in timeframe_label or "4H" in timeframe_label) else "sesiones"
+    future_label = f"+{len(projection)} {candle_unit}" if projection else "Sin proyección"
     ema50_context = "precio por encima de la media rapida" if price_value >= ema50_value else "precio por debajo de la media rapida"
     ema200_context = "precio sobre la tendencia de fondo" if price_value >= ema200_value else "precio bajo la tendencia de fondo"
     if rsi_value >= 70:
@@ -3924,6 +4072,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
 
     def _format_chart_date(raw):
         text = str(raw or "").strip()
+        if ("1H" in timeframe_label or "4H" in timeframe_label) and len(text) >= 16 and text[4] == "-" and text[7] == "-":
+            return f"{text[5:7]}/{text[8:10]} {text[11:16]}"
         if len(text) >= 10 and text[4] == "-" and text[7] == "-":
             return f"{text[5:7]}/{text[8:10]}"
         return text[:10] or "Hoy"
@@ -4214,11 +4364,12 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     return chart_path, caption
 
 
-def _send_stock_analysis_with_chart(chat_id, ticker):
+def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
+    tf = _normalize_chart_timeframe(timeframe)
     analysis_text = None
     try:
-        analysis_text = perform_deep_analysis(tk)
+        analysis_text = perform_deep_analysis(tk, timeframe=tf)
     except Exception:
         logging.exception(f"Error generando análisis textual para {tk}")
         analysis_text = _make_card(
@@ -4245,7 +4396,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker):
     chart_path = None
     chart_caption = None
     try:
-        chart_path, chart_caption = _render_stock_analysis_chart_v2(tk, LAST_KNOWN_ANALYSIS.get(tk))
+        chart_path, chart_caption = _render_stock_analysis_chart_v2(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
     except Exception:
         logging.exception(f"Error generando gráfico táctico para {tk}")
         bot.send_message(
@@ -4343,9 +4494,10 @@ def _monitor_quality_divergences(tracked):
         alerts_sent += 1
 
 
-def _perform_deep_analysis_fmp(ticker):
+def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
+    tf = _normalize_chart_timeframe(timeframe)
 
     quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
     try:
@@ -4380,14 +4532,22 @@ def _perform_deep_analysis_fmp(ticker):
     profile = _fetch_fmp_profile(tk) or {}
     news_items = _fetch_fmp_ticker_news(tk, limit=5)
     try:
-        chart_pack = _build_chart_pack(tk, candles=110) or {}
+        chart_pack = _build_chart_pack(tk, candles=110, timeframe=tf) or {}
     except Exception:
         logging.exception(f"Fallo _build_chart_pack para {tk} durante el análisis")
         chart_pack = {}
     if not chart_pack:
-        chart_pack = _build_chart_pack_failsafe(tk, tech) or {}
+        chart_pack = _build_chart_pack_failsafe(tk, tech, timeframe=tf) or {}
     divergence = chart_pack.get("divergence") or {}
     projection = _ensure_projection_has_direction(chart_pack, chart_pack.get("projection") or [], current=chart_pack.get("price"), steps=12)
+    chart_timeframe_label = chart_pack.get("timeframe_label") or ("Diaria (1D)" if tf == "1D" else f"Intradía ({tf})")
+    chart_source_label = chart_pack.get("source_label") or "FMP"
+
+    def _chart_scalar(key, default=0.0):
+        value = chart_pack.get(key, default)
+        if isinstance(value, list):
+            value = value[-1] if value else default
+        return _safe_float(value, default)
 
     company_name = profile.get("companyName") or profile.get("companyNameLong") or quote.get("name") or display_name
     sector = (
@@ -4449,6 +4609,39 @@ def _perform_deep_analysis_fmp(ticker):
     fib_618 = _safe_float((tech or {}).get("fib_618"), support)
     golden_pocket_low = _safe_float((tech or {}).get("golden_pocket_low"), fib_618)
     golden_pocket_high = _safe_float((tech or {}).get("golden_pocket_high"), fib_618)
+
+    if chart_pack:
+        price = _chart_scalar("price", price)
+        support = _chart_scalar("support", support)
+        resistance = _chart_scalar("resistance", resistance)
+        rsi = _chart_scalar("rsi", rsi)
+        macd_line = _chart_scalar("macd_line", macd_line)
+        macd_signal = _chart_scalar("macd_signal", macd_signal)
+        sma50 = _chart_scalar("sma50", sma50)
+        sma200 = _chart_scalar("sma200", sma200)
+        ema50 = _chart_scalar("ema50", ema50)
+        ema200 = _chart_scalar("ema200", ema200)
+        bb_upper = _chart_scalar("bb_upper", bb_upper)
+        bb_lower = _chart_scalar("bb_lower", bb_lower)
+        bb_basis = _chart_scalar("bb_basis", bb_basis)
+        fib_618 = _chart_scalar("fib_618", fib_618)
+        golden_pocket_low = _chart_scalar("golden_pocket_low", golden_pocket_low)
+        golden_pocket_high = _chart_scalar("golden_pocket_high", golden_pocket_high)
+        price_highs = chart_pack.get("highs") or []
+        price_lows = chart_pack.get("lows") or []
+        if isinstance(price_highs, list) and price_highs:
+            donchian_upper = max(_safe_float(v, 0.0) for v in price_highs if _safe_float(v, 0.0) > 0)
+        if isinstance(price_lows, list) and price_lows:
+            positive_lows = [_safe_float(v, 0.0) for v in price_lows if _safe_float(v, 0.0) > 0]
+            if positive_lows:
+                donchian_lower = min(positive_lows)
+        donchian_mid = (donchian_upper + donchian_lower) / 2 if donchian_upper > 0 and donchian_lower > 0 else donchian_mid
+        if tf != "1D":
+            smc_trend = "Alcista intradía" if ema50 >= ema200 else "Bajista intradía"
+            order_block = golden_pocket_low if golden_pocket_low > 0 else support
+            take_profit = projection[-1] if projection else resistance
+            stop_loss = support * (0.995 if _is_crypto_ticker(tk) else 0.98)
+
     projection_target = float(projection[-1]) if projection else price
     if projection and projection_target >= price * 1.005:
         projection_bias = "alcista"
@@ -4645,6 +4838,7 @@ def _perform_deep_analysis_fmp(ticker):
     lines = [
         "🧾 <b>Resumen ejecutivo</b>",
         f"• Empresa: <b>{_escape_html(company_name)}</b>",
+        f"• Temporalidad evaluada: <b>{_escape_html(chart_timeframe_label)}</b> | Fuente: {_escape_html(chart_source_label)}",
         f"• Sector: {_escape_html(sector)} | Industria: {_escape_html(industry)}",
         f"• Precio actual: <b>${fmt_price(price)}</b> ({change_pct:+.2f}% hoy)",
         f"• Capitalización: {_format_compact_money(market_cap)} | P/E: {pe_text} | Beta: {beta_text}",
@@ -4718,8 +4912,8 @@ def _perform_deep_analysis_fmp(ticker):
     )
 
 
-def perform_deep_analysis(ticker):
-    return _perform_deep_analysis_fmp(ticker)
+def perform_deep_analysis(ticker, timeframe="1D"):
+    return _perform_deep_analysis_fmp(ticker, timeframe=timeframe)
 
     # Bloque legacy conservado debajo por compatibilidad temporal.
     tk = remap_ticker(ticker)
@@ -5151,6 +5345,19 @@ def _extract_analysis_ticker(intent_text):
         if match:
             return match.group(1)
     return None
+
+
+def _extract_analysis_timeframe(intent_text, default="1D"):
+    text = str(intent_text or "").upper()
+    patterns = [
+        (r'\b(?:1H|1\s*H|1HR|1HORA|1HOUR|60M|60MIN)\b', "1H"),
+        (r'\b(?:4H|4\s*H|4HR|4HORAS|4HOUR|240M|240MIN)\b', "4H"),
+        (r'\b(?:1D|1\s*D|1DIA|DIARIA|DIARIO|DAILY|1DAY)\b', "1D"),
+    ]
+    for pattern, label in patterns:
+        if re.search(pattern, text):
+            return label
+    return _normalize_chart_timeframe(default)
 
 
 def _make_card(title, lines, icon="🧠", footer=None):
@@ -5587,9 +5794,10 @@ def handle_text(message):
     analysis_target = _extract_analysis_ticker(intent_text)
     if analysis_target:
         tk = remap_ticker(analysis_target)
+        tf = _extract_analysis_timeframe(intent_text, default="1D")
         display_name = get_display_name(tk)
-        bot.reply_to(message, f"📈 Consultando FMP y construyendo un análisis integral en español para {display_name}...")
-        _send_stock_analysis_with_chart(message.chat.id, tk)
+        bot.reply_to(message, f"📈 Consultando FMP y construyendo un análisis integral en español para {display_name} en {tf}...")
+        _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
         return
 
     # === BOTONES MENÚ RÃPIDO ===
@@ -5618,9 +5826,10 @@ def handle_text(message):
         match = re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text)
         if match:
             tk = remap_ticker(match.group(1))
+            tf = _extract_analysis_timeframe(intent_text, default="1D")
             display_name = get_display_name(tk)
-            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name} con gráfico táctico...")
-            _send_stock_analysis_with_chart(message.chat.id, tk)
+            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name} con gráfico táctico en {tf}...")
+            _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
         return
 
     if re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text):
