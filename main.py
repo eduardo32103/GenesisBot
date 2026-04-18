@@ -365,6 +365,99 @@ def _format_geopolitics_news_for_ai(news_items, wallet_tickers):
     return "\n".join(lines)
 
 
+def genesis_strategic_report_v2(manual=True):
+    """Reporte geopolitico y de mercado con impacto directo sobre la cartera."""
+    top_items = _collect_geopolitical_market_snapshot(limit=6, force_refresh=True if manual else False)
+
+    if not top_items:
+        return _make_card(
+            "REPORTE GEOPOLITICO",
+            [
+                "No pude consolidar noticias operables desde FMP ni desde las fuentes macro auxiliares.",
+                "El monitoreo sigue activo y reintentara en el siguiente ciclo.",
+            ],
+            icon="🌍",
+        )
+
+    wallet_impacts = GENESIS_RISK_CONTEXT.get("wallet_impacts") or _aggregate_wallet_geo_impacts(top_items)
+    geo_verdict = GENESIS_RISK_CONTEXT.get("geo_verdict") or _build_geo_verdict(wallet_impacts, top_items)
+    global_risk = _classify_sentiment(GENESIS_RISK_CONTEXT.get("sentiment_global", 0.0))
+    display_name = "tu cartera"
+    macro_context = {
+        "bias_label": geo_verdict.get("action", "macro mixto"),
+        "probability": geo_verdict.get("confidence", 60),
+        "summary": geo_verdict.get("dominant_risk", "Sin catalizador macro dominante por ahora."),
+        "headline": top_items[0].get("title_es") if top_items else "",
+        "items": [],
+    }
+
+    lines = [
+        f"• Sentimiento global: {global_risk['icon']} <b>{global_risk['label']}</b> | {global_risk['bull_pct']}% alcista / {global_risk['bear_pct']}% bajista",
+        f"• Veredicto tactico: <b>{_escape_html(geo_verdict['action'])}</b> | Confianza {geo_verdict['confidence']}%",
+        f"• Tesis central: {_escape_html(geo_verdict['thesis'])}",
+        "",
+        "📌 <b>Catalizadores mas importantes ahora</b>",
+    ]
+
+    for article in top_items[:3]:
+        title = _escape_html(_truncate_text(article.get("title_es") or article.get("title") or "", 130))
+        source_name = _escape_html(article.get("source") or "Fuente")
+        source_url = html.escape((article.get("url") or "").strip(), quote=True)
+        if source_url:
+            lines.append(f'• <a href="{source_url}"><b>{title}</b></a> | {source_name} | {article.get("published_label") or "reciente"}')
+        else:
+            lines.append(f"• <b>{title}</b> | {source_name} | {article.get('published_label') or 'reciente'}")
+        lines.append(f"• Mercado: {_escape_html(article.get('impact_summary') or 'Catalizador relevante para el mercado.')}")
+        if article.get("wallet_impacts"):
+            impact_bits = []
+            for impact in article["wallet_impacts"][:2]:
+                impact_bits.append(f"{get_display_name(impact['ticker'])}: {impact['direction']} {impact['probability']}%")
+            lines.append(f"• Impacto en cartera: {' | '.join(impact_bits)}")
+        lines.append("")
+
+    lines.append("🎯 <b>Impacto agregado en mi cartera</b>")
+    if wallet_impacts:
+        for impact in wallet_impacts[:4]:
+            lines.append(
+                f"• <b>{get_display_name(impact['ticker'])}</b> -> {impact['direction']} | probabilidad {impact['probability']}% | {_escape_html(impact['reason'])}"
+            )
+    else:
+        lines.append("• Por ahora no hay una lectura macro suficientemente fuerte sobre tus activos vigilados.")
+
+    lines.extend([
+        "",
+        "🛡️ <b>Proteccion Genesis</b>",
+        f"• Riesgo dominante: {_escape_html(geo_verdict['dominant_risk'])}",
+        "• Regla operativa: si sale un titular de alto impacto con cruce directo a tu cartera, se enviara como alerta individual.",
+    ])
+
+    if WHALE_MEMORY:
+        whale_lines = []
+        for whale in list(WHALE_MEMORY)[::-1][:2]:
+            minutes_ago = int((datetime.now() - whale["timestamp"]).total_seconds() / 60)
+            whale_lines.append(f"{get_display_name(whale['ticker'])}: {whale['type']} hace {minutes_ago} min")
+        if whale_lines:
+            lines.append(f"• Cruce con ballenas: {' | '.join(whale_lines)}")
+
+    lines.append("")
+    lines.append("ðŸŒ <b>Contexto geopolitico y de sentimiento</b>")
+    lines.append(f"â€¢ Sesgo macro para {display_name}: <b>{_escape_html(macro_context.get('bias_label', 'macro mixto'))}</b> | probabilidad {int(macro_context.get('probability', 58) or 58)}%")
+    lines.append(f"â€¢ Lectura dominante: {_escape_html(macro_context.get('summary', 'Sin catalizador macro dominante por ahora.'))}")
+    if macro_context.get("headline"):
+        lines.append(f"â€¢ Titular clave: {_escape_html(_truncate_text(macro_context.get('headline'), 105))}")
+    for macro_item in (macro_context.get("items") or [])[:2]:
+        lines.append(
+            f"â€¢ {_escape_html(_truncate_text(macro_item.get('title_es') or '', 95))} | {_escape_html(macro_item.get('direction', 'mixto'))} {int(macro_item.get('probability', 58) or 58)}%"
+        )
+
+    return _make_card(
+        "REPORTE GEOPOLITICO",
+        lines,
+        icon="🌍",
+        footer="Noticias importantes, fuentes enlazadas e impacto directo sobre tu cartera."
+    )
+
+
 def gpt_advanced_geopolitics_v3(news_items, manual=False):
     if not news_items or not OPENAI_API_KEY:
         return None
@@ -1446,6 +1539,27 @@ def check_geopolitical_news():
         return []
 
 
+def check_geopolitical_news_v2():
+    """Devuelve solo eventos geopoliticos y macro realmente alertables."""
+    try:
+        top_items = _collect_geopolitical_market_snapshot(limit=6, force_refresh=False)
+        alert_items = []
+        for article in top_items:
+            score = _safe_float(article.get("alert_score"), 0.0)
+            wallet_hits = len(article.get("wallet_impacts") or [])
+            major_topic = any(
+                topic in article.get("topics", [])
+                for topic in ("conflicto", "energia", "tasas_hawkish", "tasas_dovish", "aranceles", "chips", "recesion")
+            )
+            if score >= 6.2 and (wallet_hits > 0 or major_topic):
+                alert_items.append(article)
+        logging.info("GEO ALERT CHECK: %s alertas operables de %s noticias", len(alert_items), len(top_items))
+        return alert_items[:3]
+    except Exception as e:
+        logging.error(f"Error en check_geopolitical_news_v2: {e}")
+        return []
+
+
 def gpt_advanced_geopolitics(news_list, manual=False):
     if not news_list or not OPENAI_API_KEY: return None
     from openai import OpenAI
@@ -1919,6 +2033,716 @@ def _translate_text_to_spanish(text, max_chars=420):
     return translated
 
 
+_TRUSTED_NEWS_SOURCES = {
+    "reuters": 2.0,
+    "bloomberg": 1.95,
+    "associated press": 1.85,
+    "ap news": 1.8,
+    "financial times": 1.8,
+    "wall street journal": 1.8,
+    "wsj": 1.7,
+    "cnbc": 1.55,
+    "marketwatch": 1.35,
+    "yahoo finance": 1.25,
+    "barrons": 1.45,
+    "investing.com": 1.15,
+    "kitco": 1.1,
+    "coindesk": 1.15,
+    "cointelegraph": 0.95,
+    "google news": 0.75,
+}
+
+_MACRO_TOPIC_RULES = [
+    ("conflicto", ("war", "attack", "strike", "missile", "military", "drone", "conflict", "ceasefire", "israel", "iran", "ukraine", "russia", "hamas"), 3.2),
+    ("energia", ("oil", "crude", "brent", "opec", "strait", "hormuz", "lng", "natural gas", "shipping", "tanker", "refinery"), 3.0),
+    ("tasas_hawkish", ("inflation", "cpi", "ppi", "higher for longer", "hawkish", "yield", "yields", "treasury", "rate hike", "rates rise"), 2.9),
+    ("tasas_dovish", ("rate cut", "cuts rates", "dovish", "disinflation", "cooling inflation", "yields fall", "yield drops", "easing cycle"), 2.8),
+    ("aranceles", ("tariff", "tariffs", "trade war", "export control", "export ban", "embargo", "sanction", "sanctions"), 3.0),
+    ("chips", ("semiconductor", "chip", "chips", "taiwan", "tsmc", "nvidia", "export controls"), 2.8),
+    ("cripto", ("bitcoin", "ethereum", "solana", "crypto", "stablecoin", "etf", "digital asset"), 2.4),
+    ("recesion", ("recession", "slowdown", "default", "downgrade", "bankruptcy", "layoffs", "slump", "credit event"), 2.7),
+    ("defensa", ("defense", "defence", "weapons", "pentagon", "nato", "missile defense"), 2.2),
+]
+
+
+def _parse_news_datetime(raw_value):
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return None
+    try:
+        parsed = pd.to_datetime(raw_text, utc=True, errors="coerce")
+        if parsed is None or str(parsed) == "NaT":
+            return None
+        if hasattr(parsed, "to_pydatetime"):
+            parsed = parsed.to_pydatetime()
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _format_news_recency(published_at):
+    if not isinstance(published_at, datetime):
+        return "hora no disponible"
+    now_utc = datetime.now(timezone.utc)
+    minutes = max(int((now_utc - published_at).total_seconds() / 60), 0)
+    if minutes < 60:
+        return f"hace {minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"hace {hours} h"
+    days = hours // 24
+    return f"hace {days} d"
+
+
+def _source_trust_score(source_name):
+    source_text = str(source_name or "").strip().lower()
+    if not source_text:
+        return 0.7
+    for key, score in _TRUSTED_NEWS_SOURCES.items():
+        if key in source_text:
+            return score
+    return 0.9
+
+
+def _strip_html_tags(text):
+    return re.sub(r"<[^>]+>", " ", str(text or "")).replace("&nbsp;", " ").strip()
+
+
+def _fetch_google_market_news(limit=10):
+    queries = [
+        "geopolitics market OR fed OR inflation OR tariff OR sanctions OR war OR oil when:1d",
+        "iran OR israel OR china OR taiwan OR opec OR treasury yields OR jobs report when:1d",
+        "bitcoin OR crypto regulation OR etf OR stablecoin OR rates when:1d",
+    ]
+    collected = []
+    seen = set()
+
+    for query in queries:
+        try:
+            url = (
+                "https://news.google.com/rss/search?q="
+                f"{urllib.parse.quote(query)}&hl=en-US&gl=US&ceid=US:en"
+            )
+            resp = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200:
+                logging.debug(f"Google News RSS {query}: HTTP {resp.status_code}")
+                continue
+
+            root = ET.fromstring(resp.text)
+            for item in root.findall(".//item"):
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                source = ""
+                source_node = item.find("source")
+                if source_node is not None and source_node.text:
+                    source = source_node.text.strip()
+                description = _strip_html_tags(item.findtext("description") or "")
+                pub_date = item.findtext("pubDate") or ""
+                if source and title.endswith(f" - {source}"):
+                    title = title[: -(len(source) + 3)].strip()
+                key = re.sub(r"\s+", " ", title).strip().lower()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                collected.append({
+                    "title": title,
+                    "text": description,
+                    "source": source or "Google News",
+                    "url": link,
+                    "publishedDate": pub_date,
+                    "origin": "google",
+                })
+                if len(collected) >= limit:
+                    return collected[:limit]
+        except Exception as exc:
+            logging.debug(f"Google News RSS error para {query}: {exc}")
+
+    return collected[:limit]
+
+
+def _score_topic_matches(text):
+    text_lower = str(text or "").lower()
+    topics = []
+    total_score = 0.0
+    for label, keywords, weight in _MACRO_TOPIC_RULES:
+        hits = sum(1 for keyword in keywords if keyword in text_lower)
+        if hits:
+            topics.append(label)
+            total_score += weight + min(1.1, (hits - 1) * 0.22)
+    return topics, total_score
+
+
+def _infer_asset_buckets(ticker, sector="", industry=""):
+    tk = remap_ticker(ticker)
+    profile_text = f"{tk} {sector or ''} {industry or ''} {' '.join(_get_ticker_aliases(tk))}".upper()
+    buckets = set()
+
+    if _is_crypto_ticker(tk) or any(token in profile_text for token in ("CRYPTO", "BITCOIN", "ETHEREUM", "SOLANA", "DIGITAL ASSET")):
+        buckets.add("crypto")
+    if any(token in profile_text for token in ("MINER", "MINING", "MARATHON", "BITCOIN MINER")):
+        buckets.add("miners")
+    if tk in {"GC=F", "IAU", "GLD", "SLV"} or any(token in profile_text for token in ("GOLD", "SILVER", "BULLION", "METALS", "PRECIOUS")):
+        buckets.add("metales")
+    if tk in {"BZ=F", "IXC", "XLE", "NFE"} or any(token in profile_text for token in ("ENERGY", "OIL", "GAS", "LNG", "CRUDE", "PETROLEO")):
+        buckets.add("energia")
+    if any(token in profile_text for token in ("SEMICON", "NVIDIA", "ADVANCED MICRO", "TAIWAN SEMICONDUCTOR", "CHIP", "CHIPS")):
+        buckets.add("semis")
+    if any(token in profile_text for token in ("TECHNOLOGY", "SOFTWARE", "COMMUNICATION SERVICES", "INTERNET", "MEDIA", "ENTERTAINMENT", "GAMING", "CLOUD", "AI")):
+        buckets.add("tech_growth")
+    if any(token in profile_text for token in ("BANK", "FINANCIAL", "INSURANCE", "LENDING")):
+        buckets.add("bancos")
+    if any(token in profile_text for token in ("DEFENSE", "DEFENCE", "AEROSPACE", "MILITARY")):
+        buckets.add("defensa")
+    if any(token in profile_text for token in ("AIRLINE", "TRAVEL", "LEISURE", "HOSPITALITY")):
+        buckets.add("viajes")
+    if not buckets:
+        buckets.add("general")
+    return buckets
+
+
+def _article_mentions_ticker(article, ticker):
+    tk = remap_ticker(ticker)
+    text = " ".join([
+        str(article.get("title") or ""),
+        str(article.get("title_es") or ""),
+        str(article.get("text") or ""),
+        str(article.get("symbol") or ""),
+    ]).upper()
+    article_symbol = str(article.get("symbol") or "").upper()
+    fmp_symbol = _get_fmp_symbol(tk).upper()
+
+    if article_symbol and article_symbol in {fmp_symbol, tk.replace("-USD", "").upper(), tk.upper()}:
+        return True
+
+    for alias in _get_ticker_aliases(tk):
+        if alias and alias in text:
+            return True
+    return False
+
+
+def _score_macro_effect_for_ticker(article, ticker, sector="", industry=""):
+    tk = remap_ticker(ticker)
+    buckets = _infer_asset_buckets(tk, sector=sector, industry=industry)
+    direct_mention = _article_mentions_ticker(article, tk)
+    materiality = article.get("materiality") or _evaluate_news_materiality(article.get("title", ""), article.get("text", ""))
+    sentiment_raw = _safe_float((article.get("sentiment") or {}).get("raw"), 0.0)
+    reasons = []
+    score = 0.0
+
+    if direct_mention:
+        if materiality.get("material"):
+            direction = materiality.get("direction")
+            if direction == "bullish":
+                score += 1.8
+            elif direction == "bearish":
+                score -= 1.8
+            else:
+                score += max(-1.2, min(1.2, sentiment_raw * 3.2))
+            reasons.append(materiality.get("reason") or "Catalizador directo para el activo.")
+        elif abs(sentiment_raw) >= 0.18:
+            score += max(-1.35, min(1.35, sentiment_raw * 3.0))
+            reasons.append("El titular pega directo al activo y trae sesgo direccional.")
+        else:
+            score += 0.7
+            reasons.append("Es una noticia directa del activo y merece seguimiento cercano.")
+
+    for topic in article.get("topics", []):
+        if topic == "conflicto":
+            if "energia" in buckets:
+                score += 1.7
+                reasons.append("La escalada geopolitica suele tensar energia y beneficia productores.")
+            if "metales" in buckets:
+                score += 1.4
+                reasons.append("El flujo de refugio suele favorecer metales defensivos.")
+            if "defensa" in buckets:
+                score += 1.3
+                reasons.append("Mayor tension suele elevar el interes por defensa.")
+            if "semis" in buckets:
+                score -= 1.6
+                reasons.append("Un conflicto eleva riesgo de cadena de suministro para chips.")
+            if "tech_growth" in buckets:
+                score -= 1.2
+                reasons.append("La aversion al riesgo suele castigar growth.")
+            if "crypto" in buckets:
+                score -= 1.0
+                reasons.append("La aversion al riesgo suele pegar a cripto en el corto plazo.")
+        elif topic == "energia":
+            if "energia" in buckets:
+                score += 1.95
+                reasons.append("La presion en petroleo y gas favorece a nombres ligados a energia.")
+            if "metales" in buckets:
+                score += 0.75
+                reasons.append("Shock energetico suele empujar busqueda de refugio.")
+            if "tech_growth" in buckets or "semis" in buckets:
+                score -= 1.15
+                reasons.append("Energia mas cara suele presionar margenes y valuaciones growth.")
+            if "crypto" in buckets:
+                score -= 0.85
+                reasons.append("Shock energetico suele endurecer el apetito por riesgo.")
+        elif topic == "tasas_hawkish":
+            if "bancos" in buckets:
+                score += 0.6
+                reasons.append("Tasas altas pueden sostener spreads de nombres financieros.")
+            if "tech_growth" in buckets or "semis" in buckets:
+                score -= 1.7
+                reasons.append("Tasas altas suelen comprimir valuaciones de growth y chips.")
+            if "crypto" in buckets:
+                score -= 1.55
+                reasons.append("Rendimientos arriba y dolar fuerte suelen pesar sobre cripto.")
+            if "metales" in buckets:
+                score -= 0.75
+                reasons.append("Yields arriba suelen restar atractivo relativo a metales.")
+        elif topic == "tasas_dovish":
+            if "tech_growth" in buckets or "semis" in buckets:
+                score += 1.7
+                reasons.append("Un giro dovish suele aliviar growth y semiconductores.")
+            if "crypto" in buckets or "miners" in buckets:
+                score += 1.55
+                reasons.append("Liquidez mas amable suele apoyar cripto y miners.")
+            if "metales" in buckets:
+                score += 0.65
+                reasons.append("Yields mas bajos suelen apoyar refugios como oro y plata.")
+            if "bancos" in buckets:
+                score -= 0.45
+                reasons.append("Un entorno mas dovish puede enfriar spreads bancarios.")
+        elif topic == "aranceles":
+            if "semis" in buckets:
+                score -= 1.8
+                reasons.append("Aranceles y controles de exportacion pegan directo a chips.")
+            if "tech_growth" in buckets:
+                score -= 1.25
+                reasons.append("Friccion comercial presiona cadenas globales de tecnologia.")
+            if "energia" in buckets:
+                score -= 0.45
+                reasons.append("Menor comercio global puede enfriar demanda de energia.")
+        elif topic == "chips":
+            if "semis" in buckets:
+                score -= 1.95
+                reasons.append("El titular toca oferta de chips y eso pega al sector.")
+            if "tech_growth" in buckets:
+                score -= 1.05
+                reasons.append("Problemas de chips suelen contaminar multiples nombres tech.")
+        elif topic == "cripto":
+            if "crypto" in buckets:
+                score += 1.75 if sentiment_raw >= 0 else -1.75
+                reasons.append("El evento regula o acelera flujo institucional hacia cripto.")
+            if "miners" in buckets:
+                score += 1.55 if sentiment_raw >= 0 else -1.55
+                reasons.append("Los miners amplifican el movimiento del ecosistema cripto.")
+        elif topic == "recesion":
+            if "metales" in buckets:
+                score += 0.7
+                reasons.append("Miedo macro suele favorecer activos defensivos.")
+            if "energia" in buckets:
+                score -= 1.0
+                reasons.append("Riesgo de desaceleracion enfria demanda de energia.")
+            if "crypto" in buckets:
+                score -= 1.35
+                reasons.append("Una desaceleracion fuerte suele sacar flujo de activos especulativos.")
+            if "tech_growth" in buckets or "semis" in buckets:
+                score -= 1.2
+                reasons.append("Riesgo de recesion suele castigar nombres de beta alta.")
+        elif topic == "defensa":
+            if "defensa" in buckets:
+                score += 1.35
+                reasons.append("Mayor gasto militar suele favorecer al sector defensa.")
+            if "energia" in buckets:
+                score += 0.55
+                reasons.append("Mas tension global suele sostener energia.")
+            if "tech_growth" in buckets:
+                score -= 0.65
+                reasons.append("Defensa fuerte suele coincidir con menor apetito por growth.")
+
+    if "miners" in buckets and "crypto" in buckets and abs(sentiment_raw) > 0.18:
+        score += sentiment_raw * 0.7
+
+    if not reasons and abs(sentiment_raw) >= 0.22:
+        score += max(-0.8, min(0.8, sentiment_raw * 1.8))
+        reasons.append("El sentimiento general del titular inclina el sesgo del activo.")
+
+    if abs(score) < 0.45:
+        return None
+
+    strength_boost = min(1.7, 0.9 + (_safe_float(article.get("market_score"), 0.0) / 7.0))
+    score *= strength_boost
+    probability = int(max(58, min(92, 58 + abs(score) * 8.5 + min(_safe_float(article.get("market_score"), 0.0) * 2.2, 14))))
+    direction = "alcista" if score > 0 else "bajista"
+    return {
+        "ticker": tk,
+        "score": round(score, 3),
+        "direction": direction,
+        "probability": probability,
+        "reason": reasons[0],
+        "direct": direct_mention,
+    }
+
+
+def _explain_market_implication(article):
+    topics = article.get("topics", [])
+    materiality = article.get("materiality") or {}
+    if materiality.get("material") and article.get("affected_tickers"):
+        return "Catalizador directo sobre nombres de la cartera con lectura operable."
+    if "conflicto" in topics:
+        return "Sube la aversion al riesgo y se tensionan energia, defensivos y cadena de suministro."
+    if "energia" in topics:
+        return "El movimiento del petroleo y gas puede rotar flujo hacia energia y fuera de growth."
+    if "tasas_hawkish" in topics:
+        return "Yields arriba suelen pegar a growth, semis y cripto."
+    if "tasas_dovish" in topics:
+        return "Liquidez mas amable suele apoyar growth, semis y cripto."
+    if "aranceles" in topics or "chips" in topics:
+        return "La friccion comercial afecta oferta global y multiples valuaciones tech."
+    if "recesion" in topics:
+        return "El mercado suele rotar a defensivos y castigar beta alta."
+    if "cripto" in topics:
+        return "El flujo institucional cripto suele contagiar a exchanges y miners."
+    return "Titular con lectura de mercado util para la toma de decisiones."
+
+
+def _aggregate_wallet_geo_impacts(news_items):
+    aggregated = {}
+    for article in news_items:
+        for impact in article.get("wallet_impacts", []):
+            ticker = impact["ticker"]
+            slot = aggregated.setdefault(ticker, {
+                "ticker": ticker,
+                "score": 0.0,
+                "probability": 0,
+                "reasons": [],
+                "mentions": 0,
+            })
+            slot["score"] += _safe_float(impact.get("score"), 0.0)
+            slot["probability"] = max(slot["probability"], int(impact.get("probability") or 0))
+            slot["mentions"] += 1
+            reason = str(impact.get("reason") or "").strip()
+            if reason and reason not in slot["reasons"]:
+                slot["reasons"].append(reason)
+
+    summary = []
+    for slot in aggregated.values():
+        signed_score = _safe_float(slot["score"], 0.0)
+        if abs(signed_score) < 0.55:
+            continue
+        direction = "alcista" if signed_score > 0 else "bajista"
+        probability = int(max(slot["probability"], min(90, 60 + abs(signed_score) * 7)))
+        summary.append({
+            "ticker": slot["ticker"],
+            "direction": direction,
+            "probability": probability,
+            "score": round(signed_score, 3),
+            "mentions": slot["mentions"],
+            "reason": slot["reasons"][0] if slot["reasons"] else "Sin explicacion adicional.",
+        })
+
+    summary.sort(key=lambda item: (abs(item["score"]), item["probability"]), reverse=True)
+    return summary
+
+
+def _build_geo_verdict(wallet_impacts, top_items):
+    net_wallet_score = sum(_safe_float(item.get("score"), 0.0) for item in wallet_impacts)
+    top_item = top_items[0] if top_items else {}
+    dominant_risk = top_item.get("impact_summary") or "Sin catalizador dominante claro."
+    confidence = int(max(60, min(92, 60 + abs(net_wallet_score) * 6 + min(_safe_float(top_item.get("market_score"), 0.0) * 2.0, 14))))
+
+    if net_wallet_score <= -2.8:
+        action = "Reducir exposicion tactica"
+        thesis = "El flujo macro actual esta castigando nombres sensibles de la cartera."
+    elif net_wallet_score >= 2.8:
+        action = "Aprovechar oportunidad selectiva"
+        thesis = "Hay catalizadores macro que favorecen activos concretos y permiten ser tacticos."
+    elif abs(net_wallet_score) >= 1.1:
+        action = "Vigilar de cerca"
+        thesis = "Hay un sesgo real, pero todavia conviene esperar confirmaciones adicionales."
+    else:
+        action = "Mantener vigilancia"
+        thesis = "El flujo esta mixto y por ahora manda la selectividad por activo."
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "thesis": thesis,
+        "dominant_risk": dominant_risk,
+        "net_wallet_score": round(net_wallet_score, 3),
+    }
+
+
+def _collect_geopolitical_market_snapshot(limit=8, force_refresh=False):
+    global GENESIS_RISK_CONTEXT
+
+    last_update = GENESIS_RISK_CONTEXT.get("last_update")
+    cached_items = GENESIS_RISK_CONTEXT.get("news_digest") or []
+    if (
+        not force_refresh
+        and cached_items
+        and isinstance(last_update, datetime)
+        and (datetime.now() - last_update).total_seconds() < 480
+    ):
+        return cached_items[:limit]
+
+    wallet_tickers = get_tracked_tickers()
+    profile_map = {tk: (_fetch_fmp_profile(tk) or {}) for tk in wallet_tickers}
+    candidates = []
+    candidates.extend(_fetch_fmp_news_with_sentiment(max(limit * 2, 18)))
+    candidates.extend(_fetch_google_market_news(max(limit * 2, 16)))
+
+    deduped = []
+    seen = set()
+    for raw_item in candidates:
+        title = re.sub(r"\s+", " ", str(raw_item.get("title") or "")).strip()
+        if not title:
+            continue
+        url = str(raw_item.get("url") or "").strip().split("?")[0]
+        norm_title = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+        dedupe_key = url or norm_title
+        if not dedupe_key or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        deduped.append(raw_item)
+
+    titles = [item.get("title", "") for item in deduped[: max(limit * 2, 12)]]
+    translated_titles = _translate_titles_to_spanish_v2(titles)
+
+    enriched = []
+    for idx, raw_item in enumerate(deduped):
+        title = re.sub(r"\s+", " ", str(raw_item.get("title") or "")).strip()
+        body = re.sub(r"\s+", " ", str(raw_item.get("text") or raw_item.get("description") or "")).strip()
+        if not title:
+            continue
+
+        sentiment = raw_item.get("sentiment")
+        if not isinstance(sentiment, dict):
+            sentiment = _classify_sentiment(sentiment if sentiment is not None else _infer_sentiment_from_title(title))
+
+        source = str(raw_item.get("source") or raw_item.get("site") or "Fuente no disponible").strip()
+        url = str(raw_item.get("url") or raw_item.get("link") or "").strip()
+        published_at = _parse_news_datetime(
+            raw_item.get("publishedDate")
+            or raw_item.get("published_at")
+            or raw_item.get("date")
+            or raw_item.get("pubDate")
+        )
+        published_label = _format_news_recency(published_at)
+        article_text = f"{title}. {body}".strip()
+        topics, topic_score = _score_topic_matches(article_text)
+        materiality = _evaluate_news_materiality(title, body)
+        trust_score = _source_trust_score(source)
+        recency_score = 0.0
+        if isinstance(published_at, datetime):
+            age_hours = max((datetime.now(timezone.utc) - published_at).total_seconds() / 3600, 0.0)
+            if age_hours <= 3:
+                recency_score = 2.2
+            elif age_hours <= 8:
+                recency_score = 1.7
+            elif age_hours <= 24:
+                recency_score = 1.1
+            elif age_hours <= 72:
+                recency_score = 0.45
+        else:
+            recency_score = 0.35
+
+        title_es = translated_titles[idx] if idx < len(translated_titles) else _quick_translate_financial(title)
+        enriched_item = {
+            "title": title,
+            "title_es": title_es,
+            "text": body,
+            "text_es": _translate_text_to_spanish(body, max_chars=320) if body else "",
+            "source": source,
+            "url": url,
+            "symbol": raw_item.get("symbol") or "",
+            "sentiment": sentiment,
+            "topics": topics,
+            "materiality": materiality,
+            "published_at": published_at,
+            "published_label": published_label,
+            "affected_tickers": [],
+        }
+
+        wallet_impacts = []
+        for tk in wallet_tickers:
+            profile = profile_map.get(tk) or {}
+            impact = _score_macro_effect_for_ticker(
+                enriched_item,
+                tk,
+                sector=profile.get("sector") or "",
+                industry=profile.get("industry") or "",
+            )
+            if impact:
+                wallet_impacts.append(impact)
+                if impact["ticker"] not in enriched_item["affected_tickers"]:
+                    enriched_item["affected_tickers"].append(impact["ticker"])
+
+        wallet_impact_score = sum(abs(_safe_float(item.get("score"), 0.0)) for item in wallet_impacts)
+        sentiment_mag = abs(_safe_float(sentiment.get("raw"), 0.0))
+        materiality_bonus = abs(_safe_float(materiality.get("score"), 0.0)) * (0.7 if materiality.get("material") else 0.2)
+        market_score = topic_score + trust_score + recency_score + (sentiment_mag * 2.5) + materiality_bonus + min(wallet_impact_score, 4.0)
+
+        enriched_item["wallet_impacts"] = wallet_impacts
+        enriched_item["market_score"] = round(market_score, 3)
+        enriched_item["alert_score"] = round(market_score + min(wallet_impact_score, 3.2), 3)
+        enriched_item["impact_summary"] = _explain_market_implication(enriched_item)
+        enriched_item["event_id"] = _stable_event_id("GEO", title.lower(), source.lower(), url or published_label)
+        enriched.append(enriched_item)
+
+    enriched.sort(
+        key=lambda item: (
+            _safe_float(item.get("alert_score"), 0.0),
+            1 if item.get("affected_tickers") else 0,
+            abs(_safe_float((item.get("sentiment") or {}).get("raw"), 0.0)),
+        ),
+        reverse=True,
+    )
+
+    top_items = enriched[:limit]
+    wallet_impacts = _aggregate_wallet_geo_impacts(top_items)
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for item in top_items:
+        raw_sentiment = _safe_float((item.get("sentiment") or {}).get("raw"), 0.0)
+        weight = max(1.0, _safe_float(item.get("market_score"), 0.0))
+        weighted_sum += raw_sentiment * weight
+        weight_total += weight
+    avg_sentiment = (weighted_sum / weight_total) if weight_total > 0 else 0.0
+    verdict = _build_geo_verdict(wallet_impacts, top_items)
+
+    GENESIS_RISK_CONTEXT = {
+        "sentiment_global": avg_sentiment,
+        "high_risk_tickers": [item["ticker"] for item in wallet_impacts if item["score"] <= -1.2],
+        "last_update": datetime.now(),
+        "news_digest": top_items,
+        "wallet_impacts": wallet_impacts,
+        "geo_verdict": verdict,
+    }
+    logging.info(
+        "GEO SNAPSHOT: %s noticias enriquecidas | %s impactos cartera | sentimiento %.2f",
+        len(top_items),
+        len(wallet_impacts),
+        avg_sentiment,
+    )
+    return top_items
+
+
+def _build_ticker_macro_context(ticker, sector="", industry="", limit=3, force_refresh=False):
+    tk = remap_ticker(ticker)
+    items = _collect_geopolitical_market_snapshot(limit=max(limit + 4, 8), force_refresh=force_refresh)
+    relevant = []
+
+    for item in items:
+        impact = _score_macro_effect_for_ticker(item, tk, sector=sector, industry=industry)
+        if not impact:
+            continue
+        relevant.append({
+            "title_es": item.get("title_es") or item.get("title") or "",
+            "source": item.get("source") or "Fuente",
+            "url": item.get("url") or "",
+            "published_label": item.get("published_label") or "reciente",
+            "impact_summary": item.get("impact_summary") or "",
+            "direction": impact["direction"],
+            "probability": impact["probability"],
+            "score": impact["score"],
+            "reason": impact["reason"],
+        })
+
+    relevant.sort(key=lambda item: (abs(_safe_float(item.get("score"), 0.0)), item.get("probability", 0)), reverse=True)
+    selected = relevant[:limit]
+    net_score = sum(_safe_float(item.get("score"), 0.0) for item in selected)
+    if not selected:
+        net_score = _safe_float(GENESIS_RISK_CONTEXT.get("sentiment_global"), 0.0) * 1.15
+
+    if net_score >= 2.2:
+        bias_label = "macro muy favorable"
+    elif net_score >= 0.8:
+        bias_label = "macro favorable"
+    elif net_score <= -2.2:
+        bias_label = "macro muy adverso"
+    elif net_score <= -0.8:
+        bias_label = "macro adverso"
+    else:
+        bias_label = "macro mixto"
+
+    probability = int(max(58, min(92, 60 + abs(net_score) * 7 + (5 if selected else 0))))
+    dominant = selected[0] if selected else {}
+    summary = dominant.get("reason") or (dominant.get("impact_summary") if dominant else "Sin catalizador macro dominante por ahora.")
+    return {
+        "score": round(net_score, 3),
+        "bias_label": bias_label,
+        "probability": probability,
+        "headline": dominant.get("title_es") or "",
+        "summary": summary,
+        "items": selected,
+    }
+
+
+def _apply_macro_bias_to_projection(pack, projection, macro_score=0.0):
+    projection = _sanitize_numeric_series(projection or [], default=_safe_float(pack.get("price"), 0.0))
+    current = _safe_float(pack.get("price") or ((pack.get("closes") or pack.get("closes_series") or [0])[-1]), 0.0)
+    if current <= 0 or not projection:
+        return projection
+
+    macro_score = _safe_float(macro_score, 0.0)
+    if abs(macro_score) < 0.35:
+        return projection
+
+    support = _safe_float(pack.get("support"), current * 0.97)
+    resistance = _safe_float(pack.get("resistance"), current * 1.03)
+    visual_floor = max(current * 0.012, 0.12 if current < 20 else 0.35)
+    corridor = max(abs(resistance - support), current * 0.035, visual_floor * 2.2)
+    existing_target = _safe_float(projection[-1], current)
+    macro_move = math.copysign(corridor * min(0.28, 0.08 + abs(macro_score) * 0.035), macro_score)
+    blend = min(0.68, 0.24 + abs(macro_score) * 0.08)
+    biased_delta = ((existing_target - current) * (1 - blend)) + (macro_move * blend)
+    if abs(biased_delta) < visual_floor * 0.8:
+        biased_delta = math.copysign(visual_floor * 0.9, macro_score)
+
+    target = current + biased_delta
+    steps = max(len(projection), 12)
+    adjusted = []
+    recent_closes = pack.get("closes") or pack.get("closes_series") or []
+    recent_slope = (recent_closes[-1] - recent_closes[-6]) / 5 if len(recent_closes) >= 6 else 0.0
+    for step in range(1, steps + 1):
+        t = step / steps
+        eased = 1 - ((1 - t) ** 2)
+        curvature = math.sin(t * math.pi) * recent_slope * 0.65
+        value = current + ((target - current) * eased) + curvature
+        if target > current and value <= current:
+            value = current + max((target - current) * max(t * 0.62, 0.18), visual_floor * 0.16)
+        elif target < current and value >= current:
+            value = current - max((current - target) * max(t * 0.62, 0.18), visual_floor * 0.16)
+        adjusted.append(value)
+    return adjusted
+
+
+def _format_geopolitics_push_message(news_items):
+    if not news_items:
+        return None
+    lines = []
+    for article in news_items[:2]:
+        title = _escape_html(_truncate_text(article.get("title_es") or article.get("title") or "", 120))
+        source_name = _escape_html(article.get("source") or "Fuente")
+        source_url = html.escape((article.get("url") or "").strip(), quote=True)
+        lines.append(f"• <b>{title}</b>")
+        if source_url:
+            lines.append(f'• Fuente: <a href="{source_url}">{source_name}</a> | {article.get("published_label") or "reciente"}')
+        else:
+            lines.append(f"• Fuente: {source_name} | {article.get('published_label') or 'reciente'}")
+        lines.append(f"• Mercado: {_escape_html(article.get('impact_summary') or 'Catalizador relevante para el mercado.')}")
+        wallet_impacts = article.get("wallet_impacts") or []
+        if wallet_impacts:
+            top_impacts = []
+            for impact in wallet_impacts[:2]:
+                top_impacts.append(f"{get_display_name(impact['ticker'])}: {impact['direction']} {impact['probability']}%")
+            lines.append(f"• Cartera afectada: {' | '.join(top_impacts)}")
+        lines.append("")
+
+    return _make_card(
+        "ALERTA GEOPOLITICA",
+        lines,
+        icon="🌍",
+        footer="Solo entran catalizadores relevantes y con lectura operable para evitar spam."
+    )
+
+
 def genesis_strategic_report(manual=True):
     """REPORTE ESTRATÉGICO UNIFICADO GÉNESIS
     Integra: FMP Sentiment + Wallet Cross-Reference + Whale Data + IA
@@ -2112,7 +2936,7 @@ def genesis_strategic_report(manual=True):
 
 def generar_reporte_macro_manual():
     """Wrapper para el botón Geopolítica â€” usa el motor unificado"""
-    return genesis_strategic_report(manual=True)
+    return genesis_strategic_report_v2(manual=True)
 
 
 def fetch_intraday_data(ticker):
@@ -3450,6 +4274,9 @@ def _render_stock_analysis_chart(ticker, analysis=None):
 
     display_name = get_display_name(tk)
     divergence = pack.get("divergence") or {}
+    macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
+    macro_score = _safe_float(macro_context.get("score"), _safe_float(analysis.get("macro_score"), 0.0))
+    pack["macro_score"] = macro_score
 
     def _pack_scalar(key, default=0.0):
         value = pack.get(key, default)
@@ -3691,6 +4518,12 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"Histórico analizado: {candles_used} sesiones",
         f"Horizonte proyectado: {future_label}",
         f"Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text})",
+    ])
+    sidebar_y = _draw_section(sidebar_y, "Macro y sentimiento", [
+        f"Sesgo macro: {macro_bias_label}.",
+        f"Impacto estimado: {macro_probability}%.",
+        f"Lectura dominante: {macro_summary}",
+        f"Titular guia: {macro_headline or 'Sin titular dominante por ahora.'}",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
         f"Precio actual: ${fmt_price(price_value)}",
@@ -3989,6 +4822,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     resistance = _pack_scalar("resistance")
     price_value = _pack_scalar("price", closes[-1])
     projection = _ensure_projection_has_direction(pack, projection, current=price_value, steps=max(len(projection), 12))
+    projection = _apply_macro_bias_to_projection(pack, projection, macro_score)
     rsi_value = _pack_scalar("rsi", 50.0)
     macd_line_value = _pack_scalar("macd_line", 0.0)
     macd_signal_value = _pack_scalar("macd_signal", 0.0)
@@ -4026,6 +4860,10 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         orientation_score -= 1
     if divergence.get("active"):
         orientation_score += 1 if divergence.get("kind") == "bullish" else -1
+    if macro_score >= 1.1:
+        orientation_score += 1
+    elif macro_score <= -1.1:
+        orientation_score -= 1
     orientation_confidence = int(max(58, min(92, 61 + abs(orientation_score) * 6 + min(abs(projection_delta_pct) * 1.2, 9))))
 
     if orientation_score >= 3:
@@ -4042,6 +4880,10 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
     ema_bias = "alcista" if ema50_value >= ema200_value else "bajista"
     divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
+    macro_bias_label = str(macro_context.get("bias_label") or ("macro favorable" if macro_score > 0.7 else ("macro adverso" if macro_score < -0.7 else "macro mixto")))
+    macro_probability = int(macro_context.get("probability") or max(58, min(92, 60 + abs(macro_score) * 7)))
+    macro_summary = str(macro_context.get("summary") or "Sin catalizador macro dominante por ahora.")
+    macro_headline = str(macro_context.get("headline") or "")
     timeframe_label = pack.get("timeframe_label") or "Diaria (1D)"
     source_label = pack.get("source_label") or "FMP EOD"
     session_label = pack.get("session_label") or "Cierres confirmados"
@@ -4096,7 +4938,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
     draw.text((54, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
-    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con el motor institucional.", fill="#5D687A", font=font_sub)
+    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con tecnica, sentimiento y contexto macro.", fill="#5D687A", font=font_sub)
 
     def _draw_chip(x, y, text, fill, text_fill="#10233E"):
         bbox = draw.textbbox((0, 0), text, font=font_small)
@@ -4111,6 +4953,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     chip_x = _draw_chip(chip_x, chip_y, "Velas japonesas", (241, 233, 220, 255))
     chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} velas", (236, 232, 223, 255))
     chip_x = _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)))
+    chip_x = _draw_chip(chip_x, chip_y, f"Macro: {macro_bias_label}", (225, 241, 231, 255) if macro_score > 0.7 else ((247, 228, 225, 255) if macro_score < -0.7 else (223, 232, 243, 255)), "#0F5132" if macro_score > 0.7 else ("#842029" if macro_score < -0.7 else "#10233E"))
     _draw_chip(chip_x, chip_y, f"Orientación final: {orientation_summary}", (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)), "#0F5132" if projection_hint == "alcista" else ("#842029" if projection_hint == "bajista" else "#7A5A00"))
 
     x1, y1, x2, y2 = main_panel
@@ -4570,6 +5413,12 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         or ""
     )
     description = _truncate_text(_translate_text_to_spanish(description_raw, max_chars=420), 190)
+    macro_context = _build_ticker_macro_context(tk, sector=sector, industry=industry, limit=3, force_refresh=False)
+    macro_score = _safe_float(macro_context.get("score"), 0.0)
+    if chart_pack:
+        chart_pack["macro_score"] = macro_score
+        projection = _apply_macro_bias_to_projection(chart_pack, projection, macro_score)
+        chart_pack["projection"] = projection
 
     change_abs = _safe_float(quote.get("change"))
     change_pct = _safe_float(quote.get("changesPercentage"))
@@ -4648,6 +5497,19 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         projection_bias = "bajista"
     else:
         projection_bias = "neutral"
+
+    analysis_cache = dict((LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {})
+    analysis_cache.update({
+        "price": price,
+        "support": support,
+        "resistance": resistance,
+        "projection": projection,
+        "projection_target": projection_target,
+        "projection_bias": projection_bias,
+        "macro_score": macro_score,
+        "macro_context": macro_context,
+    })
+    LAST_KNOWN_ANALYSIS[tk] = analysis_cache
 
     reward_pct = ((take_profit - price) / price * 100) if price > 0 else 0.0
     risk_pct = ((price - stop_loss) / price * 100) if price > 0 else 0.0
@@ -4774,6 +5636,19 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         score -= 1
         bearish_reasons.append("titulares recientes con sesgo adverso")
 
+    if macro_score >= 1.6:
+        score += 2
+        bullish_reasons.append("macro y geopolítica favorecen al sector")
+    elif macro_score >= 0.7:
+        score += 1
+        bullish_reasons.append("macro reciente acompaña al activo")
+    elif macro_score <= -1.6:
+        score -= 2
+        bearish_reasons.append("macro y geopolítica presionan al sector")
+    elif macro_score <= -0.7:
+        score -= 1
+        bearish_reasons.append("macro reciente añade presión al activo")
+
     if price <= stop_loss:
         verdict = "VENTA DEFENSIVA"
         thesis = "El precio ya perforó la zona táctica de defensa y ahora prima proteger capital."
@@ -4842,6 +5717,8 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         f"• Precio actual: <b>${fmt_price(price)}</b> ({change_pct:+.2f}% hoy)",
         f"• Capitalización: {_format_compact_money(market_cap)} | P/E: {pe_text} | Beta: {beta_text}",
     ]
+
+    lines.insert(4, f"â€¢ Macro y sentimiento: <b>{_escape_html(macro_context.get('bias_label', 'macro mixto'))}</b> | impacto estimado {int(macro_context.get('probability', 58) or 58)}%")
 
     if description:
         lines.append(f"• Negocio: {_escape_html(description)}")
@@ -6183,7 +7060,7 @@ def boot_smc_levels_once():
     # PASO INICIAL: Poblar contexto geopolítico al arrancar
     try:
         print("DEBUG BOOT: Inicializando contexto geopolitico...")
-        genesis_strategic_report(manual=False)
+        genesis_strategic_report_v2(manual=False)
         print(f"DEBUG BOOT: Contexto listo. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
     except Exception as e:
         print(f"DEBUG BOOT: Error inicializando contexto geo: {e}")
@@ -6217,17 +7094,18 @@ def background_loop_proactivo():
             tracked = get_tracked_tickers()
             print(f"DEBUG HEARTBEAT [{now.strftime('%H:%M:%S')}]: Ciclo #{loop_counter} | {len(tracked)} activos en radar | Whale memory: {len(WHALE_MEMORY)}")
 
-            raw_news = check_geopolitical_news()
+            raw_news = check_geopolitical_news_v2()
             unique_news = []
-            for n_title in raw_news:
-                nws_id = f"NWS_{n_title}"
-                if not check_and_add_seen_event(nws_id):
-                    unique_news.append(n_title)
+            for article in raw_news:
+                event_id = article.get("event_id") or _stable_event_id("GEO", article.get("title"), article.get("url"), article.get("source"))
+                if not check_and_add_seen_event(event_id):
+                    unique_news.append(article)
 
             if unique_news:
-                ai_threat_evaluation = gpt_advanced_geopolitics_v3(unique_news, manual=False)
-                if ai_threat_evaluation:
-                     bot.send_message(
+                geo_push = _format_geopolitics_push_message(unique_news)
+                if geo_push:
+                    ai_threat_evaluation = geo_push
+                    bot.send_message(
                          CHAT_ID,
                          _make_card("VIGILANCIA GLOBAL", [ai_threat_evaluation], icon="🚨"),
                          parse_mode="HTML"
@@ -6238,7 +7116,7 @@ def background_loop_proactivo():
                 geo_refresh_counter = 0
                 try:
                     print(f"DEBUG GEO REFRESH: Actualizando contexto geopolitico...")
-                    genesis_strategic_report(manual=False)  # Actualiza GENESIS_RISK_CONTEXT sin enviar
+                    genesis_strategic_report_v2(manual=False)  # Actualiza GENESIS_RISK_CONTEXT sin enviar
                     print(f"DEBUG GEO REFRESH: Contexto actualizado. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
                 except Exception as e:
                     print(f"DEBUG GEO REFRESH ERROR: {e}")
