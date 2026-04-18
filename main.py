@@ -20,6 +20,7 @@ import math
 from collections import deque
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 # Configuración extendida de logs para Railway
@@ -990,6 +991,15 @@ def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
     global _FMP_LAST_ERROR
 
+    def _to_float(value, default=0.0):
+        try:
+            if value in (None, "", "None"):
+                return default
+            numeric = float(value)
+            return numeric if math.isfinite(numeric) else default
+        except Exception:
+            return default
+
     if not FMP_API_KEY:
         logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
         _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
@@ -1046,6 +1056,11 @@ def _fetch_fmp_quote(tk):
                     pe = float(quote.get('pe', 0) or 0)
                     market_cap = float(quote.get('marketCap', 0) or 0)
                     name = quote.get('name') or quote.get('companyName') or ''
+                    day_open = _to_float(quote.get('open'))
+                    day_high = _to_float(quote.get('dayHigh') or quote.get('high'))
+                    day_low = _to_float(quote.get('dayLow') or quote.get('low'))
+                    previous_close = _to_float(quote.get('previousClose'))
+                    last_timestamp = quote.get('timestamp') or quote.get('lastUpdated') or quote.get('date') or ""
                     if price > 0:
                         logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
                         return {
@@ -1058,6 +1073,11 @@ def _fetch_fmp_quote(tk):
                             'pe': pe,
                             'marketCap': market_cap,
                             'name': name,
+                            'open': day_open,
+                            'dayHigh': day_high,
+                            'dayLow': day_low,
+                            'previousClose': previous_close,
+                            'timestamp': last_timestamp,
                         }
                     else:
                         print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
@@ -2659,18 +2679,37 @@ def _count_whale_alerts_today():
     return total
 
 
+_CHART_FONT_CACHE = {}
+
+
 def _get_chart_font(size=16, bold=False):
-    candidates = [
+    cache_key = (int(size), bool(bold))
+    cached_font = _CHART_FONT_CACHE.get(cache_key)
+    if cached_font is not None:
+        return cached_font
+
+    font_candidates = [
+        os.path.join("C:\\Windows\\Fonts", "arialbd.ttf" if bold else "arial.ttf"),
+        os.path.join("C:\\Windows\\Fonts", "calibrib.ttf" if bold else "calibri.ttf"),
+        os.path.join("C:\\Windows\\Fonts", "bahnschrift.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
         "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
         "Arial Bold.ttf" if bold else "Arial.ttf",
         "arialbd.ttf" if bold else "arial.ttf",
     ]
-    for font_name in candidates:
+
+    for font_path in font_candidates:
         try:
-            return ImageFont.truetype(font_name, size=size)
+            font = ImageFont.truetype(font_path, size=int(size))
+            _CHART_FONT_CACHE[cache_key] = font
+            return font
         except Exception:
             continue
-    return ImageFont.load_default()
+
+    fallback_font = ImageFont.load_default()
+    _CHART_FONT_CACHE[cache_key] = fallback_font
+    return fallback_font
 
 
 def _find_recent_pivots(values, mode="low", window=3, lookback=55, min_gap=6):
@@ -2935,11 +2974,100 @@ def _ensure_projection_has_direction(pack, projection, current=None, steps=12):
     return adjusted_projection
 
 
+def _get_market_now():
+    try:
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return datetime.now()
+
+
+def _merge_live_quote_into_eod_history(ticker, hist_rows):
+    tk = remap_ticker(ticker)
+    hist_rows = list(hist_rows or [])
+    meta = {
+        "timeframe_label": "Diaria (1D)",
+        "source_label": "FMP EOD",
+        "session_label": "Cierres confirmados",
+        "live_candle": False,
+    }
+
+    if not hist_rows:
+        return hist_rows, meta
+
+    try:
+        quote = _fetch_fmp_quote(tk) or {}
+    except Exception:
+        quote = {}
+    if not isinstance(quote, dict):
+        quote = {}
+
+    market_now = _get_market_now()
+    today_str = market_now.date().isoformat()
+    if market_now.weekday() >= 5 and not _is_crypto_ticker(tk):
+        return hist_rows, meta
+
+    last_row = hist_rows[0] if hist_rows else {}
+    last_date = str((last_row or {}).get("date") or (last_row or {}).get("label") or "")[:10]
+
+    current_price = _safe_float(quote.get("price"), 0.0)
+    current_open = _safe_float(quote.get("open"), 0.0)
+    current_high = _safe_float(quote.get("dayHigh") or quote.get("high"), 0.0)
+    current_low = _safe_float(quote.get("dayLow") or quote.get("low"), 0.0)
+    current_volume = _safe_float(quote.get("volume") or quote.get("vol"), 0.0)
+    previous_close = _safe_float(quote.get("previousClose"), _safe_float(last_row.get("close"), current_price))
+
+    if current_price <= 0:
+        return hist_rows, meta
+
+    open_value = current_open if current_open > 0 else previous_close if previous_close > 0 else current_price
+    positive_lows = [value for value in (current_low, open_value, current_price) if value > 0]
+    low_value = min(positive_lows) if positive_lows else current_price
+    high_value = max(value for value in (current_high, open_value, current_price) if value > 0)
+
+    if last_date == today_str:
+        merged_row = dict(last_row)
+        merged_row["date"] = today_str
+        merged_row["open"] = open_value
+        merged_row["close"] = current_price
+        merged_row["high"] = max(_safe_float(last_row.get("high"), 0.0), high_value, current_price, open_value)
+        previous_low = _safe_float(last_row.get("low"), 0.0)
+        merged_row["low"] = min(value for value in (previous_low, low_value, current_price, open_value) if value > 0)
+        merged_row["volume"] = max(_safe_float(last_row.get("volume"), 0.0), current_volume)
+        hist_rows[0] = merged_row
+        meta.update({
+            "timeframe_label": "Diaria (1D) en vivo",
+            "source_label": "FMP EOD + sesión actual",
+            "session_label": "Vela diaria actualizada con cotización en curso",
+            "live_candle": True,
+        })
+        return hist_rows, meta
+
+    if last_date and last_date < today_str:
+        hist_rows.insert(0, {
+            "date": today_str,
+            "open": open_value,
+            "close": current_price,
+            "high": high_value,
+            "low": low_value,
+            "volume": current_volume,
+        })
+        meta.update({
+            "timeframe_label": "Diaria (1D) en vivo",
+            "source_label": "FMP EOD + vela del día",
+            "session_label": "Sesión actual integrada para alinear con mercado abierto",
+            "live_candle": True,
+        })
+
+    return hist_rows, meta
+
+
 def _build_chart_pack(ticker, candles=110):
     tk = remap_ticker(ticker)
     hist = _fetch_fmp_historical_eod(tk, limit=max(260, candles)) or []
     if len(hist) < 60:
         return None
+
+    hist, hist_meta = _merge_live_quote_into_eod_history(tk, hist)
 
     hist = list(reversed(hist[:max(260, candles)]))
     closes_full = [_safe_float(row.get("close"), 0.0) for row in hist]
@@ -3001,6 +3129,10 @@ def _build_chart_pack(ticker, candles=110):
 
     pack = {
         "ticker": tk,
+        "timeframe_label": hist_meta.get("timeframe_label") or "Diaria (1D)",
+        "source_label": hist_meta.get("source_label") or "FMP EOD",
+        "session_label": hist_meta.get("session_label") or "Cierres confirmados",
+        "live_candle": bool(hist_meta.get("live_candle")),
         "dates_full": dates_full,
         "opens_full": opens_full,
         "closes_full": closes_full,
@@ -3109,6 +3241,10 @@ def _build_chart_pack_failsafe(ticker, analysis=None):
 
     pack = {
         "ticker": tk,
+        "timeframe_label": "Diaria (1D) estimada",
+        "source_label": "FMP fallback",
+        "session_label": "Modo de contingencia visual",
+        "live_candle": False,
         "dates": dates[-60:],
         "opens": opens[-60:],
         "closes": closes[-60:],
@@ -3760,7 +3896,9 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     macd_bias = "alcista" if macd_line_value >= macd_signal_value else "bajista"
     ema_bias = "alcista" if ema50_value >= ema200_value else "bajista"
     divergence_text = divergence.get("summary") if divergence.get("active") else "Sin divergencia operable fuerte por ahora."
-    timeframe_label = "Diaria (1D)"
+    timeframe_label = pack.get("timeframe_label") or "Diaria (1D)"
+    source_label = pack.get("source_label") or "FMP EOD"
+    session_label = pack.get("session_label") or "Cierres confirmados"
     candles_used = len(closes)
     future_label = f"+{len(projection)} sesiones" if projection else "Sin proyección"
     ema50_context = "precio por encima de la media rapida" if price_value >= ema50_value else "precio por debajo de la media rapida"
@@ -3793,33 +3931,33 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     def _axis_number(value):
         return fmt_price(value).replace(".", ",")
 
-    img = Image.new("RGBA", (1600, 960), "#F4F0E8")
+    img = Image.new("RGBA", (1760, 1080), "#F4F0E8")
     draw = ImageDraw.Draw(img, "RGBA")
-    font_title = _get_chart_font(30, bold=True)
-    font_sub = _get_chart_font(18, bold=False)
-    font_label = _get_chart_font(16, bold=False)
-    font_small = _get_chart_font(14, bold=False)
-    font_bold = _get_chart_font(18, bold=True)
-    font_metric = _get_chart_font(20, bold=True)
-    font_badge = _get_chart_font(24, bold=True)
+    font_title = _get_chart_font(34, bold=True)
+    font_sub = _get_chart_font(20, bold=False)
+    font_label = _get_chart_font(18, bold=False)
+    font_small = _get_chart_font(16, bold=False)
+    font_bold = _get_chart_font(20, bold=True)
+    font_metric = _get_chart_font(22, bold=True)
+    font_badge = _get_chart_font(28, bold=True)
 
-    main_panel = (44, 118, 1162, 848)
-    side_panel = (1188, 118, 1556, 848)
+    main_panel = (44, 126, 1276, 962)
+    side_panel = (1304, 126, 1718, 962)
     for panel in (main_panel, side_panel):
         draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
     draw.text((54, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
-    draw.text((56, 64), "Velas japonesas confirmadas + escenario probable trazado con el motor institucional.", fill="#5D687A", font=font_sub)
+    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con el motor institucional.", fill="#5D687A", font=font_sub)
 
     def _draw_chip(x, y, text, fill, text_fill="#10233E"):
         bbox = draw.textbbox((0, 0), text, font=font_small)
         width = (bbox[2] - bbox[0]) + 24
-        draw.rounded_rectangle((x, y, x + width, y + 30), radius=14, fill=fill)
+        draw.rounded_rectangle((x, y, x + width, y + 32), radius=14, fill=fill)
         draw.text((x + 12, y + 7), text, fill=text_fill, font=font_small)
         return x + width + 10
 
     chip_x = 56
-    chip_y = 88
+    chip_y = 92
     chip_x = _draw_chip(chip_x, chip_y, f"Temporalidad: {timeframe_label}", (223, 232, 243, 255))
     chip_x = _draw_chip(chip_x, chip_y, "Velas japonesas", (241, 233, 220, 255))
     chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} velas", (236, 232, 223, 255))
@@ -3827,13 +3965,13 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     _draw_chip(chip_x, chip_y, f"Orientación final: {orientation_summary}", (225, 241, 231, 255) if projection_hint == "alcista" else ((247, 228, 225, 255) if projection_hint == "bajista" else (249, 239, 210, 255)), "#0F5132" if projection_hint == "alcista" else ("#842029" if projection_hint == "bajista" else "#7A5A00"))
 
     x1, y1, x2, y2 = main_panel
-    axis_width = 120
+    axis_width = 132
     chart_x1 = x1 + 30
     chart_x2 = x2 - axis_width - 22
     axis_x1 = chart_x2 + 10
     axis_x2 = x2 - 18
     chart_y1 = y1 + 56
-    chart_y2 = y2 - 76
+    chart_y2 = y2 - 84
     draw.rounded_rectangle((axis_x1, y1 + 18, axis_x2, y2 - 18), radius=22, fill=(234, 237, 241, 255))
 
     total_slots = hist_len + max(len(projection), 1)
@@ -3939,9 +4077,9 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
             return
         y_level = _map_price(level)
         for existing_y in placed_axis_y:
-            if abs(existing_y - y_level) < 28:
-                y_level = existing_y + 30
-        y_level = min(max(chart_y1 + 8, y_level), chart_y2 - 26)
+            if abs(existing_y - y_level) < 32:
+                y_level = existing_y + 34
+        y_level = min(max(chart_y1 + 8, y_level), chart_y2 - 28)
         placed_axis_y.append(y_level)
         text = _axis_number(level)
         if label:
@@ -3949,8 +4087,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
         bbox = draw.textbbox((0, 0), text, font=font_bold)
         width = (bbox[2] - bbox[0]) + 18
         left = axis_x2 - width - 8
-        draw.rounded_rectangle((left, y_level - 15, left + width, y_level + 15), radius=10, fill=fill)
-        draw.text((left + 9, y_level - 10), text, fill=text_fill, font=font_bold)
+        draw.rounded_rectangle((left, y_level - 17, left + width, y_level + 17), radius=10, fill=fill)
+        draw.text((left + 9, y_level - 11), text, fill=text_fill, font=font_bold)
 
     _axis_marker(resistance, "#D85C4B", label="R")
     _axis_marker(price_value, "#132B45")
@@ -4023,14 +4161,14 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
 
     def _draw_section(y_cursor, title, lines):
         draw.text((side_panel[0] + 22, y_cursor), title, fill="#10233E", font=font_metric)
-        y_cursor += 30
+        y_cursor += 34
         for line in lines:
             for wrapped_line in _wrap_draw_text(line, font_label, side_panel[2] - side_panel[0] - 46):
                 draw.text((side_panel[0] + 22, y_cursor), wrapped_line, fill="#31425B", font=font_label)
-                y_cursor += 22
-        y_cursor += 10
+                y_cursor += 26
+        y_cursor += 12
         draw.line((side_panel[0] + 22, y_cursor, side_panel[2] - 22, y_cursor), fill="#ECE6D9", width=1)
-        return y_cursor + 16
+        return y_cursor + 18
 
     sidebar_y = side_panel[1] + 54
     sidebar_y = _draw_section(sidebar_y, "Orientación", [
@@ -4038,6 +4176,11 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
         f"Escenario base: {direction_arrow} {direction_label}.",
         f"Confianza visual estimada: {orientation_confidence}%.",
         f"Ruta probable: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+    ])
+    sidebar_y = _draw_section(sidebar_y, "Contexto", [
+        f"Temporalidad real: {timeframe_label}.",
+        f"Fuente visual: {source_label}.",
+        f"Sesión mostrada: {session_label}.",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
         f"Precio actual: ${fmt_price(price_value)}",
@@ -4059,7 +4202,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None):
     caption = _make_card(
         f"GRÁFICO TÁCTICO | {display_name}",
         [
-            f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used}",
+            f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used} | Fuente: {source_label}.",
             f"• Orientación probable: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
             f"• Ruta esperada: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
             f"• EMA50 ${fmt_price(ema50_value)} | EMA200 ${fmt_price(ema200_value)} | RSI {rsi_value:.1f} | MACD {macd_bias}.",
