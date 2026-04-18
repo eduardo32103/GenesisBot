@@ -1245,13 +1245,9 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
         symbol = tk.replace("-USD", "") + "USD"
 
     safe_symbol = urllib.parse.quote(str(symbol).strip().upper())
-    now_utc = datetime.now(timezone.utc)
-    days_back = 18 if interval == "1hour" else 10
-    from_date = (now_utc - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    to_date = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d")
-
     endpoints = [
-        ("legacy", f"https://financialmodelingprep.com/api/v3/historical-chart/{interval}/{safe_symbol}?from={from_date}&to={to_date}&apikey={FMP_API_KEY}"),
+        ("stable", f"https://financialmodelingprep.com/stable/historical-chart/{interval}?symbol={safe_symbol}&apikey={FMP_API_KEY}"),
+        ("legacy", f"https://financialmodelingprep.com/api/v3/historical-chart/{interval}/{safe_symbol}?apikey={FMP_API_KEY}"),
     ]
 
     last_status = None
@@ -3199,17 +3195,20 @@ def _build_chart_pack(ticker, candles=110, timeframe="1D"):
             "session_label": "Velas horarias",
         })
     elif tf == "4H":
-        raw_intraday = _fetch_fmp_intraday_history(tk, interval="1hour", limit=max(960, (candles * 4) + 80)) or []
-        hist = _aggregate_intraday_rows(raw_intraday, group_hours=4, limit=max(320, candles + 40))
+        hist = _fetch_fmp_intraday_history(tk, interval="4hour", limit=max(320, candles + 40)) or []
+        if not hist:
+            raw_intraday = _fetch_fmp_intraday_history(tk, interval="1hour", limit=max(960, (candles * 4) + 80)) or []
+            hist = _aggregate_intraday_rows(raw_intraday, group_hours=4, limit=max(320, candles + 40))
         hist_meta.update({
             "timeframe_label": "Intradía (4H)",
-            "source_label": "FMP 1H agregado a 4H",
+            "source_label": "FMP histórico 4H",
             "session_label": "Velas de cuatro horas",
         })
     else:
         hist = _fetch_fmp_historical_eod(tk, limit=max(260, candles)) or []
 
-    if len(hist) < 60:
+    minimum_bars = 60 if tf == "1D" else 28
+    if len(hist) < minimum_bars:
         return None
 
     if tf == "1D":
@@ -5350,9 +5349,9 @@ def _extract_analysis_ticker(intent_text):
 def _extract_analysis_timeframe(intent_text, default="1D"):
     text = str(intent_text or "").upper()
     patterns = [
-        (r'\b(?:1H|1\s*H|1HR|1HORA|1HOUR|60M|60MIN)\b', "1H"),
-        (r'\b(?:4H|4\s*H|4HR|4HORAS|4HOUR|240M|240MIN)\b', "4H"),
-        (r'\b(?:1D|1\s*D|1DIA|DIARIA|DIARIO|DAILY|1DAY)\b', "1D"),
+        (r'\b(?:1H|1\s*H(?:R)?|1\s*HORA|1\s*HORAS|1HORA|1HORAS|1HOUR|60M|60MIN)\b', "1H"),
+        (r'\b(?:4H|4\s*H(?:R)?|4\s*HORA|4\s*HORAS|4HORA|4HORAS|4HOUR|240M|240MIN)\b', "4H"),
+        (r'\b(?:1D|1\s*D|1\s*DIA|1DIA|DIARIA|DIARIO|DAILY|1DAY)\b', "1D"),
     ]
     for pattern, label in patterns:
         if re.search(pattern, text):
