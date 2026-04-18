@@ -68,6 +68,79 @@ _MOJIBAKE_REPLACEMENTS = {
     "\U0001f310\u0160": "🌐",
 }
 
+_OUTGOING_FINANCE_TRANSLATIONS = {
+    "strong bullish": "fuerte alcista",
+    "strong bearish": "fuerte bajista",
+    "moderate bullish": "alcista moderada",
+    "moderate bearish": "bajista moderada",
+    "wait for confirmation": "esperar confirmación",
+    "buy-side liquidity": "liquidez del lado comprador",
+    "sell-side liquidity": "liquidez del lado vendedor",
+    "golden pocket": "zona dorada",
+    "bull trap": "trampa alcista",
+    "bear trap": "trampa bajista",
+    "breakout": "ruptura alcista",
+    "breakdown": "ruptura bajista",
+    "bullish": "alcista",
+    "bearish": "bajista",
+    "winner only": "solo ganadoras",
+    "winner": "ganadora",
+    "buyback": "recompra de acciones",
+    "headline": "titular",
+    "headlines": "titulares",
+    "wallet": "cartera",
+    "market": "mercado",
+    "news": "noticias",
+    "source": "fuente",
+    "summary": "resumen",
+    "impact": "impacto",
+    "risk": "riesgo",
+    "confidence": "confianza",
+    "probability": "probabilidad",
+    "entry": "entrada",
+    "entries": "entradas",
+    "exit": "salida",
+    "exits": "salidas",
+    "support": "soporte",
+    "resistance": "resistencia",
+    "target": "objetivo",
+    "targets": "objetivos",
+    "hold": "mantener",
+    "buy": "compra",
+    "sell": "venta",
+}
+
+
+def _translate_outgoing_user_text(text):
+    if not isinstance(text, str) or not text:
+        return text
+
+    protected = {}
+
+    def _mask(match):
+        key = f"__URL_{len(protected)}__"
+        protected[key] = match.group(0)
+        return key
+
+    translated = re.sub(r'https?://[^\s"\'>]+', _mask, text)
+    for eng, esp in sorted(_OUTGOING_FINANCE_TRANSLATIONS.items(), key=lambda item: len(item[0]), reverse=True):
+        translated = re.sub(re.escape(eng), esp, translated, flags=re.IGNORECASE)
+
+    translated = re.sub(r'\bno trigger\b', 'sin disparo', translated, flags=re.IGNORECASE)
+    translated = re.sub(r'\btriggered\b', 'disparada', translated, flags=re.IGNORECASE)
+    translated = re.sub(r'\bneutral\b', 'neutral', translated, flags=re.IGNORECASE)
+
+    quick_translate = globals().get("_quick_translate_financial")
+    if callable(quick_translate):
+        try:
+            translated = quick_translate(translated)
+        except Exception:
+            pass
+
+    for key, value in protected.items():
+        translated = translated.replace(key, value)
+    return translated
+
 
 def _decode_mojibake_segment(segment):
     raw_bytes = bytearray()
@@ -108,6 +181,8 @@ def _clean_outgoing_text(text):
 
     for control_char in ("\u008f", "\u0090", "\u0081", "\u009d"):
         cleaned = cleaned.replace(control_char, "")
+
+    cleaned = _translate_outgoing_user_text(cleaned)
 
     return cleaned
 
@@ -3532,12 +3607,13 @@ def _evaluate_news_materiality(title, body=""):
 
 
 def _build_tracked_news_alert(tk, article):
-    title = (article.get('title') or '').strip()
+    title = (article.get('title_es') or _quick_translate_financial(article.get('title') or '') or article.get('title') or '').strip()
     body = (article.get('text') or article.get('content') or '').strip()
+    title_es = (article.get('title_es') or _quick_translate_financial(title) or title).strip()
     site = (article.get('site') or article.get('source') or 'Fuente no disponible').strip()
     published = (article.get('publishedDate') or article.get('date') or '').strip()
     article_url = (article.get('url') or article.get('link') or '').strip()
-    signal = _evaluate_news_materiality(title, body)
+    signal = _evaluate_news_materiality((article.get('title') or title), body)
     if not signal.get("material"):
         return None
 
@@ -4542,7 +4618,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"Divergencia: {divergence_text}",
     ])
     draw.text((side_panel[0] + 22, sidebar_y), "Indicadores usados", fill="#10233E", font=font_metric)
-    indicators_text = "RSI, MACD, EMA 50/200, SMC, Fibonacci, golden pocket, Bollinger, Donchian, OBV y divergencias."
+    indicators_text = "RSI, MACD, EMA 50/200, SMC, Fibonacci, zona dorada, Bollinger, Donchian, OBV y divergencias."
     wrapped_indicators = "\n".join(_wrap_draw_text(indicators_text, font_label, side_panel[2] - side_panel[0] - 46))
     draw.multiline_text((side_panel[0] + 22, sidebar_y + 30), wrapped_indicators, fill="#31425B", font=font_label, spacing=6)
 
@@ -4724,7 +4800,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"MACD: {'alcista' if pack['macd_line'] >= pack['macd_signal'] else 'bajista'}",
         f"EMA50 / EMA200: ${fmt_price(pack['ema50'])} / ${fmt_price(pack['ema200'])}",
         f"Soporte / Resistencia: ${fmt_price(pack['support'])} / ${fmt_price(pack['resistance'])}",
-        f"Golden pocket: ${fmt_price(pack['golden_pocket_low'])} - ${fmt_price(pack['golden_pocket_high'])}",
+        f"Zona dorada: ${fmt_price(pack['golden_pocket_low'])} - ${fmt_price(pack['golden_pocket_high'])}",
     ]
     if divergence.get("active"):
         summary_lines.extend([
@@ -5029,7 +5105,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         gp_top = _map_price(golden_pocket_high)
         gp_bottom = _map_price(golden_pocket_low)
         draw.rounded_rectangle((chart_x1 + 6, gp_top, split_x - 10, gp_bottom), radius=18, fill=(240, 196, 92, 46), outline=(230, 170, 54, 120), width=1)
-        draw.text((chart_x1 + 12, gp_top + 8), "Golden pocket", fill="#A56B00", font=font_small)
+        draw.text((chart_x1 + 12, gp_top + 8), "Zona dorada", fill="#A56B00", font=font_small)
 
     def _draw_series_line(values, positions, color):
         points = [(positions[idx], _map_price(values[idx])) for idx in range(min(len(values), len(positions)))]
@@ -5185,7 +5261,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         f"Precio actual: ${fmt_price(price_value)}",
         f"Soporte principal: ${fmt_price(support)}",
         f"Resistencia principal: ${fmt_price(resistance)}",
-        f"Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
+        f"Zona dorada: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
     ])
     sidebar_y = _draw_section(sidebar_y, "Motor técnico", orientation_drivers + [
         f"Divergencia: {divergence_text}",
@@ -5778,7 +5854,7 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     lines.append(f"• RSI (14): {rsi:.1f} - {rsi_read}.")
     lines.append(f"• MACD: linea {macd_line:.3f} vs señal {macd_signal:.3f} - {macd_read}.")
     lines.append(f"• Fibonacci 0.382/0.5/0.618: ${fmt_price(fib_382)} / ${fmt_price(fib_500)} / ${fmt_price(fib_618)}")
-    lines.append(f"• Golden pocket: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)} - zona donde el precio suele reaccionar.")
+    lines.append(f"• Zona dorada: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)} - zona donde el precio suele reaccionar.")
     lines.append(f"• Bollinger: baja ${fmt_price(bb_lower)} | media ${fmt_price(bb_basis)} | alta ${fmt_price(bb_upper)} - mide si el precio esta estirado o comprimido.")
     lines.append(f"• Donchian: piso ${fmt_price(donchian_lower)} | medio ${fmt_price(donchian_mid)} | techo ${fmt_price(donchian_upper)} - rango reciente de ruptura.")
     lines.append(f"• OBV: <b>{_escape_html(obv_trend)}</b>")
@@ -6940,7 +7016,7 @@ def verificar_noticias_cartera():
                     f"- Si la noticia es NEUTRAL, de relleno, o sin impacto real en el precio local, responde EXACTAMENTE: 'NEUTRAL'\n"
                     f"- Si la noticia tiene impacto REAL (positivo o negativo), predice el impacto en las zonas de oferta/demanda y genera una alerta con este formato:\n"
                     f"  📰 Suceso: [Resumen de 1 línea]\n"
-                    f"  🔥¡ Sugerencia Institucional: [Vender / Vigilar / Hold / Comprar]\n"
+                    f"  🔥¡ Sugerencia Institucional: [Vender / Vigilar / Mantener / Comprar]\n"
                     f"  âš¡ Impacto Estimado: [Alto / Medio] en la liquidez\n"
                     f"RESPONDE EN ESPAÑOL."
                 )
@@ -7030,7 +7106,7 @@ def monitor_proteccion_activos():
             if current_price < smc.get('sup', 0):
                 smc_context = f"\n⚠️ Precio POR DEBAJO del Soporte SMC (${fmt_price(smc['sup'])}). Zona de riesgo."
             elif current_price > smc.get('res', 0):
-                smc_context = f"\n✅ Precio POR ENCIMA de Resistencia SMC (${fmt_price(smc['res'])}). Posible breakout."
+                smc_context = f"\n✅ Precio POR ENCIMA de Resistencia SMC (${fmt_price(smc['res'])}). Posible ruptura alcista."
             else:
                 smc_context = f"\n📊 Rango SMC: Soporte ${fmt_price(smc['sup'])} | Resistencia ${fmt_price(smc['res'])}"
 
