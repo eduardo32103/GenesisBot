@@ -324,6 +324,7 @@ def get_db_connection():
                 cr.execute("CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)")
                 cr.execute("CREATE TABLE IF NOT EXISTS alert_events (alert_id TEXT PRIMARY KEY, alert_type TEXT, ticker TEXT, direction TEXT, entry_price REAL, created_at TEXT, title TEXT, summary TEXT, source TEXT, signal_strength REAL DEFAULT 0.0, metadata_json TEXT, status TEXT DEFAULT 'tracking')")
                 cr.execute("CREATE TABLE IF NOT EXISTS alert_validations (alert_id TEXT, horizon_key TEXT, scheduled_at TEXT, evaluated_at TEXT, current_price REAL, return_pct REAL, signed_return_pct REAL, outcome_label TEXT, score_value REAL, PRIMARY KEY (alert_id, horizon_key))")
+                cr.execute("CREATE TABLE IF NOT EXISTS alert_policy_audit (decision_id TEXT PRIMARY KEY, created_at TEXT, alert_type TEXT, ticker TEXT, raw_signal_strength REAL, normalized_strength REAL, required_strength REAL, was_allowed INTEGER DEFAULT 0, reason TEXT, context_json TEXT)")
                 conn.commit()
 
             _db_local.conn = conn
@@ -355,6 +356,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS alert_events (alert_id TEXT PRIMARY KEY, alert_type TEXT, ticker TEXT, direction TEXT, entry_price REAL, created_at TEXT, title TEXT, summary TEXT, source TEXT, signal_strength REAL DEFAULT 0.0, metadata_json TEXT, status TEXT DEFAULT 'tracking')''')
         c.execute('''CREATE TABLE IF NOT EXISTS alert_validations (alert_id TEXT, horizon_key TEXT, scheduled_at TEXT, evaluated_at TEXT, current_price REAL, return_pct REAL, signed_return_pct REAL, outcome_label TEXT, score_value REAL, PRIMARY KEY (alert_id, horizon_key))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS alert_policy_audit (decision_id TEXT PRIMARY KEY, created_at TEXT, alert_type TEXT, ticker TEXT, raw_signal_strength REAL, normalized_strength REAL, required_strength REAL, was_allowed INTEGER DEFAULT 0, reason TEXT, context_json TEXT)''')
         conn.commit()
         pass # conn.close() delegado a pooling global
     except Exception as e:
@@ -1124,6 +1126,17 @@ _ALERT_TYPE_LABELS = {
     "whale_winner": "Ballena ganadora",
 }
 
+_ALERT_POLICY_BASE_THRESHOLD = {
+    "geo_macro": 1.25,
+    "sentinel_news": 1.35,
+    "divergence": 7.8,
+    "protection": 2.0,
+    "breakout_up": 1.12,
+    "breakdown": 1.12,
+    "accumulation": 1.05,
+    "whale_winner": 1.55,
+}
+
 
 def _coerce_alert_direction(direction):
     text = str(direction or "").strip().lower()
@@ -1167,6 +1180,310 @@ def _score_alert_validation(signed_return_pct, horizon_key):
         outcome = "mixta"
     score = max(-10.0, min(10.0, (signed / threshold) * 1.6))
     return outcome, round(score, 3)
+
+
+def _normalize_alert_signal_strength(alert_type, signal_strength):
+    raw_value = max(_safe_float(signal_strength, 0.0), 0.0)
+    normalized = raw_value
+    if alert_type == "divergence":
+        normalized = raw_value / 10.0
+    elif alert_type == "protection":
+        normalized = raw_value / 1.5
+    elif alert_type == "geo_macro":
+        normalized = raw_value / 1.15
+    elif alert_type == "sentinel_news":
+        normalized = raw_value / 1.1
+    elif raw_value > 12:
+        normalized = raw_value / 10.0
+    return round(max(0.0, min(normalized, 10.0)), 3)
+
+
+def _fetch_alert_policy_stats(alert_type=None, ticker=None, days=35, limit=120):
+    conn = get_db_connection()
+    if not conn:
+        return {
+            "count": 0,
+            "avg_score": 0.0,
+            "avg_return": 0.0,
+            "win_rate": 0.0,
+            "recent_fail_streak": 0,
+            "recent_win_streak": 0,
+        }
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(days)))).isoformat()
+    where_parts = ["e.created_at >= %s", "v.evaluated_at IS NOT NULL"]
+    params = [cutoff]
+    if alert_type:
+        where_parts.append("e.alert_type = %s")
+        params.append(str(alert_type))
+    if ticker:
+        where_parts.append("e.ticker = %s")
+        params.append(remap_ticker(ticker))
+    params.append(int(limit))
+
+    try:
+        c = conn.cursor()
+        c.execute(
+            f'''SELECT v.score_value, v.signed_return_pct, v.outcome_label
+                FROM alert_validations v
+                JOIN alert_events e ON e.alert_id = v.alert_id
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY v.evaluated_at DESC
+                LIMIT %s''',
+            tuple(params)
+        )
+        rows = c.fetchall() or []
+    except Exception as e:
+        logging.error(f"ALERT POLICY: error leyendo estadisticas para {alert_type}/{ticker}: {e}")
+        rows = []
+    finally:
+        pass
+
+    if not rows:
+        return {
+            "count": 0,
+            "avg_score": 0.0,
+            "avg_return": 0.0,
+            "win_rate": 0.0,
+            "recent_fail_streak": 0,
+            "recent_win_streak": 0,
+        }
+
+    count = len(rows)
+    avg_score = sum(_safe_float(row[0], 0.0) for row in rows) / count
+    avg_return = sum(_safe_float(row[1], 0.0) for row in rows) / count
+    wins = sum(1 for _, _, outcome in rows if str(outcome or "").startswith("ganadora"))
+    win_rate = (wins / count * 100.0) if count > 0 else 0.0
+
+    recent_fail_streak = 0
+    recent_win_streak = 0
+    for _, _, outcome in rows:
+        normalized_outcome = str(outcome or "").strip().lower()
+        if normalized_outcome.startswith("fallida"):
+            recent_fail_streak += 1
+        else:
+            break
+    for _, _, outcome in rows:
+        normalized_outcome = str(outcome or "").strip().lower()
+        if normalized_outcome.startswith("ganadora"):
+            recent_win_streak += 1
+        else:
+            break
+
+    return {
+        "count": count,
+        "avg_score": round(avg_score, 3),
+        "avg_return": round(avg_return, 3),
+        "win_rate": round(win_rate, 2),
+        "recent_fail_streak": recent_fail_streak,
+        "recent_win_streak": recent_win_streak,
+    }
+
+
+def _record_alert_policy_audit(alert_type, ticker, raw_signal_strength, normalized_strength, required_strength, allowed, reason, context=None):
+    conn = get_db_connection()
+    if not conn:
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    tk = remap_ticker(ticker or "")
+    audit_context = context if isinstance(context, dict) else {"raw": context} if context is not None else {}
+    decision_id = hashlib.sha1(
+        f"{now_utc.isoformat()}|{alert_type}|{tk}|{raw_signal_strength:.4f}|{normalized_strength:.4f}|{required_strength:.4f}|{int(bool(allowed))}".encode("utf-8")
+    ).hexdigest()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO alert_policy_audit (decision_id, created_at, alert_type, ticker, raw_signal_strength, normalized_strength, required_strength, was_allowed, reason, context_json)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+            (
+                decision_id,
+                now_utc.isoformat(),
+                str(alert_type or "").strip(),
+                tk,
+                _safe_float(raw_signal_strength, 0.0),
+                _safe_float(normalized_strength, 0.0),
+                _safe_float(required_strength, 0.0),
+                1 if allowed else 0,
+                re.sub(r"\s+", " ", str(reason or "")).strip()[:280],
+                json.dumps(audit_context, ensure_ascii=False, default=str)[:4000],
+            )
+        )
+        conn.commit()
+    except Exception as e:
+        logging.error(f"ALERT POLICY: no pude auditar decision para {alert_type}/{tk}: {e}")
+    finally:
+        pass
+
+
+def _evaluate_alert_dispatch_policy(alert_type, ticker, signal_strength=0.0, metadata=None):
+    alert_key = str(alert_type or "").strip()
+    tk = remap_ticker(ticker or "")
+    raw_strength = max(_safe_float(signal_strength, 0.0), 0.0)
+    normalized_strength = _normalize_alert_signal_strength(alert_key, raw_strength)
+    required_strength = _safe_float(_ALERT_POLICY_BASE_THRESHOLD.get(alert_key, 1.0), 1.0)
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    type_stats = _fetch_alert_policy_stats(alert_type=alert_key, days=35, limit=120)
+    ticker_stats = _fetch_alert_policy_stats(alert_type=alert_key, ticker=tk, days=45, limit=40) if tk else {
+        "count": 0,
+        "avg_score": 0.0,
+        "avg_return": 0.0,
+        "win_rate": 0.0,
+        "recent_fail_streak": 0,
+        "recent_win_streak": 0,
+    }
+
+    adjustments = []
+
+    if type_stats["count"] >= 6:
+        if type_stats["avg_score"] <= -1.0 or type_stats["win_rate"] < 35:
+            required_strength += 0.55
+            adjustments.append("tipo_enfriado")
+        elif type_stats["avg_score"] <= 0.0 or type_stats["win_rate"] < 45:
+            required_strength += 0.25
+            adjustments.append("tipo_moderado")
+        elif type_stats["avg_score"] >= 1.4 and type_stats["win_rate"] >= 60:
+            required_strength -= 0.25
+            adjustments.append("tipo_premiado")
+        elif type_stats["avg_score"] >= 0.7 and type_stats["win_rate"] >= 54:
+            required_strength -= 0.12
+            adjustments.append("tipo_solido")
+
+    if type_stats["recent_fail_streak"] >= 2:
+        required_strength += 0.20
+        adjustments.append("racha_fallos")
+    elif type_stats["recent_win_streak"] >= 3:
+        required_strength -= 0.10
+        adjustments.append("racha_ganadora")
+
+    if ticker_stats["count"] >= 4:
+        if ticker_stats["avg_score"] <= -0.75 or ticker_stats["win_rate"] < 38:
+            required_strength += 0.30
+            adjustments.append("ticker_debil")
+        elif ticker_stats["avg_score"] >= 1.2 and ticker_stats["win_rate"] >= 60:
+            required_strength -= 0.12
+            adjustments.append("ticker_fuerte")
+
+    if metadata.get("winner_only"):
+        required_strength -= 0.08
+        adjustments.append("winner_only")
+
+    required_strength = round(max(0.9, min(required_strength, 8.8)), 3)
+    margin = round(normalized_strength - required_strength, 3)
+    allowed = normalized_strength >= required_strength
+
+    if not allowed and type_stats["count"] < 4 and margin >= -0.12:
+        allowed = True
+        adjustments.append("muestra_corta")
+
+    reason = (
+        f"fuerza={normalized_strength:.2f}/{required_strength:.2f} | "
+        f"tipo score={type_stats['avg_score']:+.2f} win={type_stats['win_rate']:.1f}% n={type_stats['count']} | "
+        f"ticker score={ticker_stats['avg_score']:+.2f} win={ticker_stats['win_rate']:.1f}% n={ticker_stats['count']}"
+    )
+    if adjustments:
+        reason += f" | ajustes={','.join(adjustments)}"
+
+    return {
+        "allowed": allowed,
+        "reason": reason,
+        "required_strength": required_strength,
+        "normalized_strength": normalized_strength,
+        "raw_signal_strength": raw_strength,
+        "type_stats": type_stats,
+        "ticker_stats": ticker_stats,
+        "adjustments": adjustments,
+    }
+
+
+def build_alert_policy_report(days=35, topn=6):
+    conn = get_db_connection()
+    if not conn:
+        return _make_card("POLÍTICA DE ALERTAS", ["No pude conectarme a la base de datos para leer la política adaptativa."], icon="🛡️")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(days)))).isoformat()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''SELECT alert_type, ticker, normalized_strength, required_strength, was_allowed, reason
+               FROM alert_policy_audit
+               WHERE created_at >= %s
+               ORDER BY created_at DESC''',
+            (cutoff,)
+        )
+        audit_rows = c.fetchall() or []
+    except Exception as e:
+        return _make_card("POLÍTICA DE ALERTAS", [f"No pude construir el reporte de política: {e}"], icon="🛡️")
+    finally:
+        pass
+
+    if not audit_rows:
+        return _make_card(
+            "POLÍTICA DE ALERTAS",
+            ["Aún no hay decisiones auditadas por el motor adaptativo.", "En cuanto se emitan o bloqueen señales, aquí verás cómo se está calibrando."],
+            icon="🛡️"
+        )
+
+    total = len(audit_rows)
+    allowed_count = sum(1 for row in audit_rows if int(row[4] or 0) == 1)
+    blocked_count = total - allowed_count
+    allow_rate = (allowed_count / total * 100.0) if total > 0 else 0.0
+
+    type_stats = {}
+    for alert_type, ticker, normalized_strength, required_strength, was_allowed, reason in audit_rows:
+        slot = type_stats.setdefault(alert_type, {
+            "count": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "norm_sum": 0.0,
+            "req_sum": 0.0,
+        })
+        slot["count"] += 1
+        slot["allowed"] += 1 if int(was_allowed or 0) == 1 else 0
+        slot["blocked"] += 0 if int(was_allowed or 0) == 1 else 1
+        slot["norm_sum"] += _safe_float(normalized_strength, 0.0)
+        slot["req_sum"] += _safe_float(required_strength, 0.0)
+
+    lines = [
+        f"• Ventana analizada: <b>{max(7, int(days))} días</b>.",
+        f"• Decisiones auditadas: <b>{total}</b> | enviadas: <b>{allowed_count}</b> | bloqueadas: <b>{blocked_count}</b>.",
+        f"• Tasa de paso del filtro: <b>{allow_rate:.1f}%</b>.",
+        "",
+        "⚙️ <b>Estado por tipo</b>",
+    ]
+
+    ranked = []
+    for alert_type, data in type_stats.items():
+        count = data["count"]
+        pass_rate = (data["allowed"] / count * 100.0) if count > 0 else 0.0
+        avg_norm = data["norm_sum"] / count if count > 0 else 0.0
+        avg_req = data["req_sum"] / count if count > 0 else 0.0
+        perf = _fetch_alert_policy_stats(alert_type=alert_type, days=max(7, int(days)), limit=80)
+        ranked.append((perf["avg_score"], pass_rate, count, alert_type, avg_norm, avg_req, perf))
+
+    for avg_score, pass_rate, count, alert_type, avg_norm, avg_req, perf in sorted(
+        ranked,
+        key=lambda item: (item[0], item[1], item[2]),
+        reverse=True
+    )[:max(3, int(topn))]:
+        label = _ALERT_TYPE_LABELS.get(alert_type, alert_type.replace("_", " ").title())
+        lines.append(
+            f"• <b>{label}</b> -> paso {pass_rate:.1f}% | score {perf['avg_score']:+.2f} | win {perf['win_rate']:.1f}% | fuerza {avg_norm:.2f}/{avg_req:.2f}"
+        )
+
+    recent_rows = audit_rows[:min(max(3, int(topn)), 5)]
+    if recent_rows:
+        lines.extend(["", "🕒 <b>Últimas decisiones</b>"])
+        for alert_type, ticker, normalized_strength, required_strength, was_allowed, reason in recent_rows:
+            label = _ALERT_TYPE_LABELS.get(alert_type, str(alert_type or "").replace("_", " ").title())
+            state = "✅ enviada" if int(was_allowed or 0) == 1 else "🛑 bloqueada"
+            short_reason = _truncate_text(reason, 78)
+            lines.append(
+                f"• {state} | <b>{_escape_html(remap_ticker(ticker))}</b> | {_escape_html(label)} | fuerza {float(normalized_strength):.2f}/{float(required_strength):.2f} | {_escape_html(short_reason)}"
+            )
+
+    return _make_card("POLÍTICA DE ALERTAS", lines, icon="🛡️", footer="Motor adaptativo: premia alertas que sí pegan y exige más confirmación a las que se enfrían.")
 
 
 def _register_alert_event(alert_type, ticker, direction, entry_price, title="", summary="", signal_strength=0.0, source="", metadata=None):
@@ -1235,6 +1552,36 @@ def _register_alert_event(alert_type, ticker, direction, entry_price, title="", 
 
 
 def _send_alert_with_tracking(chat_id, message_text, alert_type=None, ticker=None, direction=None, entry_price=None, title="", summary="", signal_strength=0.0, source="", metadata=None, parse_mode="HTML"):
+    if alert_type and ticker and entry_price:
+        try:
+            policy_decision = _evaluate_alert_dispatch_policy(
+                alert_type=alert_type,
+                ticker=ticker,
+                signal_strength=signal_strength,
+                metadata=metadata,
+            )
+            _record_alert_policy_audit(
+                alert_type=alert_type,
+                ticker=ticker,
+                raw_signal_strength=policy_decision["raw_signal_strength"],
+                normalized_strength=policy_decision["normalized_strength"],
+                required_strength=policy_decision["required_strength"],
+                allowed=policy_decision["allowed"],
+                reason=policy_decision["reason"],
+                context={
+                    "type_stats": policy_decision["type_stats"],
+                    "ticker_stats": policy_decision["ticker_stats"],
+                    "adjustments": policy_decision["adjustments"],
+                    "source": source,
+                    "title": title,
+                },
+            )
+            if not policy_decision["allowed"]:
+                logging.info(f"ALERT POLICY: bloqueada {alert_type} para {remap_ticker(ticker)} | {policy_decision['reason']}")
+                return None
+        except Exception as e:
+            logging.error(f"ALERT POLICY: error evaluando politica para {alert_type}/{ticker}: {e}")
+
     sent_message = bot.send_message(chat_id, message_text, parse_mode=parse_mode)
     if alert_type and ticker and entry_price:
         try:
@@ -6898,6 +7245,12 @@ def cmd_dashboard_alertas(message):
         logging.error(f"ALERT SCORE: error actualizando dashboard manual: {e}")
     bot.reply_to(message, build_alert_validation_report(days=60, topn=8), parse_mode="HTML")
 
+
+@bot.message_handler(commands=['politica_alertas'])
+def cmd_politica_alertas(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.reply_to(message, build_alert_policy_report(days=45, topn=8), parse_mode="HTML")
+
 from openai import OpenAI
 
 @bot.message_handler(content_types=['photo'])
@@ -7476,6 +7829,11 @@ def handle_text(message):
         except Exception as e:
             logging.error(f"ALERT SCORE: error refrescando score por texto: {e}")
         bot.send_message(message.chat.id, build_alert_validation_report(days=60, topn=8), parse_mode="HTML")
+        return
+
+    if normalized_text in {"politica alertas", "política alertas", "motor alertas", "filtro alertas", "calibracion alertas", "calibración alertas"}:
+        bot.reply_to(message, "🛡️ Revisando cómo se está calibrando el motor adaptativo de alertas...")
+        bot.send_message(message.chat.id, build_alert_policy_report(days=45, topn=8), parse_mode="HTML")
         return
 
     analysis_target = _extract_analysis_ticker(intent_text)
