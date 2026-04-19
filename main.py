@@ -1486,6 +1486,209 @@ def build_alert_policy_report(days=35, topn=6):
     return _make_card("POLÍTICA DE ALERTAS", lines, icon="🛡️", footer="Motor adaptativo: premia alertas que sí pegan y exige más confirmación a las que se enfrían.")
 
 
+def build_alert_strategy_report(days=45, topn=6):
+    conn = get_db_connection()
+    if not conn:
+        return _make_card("ESTRATEGIA DE ALERTAS", ["No pude conectarme a la base de datos para leer la estrategia reciente del motor."], icon="🧭")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(days)))).isoformat()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''SELECT e.alert_type, e.ticker, v.horizon_key, v.score_value, v.signed_return_pct, v.outcome_label
+               FROM alert_validations v
+               JOIN alert_events e ON e.alert_id = v.alert_id
+               WHERE e.created_at >= %s AND v.evaluated_at IS NOT NULL
+               ORDER BY v.evaluated_at DESC''',
+            (cutoff,)
+        )
+        validation_rows = c.fetchall() or []
+
+        c.execute(
+            '''SELECT alert_type, ticker, normalized_strength, required_strength, was_allowed
+               FROM alert_policy_audit
+               WHERE created_at >= %s
+               ORDER BY created_at DESC''',
+            (cutoff,)
+        )
+        policy_rows = c.fetchall() or []
+    except Exception as e:
+        return _make_card("ESTRATEGIA DE ALERTAS", [f"No pude construir el reporte estratégico: {e}"], icon="🧭")
+    finally:
+        pass
+
+    if not validation_rows:
+        return _make_card(
+            "ESTRATEGIA DE ALERTAS",
+            [
+                "Todavía no hay suficiente histórico validado para construir un playbook táctico confiable.",
+                "En cuanto maduren más horizontes, aquí verás dónde el motor está leyendo mejor el mercado."
+            ],
+            icon="🧭"
+        )
+
+    type_stats = {}
+    ticker_stats = {}
+    for alert_type, ticker, horizon_key, score_value, signed_return_pct, outcome_label in validation_rows:
+        type_slot = type_stats.setdefault(alert_type, {
+            "count": 0,
+            "wins": 0,
+            "score_sum": 0.0,
+            "return_sum": 0.0,
+            "horizons": set(),
+        })
+        ticker_slot = ticker_stats.setdefault(remap_ticker(ticker), {
+            "count": 0,
+            "wins": 0,
+            "score_sum": 0.0,
+            "return_sum": 0.0,
+            "types": set(),
+        })
+
+        score_num = _safe_float(score_value, 0.0)
+        return_num = _safe_float(signed_return_pct, 0.0)
+        type_slot["count"] += 1
+        type_slot["score_sum"] += score_num
+        type_slot["return_sum"] += return_num
+        type_slot["horizons"].add(str(horizon_key or "").upper())
+
+        ticker_slot["count"] += 1
+        ticker_slot["score_sum"] += score_num
+        ticker_slot["return_sum"] += return_num
+        ticker_slot["types"].add(alert_type)
+
+        normalized_outcome = str(outcome_label or "").strip().lower()
+        if normalized_outcome.startswith("ganadora"):
+            type_slot["wins"] += 1
+            ticker_slot["wins"] += 1
+
+    policy_stats = {}
+    total_allowed = 0
+    for alert_type, ticker, normalized_strength, required_strength, was_allowed in policy_rows:
+        slot = policy_stats.setdefault(alert_type, {
+            "count": 0,
+            "allowed": 0,
+            "norm_sum": 0.0,
+            "req_sum": 0.0,
+        })
+        slot["count"] += 1
+        slot["allowed"] += 1 if int(was_allowed or 0) == 1 else 0
+        slot["norm_sum"] += _safe_float(normalized_strength, 0.0)
+        slot["req_sum"] += _safe_float(required_strength, 0.0)
+        total_allowed += 1 if int(was_allowed or 0) == 1 else 0
+
+    type_ranked = []
+    for alert_type, data in type_stats.items():
+        count = data["count"]
+        avg_score = data["score_sum"] / count if count > 0 else 0.0
+        avg_return = data["return_sum"] / count if count > 0 else 0.0
+        win_rate = (data["wins"] / count * 100.0) if count > 0 else 0.0
+        pslot = policy_stats.get(alert_type, {})
+        pass_rate = (pslot.get("allowed", 0) / pslot.get("count", 1) * 100.0) if pslot.get("count", 0) > 0 else 100.0
+        avg_norm = (pslot.get("norm_sum", 0.0) / pslot.get("count", 1)) if pslot.get("count", 0) > 0 else 0.0
+        avg_req = (pslot.get("req_sum", 0.0) / pslot.get("count", 1)) if pslot.get("count", 0) > 0 else 0.0
+        type_ranked.append((alert_type, count, avg_score, avg_return, win_rate, pass_rate, avg_norm, avg_req, data))
+
+    ticker_ranked = []
+    for ticker, data in ticker_stats.items():
+        count = data["count"]
+        avg_score = data["score_sum"] / count if count > 0 else 0.0
+        avg_return = data["return_sum"] / count if count > 0 else 0.0
+        win_rate = (data["wins"] / count * 100.0) if count > 0 else 0.0
+        ticker_ranked.append((ticker, count, avg_score, avg_return, win_rate, data))
+
+    best_type = max(type_ranked, key=lambda item: (item[2], item[4], item[1])) if type_ranked else None
+    weak_type = min(type_ranked, key=lambda item: (item[2], item[4], -item[1])) if type_ranked else None
+    overall_pass_rate = (total_allowed / len(policy_rows) * 100.0) if policy_rows else 100.0
+
+    lines = [
+        f"• Ventana analizada: <b>{max(7, int(days))} días</b>.",
+        f"• Validaciones útiles: <b>{len(validation_rows)}</b> | decisiones del filtro: <b>{len(policy_rows)}</b>.",
+        f"• Paso del filtro adaptativo: <b>{overall_pass_rate:.1f}%</b>.",
+    ]
+
+    if best_type:
+        label = _ALERT_TYPE_LABELS.get(best_type[0], best_type[0].replace("_", " ").title())
+        lines.append(f"• Mejor lectura actual: <b>{_escape_html(label)}</b> | score {best_type[2]:+.2f} | acierto {best_type[4]:.1f}%.")
+    if weak_type:
+        label = _ALERT_TYPE_LABELS.get(weak_type[0], weak_type[0].replace("_", " ").title())
+        lines.append(f"• Punto más frágil ahora: <b>{_escape_html(label)}</b> | score {weak_type[2]:+.2f} | acierto {weak_type[4]:.1f}%.")
+
+    lines.extend(["", "🎯 <b>Recomendaciones tácticas</b>"])
+    recommendations = []
+    for alert_type, count, avg_score, avg_return, win_rate, pass_rate, avg_norm, avg_req, data in sorted(
+        type_ranked,
+        key=lambda item: (item[2], item[4], item[1]),
+        reverse=True
+    ):
+        label = _ALERT_TYPE_LABELS.get(alert_type, alert_type.replace("_", " ").title())
+        horizons_text = "/".join(sorted(h for h in data["horizons"] if h)) or "mixtos"
+        if count >= 4 and avg_score >= 1.1 and win_rate >= 58:
+            recommendations.append(
+                f"• <b>{_escape_html(label)}</b>: merece más peso ahora. Está leyendo bien ({win_rate:.1f}% acierto, score {avg_score:+.2f}) y rinde mejor en {horizons_text}."
+            )
+        elif count >= 4 and (avg_score <= -0.35 or win_rate < 44):
+            recommendations.append(
+                f"• <b>{_escape_html(label)}</b>: conviene endurecerlo. Sigue activo, pero su calidad cayó ({win_rate:.1f}% acierto, score {avg_score:+.2f})."
+            )
+        elif count < 4:
+            recommendations.append(
+                f"• <b>{_escape_html(label)}</b>: todavía está en fase de muestra corta. Hay que observar más antes de subirle peso real."
+            )
+        elif pass_rate < 55 and avg_norm < avg_req:
+            recommendations.append(
+                f"• <b>{_escape_html(label)}</b>: el filtro lo está frenando bastante ({pass_rate:.1f}% paso). Eso es sano si queremos calidad antes que volumen."
+            )
+        if len(recommendations) >= max(3, min(int(topn), 5)):
+            break
+
+    if not recommendations:
+        recommendations.append("• El motor está bastante equilibrado. No detecto aún una familia de alertas que amerite un cambio fuerte de peso.")
+    lines.extend(recommendations)
+
+    strong_tickers = [item for item in ticker_ranked if item[1] >= 2]
+    strong_tickers = strong_tickers or ticker_ranked
+    if strong_tickers:
+        lines.extend(["", "📈 <b>Activos donde el motor lee mejor</b>"])
+        for ticker, count, avg_score, avg_return, win_rate, data in sorted(
+            strong_tickers,
+            key=lambda item: (item[2], item[4], item[1]),
+            reverse=True
+        )[:min(max(3, int(topn)), 4)]:
+            type_names = ", ".join(_ALERT_TYPE_LABELS.get(t, t.replace("_", " ").title()) for t in list(data["types"])[:2])
+            lines.append(
+                f"• <b>{_escape_html(remap_ticker(ticker))}</b> -> score {avg_score:+.2f} | acierto {win_rate:.1f}% | retorno {avg_return:+.2f}% | señales: {_escape_html(type_names or 'mixtas')}"
+            )
+
+        lines.extend(["", "🩺 <b>Activos con lectura más conflictiva</b>"])
+        for ticker, count, avg_score, avg_return, win_rate, data in sorted(
+            strong_tickers,
+            key=lambda item: (item[2], item[4], -item[1])
+        )[:min(max(3, int(topn)), 4)]:
+            type_names = ", ".join(_ALERT_TYPE_LABELS.get(t, t.replace("_", " ").title()) for t in list(data["types"])[:2])
+            lines.append(
+                f"• <b>{_escape_html(remap_ticker(ticker))}</b> -> score {avg_score:+.2f} | acierto {win_rate:.1f}% | retorno {avg_return:+.2f}% | señales: {_escape_html(type_names or 'mixtas')}"
+            )
+
+    if type_ranked:
+        lines.extend(["", "⚙️ <b>Cómo se está comportando el filtro</b>"])
+        for alert_type, count, avg_score, avg_return, win_rate, pass_rate, avg_norm, avg_req, data in sorted(
+            type_ranked,
+            key=lambda item: (item[5], -item[2], item[1])
+        )[:min(max(3, int(topn)), 4)]:
+            label = _ALERT_TYPE_LABELS.get(alert_type, alert_type.replace("_", " ").title())
+            lines.append(
+                f"• <b>{_escape_html(label)}</b> -> paso {pass_rate:.1f}% | fuerza media {avg_norm:.2f}/{avg_req:.2f} | score {avg_score:+.2f}"
+            )
+
+    return _make_card(
+        "ESTRATEGIA DE ALERTAS",
+        lines,
+        icon="🧭",
+        footer="Playbook vivo del motor: dónde confiar más, dónde exigir más confirmación y dónde seguir observando."
+    )
+
+
 def _register_alert_event(alert_type, ticker, direction, entry_price, title="", summary="", signal_strength=0.0, source="", metadata=None):
     conn = get_db_connection()
     if not conn:
@@ -7251,6 +7454,12 @@ def cmd_politica_alertas(message):
     if str(message.chat.id) != str(CHAT_ID): return
     bot.reply_to(message, build_alert_policy_report(days=45, topn=8), parse_mode="HTML")
 
+
+@bot.message_handler(commands=['estrategia_alertas'])
+def cmd_estrategia_alertas(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    bot.reply_to(message, build_alert_strategy_report(days=45, topn=8), parse_mode="HTML")
+
 from openai import OpenAI
 
 @bot.message_handler(content_types=['photo'])
@@ -7834,6 +8043,11 @@ def handle_text(message):
     if normalized_text in {"politica alertas", "política alertas", "motor alertas", "filtro alertas", "calibracion alertas", "calibración alertas"}:
         bot.reply_to(message, "🛡️ Revisando cómo se está calibrando el motor adaptativo de alertas...")
         bot.send_message(message.chat.id, build_alert_policy_report(days=45, topn=8), parse_mode="HTML")
+        return
+
+    if normalized_text in {"estrategia alertas", "playbook alertas", "salud motor", "salud del motor", "lectura del motor"}:
+        bot.reply_to(message, "🧭 Traduciendo el histórico reciente del motor en recomendaciones tácticas claras...")
+        bot.send_message(message.chat.id, build_alert_strategy_report(days=45, topn=8), parse_mode="HTML")
         return
 
     analysis_target = _extract_analysis_ticker(intent_text)
