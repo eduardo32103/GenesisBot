@@ -322,6 +322,8 @@ def get_db_connection():
                 cr.execute("CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)")
                 cr.execute("CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)")
                 cr.execute("CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)")
+                cr.execute("CREATE TABLE IF NOT EXISTS alert_events (alert_id TEXT PRIMARY KEY, alert_type TEXT, ticker TEXT, direction TEXT, entry_price REAL, created_at TEXT, title TEXT, summary TEXT, source TEXT, signal_strength REAL DEFAULT 0.0, metadata_json TEXT, status TEXT DEFAULT 'tracking')")
+                cr.execute("CREATE TABLE IF NOT EXISTS alert_validations (alert_id TEXT, horizon_key TEXT, scheduled_at TEXT, evaluated_at TEXT, current_price REAL, return_pct REAL, signed_return_pct REAL, outcome_label TEXT, score_value REAL, PRIMARY KEY (alert_id, horizon_key))")
                 conn.commit()
 
             _db_local.conn = conn
@@ -351,6 +353,8 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS seen_events (hash_id TEXT PRIMARY KEY, timestamp TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS runtime_locks (lock_name TEXT PRIMARY KEY, instance_id TEXT, hostname TEXT, pid BIGINT, started_at TEXT, claimed_at TEXT, last_heartbeat TEXT, stage TEXT, notes TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS alert_events (alert_id TEXT PRIMARY KEY, alert_type TEXT, ticker TEXT, direction TEXT, entry_price REAL, created_at TEXT, title TEXT, summary TEXT, source TEXT, signal_strength REAL DEFAULT 0.0, metadata_json TEXT, status TEXT DEFAULT 'tracking')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS alert_validations (alert_id TEXT, horizon_key TEXT, scheduled_at TEXT, evaluated_at TEXT, current_price REAL, return_pct REAL, signed_return_pct REAL, outcome_label TEXT, score_value REAL, PRIMARY KEY (alert_id, horizon_key))''')
         conn.commit()
         pass # conn.close() delegado a pooling global
     except Exception as e:
@@ -1100,6 +1104,394 @@ def reset_total_db():
         conn.commit()
     finally:
         pass # conn.close() delegado a pooling global
+
+
+_ALERT_VALIDATION_HORIZONS = [
+    ("1H", timedelta(hours=1)),
+    ("4H", timedelta(hours=4)),
+    ("1D", timedelta(days=1)),
+    ("1W", timedelta(days=7)),
+]
+
+_ALERT_TYPE_LABELS = {
+    "geo_macro": "Geopolítica",
+    "sentinel_news": "Centinela de noticias",
+    "divergence": "Divergencias",
+    "protection": "Protección de activos",
+    "breakout_up": "Ruptura de resistencia",
+    "breakdown": "Ruptura de soporte",
+    "accumulation": "Zona de acumulación",
+    "whale_winner": "Ballena ganadora",
+}
+
+
+def _coerce_alert_direction(direction):
+    text = str(direction or "").strip().lower()
+    if text in {"alcista", "bullish", "buy", "compra", "subida", "long"}:
+        return "alcista"
+    if text in {"bajista", "bearish", "sell", "venta", "caida", "short"}:
+        return "bajista"
+    return "mixto"
+
+
+def _alert_direction_multiplier(direction):
+    normalized = _coerce_alert_direction(direction)
+    if normalized == "alcista":
+        return 1.0
+    if normalized == "bajista":
+        return -1.0
+    return 0.0
+
+
+def _alert_validation_threshold(horizon_key):
+    return {
+        "1H": 0.35,
+        "4H": 0.75,
+        "1D": 1.25,
+        "1W": 2.50,
+    }.get(str(horizon_key or "").upper(), 0.75)
+
+
+def _score_alert_validation(signed_return_pct, horizon_key):
+    threshold = max(_alert_validation_threshold(horizon_key), 0.25)
+    signed = _safe_float(signed_return_pct, 0.0)
+    if signed >= threshold * 2.2:
+        outcome = "ganadora_fuerte"
+    elif signed >= threshold:
+        outcome = "ganadora"
+    elif signed <= -(threshold * 2.2):
+        outcome = "fallida_fuerte"
+    elif signed <= -threshold:
+        outcome = "fallida"
+    else:
+        outcome = "mixta"
+    score = max(-10.0, min(10.0, (signed / threshold) * 1.6))
+    return outcome, round(score, 3)
+
+
+def _register_alert_event(alert_type, ticker, direction, entry_price, title="", summary="", signal_strength=0.0, source="", metadata=None):
+    conn = get_db_connection()
+    if not conn:
+        return None
+
+    tk = remap_ticker(ticker)
+    entry = _safe_float(entry_price, 0.0)
+    if not tk or entry <= 0:
+        logging.warning(f"ALERT SCORE: omitido registro por datos inválidos | tipo={alert_type} | ticker={ticker} | entry={entry_price}")
+        return None
+
+    now_utc = datetime.now(timezone.utc)
+    title_text = re.sub(r"\s+", " ", str(title or "")).strip()[:160]
+    summary_text = re.sub(r"\s+", " ", str(summary or "")).strip()[:320]
+    source_text = re.sub(r"\s+", " ", str(source or "")).strip()[:120]
+    metadata_payload = metadata if isinstance(metadata, dict) else {"raw": metadata} if metadata is not None else {}
+    metadata_json = json.dumps(metadata_payload, ensure_ascii=False, default=str)[:4000]
+    alert_id = hashlib.sha1(f"{alert_type}|{tk}|{now_utc.isoformat()}|{title_text}|{entry:.6f}".encode("utf-8")).hexdigest()
+
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO alert_events (alert_id, alert_type, ticker, direction, entry_price, created_at, title, summary, source, signal_strength, metadata_json, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+            (
+                alert_id,
+                str(alert_type or "").strip(),
+                tk,
+                _coerce_alert_direction(direction),
+                float(entry),
+                now_utc.isoformat(),
+                title_text,
+                summary_text,
+                source_text,
+                _safe_float(signal_strength, 0.0),
+                metadata_json,
+                "tracking",
+            )
+        )
+        for horizon_key, delta in _ALERT_VALIDATION_HORIZONS:
+            c.execute(
+                '''INSERT INTO alert_validations (alert_id, horizon_key, scheduled_at, evaluated_at, current_price, return_pct, signed_return_pct, outcome_label, score_value)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                (
+                    alert_id,
+                    horizon_key,
+                    (now_utc + delta).isoformat(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            )
+        conn.commit()
+        logging.info(f"ALERT SCORE: registrado {alert_type} para {tk} en ${fmt_price(entry)}")
+        return alert_id
+    except Exception as e:
+        logging.error(f"ALERT SCORE: fallo registrando alerta {alert_type} para {tk}: {e}")
+        return None
+    finally:
+        pass
+
+
+def _send_alert_with_tracking(chat_id, message_text, alert_type=None, ticker=None, direction=None, entry_price=None, title="", summary="", signal_strength=0.0, source="", metadata=None, parse_mode="HTML"):
+    sent_message = bot.send_message(chat_id, message_text, parse_mode=parse_mode)
+    if alert_type and ticker and entry_price:
+        try:
+            _register_alert_event(
+                alert_type=alert_type,
+                ticker=ticker,
+                direction=direction,
+                entry_price=entry_price,
+                title=title,
+                summary=summary,
+                signal_strength=signal_strength,
+                source=source,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logging.error(f"ALERT SCORE: no pude registrar el envío {alert_type} para {ticker}: {e}")
+    return sent_message
+
+
+def _register_geopolitics_alert_batch(news_items):
+    if not isinstance(news_items, list):
+        return 0
+
+    registered = 0
+    price_cache = {}
+    for article in news_items[:3]:
+        wallet_impacts = article.get("wallet_impacts") or []
+        for impact in wallet_impacts[:3]:
+            tk = remap_ticker(impact.get("ticker") or "")
+            if not tk:
+                continue
+            if tk not in price_cache:
+                safe_price = get_safe_ticker_price(tk) or {}
+                price_cache[tk] = _safe_float(safe_price.get("price"), 0.0)
+            entry_price = price_cache.get(tk, 0.0)
+            if entry_price <= 0:
+                continue
+            alert_id = _register_alert_event(
+                alert_type="geo_macro",
+                ticker=tk,
+                direction=impact.get("direction"),
+                entry_price=entry_price,
+                title=article.get("title_es") or article.get("title") or "Catalizador geopolítico",
+                summary=impact.get("reason") or article.get("impact_summary") or "Impacto macro sobre activo vigilado.",
+                signal_strength=abs(_safe_float(impact.get("score"), 0.0)),
+                source=article.get("source") or "Fuente",
+                metadata={
+                    "probability": impact.get("probability"),
+                    "article_url": article.get("url"),
+                    "published_label": article.get("published_label"),
+                },
+            )
+            if alert_id:
+                registered += 1
+    return registered
+
+
+def evaluate_pending_alert_validations(limit=28):
+    conn = get_db_connection()
+    if not conn:
+        return 0
+
+    now_utc = datetime.now(timezone.utc)
+    processed = 0
+    alert_ids_touched = set()
+    price_cache = {}
+
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''SELECT v.alert_id, v.horizon_key, e.alert_type, e.ticker, e.direction, e.entry_price
+               FROM alert_validations v
+               JOIN alert_events e ON e.alert_id = v.alert_id
+               WHERE v.evaluated_at IS NULL AND v.scheduled_at <= %s
+               ORDER BY v.scheduled_at ASC
+               LIMIT %s''',
+            (now_utc.isoformat(), int(limit))
+        )
+        rows = c.fetchall()
+        if not rows:
+            return 0
+
+        for alert_id, horizon_key, alert_type, ticker, direction, entry_price in rows:
+            tk = remap_ticker(ticker)
+            if tk not in price_cache:
+                safe_price = get_safe_ticker_price(tk) or {}
+                price_cache[tk] = _safe_float(safe_price.get("price"), 0.0)
+            current_price = _safe_float(price_cache.get(tk), 0.0)
+            entry = _safe_float(entry_price, 0.0)
+            if entry <= 0 or current_price <= 0:
+                continue
+
+            raw_return_pct = ((current_price - entry) / entry) * 100 if entry > 0 else 0.0
+            signed_return_pct = raw_return_pct * _alert_direction_multiplier(direction)
+            outcome_label, score_value = _score_alert_validation(signed_return_pct, horizon_key)
+
+            c.execute(
+                '''UPDATE alert_validations
+                   SET evaluated_at = %s, current_price = %s, return_pct = %s, signed_return_pct = %s, outcome_label = %s, score_value = %s
+                   WHERE alert_id = %s AND horizon_key = %s''',
+                (
+                    now_utc.isoformat(),
+                    float(current_price),
+                    round(raw_return_pct, 4),
+                    round(signed_return_pct, 4),
+                    outcome_label,
+                    score_value,
+                    alert_id,
+                    horizon_key,
+                )
+            )
+            alert_ids_touched.add(alert_id)
+            processed += 1
+            logging.info(
+                "ALERT SCORE: %s %s %s evaluada | retorno=%+.2f%% | score=%+.2f | %s",
+                alert_type,
+                tk,
+                horizon_key,
+                signed_return_pct,
+                score_value,
+                outcome_label,
+            )
+
+        for alert_id in alert_ids_touched:
+            c.execute('SELECT COUNT(*) FROM alert_validations WHERE alert_id = %s AND evaluated_at IS NULL', (alert_id,))
+            pending_count = int((c.fetchone() or [0])[0] or 0)
+            c.execute('UPDATE alert_events SET status = %s WHERE alert_id = %s', ("completed" if pending_count == 0 else "tracking", alert_id))
+
+        conn.commit()
+        return processed
+    except Exception as e:
+        logging.error(f"ALERT SCORE: error evaluando alertas pendientes: {e}")
+        return processed
+    finally:
+        pass
+
+
+def purge_old_alert_validation_records(days=180):
+    conn = get_db_connection()
+    if not conn:
+        return
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(30, int(days)))).isoformat()
+    try:
+        c = conn.cursor()
+        c.execute('DELETE FROM alert_validations WHERE alert_id IN (SELECT alert_id FROM alert_events WHERE created_at < %s)', (cutoff,))
+        c.execute('DELETE FROM alert_events WHERE created_at < %s', (cutoff,))
+        conn.commit()
+    finally:
+        pass
+
+
+def build_alert_validation_report(days=45, topn=6):
+    conn = get_db_connection()
+    if not conn:
+        return _make_card("SCORE DE ALERTAS", ["No pude conectarme a la base de datos para leer la validación."], icon="📚")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(days)))).isoformat()
+    try:
+        c = conn.cursor()
+        c.execute('SELECT alert_id, alert_type FROM alert_events WHERE created_at >= %s', (cutoff,))
+        event_rows = c.fetchall() or []
+        total_alerts = len(event_rows)
+
+        c.execute(
+            '''SELECT e.alert_type, e.ticker, v.horizon_key, v.score_value, v.signed_return_pct, v.outcome_label
+               FROM alert_validations v
+               JOIN alert_events e ON e.alert_id = v.alert_id
+               WHERE e.created_at >= %s AND v.evaluated_at IS NOT NULL''',
+            (cutoff,)
+        )
+        validation_rows = c.fetchall() or []
+
+        c.execute(
+            '''SELECT COUNT(*)
+               FROM alert_validations v
+               JOIN alert_events e ON e.alert_id = v.alert_id
+               WHERE e.created_at >= %s AND v.evaluated_at IS NULL''',
+            (cutoff,)
+        )
+        pending_horizons = int((c.fetchone() or [0])[0] or 0)
+    except Exception as e:
+        return _make_card("SCORE DE ALERTAS", [f"No pude construir el reporte de validación: {e}"], icon="📚")
+    finally:
+        pass
+
+    if not event_rows:
+        return _make_card(
+            "SCORE DE ALERTAS",
+            ["Todavía no hay alertas registradas en la ventana reciente.", "En cuanto el motor acumule señales, aquí verás qué tipos están funcionando mejor."],
+            icon="📚"
+        )
+
+    type_stats = {}
+    wins = 0
+    total_score = 0.0
+    total_signed_return = 0.0
+
+    for alert_type, ticker, horizon_key, score_value, signed_return_pct, outcome_label in validation_rows:
+        slot = type_stats.setdefault(alert_type, {
+            "count": 0,
+            "wins": 0,
+            "fails": 0,
+            "score_sum": 0.0,
+            "return_sum": 0.0,
+            "tickers": set(),
+        })
+        slot["count"] += 1
+        slot["score_sum"] += _safe_float(score_value, 0.0)
+        slot["return_sum"] += _safe_float(signed_return_pct, 0.0)
+        slot["tickers"].add(remap_ticker(ticker))
+        total_score += _safe_float(score_value, 0.0)
+        total_signed_return += _safe_float(signed_return_pct, 0.0)
+
+        if str(outcome_label or "").startswith("ganadora"):
+            wins += 1
+            slot["wins"] += 1
+        elif str(outcome_label or "").startswith("fallida"):
+            slot["fails"] += 1
+
+    total_validations = len(validation_rows)
+    win_rate = (wins / total_validations * 100) if total_validations > 0 else 0.0
+    avg_score = (total_score / total_validations) if total_validations > 0 else 0.0
+    avg_signed_return = (total_signed_return / total_validations) if total_validations > 0 else 0.0
+
+    lines = [
+        f"• Alertas registradas: <b>{total_alerts}</b> en los últimos {max(7, int(days))} días.",
+        f"• Horizontes evaluados: <b>{total_validations}</b> | pendientes: <b>{pending_horizons}</b>.",
+        f"• Tasa de acierto global: <b>{win_rate:.1f}%</b>.",
+        f"• Score promedio firmado: <b>{avg_score:+.2f}</b> | retorno firmado: <b>{avg_signed_return:+.2f}%</b>.",
+    ]
+
+    if total_validations <= 0:
+        lines.extend([
+            "",
+            "⏳ El motor ya está registrando señales, pero aún no madura suficientes horizontes para calificarlas.",
+        ])
+        return _make_card("SCORE DE ALERTAS", lines, icon="📚", footer="Se validan automáticamente a 1H, 4H, 1D y 1W.")
+
+    lines.extend(["", "🏆 <b>Score por tipo de alerta</b>"])
+    ranked = []
+    for alert_type, data in type_stats.items():
+        count = data["count"]
+        if count <= 0:
+            continue
+        avg_type_score = data["score_sum"] / count
+        avg_type_return = data["return_sum"] / count
+        type_win_rate = (data["wins"] / count * 100) if count > 0 else 0.0
+        ranked.append((avg_type_score, count, alert_type, avg_type_return, type_win_rate, data))
+
+    for avg_type_score, count, alert_type, avg_type_return, type_win_rate, data in sorted(ranked, key=lambda item: (item[0], item[1]), reverse=True)[:max(3, int(topn))]:
+        label = _ALERT_TYPE_LABELS.get(alert_type, alert_type.replace("_", " ").title())
+        lines.append(
+            f"• <b>{label}</b> -> {count} evaluaciones | acierto {type_win_rate:.1f}% | score {avg_type_score:+.2f} | retorno {avg_type_return:+.2f}%"
+        )
+
+    return _make_card("SCORE DE ALERTAS", lines, icon="📚", footer="Se validan automáticamente a 1H, 4H, 1D y 1W.")
     save_state_to_telegram()
     logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
 
@@ -5511,7 +5903,24 @@ def _monitor_quality_divergences(tracked):
             icon="⚡",
             footer="Solo se envían divergencias de mayor calidad para evitar spam."
         )
-        bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+        _send_alert_with_tracking(
+            CHAT_ID,
+            msg,
+            alert_type="divergence",
+            ticker=tk,
+            direction="alcista" if divergence.get("kind") == "bullish" else "bajista",
+            entry_price=_safe_float(pack.get("price"), 0.0),
+            title=f"Divergencia {'alcista' if divergence.get('kind') == 'bullish' else 'bajista'}",
+            summary=divergence.get("summary") or action,
+            signal_strength=_safe_float(divergence.get("confidence"), 0.0),
+            source="motor_divergencias",
+            metadata={
+                "signals": divergence.get("signals") or [],
+                "support": pack.get("support"),
+                "resistance": pack.get("resistance"),
+            },
+            parse_mode="HTML"
+        )
         alerts_sent += 1
 
 
@@ -6275,6 +6684,16 @@ def cmd_backup(message):
     tkrs = get_tracked_tickers()
     bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
 
+
+@bot.message_handler(commands=['score_alertas'])
+def cmd_score_alertas(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    try:
+        evaluate_pending_alert_validations(limit=80)
+    except Exception as e:
+        logging.error(f"ALERT SCORE: error actualizando antes del reporte manual: {e}")
+    bot.reply_to(message, build_alert_validation_report(days=60, topn=8), parse_mode="HTML")
+
 from openai import OpenAI
 
 @bot.message_handler(content_types=['photo'])
@@ -6846,6 +7265,15 @@ def handle_text(message):
         _send_wallet_status(message.chat.id)
         return
 
+    if normalized_text in {"score alertas", "score de alertas", "validacion alertas", "validación alertas", "efectividad alertas"}:
+        bot.reply_to(message, "📚 Midiendo efectividad real de las alertas y actualizando score...")
+        try:
+            evaluate_pending_alert_validations(limit=80)
+        except Exception as e:
+            logging.error(f"ALERT SCORE: error refrescando score por texto: {e}")
+        bot.send_message(message.chat.id, build_alert_validation_report(days=60, topn=8), parse_mode="HTML")
+        return
+
     analysis_target = _extract_analysis_ticker(intent_text)
     if analysis_target:
         tk = remap_ticker(analysis_target)
@@ -7023,8 +7451,28 @@ def verificar_noticias_cartera_v2():
             if not alert_msg:
                 continue
 
+            signal = _evaluate_news_materiality(article.get('title') or '', article.get('text') or article.get('content') or '')
+            safe_price = get_safe_ticker_price(tk) or {}
+
             try:
-                bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+                _send_alert_with_tracking(
+                    CHAT_ID,
+                    alert_msg,
+                    alert_type="sentinel_news",
+                    ticker=tk,
+                    direction=signal.get("direction"),
+                    entry_price=_safe_float(safe_price.get("price"), 0.0),
+                    title=article.get('title_es') or article.get('title') or "Noticia de cartera",
+                    summary=signal.get("reason") or "Catalizador corporativo detectado para activo vigilado.",
+                    signal_strength=abs(_safe_float(signal.get("score"), 0.0)),
+                    source=article.get('site') or article.get('source') or "FMP",
+                    metadata={
+                        "published": published,
+                        "impact": signal.get("impact"),
+                        "url": article.get('url') or article.get('link') or "",
+                    },
+                    parse_mode="HTML"
+                )
             except Exception as e:
                 logging.debug(f"Sentinel alert send error for {tk}: {e}")
 
@@ -7217,7 +7665,24 @@ def monitor_proteccion_activos():
         )
 
         try:
-            bot.send_message(CHAT_ID, alert_msg, parse_mode="HTML")
+            _send_alert_with_tracking(
+                CHAT_ID,
+                alert_msg,
+                alert_type="protection",
+                ticker=tk,
+                direction="bajista" if pct_change < 0 else "alcista",
+                entry_price=current_price,
+                title="Protección de activos",
+                summary=f"Movimiento {pct_change:+.2f}% frente al baseline protegido.",
+                signal_strength=abs(pct_change),
+                source="monitor_proteccion",
+                metadata={
+                    "baseline": baseline,
+                    "entry_price": entry_price,
+                    "smc_context": smc_context,
+                },
+                parse_mode="HTML"
+            )
         except Exception as e:
             logging.error(f"Error enviando alerta de protección para {tk}: {e}")
 
@@ -7256,6 +7721,8 @@ def background_loop_proactivo():
     _SMC_REFRESH_INTERVAL = 120  # ~60 minutos (120 ticks * 30s)
     divergence_tick_counter = 0  # Divergencias de alta calidad cada ~20 min
     _DIVERGENCE_INTERVAL = 40  # ~20 minutos (40 ticks * 30s)
+    validation_tick_counter = 0  # Validación de alertas cada ~5 min
+    _VALIDATION_INTERVAL = 10  # ~5 minutos
     loop_counter = 0  # Contador total de ciclos para heartbeat
     while True:
         try:
@@ -7267,6 +7734,7 @@ def background_loop_proactivo():
             geo_refresh_counter += 1
             smc_refresh_counter += 1
             divergence_tick_counter += 1
+            validation_tick_counter += 1
             loop_counter += 1
 
             # === HEARTBEAT: log cada ciclo ===
@@ -7289,6 +7757,10 @@ def background_loop_proactivo():
                          _make_card("VIGILANCIA GLOBAL", [ai_threat_evaluation], icon="🚨"),
                          parse_mode="HTML"
                      )
+                    try:
+                        _register_geopolitics_alert_batch(unique_news)
+                    except Exception as e:
+                        logging.error(f"ALERT SCORE: no pude registrar lote geopolítico: {e}")
 
             # === REFRESCAR CONTEXTO GEOPOLÃTICO: cada ~10 minutos ===
             if geo_refresh_counter >= _GEO_REFRESH_INTERVAL:
@@ -7330,6 +7802,21 @@ def background_loop_proactivo():
                     _monitor_quality_divergences(tracked)
                 except Exception as e:
                     logging.error(f"Error en Monitor de Divergencias: {e}")
+
+            if validation_tick_counter >= _VALIDATION_INTERVAL:
+                validation_tick_counter = 0
+                try:
+                    evaluated = evaluate_pending_alert_validations(limit=40)
+                    if evaluated:
+                        logging.info(f"ALERT SCORE: {evaluated} horizontes evaluados en este ciclo.")
+                except Exception as e:
+                    logging.error(f"Error en Motor de Validación de Alertas: {e}")
+
+            if loop_counter % 240 == 0:
+                try:
+                    purge_old_alert_validation_records(days=180)
+                except Exception as e:
+                    logging.error(f"Error purgando histórico de validación: {e}")
 
             # === ESCANEO DE ACTIVOS: precios, rupturas, ballenas ===
             whale_scan_count = 0
@@ -7391,7 +7878,7 @@ def background_loop_proactivo():
                                     ],
                                     icon="🚀"
                                 )
-                                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+                                _send_alert_with_tracking(CHAT_ID, msg, alert_type="breakout_up", ticker=tk, direction="alcista", entry_price=cur_price, title="Ruptura de resistencia", summary=reason, signal_strength=max(rvol, 1.0), source="smc_breakout", metadata={"resistance": topol['res'], "rsi": rsi, "rvol": rvol}, parse_mode="HTML")
 
                         # L\u00f3gica 2: Ruptura Descendente
                         elif cur_price < topol['sup']:
@@ -7407,7 +7894,7 @@ def background_loop_proactivo():
                                     ],
                                     icon="⚠️"
                                 )
-                                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+                                _send_alert_with_tracking(CHAT_ID, msg, alert_type="breakdown", ticker=tk, direction="bajista", entry_price=cur_price, title="Ruptura de soporte", summary=reason, signal_strength=max(rvol, 1.0), source="smc_breakdown", metadata={"support": topol['sup'], "rsi": rsi, "rvol": rvol}, parse_mode="HTML")
                             
                         # L\u00f3gica 3: Zona de Acumulaci\u00f3n (Cerca del Soporte)
                         elif topol['sup'] <= cur_price <= (topol['sup'] * 1.015):
@@ -7423,7 +7910,7 @@ def background_loop_proactivo():
                                     ],
                                     icon="💠"
                                 )
-                                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+                                _send_alert_with_tracking(CHAT_ID, msg, alert_type="accumulation", ticker=tk, direction="alcista", entry_price=cur_price, title="Zona de acumulación", summary=reason, signal_strength=max(1.0, 1.0 + abs(rsi - 50) / 25.0), source="smc_accumulation", metadata={"support": topol['sup'], "rsi": rsi, "rvol": rvol}, parse_mode="HTML")
 
                     # Ballenas â€” con cruce geopolítico GENESIS
                     # UMBRAL TEMPORAL REDUCIDO PARA TESTING (original: crypto=5.0, stocks=2.5)
@@ -7521,7 +8008,7 @@ def background_loop_proactivo():
                                 print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
 
                                 bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}\n\ud83e\udde0 Filtro ganador: {whale_reason}{note}"
-                                bot.send_message(CHAT_ID, bot_msg, parse_mode="HTML")
+                                _send_alert_with_tracking(CHAT_ID, bot_msg, alert_type="whale_winner", ticker=tk, direction="alcista", entry_price=cur_price, title="Ballena ganadora detectada", summary=whale_reason, signal_strength=max(spike, 1.0), source="radar_ballenas", metadata={"vol_usd": vol_usd, "spike": spike, "rsi": rsi_w, "winner_only": True}, parse_mode="HTML")
                         else:
                             if intra['avg_vol'] == 0:
                                 print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
