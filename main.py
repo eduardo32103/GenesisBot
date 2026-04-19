@@ -1387,84 +1387,191 @@ def purge_old_alert_validation_records(days=180):
         pass
 
 
+def _human_alert_outcome_label(outcome_label):
+    return {
+        "ganadora_fuerte": "Ganadora fuerte",
+        "ganadora": "Ganadora",
+        "mixta": "Mixta",
+        "fallida": "Fallida",
+        "fallida_fuerte": "Fallida fuerte",
+    }.get(str(outcome_label or "").strip().lower(), "Sin clasificar")
+
+
+def _alert_score_badge(score_value):
+    score = _safe_float(score_value, 0.0)
+    if score >= 3.5:
+        return "🟢"
+    if score >= 1.0:
+        return "🟡"
+    if score <= -3.5:
+        return "🔴"
+    if score < 0:
+        return "🟠"
+    return "⚪"
+
+
+def _format_future_eta_label(raw_dt):
+    dt = _parse_news_datetime(raw_dt)
+    if not isinstance(dt, datetime):
+        return "sin ETA"
+    now_utc = datetime.now(timezone.utc)
+    minutes = max(int((dt - now_utc).total_seconds() / 60), 0)
+    if minutes < 60:
+        return f"en {minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"en {hours} h"
+    days = hours // 24
+    return f"en {days} d"
+
+
 def build_alert_validation_report(days=45, topn=6):
     conn = get_db_connection()
     if not conn:
-        return _make_card("SCORE DE ALERTAS", ["No pude conectarme a la base de datos para leer la validación."], icon="📚")
+        return _make_card("DASHBOARD DE ALERTAS", ["No pude conectarme a la base de datos para leer la validación."], icon="📊")
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(7, int(days)))).isoformat()
     try:
         c = conn.cursor()
-        c.execute('SELECT alert_id, alert_type FROM alert_events WHERE created_at >= %s', (cutoff,))
+        c.execute(
+            '''SELECT alert_id, alert_type, ticker, direction, created_at, title, signal_strength, status
+               FROM alert_events
+               WHERE created_at >= %s
+               ORDER BY created_at DESC''',
+            (cutoff,)
+        )
         event_rows = c.fetchall() or []
         total_alerts = len(event_rows)
 
         c.execute(
-            '''SELECT e.alert_type, e.ticker, v.horizon_key, v.score_value, v.signed_return_pct, v.outcome_label
+            '''SELECT e.alert_id, e.alert_type, e.ticker, e.title, e.direction, e.signal_strength,
+                      v.horizon_key, v.scheduled_at, v.evaluated_at, v.score_value, v.signed_return_pct, v.outcome_label
                FROM alert_validations v
                JOIN alert_events e ON e.alert_id = v.alert_id
-               WHERE e.created_at >= %s AND v.evaluated_at IS NOT NULL''',
+               WHERE e.created_at >= %s
+               ORDER BY COALESCE(v.evaluated_at, v.scheduled_at) DESC''',
             (cutoff,)
         )
-        validation_rows = c.fetchall() or []
-
-        c.execute(
-            '''SELECT COUNT(*)
-               FROM alert_validations v
-               JOIN alert_events e ON e.alert_id = v.alert_id
-               WHERE e.created_at >= %s AND v.evaluated_at IS NULL''',
-            (cutoff,)
-        )
-        pending_horizons = int((c.fetchone() or [0])[0] or 0)
+        all_validation_rows = c.fetchall() or []
     except Exception as e:
-        return _make_card("SCORE DE ALERTAS", [f"No pude construir el reporte de validación: {e}"], icon="📚")
+        return _make_card("DASHBOARD DE ALERTAS", [f"No pude construir el reporte de validación: {e}"], icon="📊")
     finally:
         pass
 
     if not event_rows:
         return _make_card(
-            "SCORE DE ALERTAS",
+            "DASHBOARD DE ALERTAS",
             ["Todavía no hay alertas registradas en la ventana reciente.", "En cuanto el motor acumule señales, aquí verás qué tipos están funcionando mejor."],
-            icon="📚"
+            icon="📊"
         )
 
     type_stats = {}
+    horizon_stats = {}
+    ticker_stats = {}
+    outcome_counts = {
+        "ganadora_fuerte": 0,
+        "ganadora": 0,
+        "mixta": 0,
+        "fallida": 0,
+        "fallida_fuerte": 0,
+    }
     wins = 0
     total_score = 0.0
     total_signed_return = 0.0
+    total_signal_strength = 0.0
+    active_alerts = 0
+    completed_alerts = 0
+    pending_horizons = 0
+    evaluated_alert_ids = set()
+    validated_rows = []
+    pending_rows = []
 
-    for alert_type, ticker, horizon_key, score_value, signed_return_pct, outcome_label in validation_rows:
+    for _, _, _, _, _, _, signal_strength, status_text in event_rows:
+        total_signal_strength += _safe_float(signal_strength, 0.0)
+        normalized_status = str(status_text or "tracking").strip().lower()
+        if normalized_status == "completed":
+            completed_alerts += 1
+        else:
+            active_alerts += 1
+
+    for alert_id, alert_type, ticker, title, _, _, horizon_key, scheduled_at, evaluated_at, score_value, signed_return_pct, outcome_label in all_validation_rows:
+        if evaluated_at is None:
+            pending_horizons += 1
+            pending_rows.append((alert_type, ticker, title, horizon_key, scheduled_at))
+            continue
+
+        validated_rows.append(
+            (alert_id, alert_type, ticker, title, horizon_key, scheduled_at, evaluated_at, score_value, signed_return_pct, outcome_label)
+        )
+        evaluated_alert_ids.add(alert_id)
         slot = type_stats.setdefault(alert_type, {
             "count": 0,
             "wins": 0,
             "fails": 0,
+            "strong_wins": 0,
+            "strong_fails": 0,
             "score_sum": 0.0,
             "return_sum": 0.0,
-            "tickers": set(),
+        })
+        horizon_slot = horizon_stats.setdefault(horizon_key, {
+            "count": 0,
+            "wins": 0,
+            "score_sum": 0.0,
+            "return_sum": 0.0,
+        })
+        ticker_slot = ticker_stats.setdefault(remap_ticker(ticker), {
+            "count": 0,
+            "wins": 0,
+            "score_sum": 0.0,
+            "return_sum": 0.0,
+            "types": set(),
         })
         slot["count"] += 1
         slot["score_sum"] += _safe_float(score_value, 0.0)
         slot["return_sum"] += _safe_float(signed_return_pct, 0.0)
-        slot["tickers"].add(remap_ticker(ticker))
+        horizon_slot["count"] += 1
+        horizon_slot["score_sum"] += _safe_float(score_value, 0.0)
+        horizon_slot["return_sum"] += _safe_float(signed_return_pct, 0.0)
+        ticker_slot["count"] += 1
+        ticker_slot["score_sum"] += _safe_float(score_value, 0.0)
+        ticker_slot["return_sum"] += _safe_float(signed_return_pct, 0.0)
+        ticker_slot["types"].add(alert_type)
         total_score += _safe_float(score_value, 0.0)
         total_signed_return += _safe_float(signed_return_pct, 0.0)
+        normalized_outcome = str(outcome_label or "").strip().lower()
+        if normalized_outcome in outcome_counts:
+            outcome_counts[normalized_outcome] += 1
 
-        if str(outcome_label or "").startswith("ganadora"):
+        if normalized_outcome.startswith("ganadora"):
             wins += 1
             slot["wins"] += 1
-        elif str(outcome_label or "").startswith("fallida"):
+            horizon_slot["wins"] += 1
+            ticker_slot["wins"] += 1
+            if normalized_outcome == "ganadora_fuerte":
+                slot["strong_wins"] += 1
+        elif normalized_outcome.startswith("fallida"):
             slot["fails"] += 1
+            if normalized_outcome == "fallida_fuerte":
+                slot["strong_fails"] += 1
 
-    total_validations = len(validation_rows)
+    total_validations = len(validated_rows)
     win_rate = (wins / total_validations * 100) if total_validations > 0 else 0.0
     avg_score = (total_score / total_validations) if total_validations > 0 else 0.0
     avg_signed_return = (total_signed_return / total_validations) if total_validations > 0 else 0.0
+    avg_signal_strength = (total_signal_strength / total_alerts) if total_alerts > 0 else 0.0
+    evaluation_coverage = (len(evaluated_alert_ids) / total_alerts * 100) if total_alerts > 0 else 0.0
+    section_limit = max(3, int(topn))
+    next_pending_rows = sorted(
+        pending_rows,
+        key=lambda row: _parse_news_datetime(row[4]) or datetime.max.replace(tzinfo=timezone.utc)
+    )[:min(section_limit, 5)]
 
     lines = [
-        f"• Alertas registradas: <b>{total_alerts}</b> en los últimos {max(7, int(days))} días.",
+        f"• Ventana analizada: <b>{max(7, int(days))} días</b>.",
+        f"• Alertas registradas: <b>{total_alerts}</b> | activas: <b>{active_alerts}</b> | cerradas: <b>{completed_alerts}</b>.",
         f"• Horizontes evaluados: <b>{total_validations}</b> | pendientes: <b>{pending_horizons}</b>.",
-        f"• Tasa de acierto global: <b>{win_rate:.1f}%</b>.",
-        f"• Score promedio firmado: <b>{avg_score:+.2f}</b> | retorno firmado: <b>{avg_signed_return:+.2f}%</b>.",
+        f"• Tasa de acierto global: <b>{win_rate:.1f}%</b> | score medio: <b>{avg_score:+.2f}</b> | retorno: <b>{avg_signed_return:+.2f}%</b>.",
+        f"• Fuerza media de señal: <b>{avg_signal_strength:.2f}</b> | cobertura validada: <b>{evaluation_coverage:.1f}%</b>.",
     ]
 
     if total_validations <= 0:
@@ -1472,10 +1579,25 @@ def build_alert_validation_report(days=45, topn=6):
             "",
             "⏳ El motor ya está registrando señales, pero aún no madura suficientes horizontes para calificarlas.",
         ])
-        return _make_card("SCORE DE ALERTAS", lines, icon="📚", footer="Se validan automáticamente a 1H, 4H, 1D y 1W.")
+        if next_pending_rows:
+            lines.extend(["", "⌛ <b>Próximas maduraciones</b>"])
+            for alert_type, ticker, title, horizon_key, scheduled_at in next_pending_rows:
+                type_label = _ALERT_TYPE_LABELS.get(alert_type, str(alert_type or "").replace("_", " ").title())
+                headline = _truncate_text(title or type_label, 40)
+                lines.append(
+                    f"• <b>{_escape_html(remap_ticker(ticker))}</b> | {horizon_key} | {_escape_html(headline)} | {_format_future_eta_label(scheduled_at)}"
+                )
+        return _make_card("DASHBOARD DE ALERTAS", lines, icon="📊", footer="Se validan automáticamente a 1H, 4H, 1D y 1W.")
 
-    lines.extend(["", "🏆 <b>Score por tipo de alerta</b>"])
-    ranked = []
+    lines.extend([
+        "",
+        "🧪 <b>Resultado agregado</b>",
+        f"• Ganadoras fuertes: <b>{outcome_counts['ganadora_fuerte']}</b> | ganadoras: <b>{outcome_counts['ganadora']}</b> | mixtas: <b>{outcome_counts['mixta']}</b>.",
+        f"• Fallidas: <b>{outcome_counts['fallida']}</b> | fallidas fuertes: <b>{outcome_counts['fallida_fuerte']}</b>.",
+        "",
+        "🏆 <b>Por tipo de alerta</b>",
+    ])
+    ranked_types = []
     for alert_type, data in type_stats.items():
         count = data["count"]
         if count <= 0:
@@ -1483,17 +1605,89 @@ def build_alert_validation_report(days=45, topn=6):
         avg_type_score = data["score_sum"] / count
         avg_type_return = data["return_sum"] / count
         type_win_rate = (data["wins"] / count * 100) if count > 0 else 0.0
-        ranked.append((avg_type_score, count, alert_type, avg_type_return, type_win_rate, data))
+        ranked_types.append((avg_type_score, type_win_rate, count, alert_type, avg_type_return))
 
-    for avg_type_score, count, alert_type, avg_type_return, type_win_rate, data in sorted(ranked, key=lambda item: (item[0], item[1]), reverse=True)[:max(3, int(topn))]:
+    for avg_type_score, type_win_rate, count, alert_type, avg_type_return in sorted(ranked_types, key=lambda item: (item[0], item[1], item[2]), reverse=True)[:section_limit]:
         label = _ALERT_TYPE_LABELS.get(alert_type, alert_type.replace("_", " ").title())
         lines.append(
-            f"• <b>{label}</b> -> {count} evaluaciones | acierto {type_win_rate:.1f}% | score {avg_type_score:+.2f} | retorno {avg_type_return:+.2f}%"
+            f"• <b>{label}</b> -> {count} eval. | acierto {type_win_rate:.1f}% | score {avg_type_score:+.2f} | retorno {avg_type_return:+.2f}%"
         )
 
-    return _make_card("SCORE DE ALERTAS", lines, icon="📚", footer="Se validan automáticamente a 1H, 4H, 1D y 1W.")
-    save_state_to_telegram()
-    logging.info("⚠️ RESET TOTAL ejecutado: inversiones y PnL eliminados")
+    lines.extend(["", "⏱️ <b>Por horizonte</b>"])
+    horizon_order = {key: index for index, (key, _) in enumerate(_ALERT_VALIDATION_HORIZONS)}
+    ranked_horizons = []
+    for horizon_key, data in horizon_stats.items():
+        count = data["count"]
+        if count <= 0:
+            continue
+        avg_horizon_score = data["score_sum"] / count
+        avg_horizon_return = data["return_sum"] / count
+        horizon_win_rate = (data["wins"] / count * 100) if count > 0 else 0.0
+        ranked_horizons.append((horizon_key, avg_horizon_score, avg_horizon_return, horizon_win_rate, count))
+
+    for horizon_key, avg_horizon_score, avg_horizon_return, horizon_win_rate, count in sorted(
+        ranked_horizons,
+        key=lambda item: horizon_order.get(item[0], 99)
+    ):
+        lines.append(
+            f"• <b>{horizon_key}</b> -> {count} eval. | acierto {horizon_win_rate:.1f}% | score {avg_horizon_score:+.2f} | retorno {avg_horizon_return:+.2f}%"
+        )
+
+    lines.extend(["", "📈 <b>Tickers más fiables</b>"])
+    ticker_ranked = []
+    for ticker, data in ticker_stats.items():
+        count = data["count"]
+        if count <= 0:
+            continue
+        avg_ticker_score = data["score_sum"] / count
+        avg_ticker_return = data["return_sum"] / count
+        ticker_win_rate = (data["wins"] / count * 100) if count > 0 else 0.0
+        ticker_ranked.append((avg_ticker_score, ticker_win_rate, count, ticker, avg_ticker_return))
+
+    reliable_pool = [item for item in ticker_ranked if item[2] >= 2] or ticker_ranked
+    for avg_ticker_score, ticker_win_rate, count, ticker, avg_ticker_return in sorted(
+        reliable_pool,
+        key=lambda item: (item[0], item[1], item[2]),
+        reverse=True
+    )[:min(section_limit, 4)]:
+        lines.append(
+            f"• <b>{_escape_html(remap_ticker(ticker))}</b> -> {count} eval. | acierto {ticker_win_rate:.1f}% | score {avg_ticker_score:+.2f} | retorno {avg_ticker_return:+.2f}%"
+        )
+
+    weak_pool = [item for item in ticker_ranked if item[2] >= 2] or ticker_ranked
+    worst_ranked = sorted(weak_pool, key=lambda item: (item[0], item[1], -item[2]))
+    if worst_ranked:
+        lines.extend(["", "🩺 <b>Tickers a vigilar</b>"])
+        for avg_ticker_score, ticker_win_rate, count, ticker, avg_ticker_return in worst_ranked[:min(section_limit, 4)]:
+            lines.append(
+                f"• <b>{_escape_html(remap_ticker(ticker))}</b> -> {count} eval. | acierto {ticker_win_rate:.1f}% | score {avg_ticker_score:+.2f} | retorno {avg_ticker_return:+.2f}%"
+            )
+
+    recent_rows = sorted(
+        validated_rows,
+        key=lambda row: _parse_news_datetime(row[6]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True
+    )[:min(section_limit, 5)]
+    if recent_rows:
+        lines.extend(["", "🕒 <b>Últimas validaciones</b>"])
+        for _, alert_type, ticker, title, horizon_key, _, evaluated_at, score_value, signed_return_pct, outcome_label in recent_rows:
+            type_label = _ALERT_TYPE_LABELS.get(alert_type, str(alert_type or "").replace("_", " ").title())
+            recency_label = _format_news_recency(_parse_news_datetime(evaluated_at))
+            headline = _truncate_text(title or type_label, 42)
+            lines.append(
+                f"• {_alert_score_badge(score_value)} <b>{_escape_html(remap_ticker(ticker))}</b> | {horizon_key} | {_human_alert_outcome_label(outcome_label)} | {signed_return_pct:+.2f}% | {_escape_html(headline)} | {recency_label}"
+            )
+
+    if next_pending_rows:
+        lines.extend(["", "⌛ <b>Próximas maduraciones</b>"])
+        for alert_type, ticker, title, horizon_key, scheduled_at in next_pending_rows:
+            type_label = _ALERT_TYPE_LABELS.get(alert_type, str(alert_type or "").replace("_", " ").title())
+            headline = _truncate_text(title or type_label, 42)
+            lines.append(
+                f"• <b>{_escape_html(remap_ticker(ticker))}</b> | {horizon_key} | {_escape_html(headline)} | {_format_future_eta_label(scheduled_at)}"
+            )
+
+    return _make_card("DASHBOARD DE ALERTAS", lines, icon="📊", footer="Dashboard interno del motor de alertas. Se valida automáticamente a 1H, 4H, 1D y 1W.")
 
 
 WHALE_MEMORY = deque(maxlen=5)
@@ -6694,6 +6888,16 @@ def cmd_score_alertas(message):
         logging.error(f"ALERT SCORE: error actualizando antes del reporte manual: {e}")
     bot.reply_to(message, build_alert_validation_report(days=60, topn=8), parse_mode="HTML")
 
+
+@bot.message_handler(commands=['dashboard_alertas'])
+def cmd_dashboard_alertas(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    try:
+        evaluate_pending_alert_validations(limit=80)
+    except Exception as e:
+        logging.error(f"ALERT SCORE: error actualizando dashboard manual: {e}")
+    bot.reply_to(message, build_alert_validation_report(days=60, topn=8), parse_mode="HTML")
+
 from openai import OpenAI
 
 @bot.message_handler(content_types=['photo'])
@@ -7265,8 +7469,8 @@ def handle_text(message):
         _send_wallet_status(message.chat.id)
         return
 
-    if normalized_text in {"score alertas", "score de alertas", "validacion alertas", "validación alertas", "efectividad alertas"}:
-        bot.reply_to(message, "📚 Midiendo efectividad real de las alertas y actualizando score...")
+    if normalized_text in {"score alertas", "score de alertas", "validacion alertas", "validación alertas", "efectividad alertas", "dashboard alertas", "panel alertas", "rendimiento alertas"}:
+        bot.reply_to(message, "📊 Midiendo efectividad real de las alertas y construyendo dashboard...")
         try:
             evaluate_pending_alert_validations(limit=80)
         except Exception as e:
