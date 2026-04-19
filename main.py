@@ -1689,6 +1689,157 @@ def build_alert_strategy_report(days=45, topn=6):
     )
 
 
+def _build_ticker_alert_memory(ticker, days=60):
+    tk = remap_ticker(ticker or "")
+    base_payload = {
+        "available": False,
+        "count": 0,
+        "avg_score": 0.0,
+        "avg_return": 0.0,
+        "win_rate": 0.0,
+        "pass_rate": 100.0,
+        "bias_label": "Sin memoria suficiente",
+        "summary": "Todavía no hay histórico suficiente de alertas validadas para este activo.",
+        "best_type_label": "",
+        "weak_type_label": "",
+        "score_bias": 0,
+        "confidence_delta": 0,
+        "filter_summary": "Sin histórico suficiente para calibrar el filtro.",
+    }
+    if not tk:
+        return dict(base_payload)
+
+    conn = get_db_connection()
+    if not conn:
+        return dict(base_payload)
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(14, int(days)))).isoformat()
+    try:
+        c = conn.cursor()
+        c.execute(
+            '''SELECT e.alert_type, v.score_value, v.signed_return_pct, v.outcome_label
+               FROM alert_validations v
+               JOIN alert_events e ON e.alert_id = v.alert_id
+               WHERE e.created_at >= %s AND e.ticker = %s AND v.evaluated_at IS NOT NULL
+               ORDER BY v.evaluated_at DESC''',
+            (cutoff, tk)
+        )
+        validation_rows = c.fetchall() or []
+
+        c.execute(
+            '''SELECT alert_type, normalized_strength, required_strength, was_allowed
+               FROM alert_policy_audit
+               WHERE created_at >= %s AND ticker = %s
+               ORDER BY created_at DESC''',
+            (cutoff, tk)
+        )
+        policy_rows = c.fetchall() or []
+    except Exception as e:
+        logging.error(f"ALERT MEMORY: no pude leer memoria de {tk}: {e}")
+        return dict(base_payload)
+    finally:
+        pass
+
+    if not validation_rows:
+        return dict(base_payload)
+
+    total = len(validation_rows)
+    wins = 0
+    total_score = 0.0
+    total_return = 0.0
+    type_stats = {}
+    for alert_type, score_value, signed_return_pct, outcome_label in validation_rows:
+        score_num = _safe_float(score_value, 0.0)
+        return_num = _safe_float(signed_return_pct, 0.0)
+        total_score += score_num
+        total_return += return_num
+        normalized_outcome = str(outcome_label or "").strip().lower()
+        if normalized_outcome.startswith("ganadora"):
+            wins += 1
+        slot = type_stats.setdefault(alert_type, {"count": 0, "wins": 0, "score_sum": 0.0})
+        slot["count"] += 1
+        slot["score_sum"] += score_num
+        if normalized_outcome.startswith("ganadora"):
+            slot["wins"] += 1
+
+    avg_score = total_score / total if total > 0 else 0.0
+    avg_return = total_return / total if total > 0 else 0.0
+    win_rate = (wins / total * 100.0) if total > 0 else 0.0
+
+    ranked_types = []
+    for alert_type, data in type_stats.items():
+        count = data["count"]
+        avg_type_score = data["score_sum"] / count if count > 0 else 0.0
+        type_win_rate = (data["wins"] / count * 100.0) if count > 0 else 0.0
+        ranked_types.append((avg_type_score, type_win_rate, count, alert_type))
+
+    best_type_label = ""
+    weak_type_label = ""
+    if ranked_types:
+        best_type = max(ranked_types, key=lambda item: (item[0], item[1], item[2]))
+        weak_type = min(ranked_types, key=lambda item: (item[0], item[1], -item[2]))
+        best_type_label = _ALERT_TYPE_LABELS.get(best_type[3], best_type[3].replace("_", " ").title())
+        weak_type_label = _ALERT_TYPE_LABELS.get(weak_type[3], weak_type[3].replace("_", " ").title())
+
+    pass_rate = 100.0
+    avg_norm = 0.0
+    avg_req = 0.0
+    if policy_rows:
+        pass_count = sum(1 for _, _, _, was_allowed in policy_rows if int(was_allowed or 0) == 1)
+        pass_rate = (pass_count / len(policy_rows) * 100.0) if policy_rows else 100.0
+        avg_norm = sum(_safe_float(row[1], 0.0) for row in policy_rows) / len(policy_rows)
+        avg_req = sum(_safe_float(row[2], 0.0) for row in policy_rows) / len(policy_rows)
+
+    if total >= 6 and avg_score >= 1.0 and win_rate >= 56:
+        bias_label = "Memoria favorable"
+        summary = "El motor viene leyendo bien este activo; merece un poco más de confianza táctica."
+        score_bias = 1
+        confidence_delta = 6
+    elif total >= 6 and (avg_score <= -0.55 or win_rate < 42):
+        bias_label = "Memoria adversa"
+        summary = "El motor ha tenido más fricción en este activo; conviene exigir confirmación extra."
+        score_bias = -1
+        confidence_delta = -6
+    elif total < 4:
+        bias_label = "Muestra corta"
+        summary = "Aún hay poco histórico validado en este activo; no conviene sobreconfiar."
+        score_bias = 0
+        confidence_delta = 0
+    else:
+        bias_label = "Memoria neutra"
+        summary = "El histórico reciente del motor es mixto; ayuda, pero no inclina por sí solo la tesis."
+        score_bias = 0
+        confidence_delta = 0
+
+    if policy_rows:
+        if pass_rate < 52 and avg_norm < avg_req:
+            filter_summary = "El filtro está siendo exigente con este activo porque el ruido reciente sigue alto."
+        elif pass_rate > 72 and avg_norm >= avg_req:
+            filter_summary = "El filtro está dejando pasar más señales porque este activo viene con mejor lectura."
+        else:
+            filter_summary = "El filtro está en modo equilibrado: ni demasiado suelto ni demasiado estricto."
+    else:
+        filter_summary = "Todavía no hay suficientes decisiones del filtro para leer su comportamiento en este activo."
+
+    payload = dict(base_payload)
+    payload.update({
+        "available": True,
+        "count": total,
+        "avg_score": round(avg_score, 3),
+        "avg_return": round(avg_return, 3),
+        "win_rate": round(win_rate, 2),
+        "pass_rate": round(pass_rate, 2),
+        "bias_label": bias_label,
+        "summary": summary,
+        "best_type_label": best_type_label,
+        "weak_type_label": weak_type_label,
+        "score_bias": score_bias,
+        "confidence_delta": confidence_delta,
+        "filter_summary": filter_summary,
+    })
+    return payload
+
+
 def _register_alert_event(alert_type, ticker, direction, entry_price, title="", summary="", signal_strength=0.0, source="", metadata=None):
     conn = get_db_connection()
     if not conn:
@@ -5810,6 +5961,18 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"Lectura dominante: {macro_summary}",
         f"Titular guia: {macro_headline or 'Sin titular dominante por ahora.'}",
     ])
+    sidebar_y = _draw_section(sidebar_y, "Memoria del motor", [
+        f"Estado reciente: {memory_label}.",
+        f"Acierto: {memory_win_rate:.1f}% | score {memory_avg_score:+.2f}.",
+        f"Paso del filtro: {memory_pass_rate:.1f}%.",
+        f"Lectura: {memory_summary}",
+    ])
+    sidebar_y = _draw_section(sidebar_y, "Memoria del motor", [
+        f"Estado reciente: {memory_label}.",
+        f"Acierto: {memory_win_rate:.1f}% | score {memory_avg_score:+.2f}.",
+        f"Paso del filtro: {memory_pass_rate:.1f}%.",
+        f"Lectura: {memory_summary}",
+    ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
         f"Precio actual: ${fmt_price(price_value)}",
         f"Soporte principal: ${fmt_price(support)}",
@@ -6063,6 +6226,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     display_name = get_display_name(tk)
     divergence = pack.get("divergence") or {}
     macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
+    alert_memory = analysis.get("alert_memory") if isinstance(analysis.get("alert_memory"), dict) else {}
     macro_score = _safe_float(macro_context.get("score"), _safe_float(analysis.get("macro_score"), pack.get("macro_score", 0.0)))
     pack["macro_score"] = macro_score
 
@@ -6172,6 +6336,11 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     macro_probability = int(macro_context.get("probability") or max(58, min(92, 60 + abs(macro_score) * 7)))
     macro_summary = str(macro_context.get("summary") or "Sin catalizador macro dominante por ahora.")
     macro_headline = str(macro_context.get("headline") or "")
+    memory_label = str(alert_memory.get("bias_label") or "Sin memoria suficiente")
+    memory_summary = str(alert_memory.get("summary") or "Todavia no hay memoria suficiente del motor para este activo.")
+    memory_win_rate = _safe_float(alert_memory.get("win_rate"), 0.0)
+    memory_avg_score = _safe_float(alert_memory.get("avg_score"), 0.0)
+    memory_pass_rate = _safe_float(alert_memory.get("pass_rate"), 100.0)
     timeframe_label = pack.get("timeframe_label") or "Diaria (1D)"
     source_label = pack.get("source_label") or "FMP EOD"
     session_label = pack.get("session_label") or "Cierres confirmados"
@@ -6468,6 +6637,12 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         f"Resistencia principal: ${fmt_price(resistance)}",
         f"Zona dorada: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
     ])
+    sidebar_y = _draw_section(sidebar_y, "Memoria del motor", [
+        f"Estado reciente: {memory_label}.",
+        f"Acierto: {memory_win_rate:.1f}% | score {memory_avg_score:+.2f}.",
+        f"Paso del filtro: {memory_pass_rate:.1f}%.",
+        f"Lectura: {memory_summary}",
+    ])
     sidebar_y = _draw_section(sidebar_y, "Motor técnico", orientation_drivers + [
         f"Divergencia: {divergence_text}",
         f"Lectura de medias: EMA50/EMA200 con sesgo {ema_bias}.",
@@ -6485,6 +6660,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
             f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used} | Fuente: {source_label}.",
             f"• Orientación probable: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
             f"• Ruta esperada: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• Memoria del motor: <b>{_escape_html(memory_label)}</b> | acierto {memory_win_rate:.1f}% | score {memory_avg_score:+.2f}.",
             f"• EMA50 ${fmt_price(ema50_value)} | EMA200 ${fmt_price(ema200_value)} | RSI {rsi_value:.1f} | MACD {macd_bias}.",
             f"• Divergencia: {divergence_text}",
         ],
@@ -6747,6 +6923,7 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     description = _truncate_text(_translate_text_to_spanish(description_raw, max_chars=420), 190)
     macro_context = _build_ticker_macro_context(tk, sector=sector, industry=industry, limit=3, force_refresh=False)
     macro_score = _safe_float(macro_context.get("score"), 0.0)
+    alert_memory = _build_ticker_alert_memory(tk, days=60)
     if chart_pack:
         chart_pack["macro_score"] = macro_score
         projection = _apply_macro_bias_to_projection(chart_pack, projection, macro_score)
@@ -6840,6 +7017,7 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         "projection_bias": projection_bias,
         "macro_score": macro_score,
         "macro_context": macro_context,
+        "alert_memory": alert_memory,
     })
     LAST_KNOWN_ANALYSIS[tk] = analysis_cache
 
@@ -6981,6 +7159,15 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         score -= 1
         bearish_reasons.append("macro reciente añade presión al activo")
 
+    memory_score_bias = int(alert_memory.get("score_bias", 0) or 0)
+    memory_confidence_delta = int(alert_memory.get("confidence_delta", 0) or 0)
+    if memory_score_bias > 0:
+        score += memory_score_bias
+        bullish_reasons.append("la memoria interna del motor favorece este activo")
+    elif memory_score_bias < 0:
+        score += memory_score_bias
+        bearish_reasons.append("la memoria interna del motor pide más confirmación")
+
     if price <= stop_loss:
         verdict = "VENTA DEFENSIVA"
         thesis = "El precio ya perforó la zona táctica de defensa y ahora prima proteger capital."
@@ -6997,7 +7184,7 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         verdict = "ESPERAR MEJOR ENTRADA"
         thesis = "Hay señales mixtas; lo más sano es no forzar una entrada hasta que el activo limpie estructura."
 
-    confidence = int(max(55, min(92, 56 + abs(score) * 7 + (4 if risk_reward >= 1.5 else 0))))
+    confidence = int(max(55, min(92, 56 + abs(score) * 7 + (4 if risk_reward >= 1.5 else 0) + memory_confidence_delta)))
 
     if projection_bias == "alcista" and score >= 3:
         orientation_label = "ALCISTA CLARA"
@@ -7015,7 +7202,7 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         orientation_label = "LATERAL / MIXTA"
         orientation_arrow = "→"
 
-    orientation_confidence = int(max(57, min(93, 58 + abs(score) * 6 + (5 if projection_bias != "neutral" else 0))))
+    orientation_confidence = int(max(57, min(93, 58 + abs(score) * 6 + (5 if projection_bias != "neutral" else 0) + max(min(memory_confidence_delta, 5), -5))))
     orientation_reason_pool = bullish_reasons if orientation_arrow == "↑" else bearish_reasons
     if orientation_arrow == "→":
         orientation_reason_pool = []
@@ -7051,6 +7238,8 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     ]
 
     lines.insert(4, f"â€¢ Macro y sentimiento: <b>{_escape_html(macro_context.get('bias_label', 'macro mixto'))}</b> | impacto estimado {int(macro_context.get('probability', 58) or 58)}%")
+
+    lines.append(f"• Memoria del motor: <b>{_escape_html(alert_memory.get('bias_label', 'Sin memoria suficiente'))}</b> | acierto {alert_memory.get('win_rate', 0.0):.1f}% | score {alert_memory.get('avg_score', 0.0):+.2f}")
 
     if description:
         lines.append(f"• Negocio: {_escape_html(description)}")
@@ -7090,6 +7279,12 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         lines.append("• Nota: FMP no devolvió histórico suficiente; esta lectura pesa más precio, volumen y noticias.")
 
     lines.extend([
+        "",
+        "🧠 <b>Memoria interna del motor</b>",
+        f"• Lectura histórica: {_escape_html(alert_memory.get('summary', 'Sin histórico suficiente en este activo.'))}",
+        f"• Paso reciente del filtro: <b>{alert_memory.get('pass_rate', 100.0):.1f}%</b>",
+        f"• Señal que mejor ha leído: {_escape_html(alert_memory.get('best_type_label', 'Sin muestra clara') or 'Sin muestra clara')}",
+        f"• Señal que sigue frágil: {_escape_html(alert_memory.get('weak_type_label', 'Sin muestra clara') or 'Sin muestra clara')}",
         "",
         "📰 <b>Contexto reciente</b>",
         f"• Sesgo de noticias: {news_signal['icon']} {_escape_html(news_signal['label'])}",
