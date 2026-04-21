@@ -1,3 +1,4 @@
+logging.error("ZZZ ENTRYPOINT REAL 777 | archivo=%s | version=prueba_checkdb_01", __file__)
 import os, pg8000.dbapi, telebot
 import html
 import ssl
@@ -7697,6 +7698,9 @@ def cmd_recover(message):
         bot.reply_to(message, f"âŒ Error en recuperación: `{e}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['backup'])
+bot.reply_to(message, "BACKUP RUTA NUEVA 777")
+return
+
 def cmd_backup(message):
     """Forzar un backup manual visible"""
     if str(message.chat.id) != str(CHAT_ID): return
