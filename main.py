@@ -7496,18 +7496,99 @@ def build_wallet_dashboard():
 
 @bot.message_handler(commands=['check_db'])
 def test_db(message):
-    print("â ³ Intentando conectar con Supabase (Timeout de 5 segundos)...")
-    try:
-        conn = get_db_connection()
-        if not conn:
-             print("â Œ ERROR DE RED O AUTENTICACIÓN: conn es None")
-             return
-        c = conn.cursor()
-        c.execute('SELECT version();')
-        v = c.fetchone()[0]
-        print(f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
-    except Exception as e:
-        print(f"â Œ ERROR DE RED O AUTENTICACIÓN\nSupabase ha rechazado la conexión.\n\nLog Técnico: {e}")
+    if str(message.chat.id) != str(CHAT_ID):
+        return
+
+    logging.error("ZZZ CHECK_DB REAL 777 | handler_hit | archivo=%s", __file__)
+    result = {"ok": False, "error": "timeout"}
+
+    def _safe_text(text):
+        if text is None:
+            return ""
+        return str(text).encode("utf-8", errors="ignore").decode("utf-8")
+
+    def _reply_check_db(text, phase):
+        cleaned = _safe_text(text)
+        logging.info(
+            "CHECK_DB REAL ROUTE %s | file=%s | func=test_db | chat_id=%s | text=%s",
+            phase,
+            __file__,
+            getattr(getattr(message, "chat", None), "id", "?"),
+            cleaned[:160],
+        )
+        try:
+            bot.reply_to(message, cleaned)
+            logging.info(
+                "CHECK_DB REAL ROUTE %s OK | file=%s | func=test_db | chat_id=%s",
+                phase,
+                __file__,
+                getattr(getattr(message, "chat", None), "id", "?"),
+            )
+            return
+        except Exception as exc:
+            logging.exception(
+                "CHECK_DB REAL ROUTE %s FAIL | file=%s | func=test_db | chat_id=%s | exc=%s",
+                phase,
+                __file__,
+                getattr(getattr(message, "chat", None), "id", "?"),
+                _safe_text(exc),
+            )
+        try:
+            bot.send_message(chat_id=message.chat.id, text=cleaned)
+            logging.info(
+                "CHECK_DB REAL ROUTE %s FALLBACK SEND OK | file=%s | func=test_db | chat_id=%s",
+                phase,
+                __file__,
+                getattr(getattr(message, "chat", None), "id", "?"),
+            )
+        except Exception as exc:
+            logging.exception(
+                "CHECK_DB REAL ROUTE %s FALLBACK SEND FAIL | file=%s | func=test_db | chat_id=%s | exc=%s",
+                phase,
+                __file__,
+                getattr(getattr(message, "chat", None), "id", "?"),
+                _safe_text(exc),
+            )
+
+    def _probe():
+        print("Intentando conectar con Supabase (Timeout de 5 segundos)...")
+        try:
+            conn = get_db_connection()
+            if not conn:
+                result["error"] = "conn es None"
+                print("ERROR DE RED O AUTENTICACION: conn es None")
+                return
+            c = conn.cursor()
+            c.execute('SELECT version();')
+            v = c.fetchone()[0]
+            result["ok"] = True
+            print(f"CONEXION ESTABLECIDA\nPostgreSQL OK. Base de Datos en linea y funcional.\n\nDetalle: {v}")
+        except Exception as exc:
+            result["error"] = str(exc)
+            print(f"ERROR DE RED O AUTENTICACION\nSupabase ha rechazado la conexion.\n\nLog Tecnico: {exc}")
+
+    logging.info(
+        "CHECK_DB REAL ROUTE ENTER | file=%s | func=test_db | chat_id=%s | text=%s",
+        __file__,
+        getattr(getattr(message, "chat", None), "id", "?"),
+        str(getattr(message, "text", "") or "")[:160],
+    )
+    _reply_check_db("CHECK_DB HANDLER ACTIVO", "PRE_SEND")
+
+    worker = threading.Thread(target=_probe, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+
+    if worker.is_alive():
+        _reply_check_db("DB ERROR: timeout", "FINAL_SEND")
+        return
+
+    if result["ok"]:
+        _reply_check_db("DB OK. Base de datos en linea.", "FINAL_SEND")
+        return
+
+    error_detail = _safe_text(result.get("error") or "desconocido").replace("\r", " ").replace("\n", " ")
+    _reply_check_db(f"DB ERROR: {error_detail[:160]}", "FINAL_SEND")
 
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
