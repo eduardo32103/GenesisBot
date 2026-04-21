@@ -7499,96 +7499,67 @@ def test_db(message):
     if str(message.chat.id) != str(CHAT_ID):
         return
 
-    logging.error("ZZZ CHECK_DB REAL 777 | handler_hit | archivo=%s", __file__)
     result = {"ok": False, "error": "timeout"}
+    logging.info("CHECK_DB: comando recibido | chat_id=%s", getattr(getattr(message, "chat", None), "id", "?"))
+    probe_timeout_seconds = 18
 
     def _safe_text(text):
         if text is None:
             return ""
         return str(text).encode("utf-8", errors="ignore").decode("utf-8")
 
-    def _reply_check_db(text, phase):
+    def _reply_check_db(text):
         cleaned = _safe_text(text)
-        logging.info(
-            "CHECK_DB REAL ROUTE %s | file=%s | func=test_db | chat_id=%s | text=%s",
-            phase,
-            __file__,
-            getattr(getattr(message, "chat", None), "id", "?"),
-            cleaned[:160],
-        )
         try:
             bot.reply_to(message, cleaned)
-            logging.info(
-                "CHECK_DB REAL ROUTE %s OK | file=%s | func=test_db | chat_id=%s",
-                phase,
-                __file__,
-                getattr(getattr(message, "chat", None), "id", "?"),
-            )
             return
         except Exception as exc:
             logging.exception(
-                "CHECK_DB REAL ROUTE %s FAIL | file=%s | func=test_db | chat_id=%s | exc=%s",
-                phase,
-                __file__,
+                "CHECK_DB: fallo reply_to | chat_id=%s | exc=%s",
                 getattr(getattr(message, "chat", None), "id", "?"),
                 _safe_text(exc),
             )
         try:
             bot.send_message(chat_id=message.chat.id, text=cleaned)
-            logging.info(
-                "CHECK_DB REAL ROUTE %s FALLBACK SEND OK | file=%s | func=test_db | chat_id=%s",
-                phase,
-                __file__,
-                getattr(getattr(message, "chat", None), "id", "?"),
-            )
         except Exception as exc:
             logging.exception(
-                "CHECK_DB REAL ROUTE %s FALLBACK SEND FAIL | file=%s | func=test_db | chat_id=%s | exc=%s",
-                phase,
-                __file__,
+                "CHECK_DB: fallo send_message fallback | chat_id=%s | exc=%s",
                 getattr(getattr(message, "chat", None), "id", "?"),
                 _safe_text(exc),
             )
 
     def _probe():
-        print("Intentando conectar con Supabase (Timeout de 5 segundos)...")
+        logging.info("CHECK_DB: iniciando prueba de conexión | chat_id=%s", getattr(getattr(message, "chat", None), "id", "?"))
         try:
             conn = get_db_connection()
             if not conn:
                 result["error"] = "conn es None"
-                print("ERROR DE RED O AUTENTICACION: conn es None")
+                logging.warning("CHECK_DB: get_db_connection devolvió None")
                 return
             c = conn.cursor()
             c.execute('SELECT version();')
-            v = c.fetchone()[0]
+            c.fetchone()
             result["ok"] = True
-            print(f"CONEXION ESTABLECIDA\\nPostgreSQL OK. Base de Datos en linea y funcional.\\n\\nDetalle: {v}")
+            logging.info("CHECK_DB: conexión validada correctamente")
         except Exception as exc:
-            result["error"] = str(exc)
-            print(f"ERROR DE RED O AUTENTICACION\\nSupabase ha rechazado la conexion.\\n\\nLog Tecnico: {exc}")
-
-    logging.info(
-        "CHECK_DB REAL ROUTE ENTER | file=%s | func=test_db | chat_id=%s | text=%s",
-        __file__,
-        getattr(getattr(message, "chat", None), "id", "?"),
-        str(getattr(message, "text", "") or "")[:160],
-    )
-    _reply_check_db("CHECK_DB HANDLER ACTIVO", "PRE_SEND")
+            result["error"] = _safe_text(exc).replace("\r", " ").replace("\n", " ")[:160]
+            logging.warning("CHECK_DB: error durante la prueba de conexión | detail=%s", result["error"])
 
     worker = threading.Thread(target=_probe, daemon=True)
     worker.start()
-    worker.join(timeout=5)
+    worker.join(timeout=probe_timeout_seconds)
 
     if worker.is_alive():
-        _reply_check_db("DB ERROR: timeout", "FINAL_SEND")
+        logging.warning("CHECK_DB: timeout esperando resultado")
+        _reply_check_db("DB ERROR: timeout")
         return
 
     if result["ok"]:
-        _reply_check_db("DB OK. Base de datos en linea.", "FINAL_SEND")
+        _reply_check_db("DB OK. Base de datos en línea.")
         return
 
     error_detail = _safe_text(result.get("error") or "desconocido").replace("\r", " ").replace("\n", " ")
-    _reply_check_db(f"DB ERROR: {error_detail[:160]}", "FINAL_SEND")
+    _reply_check_db(f"DB ERROR: {error_detail[:160]}")
     return
 
 @bot.message_handler(commands=['clear_all'])
@@ -7701,7 +7672,9 @@ def cmd_recover(message):
 def cmd_backup(message):
     if str(message.chat.id) != str(CHAT_ID):
         return
-    bot.reply_to(message, "BACKUP RUTA NUEVA 777")
+    save_state_to_telegram()
+    tkrs = get_tracked_tickers()
+    bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
     return
 
 
@@ -9460,7 +9433,6 @@ def _wait_for_bot_leader_lock(retry_seconds=5):
 
 # ----------------- MAIN -----------------
 def main():
-    logging.error("ZZZ ENTRYPOINT REAL 777 | archivo=%s | version=prueba_checkdb_01", __file__)
     logging.info("Identidad de esta instancia | self=%s | host=%s | pid=%s | takeover_forzado=%ss | heartbeat=%ss", INSTANCE_ID, INSTANCE_HOSTNAME, INSTANCE_PID, BOT_LOCK_FORCE_AFTER_SECONDS, BOT_LOCK_HEARTBEAT_SECONDS)
     logging.info("Iniciando Génesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
     _update_bot_runtime_lock(stage="boot", notes="arranque inicial", heartbeat=False)
