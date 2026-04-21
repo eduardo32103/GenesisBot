@@ -1,4 +1,3 @@
-logging.error("ZZZ ENTRYPOINT REAL 777 | archivo=%s | version=prueba_checkdb_01", __file__)
 import os, pg8000.dbapi, telebot
 import html
 import ssl
@@ -7563,10 +7562,10 @@ def test_db(message):
             c.execute('SELECT version();')
             v = c.fetchone()[0]
             result["ok"] = True
-            print(f"CONEXION ESTABLECIDA\nPostgreSQL OK. Base de Datos en linea y funcional.\n\nDetalle: {v}")
+            print(f"CONEXION ESTABLECIDA\\nPostgreSQL OK. Base de Datos en linea y funcional.\\n\\nDetalle: {v}")
         except Exception as exc:
             result["error"] = str(exc)
-            print(f"ERROR DE RED O AUTENTICACION\nSupabase ha rechazado la conexion.\n\nLog Tecnico: {exc}")
+            print(f"ERROR DE RED O AUTENTICACION\\nSupabase ha rechazado la conexion.\\n\\nLog Tecnico: {exc}")
 
     logging.info(
         "CHECK_DB REAL ROUTE ENTER | file=%s | func=test_db | chat_id=%s | text=%s",
@@ -7590,6 +7589,7 @@ def test_db(message):
 
     error_detail = _safe_text(result.get("error") or "desconocido").replace("\r", " ").replace("\n", " ")
     _reply_check_db(f"DB ERROR: {error_detail[:160]}", "FINAL_SEND")
+    return
 
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
@@ -7698,15 +7698,11 @@ def cmd_recover(message):
         bot.reply_to(message, f"âŒ Error en recuperación: `{e}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['backup'])
-bot.reply_to(message, "BACKUP RUTA NUEVA 777")
-return
-
 def cmd_backup(message):
-    """Forzar un backup manual visible"""
-    if str(message.chat.id) != str(CHAT_ID): return
-    save_state_to_telegram()
-    tkrs = get_tracked_tickers()
-    bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
+    if str(message.chat.id) != str(CHAT_ID):
+        return
+    bot.reply_to(message, "BACKUP RUTA NUEVA 777")
+    return
 
 
 @bot.message_handler(commands=['score_alertas'])
@@ -9464,6 +9460,7 @@ def _wait_for_bot_leader_lock(retry_seconds=5):
 
 # ----------------- MAIN -----------------
 def main():
+    logging.error("ZZZ ENTRYPOINT REAL 777 | archivo=%s | version=prueba_checkdb_01", __file__)
     logging.info("Identidad de esta instancia | self=%s | host=%s | pid=%s | takeover_forzado=%ss | heartbeat=%ss", INSTANCE_ID, INSTANCE_HOSTNAME, INSTANCE_PID, BOT_LOCK_FORCE_AFTER_SECONDS, BOT_LOCK_HEARTBEAT_SECONDS)
     logging.info("Iniciando Génesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
     _update_bot_runtime_lock(stage="boot", notes="arranque inicial", heartbeat=False)
@@ -9517,4 +9514,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
