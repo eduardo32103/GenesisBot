@@ -346,6 +346,17 @@ def get_db_connection():
     print("âŒ FATAL: No se pudo conectar a Supabase después de 3 intentos")
     return None
 
+def close_db_connection():
+    conn = getattr(_db_local, "conn", None)
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+    finally:
+        _db_local.conn = None
+
 def init_db():
     try:
         conn = get_db_connection()
@@ -358,7 +369,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS alert_validations (alert_id TEXT, horizon_key TEXT, scheduled_at TEXT, evaluated_at TEXT, current_price REAL, return_pct REAL, signed_return_pct REAL, outcome_label TEXT, score_value REAL, PRIMARY KEY (alert_id, horizon_key))''')
         c.execute('''CREATE TABLE IF NOT EXISTS alert_policy_audit (decision_id TEXT PRIMARY KEY, created_at TEXT, alert_type TEXT, ticker TEXT, raw_signal_strength REAL, normalized_strength REAL, required_strength REAL, was_allowed INTEGER DEFAULT 0, reason TEXT, context_json TEXT)''')
         conn.commit()
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     except Exception as e:
         print(f"âŒ Error: No se pudo conectar a Supabase -> {e}")
         logging.error(f"Error init_db: {e}")
@@ -835,7 +846,7 @@ def _restore_from_b64(b64_data):
                 ''', (float(rpnl),))
             conn.commit()
         finally:
-            pass # conn.close() delegado a pooling global
+            close_db_connection()
 
         logging.info(f"Restaurados {len(portfolio)} activos desde backup Base64.")
     except Exception as e:
@@ -873,7 +884,7 @@ def _restore_from_repo_json():
                                 (int(CHAT_ID), tk, int(val.get('is_investment', 1)), float(val.get('amount_usd', 1000.0)), float(val.get('entry_price', 0.0)), datetime.now().isoformat()))
                     conn.commit()
                 finally:
-                    pass # conn.close() delegado a pooling global
+                    close_db_connection()
 
                 logging.info(f"✅ Restauración desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
                 return True
@@ -931,7 +942,7 @@ def check_and_add_seen_event(event_hash):
         c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (%s, %s)', (event_hash, datetime.now().isoformat()))
         conn.commit()
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     return False
 
 def purge_old_events():
@@ -943,7 +954,7 @@ def purge_old_events():
         c.execute('DELETE FROM seen_events WHERE timestamp < %s', (cutoff_date,))
         conn.commit()
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
 
 def get_tracked_tickers():
     conn = get_db_connection()
@@ -960,7 +971,7 @@ def get_tracked_tickers():
         print(f"DEBUG WALLET: Error leyendo tickers de Supabase: {e}")
         return []
     finally:
-        pass
+        close_db_connection()
 
 def get_all_portfolio_data():
     pf = {}
@@ -972,7 +983,7 @@ def get_all_portfolio_data():
         for row in c.fetchall():
             pf[row[1]] = {"is_investment": bool(row[2]), "amount_usd": row[3], "entry_price": row[4], "timestamp": row[5]}
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     return pf
 
 def add_ticker(ticker):
@@ -992,7 +1003,7 @@ def add_ticker(ticker):
         logging.error(f"Error ADD: {e}")
         return "DB_ERROR"
     finally:
-        if conn: pass # conn.close() delegado a pooling global
+        close_db_connection()
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
@@ -1008,7 +1019,7 @@ def remove_ticker(ticker):
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
             return True
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     return False
 
 def add_investment(ticker, amount_usd, entry_price):
@@ -1025,7 +1036,7 @@ def add_investment(ticker, amount_usd, entry_price):
             c.execute('INSERT INTO wallet (user_id, ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, %s, 1, %s, %s, %s)', (int(CHAT_ID), ticker, amount_usd, entry_price, timestamp))
         conn.commit()
     finally:
-        if conn: pass # conn.close() delegado a pooling global
+        close_db_connection()
     save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def close_investment(ticker):
@@ -1037,7 +1048,7 @@ def close_investment(ticker):
         c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
         conn.commit()
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def get_investments():
@@ -1050,7 +1061,7 @@ def get_investments():
         for row in c.fetchall():
             invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     return invs
 
 def add_realized_pnl(prof_usd):
@@ -1066,7 +1077,7 @@ def add_realized_pnl(prof_usd):
         else: c.execute('INSERT INTO global_stats (key, value) VALUES (%s, %s)', ("realized_pnl", new_val))
         conn.commit()
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
@@ -1078,7 +1089,7 @@ def get_realized_pnl():
         res = c.fetchone()
         return res[0] if res else 0.0
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
 
 def reset_realized_pnl():
     """Resetea la ganancia mensual acumulada a $0.00"""
@@ -1090,7 +1101,7 @@ def reset_realized_pnl():
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
     save_state_to_telegram()
     logging.info("🔒„ PnL mensual reseteado a $0.00")
 
@@ -1105,7 +1116,7 @@ def reset_total_db():
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
 
 
 _ALERT_VALIDATION_HORIZONS = [
@@ -1237,7 +1248,7 @@ def _fetch_alert_policy_stats(alert_type=None, ticker=None, days=35, limit=120):
         logging.error(f"ALERT POLICY: error leyendo estadisticas para {alert_type}/{ticker}: {e}")
         rows = []
     finally:
-        pass
+        close_db_connection()
 
     if not rows:
         return {
@@ -1313,7 +1324,7 @@ def _record_alert_policy_audit(alert_type, ticker, raw_signal_strength, normaliz
     except Exception as e:
         logging.error(f"ALERT POLICY: no pude auditar decision para {alert_type}/{tk}: {e}")
     finally:
-        pass
+        close_db_connection()
 
 
 def _evaluate_alert_dispatch_policy(alert_type, ticker, signal_strength=0.0, metadata=None):
@@ -1416,7 +1427,7 @@ def build_alert_policy_report(days=35, topn=6):
     except Exception as e:
         return _make_card("POLÍTICA DE ALERTAS", [f"No pude construir el reporte de política: {e}"], icon="🛡️")
     finally:
-        pass
+        close_db_connection()
 
     if not audit_rows:
         return _make_card(
@@ -1515,7 +1526,7 @@ def build_alert_strategy_report(days=45, topn=6):
     except Exception as e:
         return _make_card("ESTRATEGIA DE ALERTAS", [f"No pude construir el reporte estratégico: {e}"], icon="🧭")
     finally:
-        pass
+        close_db_connection()
 
     if not validation_rows:
         return _make_card(
@@ -1738,7 +1749,7 @@ def _build_ticker_alert_memory(ticker, days=60):
         logging.error(f"ALERT MEMORY: no pude leer memoria de {tk}: {e}")
         return dict(base_payload)
     finally:
-        pass
+        close_db_connection()
 
     if not validation_rows:
         return dict(base_payload)
@@ -1902,7 +1913,7 @@ def _register_alert_event(alert_type, ticker, direction, entry_price, title="", 
         logging.error(f"ALERT SCORE: fallo registrando alerta {alert_type} para {tk}: {e}")
         return None
     finally:
-        pass
+        close_db_connection()
 
 
 def _send_alert_with_tracking(chat_id, message_text, alert_type=None, ticker=None, direction=None, entry_price=None, title="", summary="", signal_strength=0.0, source="", metadata=None, parse_mode="HTML"):
@@ -2070,7 +2081,7 @@ def evaluate_pending_alert_validations(limit=28):
         logging.error(f"ALERT SCORE: error evaluando alertas pendientes: {e}")
         return processed
     finally:
-        pass
+        close_db_connection()
 
 
 def purge_old_alert_validation_records(days=180):
@@ -2085,7 +2096,7 @@ def purge_old_alert_validation_records(days=180):
         c.execute('DELETE FROM alert_events WHERE created_at < %s', (cutoff,))
         conn.commit()
     finally:
-        pass
+        close_db_connection()
 
 
 def _human_alert_outcome_label(outcome_label):
@@ -2157,7 +2168,7 @@ def build_alert_validation_report(days=45, topn=6):
     except Exception as e:
         return _make_card("DASHBOARD DE ALERTAS", [f"No pude construir el reporte de validación: {e}"], icon="📊")
     finally:
-        pass
+        close_db_connection()
 
     if not event_rows:
         return _make_card(
@@ -7544,6 +7555,8 @@ def test_db(message):
         except Exception as exc:
             result["error"] = _safe_text(exc).replace("\r", " ").replace("\n", " ")[:160]
             logging.warning("CHECK_DB: error durante la prueba de conexión | detail=%s", result["error"])
+        finally:
+            close_db_connection()
 
     worker = threading.Thread(target=_probe, daemon=True)
     worker.start()
@@ -7576,7 +7589,7 @@ def command_clear_all(message):
     except Exception as e:
         bot.reply_to(message, f"âŒ Fallo al limpiar DB: {e}")
     finally:
-        pass # conn.close() delegado a pooling global
+        close_db_connection()
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
