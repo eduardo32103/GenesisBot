@@ -2457,6 +2457,19 @@ def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
     global _FMP_LAST_ERROR
 
+    def _clean_error_detail(raw_text):
+        text = str(raw_text or "").replace("\r", " ").replace("\n", " ").strip()
+        text = re.sub(r"\s+", " ", text)
+        return text[:220]
+
+    def _payload_error_message(payload):
+        if isinstance(payload, dict):
+            for key in ("Error Message", "error", "message", "Message", "note", "Note"):
+                value = payload.get(key)
+                if value:
+                    return _clean_error_detail(value)
+        return ""
+
     def _to_float(value, default=0.0):
         try:
             if value in (None, "", "None"):
@@ -2488,6 +2501,7 @@ def _fetch_fmp_quote(tk):
             # === STABLE API (nuevo) ===
             url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
             resp = requests.get(url, timeout=10)
+            raw_text = _clean_error_detail(resp.text)
 
             print(f"DEBUG FMP HTTP Status: {resp.status_code} para {symbol}")
             if resp.status_code != 200:
@@ -2495,7 +2509,14 @@ def _fetch_fmp_quote(tk):
 
             if resp.status_code == 200:
                 data = resp.json()
+                payload_error = _payload_error_message(data)
+                if payload_error:
+                    _FMP_LAST_ERROR[tk] = f"FMP {symbol}: {payload_error}"
+                    logging.warning(f"FMP {symbol} devolvió mensaje de error: {payload_error}")
+                    continue
                 if not data or len(data) == 0:
+                    if raw_text and raw_text not in {"[]", "{}"}:
+                        _FMP_LAST_ERROR[tk] = f"FMP {symbol}: {raw_text}"
                     print(f"DEBUG FMP: respuesta vac\u00eda para {symbol}")
                     continue
                 
@@ -2548,17 +2569,22 @@ def _fetch_fmp_quote(tk):
                     else:
                         print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
-            elif resp.status_code in (401, 403):
-                _FMP_LAST_ERROR[tk] = f"{resp.status_code} - Key rechazada o plan insuficiente"
+            elif resp.status_code in (401, 402, 403, 429):
+                detail = raw_text or f"HTTP {resp.status_code}"
+                _FMP_LAST_ERROR[tk] = f"{resp.status_code} - {detail}"
                 logging.error(f"FMP: {resp.status_code} para {symbol}. Verifica FMP_API_KEY en Railway.")
                 return None
+            else:
+                if raw_text:
+                    _FMP_LAST_ERROR[tk] = f"HTTP {resp.status_code} - {raw_text}"
 
         except Exception as e:
             logging.error(f"FMP error fetching {symbol}: {e}")
             print(f"DEBUG FMP Excepción: {e}")
 
-    _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
-    logging.warning(f"FMP falló para {tk}. Activo no localizado.")
+    if not _FMP_LAST_ERROR.get(tk):
+        _FMP_LAST_ERROR[tk] = "Sin datos de FMP para este activo o el plan llegó a su límite."
+    logging.warning(f"FMP falló para {tk}. Detalle: {_FMP_LAST_ERROR.get(tk)}")
     return None
 
 
@@ -2769,7 +2795,7 @@ def get_safe_ticker_price(ticker, force_validation=False):
         logging.warning(f"{tk}: FMP no respondió. Usando cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
         return LAST_KNOWN_PRICES[tk]
 
-    logging.error(f"{tk}: FMP falló y no hay cache disponible.")
+    logging.error(f"{tk}: FMP falló y no hay cache disponible. Detalle: {_FMP_LAST_ERROR.get(tk, 'Sin detalle')}")
     return None
 
 def verify_1m_realtime_data(ticker):
@@ -4378,7 +4404,7 @@ def genesis_strategic_report(manual=True):
 
 def generar_reporte_macro_manual():
     """Wrapper para el botón Geopolítica â€” usa el motor unificado"""
-    return genesis_strategic_report_v2(manual=True)
+    return genesis_strategic_report_v2(manual=False)
 
 
 def fetch_intraday_data(ticker):
@@ -7596,21 +7622,7 @@ def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
     logging.info(f"Update recibido | comando=/start | chat={message.chat.id} | from={getattr(getattr(message, 'from_user', None), 'id', '?')}")
     _update_bot_runtime_lock(stage="processing_update", notes=f"/start chat={message.chat.id}", heartbeat=True)
-    restore_state_from_telegram()
-    tkrs = get_tracked_tickers()
-    
-    # 1. INLINE KEYBOARD (Flotante)
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton(text="🌍 Geopolítica", callback_data="geopolitics"),
-        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="super_radar_24h")
-    )
-    markup.add(
-        InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
-        InlineKeyboardButton(text="💼 Mi Cartera", callback_data="wallet_status")
-    )
 
-    # 2. REPLY KEYBOARD (Botones fijos abajo)
     from telebot.types import ReplyKeyboardMarkup, KeyboardButton
     reply_kbd = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     reply_kbd.add(
@@ -7621,8 +7633,21 @@ def cmd_start(message):
         KeyboardButton("🦅 Niveles SMC"),
         KeyboardButton("💼 Mi Cartera")
     )
-    
+
     bot.send_message(message.chat.id, "🔄 Inicializando Base de Operaciones...", reply_markup=reply_kbd)
+
+    restore_state_from_telegram()
+    tkrs = get_tracked_tickers()
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton(text="🌍 Geopolítica", callback_data="geopolitics"),
+        InlineKeyboardButton(text="🐋 Radar de Ballenas", callback_data="super_radar_24h")
+    )
+    markup.add(
+        InlineKeyboardButton(text="🦅 Niveles SMC", callback_data="smc_levels"),
+        InlineKeyboardButton(text="💼 Mi Cartera", callback_data="wallet_status")
+    )
 
     reply_text = _make_card(
         "GÉNESIS 1.0",
@@ -8193,16 +8218,36 @@ def _send_super_radar_report(chat_id):
             pass
 
 
-def _send_geopolitics_report(chat_id):
+def _send_geopolitics_report(chat_id, loading_message_id=None):
     try:
         report = generar_reporte_macro_manual()
         if report:
+            if loading_message_id:
+                try:
+                    bot.edit_message_text(report, chat_id=chat_id, message_id=loading_message_id, parse_mode="HTML")
+                    return
+                except Exception:
+                    pass
             bot.send_message(chat_id, report, parse_mode="HTML")
         else:
-            bot.send_message(chat_id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+            fallback_text = "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
+            if loading_message_id:
+                try:
+                    bot.edit_message_text(fallback_text, chat_id=chat_id, message_id=loading_message_id, parse_mode="HTML")
+                    return
+                except Exception:
+                    pass
+            bot.send_message(chat_id, fallback_text, parse_mode="HTML")
     except Exception as e:
         logging.error(f"Error en Geopolítica: {e}")
-        bot.send_message(chat_id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
+        fallback_text = "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
+        if loading_message_id:
+            try:
+                bot.edit_message_text(fallback_text, chat_id=chat_id, message_id=loading_message_id, parse_mode="HTML")
+                return
+            except Exception:
+                pass
+        bot.send_message(chat_id, fallback_text, parse_mode="HTML")
 
 
 def _send_smc_levels_report(chat_id):
@@ -9074,7 +9119,12 @@ def callback_geopolitics(call):
         bot.answer_callback_query(call.id, text="🌍 Generando Reporte Estratégico GÉNESIS...")
     except Exception:
         pass
-    _send_geopolitics_report(call.message.chat.id)
+    loading_message = None
+    try:
+        loading_message = bot.send_message(call.message.chat.id, "🌍 Generando reporte estratégico GÉNESIS...")
+    except Exception:
+        loading_message = None
+    _send_geopolitics_report(call.message.chat.id, loading_message_id=getattr(loading_message, "message_id", None))
     return
     bot.answer_callback_query(call.id, "🌍 Generando Reporte Estratégico GÉNESIS...")
     _send_geopolitics_report(call.message.chat.id)
@@ -9194,6 +9244,8 @@ def _acquire_bot_leader_lock():
     except Exception as e:
         logging.warning(f"No pude adquirir el candado de líder: {e}")
         return True
+    finally:
+        close_db_connection()
 
 
 def _force_bot_leader_takeover(reason):
@@ -9260,6 +9312,8 @@ def _force_bot_leader_takeover(reason):
     except Exception as e:
         logging.warning(f"No pude forzar takeover de Telegram: {e}")
         return False
+    finally:
+        close_db_connection()
 
 
 def _get_bot_lock_snapshot():
@@ -9288,6 +9342,8 @@ def _get_bot_lock_snapshot():
     except Exception as e:
         logging.debug(f"No pude leer snapshot del lock de Telegram: {e}")
         return None
+    finally:
+        close_db_connection()
 
 
 def _update_bot_runtime_lock(stage=None, notes=None, heartbeat=False):
@@ -9327,6 +9383,8 @@ def _update_bot_runtime_lock(stage=None, notes=None, heartbeat=False):
     except Exception as e:
         logging.debug(f"No pude actualizar runtime_locks: {e}")
         return False
+    finally:
+        close_db_connection()
 
 
 def _bot_leader_heartbeat_loop():
