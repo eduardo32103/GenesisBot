@@ -273,18 +273,53 @@ _BOT_RUNTIME_STAGE = "boot"
 _BOT_RUNTIME_NOTES = "inicio"
 _BOT_BOOT_WARMUP_STAGE = "idle"
 _LAST_LOCK_DIAG = {"holder": None, "logged_at": 0.0}
+_LOG_EVENT_MEMORY = {}
 
 _db_local = threading.local()
 _db_bootstrap_lock = threading.Lock()
 
 
+def _format_log_field(value, limit=180):
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+def _log_operational_event(level, event, dedupe_key=None, dedupe_seconds=0, **fields):
+    event_name = _format_log_field(event, limit=80).upper() or "EVENT"
+    payload = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        cleaned = _format_log_field(value)
+        if not cleaned:
+            continue
+        payload.append(f"{key}={cleaned}")
+
+    message = " | ".join([event_name] + payload) if payload else event_name
+    if dedupe_seconds and dedupe_key:
+        now_ts = time.time()
+        last_ts = float(_LOG_EVENT_MEMORY.get(dedupe_key, 0.0))
+        if (now_ts - last_ts) < float(dedupe_seconds):
+            return False
+        _LOG_EVENT_MEMORY[dedupe_key] = now_ts
+
+    log_fn = getattr(logging, str(level or "info").lower(), logging.info)
+    log_fn(message)
+    return True
+
+
 def _set_boot_warmup_stage(stage, note=None, update_runtime=False):
     global _BOT_BOOT_WARMUP_STAGE
     _BOT_BOOT_WARMUP_STAGE = str(stage or "idle").strip().lower() or "idle"
-    if note:
-        logging.info(f"BOOT PHASE: {_BOT_BOOT_WARMUP_STAGE} | {note}")
-    else:
-        logging.info(f"BOOT PHASE: {_BOT_BOOT_WARMUP_STAGE}")
+    _log_operational_event(
+        "info",
+        "BOOT PHASE",
+        dedupe_key=f"boot_phase:{_BOT_BOOT_WARMUP_STAGE}:{_format_log_field(note, 80)}",
+        dedupe_seconds=2,
+        stage=_BOT_BOOT_WARMUP_STAGE,
+        note=note or "",
+    )
 
     if update_runtime:
         try:
@@ -2576,7 +2611,14 @@ def _get_fmp_success_cache(kind, cache_key, ticker, min_items=0):
 
     now_ts = time.time()
     if (now_ts - float(entry.get("last_logged_at") or 0.0)) >= 5:
-        logging.info(f"FMP CACHE HIT: {kind} {remap_ticker(ticker)} age={int(age)}s")
+        _log_operational_event(
+            "info",
+            "CACHE HIT",
+            source="fmp",
+            kind=kind,
+            ticker=remap_ticker(ticker),
+            age=f"{int(age)}s",
+        )
         entry["last_logged_at"] = now_ts
     return _copy_fmp_cached_data(data)
 
@@ -2598,7 +2640,15 @@ def _is_fmp_throttled(kind, cache_key, ticker):
     remaining = max(int(cooldown - age), 0)
     now_ts = time.time()
     if (now_ts - float(entry.get("last_logged_at") or 0.0)) >= 5:
-        logging.info(f"FMP THROTTLE: {kind} {remap_ticker(ticker)} cooldown activo tras {category} ({remaining}s restantes)")
+        _log_operational_event(
+            "info",
+            "THROTTLE",
+            source="fmp",
+            kind=kind,
+            ticker=remap_ticker(ticker),
+            category=category,
+            remaining=f"{remaining}s",
+        )
         entry["last_logged_at"] = now_ts
     return True
 
@@ -2681,19 +2731,55 @@ def _log_fmp_issue(symbol, category, detail="", status_code=None):
     clean_detail = _normalize_fmp_issue_detail(detail)
     if category == _FMP_ISSUE_QUOTA_LIMIT:
         quota_code = status_code if status_code == 429 else 429
-        logging.error(f"FMP: {quota_code} para {safe_symbol}. Límite/cuota del plan alcanzado.")
+        _log_operational_event(
+            "error",
+            "FMP QUOTA",
+            dedupe_key=f"fmp:quota:{safe_symbol}:{quota_code}",
+            dedupe_seconds=15,
+            ticker=safe_symbol,
+            status=quota_code,
+            detail=clean_detail or "plan_limit_reached",
+        )
         return
     if category == _FMP_ISSUE_ACCESS_RESTRICTED:
         access_code = status_code if status_code in (401, 402, 403) else 403
-        logging.error(f"FMP: {access_code} para {safe_symbol}. Consulta restringida por permisos/plan.")
+        _log_operational_event(
+            "error",
+            "FMP ACCESS",
+            dedupe_key=f"fmp:access:{safe_symbol}:{access_code}",
+            dedupe_seconds=15,
+            ticker=safe_symbol,
+            status=access_code,
+            detail=clean_detail or "plan_restricted",
+        )
         return
     if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
-        logging.warning(f"FMP sin datos para {safe_symbol}.")
+        _log_operational_event(
+            "warning",
+            "FMP NO_DATA",
+            dedupe_key=f"fmp:nodata:{safe_symbol}",
+            dedupe_seconds=15,
+            ticker=safe_symbol,
+        )
         return
     if clean_detail:
-        logging.warning(f"FMP respuesta inesperada para {safe_symbol}: {clean_detail}")
+        _log_operational_event(
+            "warning",
+            "FMP UPSTREAM",
+            dedupe_key=f"fmp:upstream:{safe_symbol}:{clean_detail[:80]}",
+            dedupe_seconds=10,
+            ticker=safe_symbol,
+            detail=clean_detail,
+        )
         return
-    logging.warning(f"FMP no respondió correctamente para {safe_symbol}.")
+    _log_operational_event(
+        "warning",
+        "FMP UPSTREAM",
+        dedupe_key=f"fmp:upstream:{safe_symbol}:generic",
+        dedupe_seconds=10,
+        ticker=safe_symbol,
+        detail="unexpected_response",
+    )
 
 
 def _fetch_fmp_quote(tk):
@@ -2724,7 +2810,13 @@ def _fetch_fmp_quote(tk):
             return default
 
     if not FMP_API_KEY:
-        logging.error(f"FMP: FMP_API_KEY no detectada para {tk}.")
+        _log_operational_event(
+            "error",
+            "FMP NO_KEY",
+            dedupe_key=f"fmp:nokey:quote:{tk}",
+            dedupe_seconds=30,
+            ticker=tk,
+        )
         _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         _store_fmp_cache_failure("quote", tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
@@ -2757,38 +2849,22 @@ def _fetch_fmp_quote(tk):
             resp = requests.get(url, timeout=10)
             raw_text = _clean_error_detail(resp.text)
 
-            print(f"DEBUG FMP HTTP Status: {resp.status_code} para {symbol}")
-            if resp.status_code != 200:
-                print(f"DEBUG FMP Respuesta Cruda: {resp.text[:300]}")
-
             if resp.status_code == 200:
                 data = resp.json()
                 payload_error = _payload_error_message(data)
                 if payload_error:
                     category = _get_fmp_issue_category(detail=payload_error)
-                    if category == _FMP_ISSUE_UPSTREAM_ERROR:
-                        category = _FMP_ISSUE_UPSTREAM_ERROR
                     _set_fmp_issue(tk, category, f"FMP {symbol}: {payload_error}")
-                    if category == _FMP_ISSUE_QUOTA_LIMIT:
-                        logging.error(f"FMP: 429 para {symbol}. Límite/cuota del plan alcanzado.")
-                    elif category == _FMP_ISSUE_ACCESS_RESTRICTED:
-                        logging.error(f"FMP: acceso restringido para {symbol}. Consulta restringida por permisos/plan.")
-                    else:
-                        logging.warning(f"FMP respuesta inesperada para {symbol}: {payload_error}")
+                    _log_fmp_issue(symbol, category, detail=payload_error)
                     continue
                 if not data or len(data) == 0:
                     if raw_text and raw_text not in {"[]", "{}"}:
                         category = _get_fmp_issue_category(detail=raw_text)
                         _set_fmp_issue(tk, category, f"FMP {symbol}: {raw_text}")
-                        if category == _FMP_ISSUE_QUOTA_LIMIT:
-                            logging.error(f"FMP: 429 para {symbol}. Límite/cuota del plan alcanzado.")
-                        elif category == _FMP_ISSUE_ACCESS_RESTRICTED:
-                            logging.error(f"FMP: 403 para {symbol}. Consulta restringida por permisos/plan.")
-                        else:
-                            logging.warning(f"FMP respuesta inesperada para {symbol}: {raw_text}")
+                        _log_fmp_issue(symbol, category, detail=raw_text)
                     else:
                         _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {symbol}")
-                        logging.warning(f"FMP sin datos para {symbol}.")
+                        _log_fmp_issue(symbol, _FMP_ISSUE_SYMBOL_NOT_FOUND)
                     continue
                 
                 # /stable/quote puede devolver lista o dict
@@ -2799,7 +2875,7 @@ def _fetch_fmp_quote(tk):
                 else:
                     detail = f"Formato inesperado para {symbol}: {str(data)[:200]}"
                     _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
-                    logging.warning(f"FMP respuesta inesperada para {symbol}: {str(data)[:200]}")
+                    _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
                     continue
 
                 if isinstance(quote, dict):
@@ -2807,7 +2883,7 @@ def _fetch_fmp_quote(tk):
                     if price is None:
                         detail = f"Precio nulo para {symbol}"
                         _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
-                        logging.warning(f"FMP respuesta inesperada para {symbol}: precio nulo.")
+                        _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
                         continue
                         
                     price = float(price)
@@ -2824,7 +2900,13 @@ def _fetch_fmp_quote(tk):
                     previous_close = _to_float(quote.get('previousClose'))
                     last_timestamp = quote.get('timestamp') or quote.get('lastUpdated') or quote.get('date') or ""
                     if price > 0:
-                        logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
+                        _log_operational_event(
+                            "info",
+                            "FMP FETCH OK",
+                            ticker=tk,
+                            symbol=symbol,
+                            price=f"${fmt_price(price)}",
+                        )
                         quote_payload = {
                             'price': price,
                             'vol': volume,
@@ -2846,38 +2928,28 @@ def _fetch_fmp_quote(tk):
                     else:
                         detail = f"Precio inválido para {symbol}"
                         _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
-                        logging.warning(f"FMP respuesta inesperada para {symbol}: precio inválido.")
+                        _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
 
             elif resp.status_code in (401, 402, 403, 429):
                 detail = raw_text or f"HTTP {resp.status_code}"
                 category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail) else _FMP_ISSUE_ACCESS_RESTRICTED
                 _set_fmp_issue(tk, category, f"HTTP {resp.status_code} - {detail}")
-                if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail):
-                    logging.error(f"FMP: {resp.status_code} para {symbol}. Límite/cuota del plan alcanzado.")
-                elif resp.status_code in (401, 402, 403):
-                    logging.error(f"FMP: {resp.status_code} para {symbol}. Consulta restringida por permisos/plan.")
-                else:
-                    logging.error(f"FMP: {resp.status_code} para {symbol}.")
+                _log_fmp_issue(symbol, category, detail=detail, status_code=resp.status_code)
                 _store_fmp_cache_failure("quote", tk, category, f"HTTP {resp.status_code} - {detail}", status_code=resp.status_code)
                 return None
             else:
                 if raw_text:
                     _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"HTTP {resp.status_code} - {raw_text}")
-                    logging.warning(f"FMP respuesta inesperada para {symbol}: HTTP {resp.status_code} - {raw_text}")
+                    _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=f"HTTP {resp.status_code} - {raw_text}")
 
         except Exception as e:
             _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"{type(e).__name__}: {e}")
-            logging.warning(f"FMP respuesta inesperada para {symbol}: {e}")
+            _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=f"{type(e).__name__}: {e}")
 
     if not _FMP_LAST_ERROR.get(tk):
         _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {tk}")
-        logging.warning(f"FMP sin datos para {tk}.")
-    else:
-        category = _get_fmp_issue_category(ticker=tk)
-        if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
-            logging.warning(f"FMP sin datos para {tk}.")
-        elif category == _FMP_ISSUE_UPSTREAM_ERROR:
-            logging.warning(f"FMP respuesta inesperada para {tk}: {_FMP_LAST_ERROR.get(tk)}")
+    category, detail = _get_fmp_issue_snapshot(ticker=tk)
+    _log_fmp_issue(tk, category, detail=detail)
     category, detail = _get_fmp_issue_snapshot(ticker=tk)
     _store_fmp_cache_failure("quote", tk, category, detail)
     return None
@@ -2907,7 +2979,13 @@ def _parse_fmp_historical_payload(raw):
 def _fetch_fmp_historical_eod(ticker, limit=None):
     tk = remap_ticker(ticker)
     if not FMP_API_KEY:
-        logging.error(f"FMP: FMP_API_KEY no detectada para {tk}.")
+        _log_operational_event(
+            "error",
+            "FMP NO_KEY",
+            dedupe_key=f"fmp:nokey:eod:{tk}",
+            dedupe_seconds=30,
+            ticker=tk,
+        )
         _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         _store_fmp_cache_failure("eod", tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
@@ -3056,7 +3134,13 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
     tk = remap_ticker(ticker)
     cache_key = f"{tk}|{str(interval or '1hour').strip().lower()}"
     if not FMP_API_KEY:
-        logging.error(f"FMP: FMP_API_KEY no detectada para {tk}.")
+        _log_operational_event(
+            "error",
+            "FMP NO_KEY",
+            dedupe_key=f"fmp:nokey:intraday:{cache_key}",
+            dedupe_seconds=30,
+            ticker=f"{tk}:{interval}",
+        )
         _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         _store_fmp_cache_failure("intraday", cache_key, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
@@ -3154,13 +3238,30 @@ def get_safe_ticker_price(ticker, force_validation=False):
     # Cache como único respaldo si FMP no responde
     if tk in LAST_KNOWN_PRICES:
         issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
-        logging.warning(f"{tk}: {issue_text} Usando caché local: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+        _log_operational_event(
+            "info",
+            "FMP FALLBACK CACHE",
+            dedupe_key=f"fmp:fallback_cache:{tk}",
+            dedupe_seconds=10,
+            ticker=tk,
+            issue=_get_fmp_issue_category(ticker=tk),
+            price=f"${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}",
+        )
         cached_result = dict(LAST_KNOWN_PRICES[tk])
         cached_result['cache_only'] = True
         return cached_result
 
     issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
-    logging.error(f"{tk}: {issue_text} Sin caché local disponible.")
+    _log_operational_event(
+        "warning",
+        "FMP BLOCKED",
+        dedupe_key=f"fmp:blocked:{tk}:{_get_fmp_issue_category(ticker=tk)}",
+        dedupe_seconds=10,
+        ticker=tk,
+        issue=_get_fmp_issue_category(ticker=tk),
+        detail=issue_text,
+        cache="none",
+    )
     return None
 
 def verify_1m_realtime_data(ticker):
@@ -5000,7 +5101,7 @@ def fetch_and_analyze_stock(ticker):
     """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
     clean_ticker = str(ticker).strip().upper()
     tk = remap_ticker(clean_ticker)
-    print(f"DEBUG SMC: Consultando niveles para {tk}...")
+    logging.debug(f"SMC TRACE | ticker={tk} | step=start")
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
@@ -5011,7 +5112,7 @@ def fetch_and_analyze_stock(ticker):
                     f"SMC {tk}: {issue_text} Usando último análisis en caché."
                 )
                 return cached_analysis
-            print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
+            logging.debug(f"SMC TRACE | ticker={tk} | step=no_safe_price")
             return f"⚠️ {issue_text}"
             
         def _get_fallback_smc():
@@ -5034,7 +5135,7 @@ def fetch_and_analyze_stock(ticker):
             }
 
         hist = _fetch_fmp_historical_eod(tk, limit=260) or []
-        print(f"DEBUG SMC: Histórico recibido para {tk}: {len(hist)} velas")
+        logging.debug(f"SMC TRACE | ticker={tk} | historical_rows={len(hist)}")
 
         if not hist or not isinstance(hist, list) or len(hist) < 5:
             logging.warning(f"SMC fallback para {tk}: histórico FMP insuficiente o no disponible.")
@@ -5049,7 +5150,7 @@ def fetch_and_analyze_stock(ticker):
         lows = pd.Series([_safe_float(d.get('low'), 0.0) for d in hist])
 
         if len(closes) < 15:
-            print(f"DEBUG SMC: closes length {len(closes)} < 15 para {tk}")
+            logging.debug(f"SMC TRACE | ticker={tk} | insufficient_closes={len(closes)}")
             return _get_fallback_smc()
 
         # RSI
@@ -5177,7 +5278,7 @@ def fetch_and_analyze_stock(ticker):
         LAST_KNOWN_ANALYSIS[tk] = result
         return result
     except Exception as e:
-        print(f"ERROR CR\u00cdTICO SMC: {e}")
+        logging.exception(f"SMC BUG | ticker={tk} | stage=compute")
         try:
             return _get_fallback_smc()
         except:
@@ -7342,13 +7443,13 @@ def _render_stock_analysis_chart_safe(ticker, analysis=None, timeframe="1D"):
             chart_path, chart_caption = renderer()
             if chart_path and os.path.exists(chart_path):
                 if renderer_name != "principal":
-                    logging.warning(f"CHART FALLBACK: renderer principal falló para {tk}; usando respaldo.")
+                    _log_operational_event("warning", "CHART FALLBACK", ticker=tk, renderer="respaldo", reason="principal_failed")
                 return chart_path, chart_caption, render_errors
             render_errors.append(f"{renderer_name}: sin archivo válido")
-            logging.warning(f"Renderer {renderer_name} no produjo un archivo de gráfico válido para {tk}.")
+            _log_operational_event("warning", "CHART FALLBACK", ticker=tk, renderer=renderer_name, reason="no_valid_file")
         except Exception as exc:
             render_errors.append(f"{renderer_name}: {type(exc).__name__}: {exc}")
-            logging.warning(f"Renderer {renderer_name} falló para {tk}: {type(exc).__name__}: {exc}")
+            _log_operational_event("warning", "CHART FALLBACK", ticker=tk, renderer=renderer_name, reason=f"{type(exc).__name__}: {exc}")
 
     return None, None, render_errors
 
@@ -7363,7 +7464,7 @@ def _send_stock_analysis_message(chat_id, text, parse_mode="HTML", label="analys
             bot.send_message(chat_id, payload, parse_mode=parse_mode if parse_mode else None)
             return True
         except Exception as exc:
-            logging.warning(f"ANALYSIS MESSAGE RETRY: fallo enviando {label} a chat={chat_id} intento={attempt}/{attempts} | exc={exc}")
+            _log_operational_event("warning", "TELEGRAM SEND RETRY", target=label, chat=chat_id, attempt=f"{attempt}/{attempts}", detail=exc)
             time.sleep(0.8)
 
     if parse_mode == "HTML":
@@ -7373,7 +7474,7 @@ def _send_stock_analysis_message(chat_id, text, parse_mode="HTML", label="analys
                 bot.send_message(chat_id, plain_payload)
                 return True
             except Exception as exc:
-                logging.warning(f"ANALYSIS MESSAGE RETRY: fallo enviando {label} en modo plano a chat={chat_id} intento={attempt}/{attempts} | exc={exc}")
+                _log_operational_event("warning", "TELEGRAM SEND RETRY", target=f"{label}:plain", chat=chat_id, attempt=f"{attempt}/{attempts}", detail=exc)
                 time.sleep(0.8)
 
     return False
@@ -7387,7 +7488,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     try:
         analysis_text, analysis_context = _perform_deep_analysis_fmp(tk, timeframe=tf, return_context=True)
     except Exception:
-        logging.exception(f"Error generando análisis textual para {tk}")
+        logging.exception(f"ANALYSIS BUG | ticker={tk} | stage=text_generation")
         analysis_text = _make_card(
             f"ANÁLISIS FMP | {get_display_name(tk)}",
             [
@@ -7402,7 +7503,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
 
     if analysis_text:
         if not _send_stock_analysis_message(chat_id, analysis_text, parse_mode="HTML", label=f"analysis_text:{tk}"):
-            logging.error(f"Error enviando análisis textual para {tk} tras varios intentos.")
+            _log_operational_event("error", "ANALYSIS BUG", ticker=tk, stage="text_delivery", detail="message_send_exhausted")
 
     chart_path = None
     chart_caption = None
@@ -7410,9 +7511,9 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     try:
         chart_path, chart_caption, render_errors = _render_stock_analysis_chart_safe(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
     except Exception:
-        logging.exception(f"Error generando gráfico táctico para {tk}")
+        logging.exception(f"CHART BUG | ticker={tk} | stage=render")
         if analysis_context.get("mode") != "blocked":
-            logging.error(f"CHART FAILURE: no se pudo generar gráfico táctico para {tk}; se envió solo análisis textual.")
+            _log_operational_event("error", "CHART FAILURE", ticker=tk, text_sent_only="true", reason="render_exception")
             _send_stock_analysis_message(
                 chat_id,
                 _make_card(
@@ -7427,9 +7528,15 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
 
     if not chart_path or not os.path.exists(chart_path):
         if analysis_context.get("mode") == "blocked":
-            logging.warning(f"ANALYSIS BLOCKED: sin base suficiente para gráfico honesto en {tk}.")
+            _log_operational_event("warning", "ANALYSIS BLOCKED", ticker=tk, reason="no_honest_chart_basis")
             return
-        logging.error(f"CHART FAILURE: no se pudo generar gráfico táctico para {tk}; se envió solo análisis textual. detalle={' | '.join(render_errors) if render_errors else 'sin detalle'}")
+        _log_operational_event(
+            "error",
+            "CHART FAILURE",
+            ticker=tk,
+            text_sent_only="true",
+            detail=" | ".join(render_errors) if render_errors else "sin_detalle",
+        )
         _send_stock_analysis_message(
             chat_id,
             _make_card(
@@ -7446,16 +7553,16 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
         with open(chart_path, "rb") as chart_file:
             bot.send_photo(chat_id, chart_file, caption=chart_caption, parse_mode="HTML")
     except Exception:
-        logging.exception(f"Error enviando gráfico táctico con caption para {tk}")
+        logging.exception(f"CHART BUG | ticker={tk} | stage=send_with_caption")
         try:
             with open(chart_path, "rb") as chart_file:
                 bot.send_photo(chat_id, chart_file)
             if chart_caption:
                 _send_stock_analysis_message(chat_id, chart_caption, parse_mode="HTML", label=f"chart_caption:{tk}")
         except Exception:
-            logging.exception(f"Error enviando gráfico táctico sin caption para {tk}")
+            logging.exception(f"CHART BUG | ticker={tk} | stage=send_without_caption")
             if analysis_context.get("mode") != "blocked":
-                logging.error(f"CHART FAILURE: no se pudo enviar gráfico táctico para {tk}; se envió solo análisis textual.")
+                _log_operational_event("error", "CHART FAILURE", ticker=tk, text_sent_only="true", reason="send_photo_failed")
                 _send_stock_analysis_message(
                     chat_id,
                     _make_card(
@@ -7479,7 +7586,7 @@ def _run_stock_analysis_request(chat_id, ticker, timeframe="1D"):
     try:
         _send_stock_analysis_with_chart(chat_id, tk, timeframe=timeframe)
     except Exception as exc:
-        logging.exception(f"ANALYSIS REQUEST FAILURE: fallo no controlado para {tk}")
+        logging.exception(f"ANALYSIS BUG | ticker={tk} | stage=request_runner")
         _send_stock_analysis_message(
             chat_id,
             _make_card(
@@ -7584,15 +7691,15 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
     if live_price <= 0:
         snapshot_info = _get_local_snapshot_analysis(tk, tech, timeframe=tf)
         if snapshot_info:
-            logging.info(f"ANALYSIS FALLBACK: usando snapshot local para {tk} por fallo de FMP.")
+            _log_operational_event("info", "ANALYSIS FALLBACK SNAPSHOT", ticker=tk, reason="fmp_unavailable")
             return _finalize(_build_snapshot_analysis_card(tk, snapshot_info, timeframe=tf), mode="snapshot")
 
         historical_pack = _build_chart_pack_failsafe(tk, tech, timeframe=tf) or {}
         if historical_pack:
-            logging.info(f"ANALYSIS FALLBACK: usando histórico confirmado para {tk} por fallo de FMP.")
+            _log_operational_event("info", "ANALYSIS FALLBACK HISTORICAL", ticker=tk, reason="fmp_unavailable")
             return _finalize(_build_historical_contingency_card(tk, historical_pack, timeframe=tf), mode="contingency")
 
-        logging.warning(f"ANALYSIS BLOCKED: sin precio verificado ni base local/histórica suficiente para {tk}.")
+        _log_operational_event("warning", "ANALYSIS BLOCKED", ticker=tk, reason="no_live_price_no_snapshot")
         fmp_sym = _get_fmp_symbol(tk)
         issue_text = _get_fmp_user_issue_text(tk, "Sin información de error")
         issue_category = _get_fmp_issue_category(ticker=tk)
@@ -9488,11 +9595,17 @@ def boot_smc_levels_once():
 
     _set_boot_warmup_stage("geo_warmup", "precargando contexto geopolítico", update_runtime=True)
     try:
-        print("DEBUG BOOT: Inicializando contexto geopolitico...")
+        logging.info("BOOT PHASE | stage=geo_warmup | note=inicializando contexto geopolitico")
         genesis_strategic_report_v2(manual=False)
-        print(f"DEBUG BOOT: Contexto listo. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
+        _log_operational_event(
+            "info",
+            "BOOT PHASE",
+            stage="geo_ready",
+            sentiment=GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A'),
+            high_risk=len(GENESIS_RISK_CONTEXT.get('high_risk_tickers', []) or []),
+        )
     except Exception as e:
-        print(f"DEBUG BOOT: Error inicializando contexto geo: {e}")
+        _log_operational_event("warning", "BOOT PHASE", stage="geo_warmup", detail=e)
     finally:
         _set_boot_warmup_stage("ready", "warmup inicial completado", update_runtime=True)
 
@@ -9530,7 +9643,8 @@ def background_loop_proactivo():
 
             # === HEARTBEAT: log cada ciclo ===
             tracked = get_tracked_tickers()
-            print(f"DEBUG HEARTBEAT [{now.strftime('%H:%M:%S')}]: Ciclo #{loop_counter} | {len(tracked)} activos en radar | Whale memory: {len(WHALE_MEMORY)}")
+            if loop_counter == 1 or loop_counter % 10 == 0:
+                _log_operational_event("info", "LOOP HEARTBEAT", cycle=loop_counter, tracked=len(tracked), whale_memory=len(WHALE_MEMORY))
 
             if boot_light_cycles_remaining > 0:
                 current_light_cycle = (max(int(BOT_BOOT_LIGHT_CYCLES), 0) - boot_light_cycles_remaining) + 1
@@ -9569,17 +9683,16 @@ def background_loop_proactivo():
             if geo_refresh_counter >= _GEO_REFRESH_INTERVAL:
                 geo_refresh_counter = 0
                 try:
-                    print(f"DEBUG GEO REFRESH: Actualizando contexto geopolitico...")
                     genesis_strategic_report_v2(manual=False)  # Actualiza GENESIS_RISK_CONTEXT sin enviar
-                    print(f"DEBUG GEO REFRESH: Contexto actualizado. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
+                    _log_operational_event("info", "GEO REFRESH", sentiment=GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A'), high_risk=len(GENESIS_RISK_CONTEXT.get('high_risk_tickers', []) or []))
                 except Exception as e:
-                    print(f"DEBUG GEO REFRESH ERROR: {e}")
+                    _log_operational_event("warning", "GEO REFRESH", detail=e)
 
             if smc_refresh_counter >= _SMC_REFRESH_INTERVAL:
                 smc_refresh_counter = 0
                 try:
                     refreshed = _refresh_smc_snapshot(tracked, force=True)
-                    print(f"DEBUG SMC REFRESH: {refreshed} niveles actualizados")
+                    _log_operational_event("info", "SMC REFRESH", refreshed=refreshed)
                 except Exception as e:
                     logging.error(f"Error refrescando niveles SMC: {e}")
 
@@ -9628,7 +9741,7 @@ def background_loop_proactivo():
                 try:
                     intra = fetch_intraday_data(tk)
                     if not intra:
-                        print(f"DEBUG WHALE SCAN: {tk} -> fetch_intraday_data devolvio None")
+                        logging.debug(f"WHALE TRACE | ticker={tk} | intraday=none")
                         continue
                     cur_price = intra['latest_price']
                     display_name = get_display_name(tk)
@@ -9724,7 +9837,7 @@ def background_loop_proactivo():
 
                         # DEBUG: logear ratios de volumen significativos
                         if spike > 1.0:
-                            print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
+                            logging.debug(f"WHALE TRACE | ticker={tk} | spike={spike:.2f}x | threshold={whale_threshold:.2f}x")
 
                         if spike >= whale_threshold:
                             current_time = time.time()
@@ -9808,21 +9921,20 @@ def background_loop_proactivo():
                                 else:
                                     vol_display = f"{valid_vol:,} unidades"
 
-                                print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
+                                logging.debug(f"WHALE TRACE | ticker={tk} | winner=true | volume={vol_display} | type={intra['vol_type']} | spike={spike:.2f}x")
 
                                 bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}\n\ud83e\udde0 Filtro ganador: {whale_reason}{note}"
                                 _send_alert_with_tracking(CHAT_ID, bot_msg, alert_type="whale_winner", ticker=tk, direction="alcista", entry_price=cur_price, title="Ballena ganadora detectada", summary=whale_reason, signal_strength=max(spike, 1.0), source="radar_ballenas", metadata={"vol_usd": vol_usd, "spike": spike, "rsi": rsi_w, "winner_only": True}, parse_mode="HTML")
                         else:
                             if intra['avg_vol'] == 0:
-                                print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
+                                logging.debug(f"WHALE TRACE | ticker={tk} | avg_vol=0")
                 except Exception as e:
                     logging.error(f'Error ticker {tk}: {e}')
                     continue
             # === HEARTBEAT BALLENAS: resumen del escaneo ===
-            print(f"DEBUG WHALE SCAN COMPLETADO: {whale_scan_count}/{len(tracked)} escaneados | {whale_detected_count} ballenas detectadas")
+            _log_operational_event("info", "WHALE LOOP", scanned=f"{whale_scan_count}/{len(tracked)}", detected=whale_detected_count)
 
         except Exception as e:
-            print(f"DEBUG ERROR HFT LOOP: {e}")
             logging.error(f"Error HFT: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "super_radar_24h")
@@ -9912,7 +10024,7 @@ def _acquire_bot_leader_lock():
         conn.commit()
 
         if row and row[0] == INSTANCE_ID:
-            logging.info(f"Candado de líder adquirido por {INSTANCE_ID}; esta instancia controlará Telegram.")
+            _log_operational_event("info", "BOOT TAKEOVER", state="leader_acquired", holder=INSTANCE_ID)
             return True
 
         cursor.execute(
@@ -9942,27 +10054,35 @@ def _acquire_bot_leader_lock():
             or (time.time() - float(_LAST_LOCK_DIAG.get("logged_at", 0.0))) >= 60
         )
         if should_log:
-            logging.warning(
-                "Telegram ocupado por otra instancia | holder=%s | host=%s | pid=%s | etapa=%s | heartbeat=%s | notas=%s",
-                holder_id,
-                holder_host,
-                holder_pid,
-                holder_stage,
-                heartbeat_age,
-                holder_notes or "sin notas",
+            _log_operational_event(
+                "warning",
+                "BOOT TAKEOVER",
+                dedupe_key=f"boot_takeover_wait:{holder_summary}",
+                dedupe_seconds=30,
+                state="waiting",
+                holder=holder_id,
+                host=holder_host,
+                pid=holder_pid,
+                stage=holder_stage,
+                heartbeat=heartbeat_age,
+                notes=holder_notes or "sin_notas",
             )
             if holder_host and str(holder_host) != str(INSTANCE_HOSTNAME):
-                logging.error(
-                    "Diagnóstico Telegram: hay al menos dos hosts activos intentando operar el bot | self_host=%s | holder_host=%s | self=%s | holder=%s",
-                    INSTANCE_HOSTNAME,
-                    holder_host,
-                    INSTANCE_ID,
-                    holder_id,
+                _log_operational_event(
+                    "error",
+                    "BOOT TAKEOVER",
+                    dedupe_key=f"boot_takeover_conflict:{holder_host}:{holder_id}",
+                    dedupe_seconds=30,
+                    state="conflict",
+                    self_host=INSTANCE_HOSTNAME,
+                    holder_host=holder_host,
+                    self_id=INSTANCE_ID,
+                    holder_id=holder_id,
                 )
             _LAST_LOCK_DIAG = {"holder": holder_summary, "logged_at": time.time()}
         return False
     except Exception as e:
-        logging.warning(f"No pude adquirir el candado de líder: {e}")
+        _log_operational_event("warning", "BOOT TAKEOVER", state="lock_check_failed", detail=e)
         return True
     finally:
         close_db_connection()
@@ -9972,7 +10092,7 @@ def _force_bot_leader_takeover(reason):
     try:
         conn = get_db_connection()
         if not conn:
-            logging.warning("No pude forzar takeover de Telegram: sin conexión a base de datos.")
+            _log_operational_event("warning", "BOOT TAKEOVER", state="force_skipped", detail="sin_conexion_db")
             return False
 
         now = datetime.now(timezone.utc)
@@ -10021,16 +10141,18 @@ def _force_bot_leader_takeover(reason):
                 f"id={previous_holder[0]} | host={previous_holder[1]} | pid={previous_holder[2]} | "
                 f"stage={previous_holder[3]} | notes={previous_holder[4]} | heartbeat={previous_holder[5]}"
             )
-        logging.warning(
-            "TAKEOVER FORZADO DE TELEGRAM | nuevo_holder=%s | motivo=%s | previo=%s",
-            INSTANCE_ID,
-            reason,
-            previous_summary,
+        _log_operational_event(
+            "warning",
+            "BOOT TAKEOVER",
+            state="forced",
+            holder=INSTANCE_ID,
+            reason=reason,
+            previous=previous_summary,
         )
         _update_bot_runtime_lock(stage="force_takeover", notes=reason, heartbeat=True)
         return True
     except Exception as e:
-        logging.warning(f"No pude forzar takeover de Telegram: {e}")
+        _log_operational_event("warning", "BOOT TAKEOVER", state="force_failed", detail=e)
         return False
     finally:
         close_db_connection()
@@ -10121,19 +10243,23 @@ def _bot_leader_heartbeat_loop():
                 or (time.time() - float(_LAST_LOCK_DIAG.get("guard_logged_at", 0.0))) >= 30
             )
             if should_log:
-                logging.error(
-                    "Esta instancia perdió el liderazgo de Telegram y soltará el polling | self=%s | holder=%s | etapa=%s | notas=%s",
-                    INSTANCE_ID,
-                    holder_id,
-                    holder_stage,
-                    holder_notes or "sin notas",
+                _log_operational_event(
+                    "error",
+                    "BOOT TAKEOVER",
+                    dedupe_key=f"boot_takeover_lost:{holder_id}:{holder_stage}",
+                    dedupe_seconds=30,
+                    state="lock_lost",
+                    self_id=INSTANCE_ID,
+                    holder=holder_id,
+                    stage=holder_stage,
+                    notes=holder_notes or "sin_notas",
                 )
                 _LAST_LOCK_DIAG["guard_holder"] = guard_summary
                 _LAST_LOCK_DIAG["guard_logged_at"] = time.time()
             try:
                 bot.stop_polling()
             except Exception as stop_error:
-                logging.warning(f"No pude detener polling tras perder el liderazgo: {stop_error}")
+                _log_operational_event("warning", "BOOT TAKEOVER", state="stop_polling_failed", detail=stop_error)
             _update_bot_runtime_lock(stage="lock_lost", notes=f"holder={holder_id} etapa={holder_stage}"[:240], heartbeat=False)
             time.sleep(BOT_LOCK_GUARD_SECONDS)
             continue
@@ -10194,30 +10320,34 @@ def _wait_for_bot_leader_lock(retry_seconds=5):
         _update_bot_runtime_lock(stage="esperando_lock", notes=f"reintento en {retry_seconds}s", heartbeat=False)
         if _acquire_bot_leader_lock():
             if waiting_logged:
-                logging.info("GÉNESIS recuperó el control de Telegram y continuará con el arranque.")
+                _log_operational_event("info", "BOOT TAKEOVER", state="recovered", self_id=INSTANCE_ID)
             return True
 
         if not waiting_logged:
-            logging.warning("Esta instancia reintentará el control de Telegram automáticamente hasta quedar activa.")
+            _log_operational_event("warning", "BOOT TAKEOVER", state="retrying", self_id=INSTANCE_ID)
             waiting_logged = True
 
         waited = time.time() - wait_started
         remaining = max(BOT_LOCK_FORCE_AFTER_SECONDS - int(waited), 0)
         if int(waited) == 0 or int(waited) % 5 == 0:
             snapshot = _get_bot_lock_snapshot() or {}
-            logging.warning(
-                "Esperando takeover de Telegram | self=%s | holder=%s | etapa=%s | faltan=%ss para takeover forzado",
-                INSTANCE_ID,
-                snapshot.get("instance_id", "sin_holder"),
-                snapshot.get("stage", "desconocida"),
-                remaining,
+            _log_operational_event(
+                "warning",
+                "BOOT TAKEOVER",
+                dedupe_key=f"boot_takeover_pending:{snapshot.get('instance_id', 'sin_holder')}:{remaining}",
+                dedupe_seconds=5,
+                state="pending",
+                self_id=INSTANCE_ID,
+                holder=snapshot.get("instance_id", "sin_holder"),
+                stage=snapshot.get("stage", "desconocida"),
+                remaining=f"{remaining}s",
             )
         if not force_attempted and waited >= BOT_LOCK_FORCE_AFTER_SECONDS:
             force_attempted = True
             reason = f"espera de {int(waited)}s sin obtener Telegram"
-            logging.warning("Se alcanzó el umbral de takeover forzado (%ss). Intentando tomar Telegram.", BOT_LOCK_FORCE_AFTER_SECONDS)
+            _log_operational_event("warning", "BOOT TAKEOVER", state="forcing", threshold=f"{BOT_LOCK_FORCE_AFTER_SECONDS}s")
             if _force_bot_leader_takeover(reason):
-                logging.warning("Takeover forzado ejecutado. Esta instancia intentará iniciar polling.")
+                _log_operational_event("warning", "BOOT TAKEOVER", state="forced_ready", self_id=INSTANCE_ID)
                 return True
 
         time.sleep(retry_seconds)
@@ -10231,24 +10361,23 @@ def main():
     _update_bot_runtime_lock(stage="boot", notes="lock adquirido", heartbeat=False)
 
     # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
-    print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
+    _log_operational_event("info", "BOOT PHASE", stage="webhook_cleanup", note="limpiando webhook para evitar conflictos getUpdates")
     try:
         _update_bot_runtime_lock(stage="boot", notes="limpiando webhook", heartbeat=False)
         bot.delete_webhook(drop_pending_updates=True)
         time.sleep(1)
     except Exception as e:
-        print(f"DEBUG BOOT: Webhook clear error (ignorado): {e}")
+        _log_operational_event("warning", "BOOT PHASE", stage="webhook_cleanup", detail=f"ignored_error: {e}")
         _update_bot_runtime_lock(stage="boot", notes=f"webhook clear error: {e}", heartbeat=False)
 
     # Polling con auto-reconexion
     _log_telegram_boot_diagnostics()
     _update_bot_runtime_lock(stage="boot", notes="diagnóstico telegram completado", heartbeat=False)
     _start_bot_leader_heartbeat()
-    logging.info("BOOT PHASE: polling listo; lanzando background proactivo tras saneamiento inicial de Telegram.")
+    _log_operational_event("info", "BOOT PHASE", stage="polling_ready", note="lanzando background proactivo tras saneamiento inicial de Telegram")
     t = threading.Thread(target=background_loop_proactivo, daemon=True)
     t.start()
-    print("DEBUG BOOT: Iniciando Telegram polling...")
-    print(">>> SISTEMA GENESIS ACTIVO <<<")
+    _log_operational_event("info", "BOOT PHASE", stage="polling_start", note="sistema activo")
     while True:
         if not _acquire_bot_leader_lock():
             _update_bot_runtime_lock(stage="esperando_lock", notes="liderazgo perdido antes de polling", heartbeat=False)
@@ -10256,12 +10385,12 @@ def main():
             _log_telegram_boot_diagnostics()
         try:
             _update_bot_runtime_lock(stage="polling", notes="infinity_polling activo", heartbeat=True)
-            print("GENESIS ESTA VIVO Y ESCUCHANDO...")
+            _log_operational_event("info", "POLLING", state="active", mode="infinity_polling")
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
             _update_bot_runtime_lock(stage="polling_error", notes=str(e)[:240], heartbeat=True)
-            print(f"X TELEGRAM POLLING CAIDO: {e}")
             wait_seconds = 30 if "409" in str(e) else 5
+            _log_operational_event("error", "POLLING", state="error", wait=f"{wait_seconds}s", detail=e)
             if "409" in str(e):
                 try:
                     bot.delete_webhook(drop_pending_updates=False)
@@ -10271,9 +10400,8 @@ def main():
                     _wait_for_bot_leader_lock()
                     continue
             _log_telegram_boot_diagnostics()
-            print(f"DEBUG: Reconectando en {wait_seconds} segundos...")
             time.sleep(wait_seconds)
-            print("DEBUG: Reintentando polling...")
+            _log_operational_event("warning", "POLLING", state="retrying")
 
 if __name__ == "__main__":
     main()
