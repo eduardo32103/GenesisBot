@@ -7817,22 +7817,35 @@ from openai import OpenAI
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    msg = bot.reply_to(message, "👁️ Analizando gráfica con Visión GÉNESIS y lectura técnica avanzada...")
-    try:
-        if not OPENAI_API_KEY:
-            bot.edit_message_text("⚠️ Error de configuración del modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
-            return
 
+    def _edit_photo_result(text):
+        bot.edit_message_text(text, chat_id=message.chat.id, message_id=msg.message_id, parse_mode="HTML")
+    msg = bot.reply_to(message, "👁️ Analizando gráfica con Visión GÉNESIS y lectura técnica avanzada...")
+    if not OPENAI_API_KEY:
+        _edit_photo_result("⚠️ Error de configuración del modelo: OPENAI_API_KEY no detectada.")
+        return
+
+    if not getattr(message, "photo", None):
+        _edit_photo_result("⚠️ No recibí una imagen válida para analizar.")
+        return
+
+    try:
         file_info = bot.get_file(message.photo[-1].file_id)
         image_bytes = bot.download_file(file_info.file_path)
         base_img = base64.b64encode(image_bytes).decode('utf-8')
+    except Exception as e:
+        logging.error(f"Error descargando foto de Telegram: {e}")
+        _edit_photo_result("⚠️ No pude descargar la imagen desde Telegram. Intenta enviarla de nuevo.")
+        return
 
+    try:
         client = OpenAI(api_key=OPENAI_API_KEY)
         prompt = (
             "Eres Visión GÉNESIS, un analista técnico institucional.\n\n"
             "Analiza SOLO lo que sea realmente visible en la imagen. No inventes datos, niveles ni indicadores.\n"
             "Mantén un tono profesional, claro y fácil de entender para una persona no experta, pero con criterio serio de mesa institucional.\n"
             "Debes evaluar, si se ven en la imagen: estructura SMC, liquidez, BOS, CHoCH, order blocks, RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian, OBV y divergencias.\n"
+            "Si la imagen no es una gráfica útil o no tiene suficiente contexto visual para una lectura seria, responde EXACTAMENTE: SIN CONTEXTO UTIL.\n"
             "No expliques teoría. Entrega lectura operativa.\n\n"
             "Responde EXACTAMENTE en ESPAÑOL con este formato:\n"
             "📊 CONTEXTO TÉCNICO: [tendencia actual, estructura y liquidez en 2 o 3 líneas].\n"
@@ -7855,65 +7868,33 @@ def handle_photo(message):
             max_tokens=950
         )
 
-        vision_report = res.choices[0].message.content.strip()
+        vision_report = ((res.choices[0].message.content or "").strip() if getattr(res, "choices", None) else "")
+        if not vision_report:
+            _edit_photo_result("⚠️ El análisis visual no devolvió contenido útil. Intenta con una imagen más clara.")
+            return
+
+        if vision_report.strip().upper() == "SIN CONTEXTO UTIL":
+            _edit_photo_result("⚠️ No encontré contexto visual suficiente para una lectura seria. Intenta con una gráfica más clara o con más indicadores visibles.")
+            return
+
         report_lines = []
         for raw_line in vision_report.splitlines():
             cleaned_line = raw_line.strip()
             report_lines.append(_escape_html(cleaned_line) if cleaned_line else "")
 
-        bot.edit_message_text(
+        _edit_photo_result(
             _make_card(
                 "REPORTE VISUAL GÉNESIS",
                 report_lines,
                 icon="👁️",
                 footer="Lectura institucional basada en lo visible en la imagen."
-            ),
-            chat_id=message.chat.id,
-            message_id=msg.message_id,
-            parse_mode="HTML"
+            )
         )
         return
     except Exception as e:
         logging.error(f"Error de visión OpenAI: {e}")
-        bot.edit_message_text("⚠️ No pude completar el análisis visual en este momento.", chat_id=message.chat.id, message_id=msg.message_id)
+        _edit_photo_result("⚠️ No pude completar el análisis visual en este momento.")
         return
-    msg = bot.reply_to(message, "ðŸ‘ï¸ Analizando gráfica con GÉNESIS Vision (GPT-4o OpenAI)...")
-    try:
-        if not OPENAI_API_KEY:
-            bot.edit_message_text("⚠️ Error de configuración de modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
-            return
-
-        file_info = bot.get_file(message.photo[-1].file_id)
-        image_bytes = bot.download_file(file_info.file_path)
-        base_img = base64.b64encode(image_bytes).decode('utf-8')
-        
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        
-        prompt = (
-            "Actúa como una herramienta educativa de análisis técnico. Este análisis es puramente para fines de estudio y simulación, no es asesoría financiera. Analiza la siguiente imagen de manera objetiva.\n\n"
-            "Analiza bajo conceptos Smart Money Concepts (SMC). PROHIBIDO explicar qué significa SMC, Order Blocks, BOS o CHoCH. CERO TEORÃA.\n\n"
-            "Tu respuesta DEBE seguir ESTRICTAMENTE este formato, sin agregar introducciones ni despedidas. Tono frío, analítico y directo a los datos duros:\n\n"
-            "📊 CONTEXTO TÉCNICO: [1 o 2 líneas sobre la tendencia actual y la acción del precio evaluando liquidez y estructura].\n"
-            "🎯 NIVELES CLAVE: [Soportes, Resistencias u Order Blocks con PRECIOS EXACTOS según la gráfica].\n"
-            "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [Razón técnica directa].\n"
-            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Fuerte Bajista / Neutral / Esperar Confirmación] - [Justificación descriptiva en una línea, ej. 'Alta probabilidad de rebote en FVG en $150']."
-        )
-
-        res = client.chat.completions.create(
-            model="gpt-4o", 
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt}, 
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base_img}"}}
-                ]}
-            ], 
-            max_tokens=800
-        )
-        
-        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.choices[0].message.content.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Error de visión OpenAI: {e}")
-        bot.edit_message_text("\u26a0\ufe0f Error de configuraci\u00f3n de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
 def _normalize_menu_text(text):
     cleaned = _clean_outgoing_text((text or "").replace("\ufe0f", ""))
