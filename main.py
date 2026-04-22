@@ -7177,6 +7177,32 @@ def _render_stock_analysis_chart_safe(ticker, analysis=None, timeframe="1D"):
     return None, None, render_errors
 
 
+def _send_stock_analysis_message(chat_id, text, parse_mode="HTML", label="analysis_text", attempts=2):
+    payload = text if isinstance(text, str) else str(text or "")
+    if not payload:
+        return False
+
+    for attempt in range(1, attempts + 1):
+        try:
+            bot.send_message(chat_id, payload, parse_mode=parse_mode if parse_mode else None)
+            return True
+        except Exception as exc:
+            logging.warning(f"ANALYSIS MESSAGE RETRY: fallo enviando {label} a chat={chat_id} intento={attempt}/{attempts} | exc={exc}")
+            time.sleep(0.8)
+
+    if parse_mode == "HTML":
+        plain_payload = _strip_html_for_telegram(payload)
+        for attempt in range(1, attempts + 1):
+            try:
+                bot.send_message(chat_id, plain_payload)
+                return True
+            except Exception as exc:
+                logging.warning(f"ANALYSIS MESSAGE RETRY: fallo enviando {label} en modo plano a chat={chat_id} intento={attempt}/{attempts} | exc={exc}")
+                time.sleep(0.8)
+
+    return False
+
+
 def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
     tf = _normalize_chart_timeframe(timeframe)
@@ -7199,14 +7225,8 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
         analysis_context = {"mode": "contingency"}
 
     if analysis_text:
-        try:
-            bot.send_message(chat_id, analysis_text, parse_mode="HTML")
-        except Exception:
-            logging.exception(f"Error enviando análisis textual para {tk}")
-            try:
-                bot.send_message(chat_id, _strip_html_for_telegram(analysis_text))
-            except Exception:
-                logging.exception(f"Error enviando análisis textual en modo plano para {tk}")
+        if not _send_stock_analysis_message(chat_id, analysis_text, parse_mode="HTML", label=f"analysis_text:{tk}"):
+            logging.error(f"Error enviando análisis textual para {tk} tras varios intentos.")
 
     chart_path = None
     chart_caption = None
@@ -7217,14 +7237,15 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
         logging.exception(f"Error generando gráfico táctico para {tk}")
         if analysis_context.get("mode") != "blocked":
             logging.error(f"CHART FAILURE: no se pudo generar gráfico táctico para {tk}; se envió solo análisis textual.")
-            bot.send_message(
+            _send_stock_analysis_message(
                 chat_id,
                 _make_card(
                     "GRÁFICO TÁCTICO",
                     ["El análisis textual quedó listo, pero no pude generar el gráfico táctico en esta ejecución."],
                     icon="🖼️"
                 ),
-                parse_mode="HTML"
+                parse_mode="HTML",
+                label=f"chart_failure:{tk}"
             )
         return
 
@@ -7233,14 +7254,15 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
             logging.warning(f"ANALYSIS BLOCKED: sin base suficiente para gráfico honesto en {tk}.")
             return
         logging.error(f"CHART FAILURE: no se pudo generar gráfico táctico para {tk}; se envió solo análisis textual. detalle={' | '.join(render_errors) if render_errors else 'sin detalle'}")
-        bot.send_message(
+        _send_stock_analysis_message(
             chat_id,
             _make_card(
                 "GRÁFICO TÁCTICO",
                 ["El análisis textual quedó listo, pero no pude generar el gráfico táctico en esta ejecución."],
                 icon="🖼️"
             ),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            label=f"chart_failure:{tk}"
         )
         return
 
@@ -7253,19 +7275,20 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
             with open(chart_path, "rb") as chart_file:
                 bot.send_photo(chat_id, chart_file)
             if chart_caption:
-                bot.send_message(chat_id, chart_caption, parse_mode="HTML")
+                _send_stock_analysis_message(chat_id, chart_caption, parse_mode="HTML", label=f"chart_caption:{tk}")
         except Exception:
             logging.exception(f"Error enviando gráfico táctico sin caption para {tk}")
             if analysis_context.get("mode") != "blocked":
                 logging.error(f"CHART FAILURE: no se pudo enviar gráfico táctico para {tk}; se envió solo análisis textual.")
-                bot.send_message(
+                _send_stock_analysis_message(
                     chat_id,
                     _make_card(
                         "GRÁFICO TÁCTICO",
                         ["El análisis textual quedó listo, pero no pude enviar el gráfico táctico en esta ejecución."],
                         icon="🖼️"
                     ),
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    label=f"chart_send_failure:{tk}"
                 )
     finally:
         if chart_path and os.path.exists(chart_path):
@@ -7273,6 +7296,29 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
                 os.remove(chart_path)
             except Exception:
                 pass
+
+
+def _run_stock_analysis_request(chat_id, ticker, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    try:
+        _send_stock_analysis_with_chart(chat_id, tk, timeframe=timeframe)
+    except Exception as exc:
+        logging.exception(f"ANALYSIS REQUEST FAILURE: fallo no controlado para {tk}")
+        _send_stock_analysis_message(
+            chat_id,
+            _make_card(
+                f"ANÁLISIS FMP | {get_display_name(tk)}",
+                [
+                    "⚠️ El análisis no pudo completarse en esta ejecución.",
+                    "• El motor activó una salida de contingencia para no dejar la solicitud abierta.",
+                    f"• Detalle técnico breve: {_escape_html(_truncate_text(str(exc), 120))}",
+                ],
+                icon="📉",
+                footer="Reintenta en unos segundos si quieres volver a consultar."
+            ),
+            parse_mode="HTML",
+            label=f"analysis_unhandled:{tk}"
+        )
 
 
 def _monitor_quality_divergences(tracked):
@@ -8853,7 +8899,11 @@ def handle_text(message):
         tf = _extract_analysis_timeframe(intent_text, default="1D")
         display_name = get_display_name(tk)
         bot.reply_to(message, f"📈 Consultando FMP y construyendo un análisis integral en español para {display_name} en {tf}...")
-        _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
+        threading.Thread(
+            target=_run_stock_analysis_request,
+            args=(message.chat.id, tk, tf),
+            daemon=True
+        ).start()
         return
 
     if re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text):
