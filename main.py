@@ -2454,31 +2454,111 @@ def _get_fmp_symbol(tk):
 
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
-def _is_fmp_bandwidth_limited(ticker=None, detail=None):
-    tk = remap_ticker(ticker) if ticker else None
-    raw_detail = detail if detail is not None else (_FMP_LAST_ERROR.get(tk, "") if tk else "")
-    text = str(raw_detail or "").strip().lower()
-    if not text:
-        return False
-    markers = (
-        "429",
-        "bandwidth limit",
-        "limit reach",
-        "please upgrade your plan",
-        "too many requests",
-        "rate limit",
-    )
-    return any(marker in text for marker in markers)
+_FMP_ISSUE_NO_KEY = "NO_KEY"
+_FMP_ISSUE_QUOTA_LIMIT = "QUOTA_LIMIT"
+_FMP_ISSUE_ACCESS_RESTRICTED = "ACCESS_RESTRICTED"
+_FMP_ISSUE_SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
+_FMP_ISSUE_UPSTREAM_ERROR = "UPSTREAM_ERROR"
+_FMP_ISSUE_PRIORITY = {
+    _FMP_ISSUE_NO_KEY: 5,
+    _FMP_ISSUE_QUOTA_LIMIT: 4,
+    _FMP_ISSUE_ACCESS_RESTRICTED: 3,
+    _FMP_ISSUE_SYMBOL_NOT_FOUND: 2,
+    _FMP_ISSUE_UPSTREAM_ERROR: 1,
+}
 
 
-def _get_fmp_user_issue_text(ticker, default_message="No pude obtener datos desde FMP."):
+def _normalize_fmp_issue_detail(detail, limit=240):
+    text = str(detail or "").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+def _set_fmp_issue(ticker, category, detail=""):
     tk = remap_ticker(ticker)
-    detail = str(_FMP_LAST_ERROR.get(tk, "") or "").strip()
-    if _is_fmp_bandwidth_limited(tk, detail=detail):
+    normalized_category = str(category or _FMP_ISSUE_UPSTREAM_ERROR).strip().upper()
+    normalized_detail = _normalize_fmp_issue_detail(detail)
+    current_raw = _FMP_LAST_ERROR.get(tk)
+    if current_raw:
+        current_category, current_detail = _get_fmp_issue_snapshot(ticker=tk)
+        current_priority = _FMP_ISSUE_PRIORITY.get(current_category, 0)
+        new_priority = _FMP_ISSUE_PRIORITY.get(normalized_category, 0)
+        if current_priority > new_priority:
+            return current_raw
+        if current_priority == new_priority and current_detail and not normalized_detail:
+            return current_raw
+    _FMP_LAST_ERROR[tk] = f"{normalized_category}|{normalized_detail}" if normalized_detail else normalized_category
+    return _FMP_LAST_ERROR[tk]
+
+
+def _get_fmp_issue_snapshot(ticker=None, detail=None):
+    raw_value = detail
+    if raw_value is None and ticker is not None:
+        raw_value = _FMP_LAST_ERROR.get(remap_ticker(ticker), "")
+
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return _FMP_ISSUE_UPSTREAM_ERROR, ""
+
+    if "|" in raw_text:
+        category, payload = raw_text.split("|", 1)
+        category = str(category or "").strip().upper() or _FMP_ISSUE_UPSTREAM_ERROR
+        return category, _normalize_fmp_issue_detail(payload)
+
+    text = raw_text.lower()
+    if "fmp_api_key no detectada" in text:
+        return _FMP_ISSUE_NO_KEY, _normalize_fmp_issue_detail(raw_text)
+    if any(marker in text for marker in ("429", "bandwidth limit", "limit reach", "please upgrade your plan", "too many requests", "rate limit")):
+        return _FMP_ISSUE_QUOTA_LIMIT, _normalize_fmp_issue_detail(raw_text)
+    if any(marker in text for marker in ("401", "402", "403", "permission", "forbidden", "unauthorized", "restringido", "restricted")):
+        return _FMP_ISSUE_ACCESS_RESTRICTED, _normalize_fmp_issue_detail(raw_text)
+    if any(marker in text for marker in ("sin datos", "no devolvió datos", "not found", "no data", "respuesta vacia", "respuesta vacía")):
+        return _FMP_ISSUE_SYMBOL_NOT_FOUND, _normalize_fmp_issue_detail(raw_text)
+    return _FMP_ISSUE_UPSTREAM_ERROR, _normalize_fmp_issue_detail(raw_text)
+
+
+def _get_fmp_issue_category(ticker=None, detail=None):
+    category, _ = _get_fmp_issue_snapshot(ticker=ticker, detail=detail)
+    return category
+
+
+def _is_fmp_bandwidth_limited(ticker=None, detail=None):
+    return _get_fmp_issue_category(ticker=ticker, detail=detail) == _FMP_ISSUE_QUOTA_LIMIT
+
+
+def _get_fmp_user_issue_text(ticker, default_message="FMP no respondió correctamente en este momento."):
+    category, detail = _get_fmp_issue_snapshot(ticker=ticker)
+    if category == _FMP_ISSUE_NO_KEY:
+        return "FMP_API_KEY no está configurada en el entorno."
+    if category == _FMP_ISSUE_QUOTA_LIMIT:
         return "FMP alcanzó el límite de ancho de banda del plan. La API key está cargada, pero la cuota actual no permite más consultas."
-    if detail:
-        return detail
+    if category == _FMP_ISSUE_ACCESS_RESTRICTED:
+        return "FMP rechazó esta consulta por permisos o restricciones del plan."
+    if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
+        return "FMP no devolvió datos para ese activo."
+    if category == _FMP_ISSUE_UPSTREAM_ERROR and detail:
+        return "FMP no respondió correctamente en este momento."
     return default_message
+
+
+def _log_fmp_issue(symbol, category, detail="", status_code=None):
+    safe_symbol = str(symbol or "UNKNOWN").strip().upper()
+    clean_detail = _normalize_fmp_issue_detail(detail)
+    if category == _FMP_ISSUE_QUOTA_LIMIT:
+        quota_code = status_code if status_code == 429 else 429
+        logging.error(f"FMP: {quota_code} para {safe_symbol}. Límite/cuota del plan alcanzado.")
+        return
+    if category == _FMP_ISSUE_ACCESS_RESTRICTED:
+        access_code = status_code if status_code in (401, 402, 403) else 403
+        logging.error(f"FMP: {access_code} para {safe_symbol}. Consulta restringida por permisos/plan.")
+        return
+    if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
+        logging.warning(f"FMP sin datos para {safe_symbol}.")
+        return
+    if clean_detail:
+        logging.warning(f"FMP respuesta inesperada para {safe_symbol}: {clean_detail}")
+        return
+    logging.warning(f"FMP no respondió correctamente para {safe_symbol}.")
 
 
 def _fetch_fmp_quote(tk):
@@ -2508,8 +2588,8 @@ def _fetch_fmp_quote(tk):
             return default
 
     if not FMP_API_KEY:
-        logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
-        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
+        logging.error(f"FMP: FMP_API_KEY no detectada para {tk}.")
+        _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
 
     fmp_symbol = _get_fmp_symbol(tk)
@@ -2539,13 +2619,30 @@ def _fetch_fmp_quote(tk):
                 data = resp.json()
                 payload_error = _payload_error_message(data)
                 if payload_error:
-                    _FMP_LAST_ERROR[tk] = f"FMP {symbol}: {payload_error}"
-                    logging.warning(f"FMP {symbol} devolvió mensaje de error: {payload_error}")
+                    category = _get_fmp_issue_category(detail=payload_error)
+                    if category == _FMP_ISSUE_UPSTREAM_ERROR:
+                        category = _FMP_ISSUE_UPSTREAM_ERROR
+                    _set_fmp_issue(tk, category, f"FMP {symbol}: {payload_error}")
+                    if category == _FMP_ISSUE_QUOTA_LIMIT:
+                        logging.error(f"FMP: 429 para {symbol}. Límite/cuota del plan alcanzado.")
+                    elif category == _FMP_ISSUE_ACCESS_RESTRICTED:
+                        logging.error(f"FMP: acceso restringido para {symbol}. Consulta restringida por permisos/plan.")
+                    else:
+                        logging.warning(f"FMP respuesta inesperada para {symbol}: {payload_error}")
                     continue
                 if not data or len(data) == 0:
                     if raw_text and raw_text not in {"[]", "{}"}:
-                        _FMP_LAST_ERROR[tk] = f"FMP {symbol}: {raw_text}"
-                    print(f"DEBUG FMP: respuesta vac\u00eda para {symbol}")
+                        category = _get_fmp_issue_category(detail=raw_text)
+                        _set_fmp_issue(tk, category, f"FMP {symbol}: {raw_text}")
+                        if category == _FMP_ISSUE_QUOTA_LIMIT:
+                            logging.error(f"FMP: 429 para {symbol}. Límite/cuota del plan alcanzado.")
+                        elif category == _FMP_ISSUE_ACCESS_RESTRICTED:
+                            logging.error(f"FMP: 403 para {symbol}. Consulta restringida por permisos/plan.")
+                        else:
+                            logging.warning(f"FMP respuesta inesperada para {symbol}: {raw_text}")
+                    else:
+                        _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {symbol}")
+                        logging.warning(f"FMP sin datos para {symbol}.")
                     continue
                 
                 # /stable/quote puede devolver lista o dict
@@ -2554,13 +2651,17 @@ def _fetch_fmp_quote(tk):
                 elif isinstance(data, dict):
                     quote = data
                 else:
-                    print(f"DEBUG FMP: formato inesperado para {symbol}: {str(data)[:200]}")
+                    detail = f"Formato inesperado para {symbol}: {str(data)[:200]}"
+                    _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
+                    logging.warning(f"FMP respuesta inesperada para {symbol}: {str(data)[:200]}")
                     continue
 
                 if isinstance(quote, dict):
                     price = quote.get('price')
                     if price is None:
-                        print(f"DEBUG FMP: precio nulo para {symbol}. Datos: {quote}")
+                        detail = f"Precio nulo para {symbol}"
+                        _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
+                        logging.warning(f"FMP respuesta inesperada para {symbol}: precio nulo.")
                         continue
                         
                     price = float(price)
@@ -2595,29 +2696,39 @@ def _fetch_fmp_quote(tk):
                             'timestamp': last_timestamp,
                         }
                     else:
-                        print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
+                        detail = f"Precio inválido para {symbol}"
+                        _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
+                        logging.warning(f"FMP respuesta inesperada para {symbol}: precio inválido.")
 
             elif resp.status_code in (401, 402, 403, 429):
                 detail = raw_text or f"HTTP {resp.status_code}"
-                _FMP_LAST_ERROR[tk] = f"{resp.status_code} - {detail}"
+                category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail) else _FMP_ISSUE_ACCESS_RESTRICTED
+                _set_fmp_issue(tk, category, f"HTTP {resp.status_code} - {detail}")
                 if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail):
                     logging.error(f"FMP: {resp.status_code} para {symbol}. Límite/cuota del plan alcanzado.")
                 elif resp.status_code in (401, 402, 403):
-                    logging.error(f"FMP: {resp.status_code} para {symbol}. Revisa FMP_API_KEY o permisos del plan.")
+                    logging.error(f"FMP: {resp.status_code} para {symbol}. Consulta restringida por permisos/plan.")
                 else:
                     logging.error(f"FMP: {resp.status_code} para {symbol}.")
                 return None
             else:
                 if raw_text:
-                    _FMP_LAST_ERROR[tk] = f"HTTP {resp.status_code} - {raw_text}"
+                    _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"HTTP {resp.status_code} - {raw_text}")
+                    logging.warning(f"FMP respuesta inesperada para {symbol}: HTTP {resp.status_code} - {raw_text}")
 
         except Exception as e:
-            logging.error(f"FMP error fetching {symbol}: {e}")
-            print(f"DEBUG FMP Excepción: {e}")
+            _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"{type(e).__name__}: {e}")
+            logging.warning(f"FMP respuesta inesperada para {symbol}: {e}")
 
     if not _FMP_LAST_ERROR.get(tk):
-        _FMP_LAST_ERROR[tk] = "Sin datos de FMP para este activo o el plan llegó a su límite."
-    logging.warning(f"FMP falló para {tk}. Detalle: {_FMP_LAST_ERROR.get(tk)}")
+        _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {tk}")
+        logging.warning(f"FMP sin datos para {tk}.")
+    else:
+        category = _get_fmp_issue_category(ticker=tk)
+        if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
+            logging.warning(f"FMP sin datos para {tk}.")
+        elif category == _FMP_ISSUE_UPSTREAM_ERROR:
+            logging.warning(f"FMP respuesta inesperada para {tk}: {_FMP_LAST_ERROR.get(tk)}")
     return None
 
 
@@ -2645,7 +2756,8 @@ def _parse_fmp_historical_payload(raw):
 def _fetch_fmp_historical_eod(ticker, limit=None):
     tk = remap_ticker(ticker)
     if not FMP_API_KEY:
-        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
+        logging.error(f"FMP: FMP_API_KEY no detectada para {tk}.")
+        _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
 
     symbol = _get_fmp_symbol(tk)
@@ -2659,25 +2771,43 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
     ]
 
     last_status = None
+    last_category = None
+    last_detail = ""
     for endpoint_name, url in endpoints:
         try:
             resp = requests.get(url, timeout=10)
             last_status = resp.status_code
             logging.debug(f"FMP historical {endpoint_name} status {resp.status_code} para {tk}")
+            raw_text = _normalize_fmp_issue_detail(resp.text)
             if resp.status_code != 200:
+                if resp.status_code in (401, 402, 403, 429):
+                    last_category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=raw_text) else _FMP_ISSUE_ACCESS_RESTRICTED
+                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
+                else:
+                    last_category = _FMP_ISSUE_UPSTREAM_ERROR
+                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
                 continue
 
-            hist = _parse_fmp_historical_payload(resp.json())
+            payload = resp.json()
+            hist = _parse_fmp_historical_payload(payload)
             if hist:
                 return hist[:int(limit)] if limit else hist
+            if raw_text and raw_text not in {"[]", "{}"}:
+                last_category = _get_fmp_issue_category(detail=raw_text)
+                last_detail = f"Histórico {safe_symbol}: {raw_text}"
+            else:
+                last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
+                last_detail = f"Sin datos históricos para {safe_symbol}"
         except Exception as e:
             logging.debug(f"FMP historical {endpoint_name} error para {tk}: {e}")
+            last_category = _FMP_ISSUE_UPSTREAM_ERROR
+            last_detail = f"{type(e).__name__}: {e}"
 
-    if last_status in (401, 403):
-        _FMP_LAST_ERROR[tk] = f"Histórico FMP no disponible para {tk}: HTTP {last_status}"
-        logging.warning(f"FMP histórico restringido para {tk} (HTTP {last_status}). Se usará fallback local.")
-    else:
-        _FMP_LAST_ERROR[tk] = f"Histórico FMP no disponible para {tk}"
+    if not last_category:
+        last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
+        last_detail = f"Sin datos históricos para {safe_symbol}"
+    _set_fmp_issue(tk, last_category, last_detail)
+    _log_fmp_issue(safe_symbol, last_category, detail=last_detail, status_code=last_status)
     return None
 
 
@@ -2762,7 +2892,8 @@ def _aggregate_intraday_rows(rows, group_hours=4, limit=None):
 def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
     tk = remap_ticker(ticker)
     if not FMP_API_KEY:
-        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
+        logging.error(f"FMP: FMP_API_KEY no detectada para {tk}.")
+        _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
 
     symbol = _get_fmp_symbol(tk)
@@ -2776,24 +2907,43 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
     ]
 
     last_status = None
+    last_category = None
+    last_detail = ""
     for endpoint_name, url in endpoints:
         try:
             resp = requests.get(url, timeout=12)
             last_status = resp.status_code
             logging.debug(f"FMP intraday {interval} {endpoint_name} status {resp.status_code} para {tk}")
+            raw_text = _normalize_fmp_issue_detail(resp.text)
             if resp.status_code != 200:
+                if resp.status_code in (401, 402, 403, 429):
+                    last_category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=raw_text) else _FMP_ISSUE_ACCESS_RESTRICTED
+                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
+                else:
+                    last_category = _FMP_ISSUE_UPSTREAM_ERROR
+                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
                 continue
 
-            hist = _parse_fmp_historical_payload(resp.json())
+            payload = resp.json()
+            hist = _parse_fmp_historical_payload(payload)
             if hist:
                 return hist[:int(limit)] if limit else hist
+            if raw_text and raw_text not in {"[]", "{}"}:
+                last_category = _get_fmp_issue_category(detail=raw_text)
+                last_detail = f"Intradía {safe_symbol}: {raw_text}"
+            else:
+                last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
+                last_detail = f"Sin datos intradía para {safe_symbol}"
         except Exception as exc:
             logging.debug(f"FMP intraday {interval} {endpoint_name} error para {tk}: {exc}")
+            last_category = _FMP_ISSUE_UPSTREAM_ERROR
+            last_detail = f"{type(exc).__name__}: {exc}"
 
-    if last_status in (401, 403):
-        _FMP_LAST_ERROR[tk] = f"Histórico intradía FMP no disponible para {tk}: HTTP {last_status}"
-    else:
-        _FMP_LAST_ERROR[tk] = f"Histórico intradía FMP no disponible para {tk}"
+    if not last_category:
+        last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
+        last_detail = f"Sin datos intradía para {safe_symbol}"
+    _set_fmp_issue(tk, last_category, last_detail)
+    _log_fmp_issue(safe_symbol, last_category, detail=last_detail, status_code=last_status)
     return None
 
 
@@ -2820,15 +2970,21 @@ def get_safe_ticker_price(ticker, force_validation=False):
     # FMP es la fuente única para TODOS los activos
     result = _fetch_fmp_quote(tk)
     if result and _sanity_check_price(tk, result['price']):
-        LAST_KNOWN_PRICES[tk] = result
-        return result
+        live_result = dict(result)
+        live_result['cache_only'] = False
+        LAST_KNOWN_PRICES[tk] = live_result
+        return dict(live_result)
 
     # Cache como único respaldo si FMP no responde
     if tk in LAST_KNOWN_PRICES:
-        logging.warning(f"{tk}: FMP no respondió. Usando cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
-        return LAST_KNOWN_PRICES[tk]
+        issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
+        logging.warning(f"{tk}: {issue_text} Usando caché local: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+        cached_result = dict(LAST_KNOWN_PRICES[tk])
+        cached_result['cache_only'] = True
+        return cached_result
 
-    logging.error(f"{tk}: FMP falló y no hay cache disponible. Detalle: {_FMP_LAST_ERROR.get(tk, 'Sin detalle')}")
+    issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
+    logging.error(f"{tk}: {issue_text} Sin caché local disponible.")
     return None
 
 def verify_1m_realtime_data(ticker):
@@ -4672,16 +4828,15 @@ def fetch_and_analyze_stock(ticker):
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
+            issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
             cached_analysis = _get_cached_smc_analysis(tk)
             if cached_analysis:
                 logging.warning(
-                    f"SMC {tk}: FMP no disponible. Usando último análisis en caché. Detalle: {_FMP_LAST_ERROR.get(tk, 'Sin detalle')}"
+                    f"SMC {tk}: {issue_text} Usando último análisis en caché."
                 )
                 return cached_analysis
             print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
-            if _is_fmp_bandwidth_limited(tk):
-                return "\u26a0\ufe0f FMP alcanz\u00f3 el l\u00edmite de ancho de banda del plan."
-            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
+            return f"⚠️ {issue_text}"
             
         def _get_fallback_smc():
             latest_price = _safe_float(safe_check.get('price'), 0.0)
@@ -5688,6 +5843,229 @@ def _build_chart_pack(ticker, candles=110, timeframe="1D"):
     return pack
 
 
+def _get_local_snapshot_pack(ticker, analysis=None, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    tf = _normalize_chart_timeframe(timeframe)
+    snapshot = analysis if isinstance(analysis, dict) else {}
+    if not snapshot and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
+        snapshot = LAST_KNOWN_ANALYSIS.get(tk) or {}
+
+    closes = _sanitize_numeric_series(snapshot.get("closes_series") or snapshot.get("closes") or [], default=0.0)
+    opens = _sanitize_numeric_series(snapshot.get("opens_series") or snapshot.get("opens") or [], default=0.0)
+    highs = _sanitize_numeric_series(snapshot.get("highs_series") or snapshot.get("highs") or [], default=0.0)
+    lows = _sanitize_numeric_series(snapshot.get("lows_series") or snapshot.get("lows") or [], default=0.0)
+    dates = list(snapshot.get("dates_series") or snapshot.get("dates") or [])
+
+    if len(closes) < 12:
+        return None
+    if not (len(opens) == len(closes) == len(highs) == len(closes) == len(lows) == len(closes)):
+        return None
+    if dates and len(dates) != len(closes):
+        return None
+
+    price = _safe_float(snapshot.get("price"), _safe_float(closes[-1], 0.0))
+    support = _safe_float(snapshot.get("support") or snapshot.get("smc_sup"), 0.0)
+    resistance = _safe_float(snapshot.get("resistance") or snapshot.get("smc_res"), 0.0)
+    if price <= 0 or support <= 0 or resistance <= 0:
+        return None
+
+    divergence = snapshot.get("divergence") if isinstance(snapshot.get("divergence"), dict) else {}
+    if not divergence:
+        divergence = {"active": False, "summary": "Sin divergencia operable fuerte por ahora."}
+
+    projection = _sanitize_numeric_series(snapshot.get("projection") or [], default=price)
+    timeframe_label = snapshot.get("chart_snapshot_timeframe_label") or snapshot.get("chart_timeframe_label") or ("Diaria (1D)" if tf == "1D" else f"Intradía ({tf})")
+
+    return {
+        "ticker": tk,
+        "timeframe_label": f"{timeframe_label} | snapshot local",
+        "source_label": "Snapshot local",
+        "session_label": "Último snapshot disponible (sin cotización en vivo)",
+        "live_candle": False,
+        "snapshot_only": True,
+        "dates": dates[-110:] if dates else [f"S-{len(closes) - idx - 1}" for idx in range(min(len(closes), 110))],
+        "opens": opens[-110:],
+        "closes": closes[-110:],
+        "highs": highs[-110:],
+        "lows": lows[-110:],
+        "support": support,
+        "resistance": resistance,
+        "price": price,
+        "rsi": _safe_float(snapshot.get("rsi"), 50.0),
+        "macd_line": _safe_float(snapshot.get("macd_line"), 0.0),
+        "macd_signal": _safe_float(snapshot.get("macd_signal"), 0.0),
+        "ema50": _safe_float(snapshot.get("ema50"), price),
+        "ema200": _safe_float(snapshot.get("ema200"), price),
+        "golden_pocket_low": _safe_float(snapshot.get("golden_pocket_low"), min(support, price)),
+        "golden_pocket_high": _safe_float(snapshot.get("golden_pocket_high"), max(resistance, price)),
+        "divergence": divergence,
+        "projection": projection,
+    }
+
+
+def _format_snapshot_label(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return _truncate_text(text, 32)
+
+
+def _get_local_snapshot_analysis(ticker, analysis=None, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    snapshot = analysis if isinstance(analysis, dict) else {}
+    if not snapshot and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
+        snapshot = LAST_KNOWN_ANALYSIS.get(tk) or {}
+    if not snapshot:
+        return None
+
+    snapshot_pack = _get_local_snapshot_pack(tk, snapshot, timeframe=timeframe)
+    price = _safe_float(snapshot.get("price"), _safe_float((snapshot_pack or {}).get("price"), 0.0))
+    support = _safe_float(snapshot.get("support") or snapshot.get("smc_sup"), _safe_float((snapshot_pack or {}).get("support"), 0.0))
+    resistance = _safe_float(snapshot.get("resistance") or snapshot.get("smc_res"), _safe_float((snapshot_pack or {}).get("resistance"), 0.0))
+    if price <= 0 or support <= 0 or resistance <= 0:
+        return None
+
+    snapshot_info = dict(snapshot)
+    snapshot_info["snapshot_only"] = True
+    snapshot_info["snapshot_pack"] = snapshot_pack
+    snapshot_info["snapshot_timeframe_label"] = (snapshot_pack or {}).get("timeframe_label") or snapshot.get("chart_snapshot_timeframe_label") or snapshot.get("chart_timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})")
+    snapshot_info["snapshot_source_label"] = (snapshot_pack or {}).get("source_label") or snapshot.get("chart_snapshot_source_label") or "Snapshot local"
+    snapshot_info["snapshot_generated_at"] = snapshot.get("chart_snapshot_generated_at") or snapshot.get("snapshot_generated_at") or ""
+    return snapshot_info
+
+
+def _build_snapshot_analysis_card(ticker, snapshot_info, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    display_name = get_display_name(tk)
+    snapshot_info = snapshot_info if isinstance(snapshot_info, dict) else {}
+    if not snapshot_info:
+        return None
+
+    snapshot_pack = snapshot_info.get("snapshot_pack") if isinstance(snapshot_info.get("snapshot_pack"), dict) else {}
+    price = _safe_float(snapshot_info.get("price"), _safe_float(snapshot_pack.get("price"), 0.0))
+    support = _safe_float(snapshot_info.get("support") or snapshot_info.get("smc_sup"), _safe_float(snapshot_pack.get("support"), 0.0))
+    resistance = _safe_float(snapshot_info.get("resistance") or snapshot_info.get("smc_res"), _safe_float(snapshot_pack.get("resistance"), 0.0))
+    if price <= 0 or support <= 0 or resistance <= 0:
+        return None
+
+    timeframe_label = snapshot_info.get("snapshot_timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})")
+    source_label = snapshot_info.get("snapshot_source_label") or "Snapshot local"
+    snapshot_stamp = _format_snapshot_label(snapshot_info.get("snapshot_generated_at"))
+    rsi = _safe_float(snapshot_info.get("rsi"), 50.0)
+    macd_line = _safe_float(snapshot_info.get("macd_line"), 0.0)
+    macd_signal = _safe_float(snapshot_info.get("macd_signal"), 0.0)
+    projection = _sanitize_numeric_series(snapshot_info.get("projection") or snapshot_pack.get("projection") or [], default=price)
+    projection_target = _safe_float(snapshot_info.get("projection_target"), _safe_float(projection[-1] if projection else price, price))
+    projection_bias = str(snapshot_info.get("projection_bias") or ("alcista" if projection and projection_target >= price else ("bajista" if projection and projection_target < price else "mixto")))
+    smc_trend = str(snapshot_info.get("smc_trend") or "Lectura previa del motor")
+
+    lines = [
+        "⚠️ Usé el último snapshot local disponible porque FMP no entregó datos frescos.",
+        f"• Temporalidad del snapshot: <b>{_escape_html(timeframe_label)}</b>",
+        f"• Fuente: <b>{_escape_html(source_label)}</b>",
+        f"• Precio del snapshot: <b>${fmt_price(price)}</b> (no verificado en vivo)",
+        f"• Soporte: ${fmt_price(support)} | Resistencia: ${fmt_price(resistance)}",
+        f"• Tendencia previa: <b>{_escape_html(smc_trend)}</b>",
+        f"• RSI: {rsi:.1f} | MACD: {macd_line:.3f} vs señal {macd_signal:.3f}",
+    ]
+    if projection:
+        lines.append(f"• Ruta previa del motor: sesgo <b>{_escape_html(projection_bias)}</b> hacia ${fmt_price(projection_target)}.")
+    if snapshot_stamp:
+        lines.append(f"• Último snapshot guardado: {_escape_html(snapshot_stamp)}")
+    lines.append("• El precio en vivo no pudo verificarse; la lectura es de contingencia y no reemplaza una cotización real.")
+
+    return _make_card(
+        f"ANÁLISIS DE CONTINGENCIA | {display_name}",
+        lines,
+        icon="📉",
+        footer="Snapshot local; úsalo solo como referencia hasta recuperar la cotización en vivo."
+    )
+
+
+def _build_historical_contingency_card(ticker, pack, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    display_name = get_display_name(tk)
+    pack = pack if isinstance(pack, dict) else {}
+    if not pack:
+        return None
+
+    price = _safe_float(pack.get("price"), 0.0)
+    support = _safe_float(pack.get("support"), 0.0)
+    resistance = _safe_float(pack.get("resistance"), 0.0)
+    if price <= 0 or support <= 0 or resistance <= 0:
+        return None
+
+    timeframe_label = pack.get("timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})")
+    source_label = pack.get("source_label") or "Histórico confirmado"
+    session_label = pack.get("session_label") or "Sin cotización en vivo; usando histórico confirmado"
+    rsi = _safe_float(pack.get("rsi"), 50.0)
+    macd_line = _safe_float(pack.get("macd_line"), 0.0)
+    macd_signal = _safe_float(pack.get("macd_signal"), 0.0)
+    projection = _sanitize_numeric_series(pack.get("projection") or [], default=price)
+    projection_target = _safe_float(projection[-1] if projection else price, price)
+    projection_bias = "alcista" if projection and projection_target >= price else ("bajista" if projection and projection_target < price else "mixto")
+
+    lines = [
+        "⚠️ Usé histórico confirmado de contingencia porque FMP no entregó cotización en vivo.",
+        f"• Temporalidad de referencia: <b>{_escape_html(timeframe_label)}</b>",
+        f"• Fuente: <b>{_escape_html(source_label)}</b>",
+        f"• Sesión mostrada: <b>{_escape_html(session_label)}</b>",
+        f"• Último cierre confirmado: <b>${fmt_price(price)}</b> (no verificado en vivo)",
+        f"• Soporte: ${fmt_price(support)} | Resistencia: ${fmt_price(resistance)}",
+        f"• RSI: {rsi:.1f} | MACD: {macd_line:.3f} vs señal {macd_signal:.3f}",
+    ]
+    if projection:
+        lines.append(f"• Ruta de contingencia: sesgo <b>{_escape_html(projection_bias)}</b> hacia ${fmt_price(projection_target)}.")
+    lines.append("• El precio en vivo no pudo verificarse; esta lectura sirve como referencia táctica, no como cotización actual.")
+
+    return _make_card(
+        f"ANÁLISIS DE CONTINGENCIA | {display_name}",
+        lines,
+        icon="📉",
+        footer="Histórico confirmado de contingencia; úsalo solo como referencia hasta recuperar la cotización en vivo."
+    )
+
+
+def _cache_chart_snapshot(ticker, chart_pack, analysis=None, timeframe="1D"):
+    tk = remap_ticker(ticker)
+    if not isinstance(chart_pack, dict) or chart_pack.get("snapshot_only"):
+        return False
+
+    def _pick_series(*keys):
+        for key in keys:
+            value = chart_pack.get(key)
+            if isinstance(value, list) and len(value) >= 12:
+                return list(value)
+        return []
+
+    dates = _pick_series("dates", "dates_series")
+    opens = _pick_series("opens", "opens_series")
+    closes = _pick_series("closes", "closes_series")
+    highs = _pick_series("highs", "highs_series")
+    lows = _pick_series("lows", "lows_series")
+    if not dates or not closes or not (len(dates) == len(closes) == len(opens) == len(highs) == len(lows)):
+        return False
+
+    snapshot = dict(analysis if isinstance(analysis, dict) else ((LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}))
+    snapshot.update({
+        "dates_series": dates,
+        "opens_series": opens,
+        "closes_series": closes,
+        "highs_series": highs,
+        "lows_series": lows,
+        "chart_snapshot_generated_at": datetime.now().isoformat(),
+        "chart_snapshot_timeframe_key": _normalize_chart_timeframe(timeframe),
+        "chart_snapshot_timeframe_label": chart_pack.get("timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})"),
+        "chart_snapshot_source_label": chart_pack.get("source_label") or "FMP",
+    })
+    LAST_KNOWN_ANALYSIS[tk] = snapshot
+    return True
+
+
 def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
     tk = remap_ticker(ticker)
     tf = _normalize_chart_timeframe(timeframe)
@@ -5695,34 +6073,29 @@ def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
     if not analysis and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
         analysis = LAST_KNOWN_ANALYSIS.get(tk) or {}
 
+    snapshot_pack = _get_local_snapshot_pack(tk, analysis, timeframe=tf)
+    if snapshot_pack:
+        return snapshot_pack
+
     quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
     hist = _fetch_fmp_historical_eod(tk, limit=90) or []
-    closes = []
-
-    if isinstance(hist, list) and hist:
-        hist = list(reversed(hist[:90]))
-        closes = [_safe_float(row.get("close"), 0.0) for row in hist]
-        closes = [value for value in closes if value > 0]
-
-    price = _safe_float(quote.get("price") or analysis.get("price") or (closes[-1] if closes else 0.0), 0.0)
-    if price <= 0:
+    if not isinstance(hist, list) or len(hist) < 12:
         return None
 
-    if len(closes) < 12:
-        change_pct = _safe_float(quote.get("changesPercentage"), 0.0)
-        direction = -1 if change_pct < 0 else 1
-        step = max(price * 0.0025, 0.01)
-        closes = [max(0.01, price - (direction * step * (15 - idx))) for idx in range(16)]
-        closes[-1] = price
+    hist = list(reversed(hist[:90]))
+    closes = [_safe_float(row.get("close"), 0.0) for row in hist]
+    opens = [_safe_float(row.get("open"), closes[idx] if idx < len(closes) else 0.0) for idx, row in enumerate(hist)]
+    highs = [_safe_float(row.get("high"), max(opens[idx], closes[idx])) for idx, row in enumerate(hist)]
+    lows = [_safe_float(row.get("low"), min(opens[idx], closes[idx])) for idx, row in enumerate(hist)]
+    dates = [str(row.get("date") or row.get("label") or "") for row in hist]
+    if any(value <= 0 for value in closes) or any(value <= 0 for value in highs) or any(value <= 0 for value in lows):
+        return None
 
-    opens = [closes[0]] + closes[:-1]
-    highs = []
-    lows = []
-    for open_value, close_value in zip(opens, closes):
-        candle_spread = max(price * 0.0035, abs(close_value - open_value) * 0.55, 0.01)
-        highs.append(max(open_value, close_value) + candle_spread)
-        lows.append(max(0.01, min(open_value, close_value) - candle_spread))
-    dates = [f"D-{len(closes) - idx - 1}" for idx in range(len(closes))]
+    quote_is_live = isinstance(quote, dict) and not bool(quote.get("cache_only"))
+    live_price = _safe_float(quote.get("price"), 0.0) if quote_is_live else 0.0
+    price = live_price if live_price > 0 else _safe_float(closes[-1], 0.0)
+    if price <= 0:
+        return None
 
     window = closes[-min(len(closes), 20):]
     base_support = min(window) if window else price * 0.97
@@ -5749,10 +6122,11 @@ def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
 
     pack = {
         "ticker": tk,
-        "timeframe_label": "Diaria (1D) estimada" if tf == "1D" else (f"Intradía ({tf}) estimada"),
-        "source_label": "FMP fallback",
-        "session_label": "Modo de contingencia visual",
+        "timeframe_label": "Diaria (1D) de contingencia" if tf == "1D" else (f"Intradía ({tf}) de contingencia"),
+        "source_label": "Histórico FMP de contingencia" if live_price > 0 else "Último cierre confirmado",
+        "session_label": "Sin cotización en vivo; usando histórico confirmado",
         "live_candle": False,
+        "snapshot_only": True,
         "dates": dates[-60:],
         "opens": opens[-60:],
         "closes": closes[-60:],
@@ -5811,6 +6185,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         return None, None
 
     display_name = get_display_name(tk)
+    snapshot_only = bool(pack.get("snapshot_only"))
     divergence = pack.get("divergence") or {}
     macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
     macro_score = _safe_float(macro_context.get("score"), _safe_float(analysis.get("macro_score"), 0.0))
@@ -5839,7 +6214,8 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     if not isinstance(dates, list):
         dates = []
 
-    timeframe_label = "Diaria (1D)"
+    timeframe_label = pack.get("timeframe_label") or "Diaria (1D)"
+    source_label = pack.get("source_label") or "FMP"
     candles_used = len(closes)
     horizon_sessions = len(projection)
     projection_target = projection[-1] if projection else price_value
@@ -5882,7 +6258,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
     draw.text((56, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
-    draw.text((58, 64), "Precio confirmado en temporalidad diaria y escenario probable generado con el motor institucional.", fill="#5D687A", font=font_sub)
+    draw.text((58, 64), ("Snapshot local de contingencia con velas guardadas previamente." if snapshot_only else "Precio confirmado en temporalidad diaria y escenario probable generado con el motor institucional."), fill="#5D687A", font=font_sub)
 
     def _draw_chip(x, y, text, fill, text_fill="#10233E"):
         bbox = draw.textbbox((0, 0), text, font=font_small)
@@ -5895,7 +6271,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     chip_x = 58
     chip_y = 88
     chip_x = _draw_chip(chip_x, chip_y, f"Temporalidad: {timeframe_label}", (223, 232, 243, 255))
-    chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} sesiones", (236, 232, 223, 255))
+    chip_x = _draw_chip(chip_x, chip_y, f"{'Snapshot' if snapshot_only else 'Histórico'}: {candles_used} sesiones", (236, 232, 223, 255))
     chip_x = _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
     _draw_chip(chip_x, chip_y, f"Dirección: {direction_arrow} {projection_hint}", (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
 
@@ -5935,8 +6311,8 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         y = usable_y1 + ((usable_y2 - usable_y1) * idx / 5)
         draw.line((x1 + 22, y, x2 - 22, y), fill="#ECE6D9", width=1)
 
-    draw.text((x1 + 28, y1 + 16), "Tramo confirmado", fill="#10233E", font=font_bold)
-    draw.text((split_x + 18, y1 + 16), "Escenario probable", fill=projection_color, font=font_bold)
+    draw.text((x1 + 28, y1 + 16), "Tramo confirmado" if not snapshot_only else "Tramo del snapshot", fill="#10233E", font=font_bold)
+    draw.text((split_x + 18, y1 + 16), "Escenario probable" if not snapshot_only else "Escenario previo del motor", fill=projection_color, font=font_bold)
     draw.text((split_x + 18, y1 + 42), f"{direction_arrow} {direction_label} {projection_delta_text}", fill=projection_color, font=font_metric)
 
     for value in (price_max, (price_max + price_min) / 2, price_min):
@@ -6000,7 +6376,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         draw.rounded_rectangle((x_left, y_top, x_left + tag_w, y_top + tag_h), radius=10, fill=fill)
         draw.text((x_left + 9, y_top + 5), text, fill=text_fill, font=font_small)
 
-    _draw_price_tag(px, py, f"Ahora ${fmt_price(price_value)}", "#132B45")
+    _draw_price_tag(px, py, f"{'Ahora' if not snapshot_only else 'Snapshot'} ${fmt_price(price_value)}", "#132B45")
     if projection_pts:
         lx, ly = projection_pts[-1]
         _draw_price_tag(lx, ly, f"Objetivo ${fmt_price(projection_target)}", projection_color)
@@ -6055,11 +6431,11 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         return y_cursor + 14
 
     sidebar_y = side_panel[1] + 54
-    sidebar_y = _draw_section(sidebar_y, "Contexto", [
+    sidebar_y = _draw_section(sidebar_y, "Contexto" if not snapshot_only else "Contexto del snapshot", [
         f"Temporalidad: {timeframe_label}",
-        f"Histórico analizado: {candles_used} sesiones",
-        f"Horizonte proyectado: {future_label}",
-        f"Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text})",
+        f"{'Velas guardadas' if snapshot_only else 'Histórico analizado'}: {candles_used} sesiones",
+        f"Fuente visual: {source_label}",
+        f"{'Ruta previa del motor' if snapshot_only else 'Dirección esperada'}: {direction_arrow} {projection_hint} ({projection_delta_text})",
     ])
     sidebar_y = _draw_section(sidebar_y, "Macro y sentimiento", [
         f"Sesgo macro: {macro_bias_label}.",
@@ -6080,10 +6456,10 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"Lectura: {memory_summary}",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
-        f"Precio actual: ${fmt_price(price_value)}",
+        f"{'Precio del snapshot' if snapshot_only else 'Precio actual'}: ${fmt_price(price_value)}",
         f"Soporte principal: ${fmt_price(support)}",
         f"Resistencia principal: ${fmt_price(resistance)}",
-        f"Objetivo probable: ${fmt_price(projection_target)}",
+        f"{'Objetivo previo' if snapshot_only else 'Objetivo probable'}: ${fmt_price(projection_target)}",
     ])
     sidebar_y = _draw_section(sidebar_y, "Motor interno", [
         f"RSI: {rsi_value:.1f}",
@@ -6101,13 +6477,13 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     caption = _make_card(
         f"GRÁFICO TÁCTICO | {display_name}",
         [
-            f"• Temporalidad: {timeframe_label} | Histórico: {candles_used} sesiones",
-            f"• Tramo real: precio confirmado hasta {now_label}.",
-            f"• Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text}) hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• {'Temporalidad del snapshot' if snapshot_only else 'Temporalidad'}: {timeframe_label} | {'Velas guardadas' if snapshot_only else 'Histórico'}: {candles_used} sesiones | Fuente: {source_label}.",
+            f"• {'Referencia visual' if snapshot_only else 'Tramo real'}: {'último snapshot local disponible' if snapshot_only else f'precio confirmado hasta {now_label}.'}",
+            f"• {'Ruta previa del motor' if snapshot_only else 'Dirección esperada'}: {direction_arrow} {projection_hint} ({projection_delta_text}) hacia ${fmt_price(projection_target)} en {future_label}.",
             f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
-        footer="Gráfico claro: precio actual + ruta probable calculada con el motor institucional."
+        footer="Snapshot local: referencia visual de contingencia; no reemplaza una cotización en vivo." if snapshot_only else "Gráfico claro: precio actual + ruta probable calculada con el motor institucional."
     )
     return chart_path, caption
 
@@ -6330,6 +6706,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         return None, None
 
     display_name = get_display_name(tk)
+    snapshot_only = bool(pack.get("snapshot_only"))
     divergence = pack.get("divergence") or {}
     macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
     alert_memory = analysis.get("alert_memory") if isinstance(analysis.get("alert_memory"), dict) else {}
@@ -6501,7 +6878,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
     draw.text((54, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
-    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con tecnica, sentimiento y contexto macro.", fill="#5D687A", font=font_sub)
+    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con tecnica, sentimiento y contexto macro." if not snapshot_only else "Snapshot local de contingencia con velas guardadas previamente y escenario previo del motor.", fill="#5D687A", font=font_sub)
 
     def _draw_chip(x, y, text, fill, text_fill="#10233E"):
         bbox = draw.textbbox((0, 0), text, font=font_small)
@@ -6576,8 +6953,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         draw.line((x_level, chart_y1, x_level, chart_y2), fill=(233, 227, 218, 155), width=1)
 
     draw.line((split_x, chart_y1 - 8, split_x, chart_y2 + 8), fill="#BEC7D4", width=2)
-    draw.text((chart_x1 + 8, y1 + 20), "Tramo real", fill="#10233E", font=font_bold)
-    draw.text((split_x + 18, y1 + 20), "Escenario probable", fill=projection_color, font=font_bold)
+    draw.text((chart_x1 + 8, y1 + 20), "Tramo real" if not snapshot_only else "Tramo del snapshot", fill="#10233E", font=font_bold)
+    draw.text((split_x + 18, y1 + 20), "Escenario probable" if not snapshot_only else "Escenario previo del motor", fill=projection_color, font=font_bold)
     draw.text((split_x + 18, y1 + 46), f"{direction_arrow} {direction_label} {projection_delta_text}", fill=projection_color, font=font_badge)
     draw.text((split_x + 18, y1 + 78), f"Confianza visual: {orientation_confidence}%", fill=projection_color, font=font_metric)
 
@@ -6726,19 +7103,19 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         return y_cursor + 18
 
     sidebar_y = side_panel[1] + 54
-    sidebar_y = _draw_section(sidebar_y, "Orientación", [
+    sidebar_y = _draw_section(sidebar_y, "Orientación" if not snapshot_only else "Orientación del snapshot", [
         f"Lectura dominante: {orientation_summary}.",
         f"Escenario base: {direction_arrow} {direction_label}.",
         f"Confianza visual estimada: {orientation_confidence}%.",
-        f"Ruta probable: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+        f"{'Ruta previa del motor' if snapshot_only else 'Ruta probable'}: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
     ])
-    sidebar_y = _draw_section(sidebar_y, "Contexto", [
-        f"Temporalidad real: {timeframe_label}.",
+    sidebar_y = _draw_section(sidebar_y, "Contexto" if not snapshot_only else "Contexto del snapshot", [
+        f"{'Temporalidad del snapshot' if snapshot_only else 'Temporalidad real'}: {timeframe_label}.",
         f"Fuente visual: {source_label}.",
         f"Sesión mostrada: {session_label}.",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
-        f"Precio actual: ${fmt_price(price_value)}",
+        f"{'Precio del snapshot' if snapshot_only else 'Precio actual'}: ${fmt_price(price_value)}",
         f"Soporte principal: ${fmt_price(support)}",
         f"Resistencia principal: ${fmt_price(resistance)}",
         f"Zona dorada: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
@@ -6754,8 +7131,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         f"Lectura de medias: EMA50/EMA200 con sesgo {ema_bias}.",
     ])
     _draw_section(sidebar_y, "Cómo leerlo", [
-        "Las velas sólidas muestran el precio confirmado.",
-        "Las velas translúcidas muestran la trayectoria más probable, no precio garantizado.",
+        "Las velas muestran el último snapshot local disponible." if snapshot_only else "Las velas sólidas muestran el precio confirmado.",
+        "La ruta translúcida conserva el último escenario del motor y no reemplaza una cotización en vivo." if snapshot_only else "Las velas translúcidas muestran la trayectoria más probable, no precio garantizado.",
         "El eje derecho replica la referencia rápida de niveles, al estilo TradingView.",
     ])
 
@@ -6763,15 +7140,15 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     caption = _make_card(
         f"GRÁFICO TÁCTICO | {display_name}",
         [
-            f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used} | Fuente: {source_label}.",
-            f"• Orientación probable: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
-            f"• Ruta esperada: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• {'Temporalidad del snapshot' if snapshot_only else 'Temporalidad'}: {timeframe_label} | {'Velas guardadas' if snapshot_only else 'Velas reales'}: {candles_used} | Fuente: {source_label}.",
+            f"• {'Orientación del snapshot' if snapshot_only else 'Orientación probable'}: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
+            f"• {'Ruta previa del motor' if snapshot_only else 'Ruta esperada'}: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
             f"• Memoria del motor: <b>{_escape_html(memory_label)}</b> | acierto {memory_win_rate:.1f}% | score {memory_avg_score:+.2f}.",
             f"• EMA50 ${fmt_price(ema50_value)} | EMA200 ${fmt_price(ema200_value)} | RSI {rsi_value:.1f} | MACD {macd_bias}.",
             f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
-        footer="Velas confirmadas + escenario probable del motor institucional."
+        footer="Snapshot local: referencia visual de contingencia; no reemplaza una cotización en vivo." if snapshot_only else "Velas confirmadas + escenario probable del motor institucional."
     )
     return chart_path, caption
 
@@ -6789,26 +7166,24 @@ def _render_stock_analysis_chart_safe(ticker, analysis=None, timeframe="1D"):
             chart_path, chart_caption = renderer()
             if chart_path and os.path.exists(chart_path):
                 if renderer_name != "principal":
-                    logging.warning(f"Gráfico táctico de {tk} generado con renderer de respaldo.")
-                return chart_path, chart_caption
+                    logging.warning(f"CHART FALLBACK: renderer principal falló para {tk}; usando respaldo.")
+                return chart_path, chart_caption, render_errors
             render_errors.append(f"{renderer_name}: sin archivo válido")
             logging.warning(f"Renderer {renderer_name} no produjo un archivo de gráfico válido para {tk}.")
         except Exception as exc:
             render_errors.append(f"{renderer_name}: {type(exc).__name__}: {exc}")
-            logging.exception(f"Error generando gráfico táctico con renderer {renderer_name} para {tk}")
+            logging.warning(f"Renderer {renderer_name} falló para {tk}: {type(exc).__name__}: {exc}")
 
-    logging.error(
-        f"Fallo total al generar gráfico táctico para {tk} | detalle={' | '.join(render_errors) if render_errors else 'sin detalle'}"
-    )
-    return None, None
+    return None, None, render_errors
 
 
 def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
     tf = _normalize_chart_timeframe(timeframe)
     analysis_text = None
+    analysis_context = {"mode": "unknown"}
     try:
-        analysis_text = perform_deep_analysis(tk, timeframe=tf)
+        analysis_text, analysis_context = _perform_deep_analysis_fmp(tk, timeframe=tf, return_context=True)
     except Exception:
         logging.exception(f"Error generando análisis textual para {tk}")
         analysis_text = _make_card(
@@ -6821,6 +7196,7 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
             icon="📉",
             footer="El gráfico táctico se intentará enviar de todas formas."
         )
+        analysis_context = {"mode": "contingency"}
 
     if analysis_text:
         try:
@@ -6834,27 +7210,34 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
 
     chart_path = None
     chart_caption = None
+    render_errors = []
     try:
-        chart_path, chart_caption = _render_stock_analysis_chart_safe(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
+        chart_path, chart_caption, render_errors = _render_stock_analysis_chart_safe(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
     except Exception:
         logging.exception(f"Error generando gráfico táctico para {tk}")
-        bot.send_message(
-            chat_id,
-            _make_card(
-                "GRÁFICO TÁCTICO",
-                ["No pude generar el gráfico visual en este momento, pero el análisis textual sí quedó listo."],
-                icon="🖼️"
-            ),
-            parse_mode="HTML"
-        )
+        if analysis_context.get("mode") != "blocked":
+            logging.error(f"CHART FAILURE: no se pudo generar gráfico táctico para {tk}; se envió solo análisis textual.")
+            bot.send_message(
+                chat_id,
+                _make_card(
+                    "GRÁFICO TÁCTICO",
+                    ["El análisis textual quedó listo, pero no pude generar el gráfico táctico en esta ejecución."],
+                    icon="🖼️"
+                ),
+                parse_mode="HTML"
+            )
         return
 
     if not chart_path or not os.path.exists(chart_path):
+        if analysis_context.get("mode") == "blocked":
+            logging.warning(f"ANALYSIS BLOCKED: sin base suficiente para gráfico honesto en {tk}.")
+            return
+        logging.error(f"CHART FAILURE: no se pudo generar gráfico táctico para {tk}; se envió solo análisis textual. detalle={' | '.join(render_errors) if render_errors else 'sin detalle'}")
         bot.send_message(
             chat_id,
             _make_card(
                 "GRÁFICO TÁCTICO",
-                ["No encontré un archivo de gráfico válido para enviarlo, aunque el análisis textual sí quedó listo."],
+                ["El análisis textual quedó listo, pero no pude generar el gráfico táctico en esta ejecución."],
                 icon="🖼️"
             ),
             parse_mode="HTML"
@@ -6873,15 +7256,17 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
                 bot.send_message(chat_id, chart_caption, parse_mode="HTML")
         except Exception:
             logging.exception(f"Error enviando gráfico táctico sin caption para {tk}")
-            bot.send_message(
-                chat_id,
-                _make_card(
-                    "GRÁFICO TÁCTICO",
-                    ["No pude enviar el gráfico visual en este momento, pero el análisis textual sí quedó listo."],
-                    icon="🖼️"
-                ),
-                parse_mode="HTML"
-            )
+            if analysis_context.get("mode") != "blocked":
+                logging.error(f"CHART FAILURE: no se pudo enviar gráfico táctico para {tk}; se envió solo análisis textual.")
+                bot.send_message(
+                    chat_id,
+                    _make_card(
+                        "GRÁFICO TÁCTICO",
+                        ["El análisis textual quedó listo, pero no pude enviar el gráfico táctico en esta ejecución."],
+                        icon="🖼️"
+                    ),
+                    parse_mode="HTML"
+                )
     finally:
         if chart_path and os.path.exists(chart_path):
             try:
@@ -6950,10 +7335,15 @@ def _monitor_quality_divergences(tracked):
         alerts_sent += 1
 
 
-def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
+def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
     tf = _normalize_chart_timeframe(timeframe)
+
+    def _finalize(payload, mode="live"):
+        if return_context:
+            return payload, {"mode": mode}
+        return payload
 
     quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
     try:
@@ -6964,17 +7354,36 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     if not isinstance(tech, dict):
         tech = LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else None
 
-    if isinstance(tech, dict) and quote.get("price"):
-        tech["price"] = quote["price"]
+    quote_is_live = isinstance(quote, dict) and not bool(quote.get("cache_only"))
+    live_price = _safe_float(quote.get("price"), 0.0) if quote_is_live else 0.0
+    if isinstance(tech, dict) and live_price > 0:
+        tech["price"] = live_price
 
-    price = _safe_float(quote.get("price") or ((tech or {}).get("price")))
-    if price <= 0:
+    if live_price <= 0:
+        snapshot_info = _get_local_snapshot_analysis(tk, tech, timeframe=tf)
+        if snapshot_info:
+            logging.info(f"ANALYSIS FALLBACK: usando snapshot local para {tk} por fallo de FMP.")
+            return _finalize(_build_snapshot_analysis_card(tk, snapshot_info, timeframe=tf), mode="snapshot")
+
+        historical_pack = _build_chart_pack_failsafe(tk, tech, timeframe=tf) or {}
+        if historical_pack:
+            logging.info(f"ANALYSIS FALLBACK: usando histórico confirmado para {tk} por fallo de FMP.")
+            return _finalize(_build_historical_contingency_card(tk, historical_pack, timeframe=tf), mode="contingency")
+
+        logging.warning(f"ANALYSIS BLOCKED: sin precio verificado ni base local/histórica suficiente para {tk}.")
         fmp_sym = _get_fmp_symbol(tk)
         issue_text = _get_fmp_user_issue_text(tk, "Sin información de error")
+        issue_category = _get_fmp_issue_category(ticker=tk)
         diag = _escape_html(issue_text)
         key_len = len(FMP_API_KEY) if FMP_API_KEY else 0
-        footer_text = "FMP necesita más ancho de banda o debes esperar al reinicio de cuota." if _is_fmp_bandwidth_limited(tk, detail=issue_text) else "Revisa FMP_API_KEY o el símbolo del activo."
-        return _make_card(
+        footer_text = {
+            _FMP_ISSUE_NO_KEY: "Configura FMP_API_KEY en el entorno antes de reintentar.",
+            _FMP_ISSUE_QUOTA_LIMIT: "Espera al reinicio de cuota o amplía el plan antes de reintentar.",
+            _FMP_ISSUE_ACCESS_RESTRICTED: "El plan actual no permite esta consulta de FMP.",
+            _FMP_ISSUE_SYMBOL_NOT_FOUND: "Verifica el ticker solo si esperabas datos para ese activo.",
+            _FMP_ISSUE_UPSTREAM_ERROR: "Intenta de nuevo en unos minutos.",
+        }.get(issue_category, "Intenta de nuevo en unos minutos.")
+        return _finalize(_make_card(
             f"ANÁLISIS FMP | {display_name}",
             [
                 "⚠️ No pude obtener un precio válido desde FMP.",
@@ -6985,7 +7394,9 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
             ],
             icon="📉",
             footer=footer_text
-        )
+        ), mode="blocked")
+
+    price = live_price
 
     profile = _fetch_fmp_profile(tk) or {}
     news_items = _fetch_fmp_ticker_news(tk, limit=5)
@@ -7126,8 +7537,11 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         "macro_score": macro_score,
         "macro_context": macro_context,
         "alert_memory": alert_memory,
+        "chart_timeframe_key": tf,
+        "chart_timeframe_label": chart_timeframe_label,
     })
     LAST_KNOWN_ANALYSIS[tk] = analysis_cache
+    _cache_chart_snapshot(tk, chart_pack, analysis_cache, timeframe=tf)
 
     reward_pct = ((take_profit - price) / price * 100) if price > 0 else 0.0
     risk_pct = ((price - stop_loss) / price * 100) if price > 0 else 0.0
@@ -7415,16 +7829,16 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
         f"• Lectura final: {_escape_html(thesis)}",
     ])
 
-    return _make_card(
+    return _finalize(_make_card(
         f"ANÁLISIS FMP | {display_name}",
         lines,
         icon="📈",
         footer="Análisis institucional con datos FMP."
-    )
+    ), mode="live")
 
 
 def perform_deep_analysis(ticker, timeframe="1D"):
-    return _perform_deep_analysis_fmp(ticker, timeframe=timeframe)
+    return _perform_deep_analysis_fmp(ticker, timeframe=timeframe, return_context=False)
 
     # Bloque legacy conservado debajo por compatibilidad temporal.
     tk = remap_ticker(ticker)
@@ -8463,7 +8877,7 @@ def handle_text(message):
 
              validation = get_safe_ticker_price(tk)
              if validation is None:
-                 issue_text = _get_fmp_user_issue_text(tk, "Activo no encontrado en FMP. No se agregó.")
+                 issue_text = _get_fmp_user_issue_text(tk, "FMP no devolvió datos para ese activo.")
                  bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"⚠️ {_escape_html(issue_text)}"], icon="🗂️"), parse_mode="HTML")
                  return
              res = add_ticker(tk)
@@ -8502,7 +8916,7 @@ def handle_text(message):
                     parse_mode="HTML"
                 )
             else:
-                issue_text = _get_fmp_user_issue_text(tk, f"No pude fijar el precio real de {display_name} ahora mismo.")
+                issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
                 bot.reply_to(message, _make_card("CAPITAL REGISTRADO", [f"❌ {_escape_html(issue_text)}"], icon="💰"), parse_mode="HTML")
         return
 
