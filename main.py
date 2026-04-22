@@ -2531,6 +2531,10 @@ FMP_INTRADAY_TTL_SECONDS = int(os.environ.get("FMP_INTRADAY_TTL_SECONDS", "45"))
 FMP_QUOTA_COOLDOWN_SECONDS = int(os.environ.get("FMP_QUOTA_COOLDOWN_SECONDS", "25"))
 FMP_ACCESS_COOLDOWN_SECONDS = int(os.environ.get("FMP_ACCESS_COOLDOWN_SECONDS", "20"))
 FMP_UPSTREAM_COOLDOWN_SECONDS = int(os.environ.get("FMP_UPSTREAM_COOLDOWN_SECONDS", "12"))
+FMP_USAGE_SUMMARY_INTERVAL_SECONDS = int(os.environ.get("FMP_USAGE_SUMMARY_INTERVAL_SECONDS", "600"))
+FMP_USAGE_STATS = {}
+_FMP_USAGE_LAST_SUMMARY_AT = 0.0
+_FMP_USAGE_LOCK = threading.Lock()
 
 
 def _get_fmp_cache_bucket(kind):
@@ -2539,6 +2543,90 @@ def _get_fmp_cache_bucket(kind):
     if kind == "eod":
         return FMP_EOD_CACHE
     return FMP_INTRADAY_CACHE
+
+
+def _ensure_fmp_usage_bucket(kind):
+    bucket = FMP_USAGE_STATS.get(kind)
+    if bucket is None:
+        bucket = {
+            "fetch": 0,
+            "ok": 0,
+            "cache_hit": 0,
+            "throttle": 0,
+            "quota": 0,
+            "access": 0,
+            "no_data": 0,
+            "upstream": 0,
+            "no_key": 0,
+            "bytes": 0,
+        }
+        FMP_USAGE_STATS[kind] = bucket
+    return bucket
+
+
+def _emit_fmp_usage_summary_if_due(force=False):
+    global _FMP_USAGE_LAST_SUMMARY_AT
+    interval = max(int(FMP_USAGE_SUMMARY_INTERVAL_SECONDS), 0)
+    now_ts = time.time()
+    if not force and not _FMP_USAGE_LAST_SUMMARY_AT:
+        _FMP_USAGE_LAST_SUMMARY_AT = now_ts
+        return False
+    if not force and interval and (now_ts - float(_FMP_USAGE_LAST_SUMMARY_AT or 0.0)) < interval:
+        return False
+
+    with _FMP_USAGE_LOCK:
+        snapshot = {
+            kind: dict(values)
+            for kind, values in FMP_USAGE_STATS.items()
+            if isinstance(values, dict)
+        }
+        _FMP_USAGE_LAST_SUMMARY_AT = now_ts
+
+    if not snapshot:
+        return False
+
+    for kind, values in snapshot.items():
+        if not any(int(values.get(field, 0) or 0) for field in ("fetch", "cache_hit", "throttle", "quota", "access", "no_data", "upstream", "no_key")):
+            continue
+        _log_operational_event(
+            "info",
+            "FMP USAGE",
+            kind=kind,
+            fetch=values.get("fetch", 0),
+            ok=values.get("ok", 0),
+            cache_hit=values.get("cache_hit", 0),
+            throttle=values.get("throttle", 0),
+            quota=values.get("quota", 0),
+            access=values.get("access", 0),
+            no_data=values.get("no_data", 0),
+            upstream=values.get("upstream", 0),
+            no_key=values.get("no_key", 0),
+            bytes=values.get("bytes", 0),
+            window=f"{interval}s" if interval else "manual",
+        )
+    return True
+
+
+def _record_fmp_usage_event(kind, outcome, response_bytes=0):
+    normalized_kind = str(kind or "unknown").strip().lower() or "unknown"
+    normalized_outcome = str(outcome or "upstream").strip().lower() or "upstream"
+    with _FMP_USAGE_LOCK:
+        bucket = _ensure_fmp_usage_bucket(normalized_kind)
+        bucket[normalized_outcome] = int(bucket.get(normalized_outcome, 0) or 0) + 1
+        if response_bytes:
+            bucket["bytes"] = int(bucket.get("bytes", 0) or 0) + max(int(response_bytes), 0)
+    _emit_fmp_usage_summary_if_due(force=False)
+
+
+def _record_fmp_issue_usage(kind, category, response_bytes=0):
+    category_map = {
+        _FMP_ISSUE_NO_KEY: "no_key",
+        _FMP_ISSUE_QUOTA_LIMIT: "quota",
+        _FMP_ISSUE_ACCESS_RESTRICTED: "access",
+        _FMP_ISSUE_SYMBOL_NOT_FOUND: "no_data",
+        _FMP_ISSUE_UPSTREAM_ERROR: "upstream",
+    }
+    _record_fmp_usage_event(kind, category_map.get(category, "upstream"), response_bytes=response_bytes)
 
 
 def _get_fmp_cache_ttl(kind):
@@ -2609,6 +2697,7 @@ def _get_fmp_success_cache(kind, cache_key, ticker, min_items=0):
     if min_items and isinstance(data, list) and len(data) < int(min_items):
         return None
 
+    _record_fmp_usage_event(kind, "cache_hit")
     now_ts = time.time()
     if (now_ts - float(entry.get("last_logged_at") or 0.0)) >= 5:
         _log_operational_event(
@@ -2638,6 +2727,7 @@ def _is_fmp_throttled(kind, cache_key, ticker):
     if detail:
         _set_fmp_issue(ticker, category, detail)
     remaining = max(int(cooldown - age), 0)
+    _record_fmp_usage_event(kind, "throttle")
     now_ts = time.time()
     if (now_ts - float(entry.get("last_logged_at") or 0.0)) >= 5:
         _log_operational_event(
@@ -2818,6 +2908,7 @@ def _fetch_fmp_quote(tk):
             ticker=tk,
         )
         _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
+        _record_fmp_issue_usage("quote", _FMP_ISSUE_NO_KEY)
         _store_fmp_cache_failure("quote", tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
 
@@ -2846,8 +2937,10 @@ def _fetch_fmp_quote(tk):
         try:
             # === STABLE API (nuevo) ===
             url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
+            _record_fmp_usage_event("quote", "fetch")
             resp = requests.get(url, timeout=10)
             raw_text = _clean_error_detail(resp.text)
+            response_bytes = len(resp.content or b"")
 
             if resp.status_code == 200:
                 data = resp.json()
@@ -2855,15 +2948,18 @@ def _fetch_fmp_quote(tk):
                 if payload_error:
                     category = _get_fmp_issue_category(detail=payload_error)
                     _set_fmp_issue(tk, category, f"FMP {symbol}: {payload_error}")
+                    _record_fmp_issue_usage("quote", category, response_bytes=response_bytes)
                     _log_fmp_issue(symbol, category, detail=payload_error)
                     continue
                 if not data or len(data) == 0:
                     if raw_text and raw_text not in {"[]", "{}"}:
                         category = _get_fmp_issue_category(detail=raw_text)
                         _set_fmp_issue(tk, category, f"FMP {symbol}: {raw_text}")
+                        _record_fmp_issue_usage("quote", category, response_bytes=response_bytes)
                         _log_fmp_issue(symbol, category, detail=raw_text)
                     else:
                         _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {symbol}")
+                        _record_fmp_issue_usage("quote", _FMP_ISSUE_SYMBOL_NOT_FOUND, response_bytes=response_bytes)
                         _log_fmp_issue(symbol, _FMP_ISSUE_SYMBOL_NOT_FOUND)
                     continue
                 
@@ -2875,6 +2971,7 @@ def _fetch_fmp_quote(tk):
                 else:
                     detail = f"Formato inesperado para {symbol}: {str(data)[:200]}"
                     _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
+                    _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
                     _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
                     continue
 
@@ -2883,6 +2980,7 @@ def _fetch_fmp_quote(tk):
                     if price is None:
                         detail = f"Precio nulo para {symbol}"
                         _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
+                        _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
                         _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
                         continue
                         
@@ -2900,6 +2998,7 @@ def _fetch_fmp_quote(tk):
                     previous_close = _to_float(quote.get('previousClose'))
                     last_timestamp = quote.get('timestamp') or quote.get('lastUpdated') or quote.get('date') or ""
                     if price > 0:
+                        _record_fmp_usage_event("quote", "ok", response_bytes=response_bytes)
                         _log_operational_event(
                             "info",
                             "FMP FETCH OK",
@@ -2928,22 +3027,26 @@ def _fetch_fmp_quote(tk):
                     else:
                         detail = f"Precio inválido para {symbol}"
                         _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
+                        _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
                         _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
 
             elif resp.status_code in (401, 402, 403, 429):
                 detail = raw_text or f"HTTP {resp.status_code}"
                 category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail) else _FMP_ISSUE_ACCESS_RESTRICTED
                 _set_fmp_issue(tk, category, f"HTTP {resp.status_code} - {detail}")
+                _record_fmp_issue_usage("quote", category, response_bytes=response_bytes)
                 _log_fmp_issue(symbol, category, detail=detail, status_code=resp.status_code)
                 _store_fmp_cache_failure("quote", tk, category, f"HTTP {resp.status_code} - {detail}", status_code=resp.status_code)
                 return None
             else:
                 if raw_text:
                     _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"HTTP {resp.status_code} - {raw_text}")
+                    _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
                     _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=f"HTTP {resp.status_code} - {raw_text}")
 
         except Exception as e:
             _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"{type(e).__name__}: {e}")
+            _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR)
             _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=f"{type(e).__name__}: {e}")
 
     if not _FMP_LAST_ERROR.get(tk):
@@ -2987,6 +3090,7 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
             ticker=tk,
         )
         _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
+        _record_fmp_issue_usage("eod", _FMP_ISSUE_NO_KEY)
         _store_fmp_cache_failure("eod", tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
 
@@ -3014,10 +3118,12 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
     last_detail = ""
     for endpoint_name, url in endpoints:
         try:
+            _record_fmp_usage_event("eod", "fetch")
             resp = requests.get(url, timeout=10)
             last_status = resp.status_code
             logging.debug(f"FMP historical {endpoint_name} status {resp.status_code} para {tk}")
             raw_text = _normalize_fmp_issue_detail(resp.text)
+            response_bytes = len(resp.content or b"")
             if resp.status_code != 200:
                 if resp.status_code in (401, 402, 403, 429):
                     last_category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=raw_text) else _FMP_ISSUE_ACCESS_RESTRICTED
@@ -3030,6 +3136,7 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
             payload = resp.json()
             hist = _parse_fmp_historical_payload(payload)
             if hist:
+                _record_fmp_usage_event("eod", "ok", response_bytes=response_bytes)
                 _store_fmp_cache_success("eod", tk, hist)
                 return hist[:int(limit)] if limit else hist
             if raw_text and raw_text not in {"[]", "{}"}:
@@ -3047,6 +3154,7 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
         last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
         last_detail = f"Sin datos históricos para {safe_symbol}"
     _set_fmp_issue(tk, last_category, last_detail)
+    _record_fmp_issue_usage("eod", last_category)
     _log_fmp_issue(safe_symbol, last_category, detail=last_detail, status_code=last_status)
     _store_fmp_cache_failure("eod", tk, last_category, last_detail, status_code=last_status)
     return None
@@ -3142,6 +3250,7 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
             ticker=f"{tk}:{interval}",
         )
         _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
+        _record_fmp_issue_usage("intraday", _FMP_ISSUE_NO_KEY)
         _store_fmp_cache_failure("intraday", cache_key, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
         return None
 
@@ -3169,10 +3278,12 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
     last_detail = ""
     for endpoint_name, url in endpoints:
         try:
+            _record_fmp_usage_event("intraday", "fetch")
             resp = requests.get(url, timeout=12)
             last_status = resp.status_code
             logging.debug(f"FMP intraday {interval} {endpoint_name} status {resp.status_code} para {tk}")
             raw_text = _normalize_fmp_issue_detail(resp.text)
+            response_bytes = len(resp.content or b"")
             if resp.status_code != 200:
                 if resp.status_code in (401, 402, 403, 429):
                     last_category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=raw_text) else _FMP_ISSUE_ACCESS_RESTRICTED
@@ -3185,6 +3296,7 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
             payload = resp.json()
             hist = _parse_fmp_historical_payload(payload)
             if hist:
+                _record_fmp_usage_event("intraday", "ok", response_bytes=response_bytes)
                 _store_fmp_cache_success("intraday", cache_key, hist)
                 return hist[:int(limit)] if limit else hist
             if raw_text and raw_text not in {"[]", "{}"}:
@@ -3202,6 +3314,7 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
         last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
         last_detail = f"Sin datos intradía para {safe_symbol}"
     _set_fmp_issue(tk, last_category, last_detail)
+    _record_fmp_issue_usage("intraday", last_category)
     _log_fmp_issue(safe_symbol, last_category, detail=last_detail, status_code=last_status)
     _store_fmp_cache_failure("intraday", cache_key, last_category, last_detail, status_code=last_status)
     return None
@@ -3281,6 +3394,7 @@ def verify_1m_realtime_data(ticker):
 
 def _fetch_fmp_news(limit=10):
     if not FMP_API_KEY:
+        _record_fmp_issue_usage("news", _FMP_ISSUE_NO_KEY)
         return []
 
     all_news = []
@@ -3306,17 +3420,27 @@ def _fetch_fmp_news(limit=10):
     for ticker in symbols:
         try:
             url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
+            _record_fmp_usage_event("news", "fetch")
             resp = requests.get(url, timeout=5)
+            response_bytes = len(resp.content or b"")
             if resp.status_code == 200:
-                logging.info(f"LOG FMP [stable/stock-news {ticker}]: Status 200")
                 data = resp.json()
                 if isinstance(data, list):
+                    if data:
+                        _record_fmp_usage_event("news", "ok", response_bytes=response_bytes)
+                    else:
+                        _record_fmp_issue_usage("news", _FMP_ISSUE_SYMBOL_NOT_FOUND, response_bytes=response_bytes)
                     all_news.extend(data)
+                else:
+                    _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
             else:
+                category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 else (_FMP_ISSUE_ACCESS_RESTRICTED if resp.status_code in (401, 402, 403) else _FMP_ISSUE_UPSTREAM_ERROR)
+                _record_fmp_issue_usage("news", category, response_bytes=response_bytes)
                 logging.debug(f"FMP stock-news {ticker}: HTTP {resp.status_code}")
             if len(all_news) >= limit:
                 break
         except Exception as e:
+            _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR)
             logging.debug(f"FMP stock-news fallback error for {ticker}: {e}")
 
     unique = []
@@ -5437,6 +5561,7 @@ def _fetch_fmp_profile(ticker):
 
 def _fetch_fmp_ticker_news(ticker, limit=3):
     if not FMP_API_KEY:
+        _record_fmp_issue_usage("news", _FMP_ISSUE_NO_KEY)
         return []
 
     tk = remap_ticker(ticker)
@@ -5451,12 +5576,24 @@ def _fetch_fmp_ticker_news(ticker, limit=3):
     url = f"https://financialmodelingprep.com/stable/stock-news?symbol={urllib.parse.quote(symbol)}&limit={int(limit)}&apikey={FMP_API_KEY}"
 
     try:
+        _record_fmp_usage_event("news", "fetch")
         resp = requests.get(url, timeout=10)
+        response_bytes = len(resp.content or b"")
         if resp.status_code != 200:
+            category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 else (_FMP_ISSUE_ACCESS_RESTRICTED if resp.status_code in (401, 402, 403) else _FMP_ISSUE_UPSTREAM_ERROR)
+            _record_fmp_issue_usage("news", category, response_bytes=response_bytes)
             return []
         data = resp.json()
-        return data if isinstance(data, list) else []
+        if isinstance(data, list):
+            if data:
+                _record_fmp_usage_event("news", "ok", response_bytes=response_bytes)
+            else:
+                _record_fmp_issue_usage("news", _FMP_ISSUE_SYMBOL_NOT_FOUND, response_bytes=response_bytes)
+            return data
+        _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
+        return []
     except Exception as e:
+        _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR)
         logging.debug(f"FMP ticker news error for {tk}: {e}")
         return []
 
