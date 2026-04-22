@@ -2470,6 +2470,16 @@ def _is_fmp_bandwidth_limited(ticker=None, detail=None):
     return any(marker in text for marker in markers)
 
 
+def _get_fmp_user_issue_text(ticker, default_message="No pude obtener datos desde FMP."):
+    tk = remap_ticker(ticker)
+    detail = str(_FMP_LAST_ERROR.get(tk, "") or "").strip()
+    if _is_fmp_bandwidth_limited(tk, detail=detail):
+        return "FMP alcanzó el límite de ancho de banda del plan. La API key está cargada, pero la cuota actual no permite más consultas."
+    if detail:
+        return detail
+    return default_message
+
+
 def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
     global _FMP_LAST_ERROR
@@ -6959,8 +6969,10 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     price = _safe_float(quote.get("price") or ((tech or {}).get("price")))
     if price <= 0:
         fmp_sym = _get_fmp_symbol(tk)
-        diag = _escape_html(_FMP_LAST_ERROR.get(tk, "Sin información de error"))
+        issue_text = _get_fmp_user_issue_text(tk, "Sin información de error")
+        diag = _escape_html(issue_text)
         key_len = len(FMP_API_KEY) if FMP_API_KEY else 0
+        footer_text = "FMP necesita más ancho de banda o debes esperar al reinicio de cuota." if _is_fmp_bandwidth_limited(tk, detail=issue_text) else "Revisa FMP_API_KEY o el símbolo del activo."
         return _make_card(
             f"ANÁLISIS FMP | {display_name}",
             [
@@ -6971,7 +6983,7 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
                 "🛡️ El análisis se bloqueó para evitar inventar datos.",
             ],
             icon="📉",
-            footer="Revisa FMP_API_KEY o el símbolo del activo."
+            footer=footer_text
         )
 
     profile = _fetch_fmp_profile(tk) or {}
@@ -8439,7 +8451,8 @@ def handle_text(message):
 
              validation = get_safe_ticker_price(tk)
              if validation is None:
-                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", ["⚠️ Activo no encontrado en FMP. No se agregó."], icon="🗂️"), parse_mode="HTML")
+                 issue_text = _get_fmp_user_issue_text(tk, "Activo no encontrado en FMP. No se agregó.")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"⚠️ {_escape_html(issue_text)}"], icon="🗂️"), parse_mode="HTML")
                  return
              res = add_ticker(tk)
              if res == "DB_ERROR":
@@ -8477,7 +8490,8 @@ def handle_text(message):
                     parse_mode="HTML"
                 )
             else:
-                bot.reply_to(message, _make_card("CAPITAL REGISTRADO", [f"❌ No pude fijar el precio real de {display_name} ahora mismo."], icon="💰"), parse_mode="HTML")
+                issue_text = _get_fmp_user_issue_text(tk, f"No pude fijar el precio real de {display_name} ahora mismo.")
+                bot.reply_to(message, _make_card("CAPITAL REGISTRADO", [f"❌ {_escape_html(issue_text)}"], icon="💰"), parse_mode="HTML")
         return
 
     if re.search(r'\bVENDI\b', intent_text):
