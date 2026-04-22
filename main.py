@@ -264,6 +264,7 @@ BOT_LOCK_STALE_SECONDS = int(os.environ.get("BOT_LOCK_STALE_SECONDS", "20"))
 BOT_LOCK_HEARTBEAT_SECONDS = int(os.environ.get("BOT_LOCK_HEARTBEAT_SECONDS", "10"))
 BOT_LOCK_GUARD_SECONDS = int(os.environ.get("BOT_LOCK_GUARD_SECONDS", "5"))
 BOT_LOCK_FORCE_AFTER_SECONDS = int(os.environ.get("BOT_LOCK_FORCE_AFTER_SECONDS", "12"))
+BOT_BOOT_GRACE_SECONDS = int(os.environ.get("BOT_BOOT_GRACE_SECONDS", "15"))
 _BOT_LEADER_ACTIVE = False
 _BOT_RUNTIME_STAGE = "boot"
 _BOT_RUNTIME_NOTES = "inicio"
@@ -8819,10 +8820,11 @@ def monitor_proteccion_activos():
 def boot_smc_levels_once():
     logging.info("Arrancando Centinela Quirúrgico (30s)...")
 
-    # PASO CRÃTICO: Restaurar datos ANTES de hacer cualquier otra cosa
-    restore_state_from_telegram()
-
     tkrs = get_tracked_tickers()
+    if not tkrs:
+        logging.info("BOOT SMC: radar vacío al arrancar, intentando restauración inicial.")
+        restore_state_from_telegram()
+        tkrs = get_tracked_tickers()
     logging.info(f"Activos cargados en radar: {len(tkrs)} â†’ {tkrs}")
 
     for tk in tkrs:
@@ -8841,6 +8843,9 @@ def boot_smc_levels_once():
 
 def background_loop_proactivo():
     """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÃAS)"""
+    if BOT_BOOT_GRACE_SECONDS > 0:
+        logging.info(f"BOOT LOOP: esperando {BOT_BOOT_GRACE_SECONDS}s antes del bootstrap pesado para priorizar respuesta inicial del bot.")
+        time.sleep(BOT_BOOT_GRACE_SECONDS)
     boot_smc_levels_once()
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
     protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
