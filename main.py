@@ -8418,38 +8418,6 @@ def handle_text(message):
         _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
         return
 
-    # === BOTONES MENÚ RÃPIDO ===
-    if normalized_text in {"🌍 geopolítica", "🛡 geopolítica", "geopolítica"}:
-        bot.reply_to(message, "🌍 Generando Reporte Estratégico GÉNESIS...")
-        _send_geopolitics_report(message.chat.id)
-        return
-
-    if normalized_text in {"🐋 radar de ballenas", "radar de ballenas"}:
-        bot.reply_to(message, "🐋 Activando Radar de Ballenas...")
-        _send_super_radar_report(message.chat.id)
-        return
-
-    if normalized_text in {"🦅 niveles smc", "niveles smc"}:
-        bot.reply_to(message, "🦅 Forzando datos frescos y analizando niveles SMC...")
-        _send_smc_levels_report(message.chat.id)
-        return
-
-    if normalized_text in {"💼 mi cartera", "💼 mi wallet", "💰 mi cartera", "💰 mi wallet", "mi cartera", "mi wallet"}:
-        bot.reply_to(message, "💼 Extrayendo datos robustos y valuando métricas en vivo...")
-        _send_wallet_status(message.chat.id)
-        return
-
-    # === EXPRESIONES REGULARES INTELIGENTES NLP ===
-    if re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text):
-        match = re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text)
-        if match:
-            tk = remap_ticker(match.group(1))
-            tf = _extract_analysis_timeframe(intent_text, default="1D")
-            display_name = get_display_name(tk)
-            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name} con gráfico táctico en {tf}...")
-            _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
-        return
-
     if re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text):
         match = re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text)
         if match:
