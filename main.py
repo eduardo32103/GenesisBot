@@ -2453,6 +2453,23 @@ def _get_fmp_symbol(tk):
 
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
+def _is_fmp_bandwidth_limited(ticker=None, detail=None):
+    tk = remap_ticker(ticker) if ticker else None
+    raw_detail = detail if detail is not None else (_FMP_LAST_ERROR.get(tk, "") if tk else "")
+    text = str(raw_detail or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "429",
+        "bandwidth limit",
+        "limit reach",
+        "please upgrade your plan",
+        "too many requests",
+        "rate limit",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
     global _FMP_LAST_ERROR
@@ -2572,7 +2589,12 @@ def _fetch_fmp_quote(tk):
             elif resp.status_code in (401, 402, 403, 429):
                 detail = raw_text or f"HTTP {resp.status_code}"
                 _FMP_LAST_ERROR[tk] = f"{resp.status_code} - {detail}"
-                logging.error(f"FMP: {resp.status_code} para {symbol}. Verifica FMP_API_KEY en Railway.")
+                if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail):
+                    logging.error(f"FMP: {resp.status_code} para {symbol}. Límite/cuota del plan alcanzado.")
+                elif resp.status_code in (401, 402, 403):
+                    logging.error(f"FMP: {resp.status_code} para {symbol}. Revisa FMP_API_KEY o permisos del plan.")
+                else:
+                    logging.error(f"FMP: {resp.status_code} para {symbol}.")
                 return None
             else:
                 if raw_text:
@@ -4614,6 +4636,23 @@ def _is_winner_whale_setup(price, intra, topol=None, analysis=None):
         return False, "Relación beneficio/riesgo insuficiente."
 
     return True, "Compra institucional en zona táctica de soporte."
+def _get_cached_smc_analysis(ticker):
+    tk = remap_ticker(ticker)
+    cached = LAST_KNOWN_ANALYSIS.get(tk)
+    if not isinstance(cached, dict) or not cached:
+        return None
+
+    snapshot = dict(cached)
+    live_cache = LAST_KNOWN_PRICES.get(tk)
+    if isinstance(live_cache, dict):
+        cached_price = _safe_float(live_cache.get('price'), _safe_float(snapshot.get('price'), 0.0))
+        if cached_price > 0:
+            snapshot['price'] = cached_price
+    snapshot['cache_only'] = True
+    snapshot['cache_reason'] = _FMP_LAST_ERROR.get(tk, "")
+    return snapshot
+
+
 def fetch_and_analyze_stock(ticker):
     """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
     clean_ticker = str(ticker).strip().upper()
@@ -4622,7 +4661,15 @@ def fetch_and_analyze_stock(ticker):
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
+            cached_analysis = _get_cached_smc_analysis(tk)
+            if cached_analysis:
+                logging.warning(
+                    f"SMC {tk}: FMP no disponible. Usando último análisis en caché. Detalle: {_FMP_LAST_ERROR.get(tk, 'Sin detalle')}"
+                )
+                return cached_analysis
             print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
+            if _is_fmp_bandwidth_limited(tk):
+                return "\u26a0\ufe0f FMP alcanz\u00f3 el l\u00edmite de ancho de banda del plan."
             return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
             
         def _get_fallback_smc():
@@ -4796,7 +4843,18 @@ def fetch_and_analyze_stock(ticker):
 
 def update_smc_memory(ticker, analysis):
     tk = remap_ticker(ticker)
-    SMC_LEVELS_MEMORY[tk] = {'sup': analysis['smc_sup'], 'res': analysis['smc_res'], 'update_date': datetime.now()}
+    if not isinstance(analysis, dict):
+        logging.debug(f"SMC {tk}: se omite memoria porque el análisis no es dict.")
+        return False
+
+    support = _safe_float(analysis.get('smc_sup'), 0.0)
+    resistance = _safe_float(analysis.get('smc_res'), 0.0)
+    if support <= 0 or resistance <= 0:
+        logging.debug(f"SMC {tk}: se omite memoria por niveles inválidos. sup={support} res={resistance}")
+        return False
+
+    SMC_LEVELS_MEMORY[tk] = {'sup': support, 'res': resistance, 'update_date': datetime.now()}
+    return True
 
 def analyze_breakout_gpt(ticker, level_type, price):
     tk = remap_ticker(ticker)
@@ -7636,8 +7694,14 @@ def cmd_start(message):
 
     bot.send_message(message.chat.id, "🔄 Inicializando Base de Operaciones...", reply_markup=reply_kbd)
 
-    restore_state_from_telegram()
-    tkrs = get_tracked_tickers()
+    tkrs = []
+    startup_note = None
+    try:
+        restore_state_from_telegram()
+        tkrs = get_tracked_tickers()
+    except Exception as e:
+        logging.exception(f"/start: error preparando contexto inicial: {e}")
+        startup_note = "La restauración sigue en curso; el bot responderá aunque los datos tarden un poco."
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -7656,6 +7720,7 @@ def cmd_start(message):
             f"📊 <b>Radar activo:</b> {len(tkrs)} activos",
             "🛡️ <b>Persistencia:</b> cartera protegida y lista para operar",
             "🎛️ Usa los botones de abajo o el panel flotante para navegar",
+            startup_note,
         ],
         icon="🧠"
     )
@@ -8268,6 +8333,10 @@ def _send_smc_levels_report(chat_id):
         analysis = LAST_KNOWN_ANALYSIS.get(tk)
         if not analysis:
             analysis = fetch_and_analyze_stock(tk)
+        if not isinstance(analysis, dict):
+            cached_analysis = _get_cached_smc_analysis(tk)
+            if cached_analysis:
+                analysis = cached_analysis
         d_name = get_display_name(tk)
 
         if analysis and isinstance(analysis, dict):
@@ -8294,6 +8363,8 @@ def _send_smc_levels_report(chat_id):
                 f"• SL: ${fmt_price(analysis.get('stop_loss', 0))}",
                 f"⚖️ <b>Veredicto:</b> <b>{veredicto}</b>",
             ])
+            if analysis.get('cache_only'):
+                report_lines.append("• Fuente: caché local. FMP está limitado temporalmente.")
         elif isinstance(analysis, str):
             report_lines.extend(["", f"🏦 <b>{d_name}</b>", f"• {analysis}"])
         else:
@@ -8782,7 +8853,9 @@ def boot_smc_levels_once():
 
     for tk in tkrs:
         val = fetch_and_analyze_stock(tk)
-        if val: update_smc_memory(tk, val)
+        if isinstance(val, dict):
+            LAST_KNOWN_ANALYSIS[tk] = val
+            update_smc_memory(tk, val)
 
     # PASO INICIAL: Poblar contexto geopolítico al arrancar
     try:
