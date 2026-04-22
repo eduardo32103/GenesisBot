@@ -265,13 +265,34 @@ BOT_LOCK_HEARTBEAT_SECONDS = int(os.environ.get("BOT_LOCK_HEARTBEAT_SECONDS", "1
 BOT_LOCK_GUARD_SECONDS = int(os.environ.get("BOT_LOCK_GUARD_SECONDS", "5"))
 BOT_LOCK_FORCE_AFTER_SECONDS = int(os.environ.get("BOT_LOCK_FORCE_AFTER_SECONDS", "12"))
 BOT_BOOT_GRACE_SECONDS = int(os.environ.get("BOT_BOOT_GRACE_SECONDS", "15"))
+BOT_BOOT_LIGHT_CYCLES = int(os.environ.get("BOT_BOOT_LIGHT_CYCLES", "2"))
+BOT_BOOT_WARMUP_TICKER_LIMIT = int(os.environ.get("BOT_BOOT_WARMUP_TICKER_LIMIT", "4"))
+BOT_BOOT_PHASE_PAUSE_SECONDS = float(os.environ.get("BOT_BOOT_PHASE_PAUSE_SECONDS", "1.0"))
 _BOT_LEADER_ACTIVE = False
 _BOT_RUNTIME_STAGE = "boot"
 _BOT_RUNTIME_NOTES = "inicio"
+_BOT_BOOT_WARMUP_STAGE = "idle"
 _LAST_LOCK_DIAG = {"holder": None, "logged_at": 0.0}
 
 _db_local = threading.local()
 _db_bootstrap_lock = threading.Lock()
+
+
+def _set_boot_warmup_stage(stage, note=None, update_runtime=False):
+    global _BOT_BOOT_WARMUP_STAGE
+    _BOT_BOOT_WARMUP_STAGE = str(stage or "idle").strip().lower() or "idle"
+    if note:
+        logging.info(f"BOOT PHASE: {_BOT_BOOT_WARMUP_STAGE} | {note}")
+    else:
+        logging.info(f"BOOT PHASE: {_BOT_BOOT_WARMUP_STAGE}")
+
+    if update_runtime:
+        try:
+            runtime_stage = f"boot_{_BOT_BOOT_WARMUP_STAGE}"[:64]
+            runtime_notes = str(note or _BOT_BOOT_WARMUP_STAGE)[:240]
+            _update_bot_runtime_lock(stage=runtime_stage, notes=runtime_notes, heartbeat=False)
+        except Exception:
+            pass
 
 def get_db_connection():
     conn = getattr(_db_local, "conn", None)
@@ -8335,9 +8356,13 @@ def cmd_start(message):
     try:
         tkrs = get_tracked_tickers()
         if not tkrs:
-            logging.info("/start: radar vacío, intentando restauración bajo demanda.")
-            restore_state_from_telegram()
-            tkrs = get_tracked_tickers()
+            if _BOT_BOOT_WARMUP_STAGE not in {"idle", "ready"}:
+                logging.info(f"/start: warmup activo ({_BOT_BOOT_WARMUP_STAGE}), omitiendo restauración bajo demanda para responder rápido.")
+                startup_note = "El warmup inicial sigue en curso; el radar terminará de poblarse en breve sin bloquear el bot."
+            else:
+                logging.info("/start: radar vacío, intentando restauración bajo demanda.")
+                restore_state_from_telegram()
+                tkrs = get_tracked_tickers()
     except Exception as e:
         logging.exception(f"/start: error preparando contexto inicial: {e}")
         startup_note = "La restauración sigue en curso; el bot responderá aunque los datos tarden un poco."
@@ -9438,34 +9463,46 @@ def monitor_proteccion_activos():
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
     logging.info("Arrancando Centinela Quirúrgico (30s)...")
-
+    _set_boot_warmup_stage("restore", "verificando radar inicial", update_runtime=True)
     tkrs = get_tracked_tickers()
     if not tkrs:
         logging.info("BOOT SMC: radar vacío al arrancar, intentando restauración inicial.")
         restore_state_from_telegram()
         tkrs = get_tracked_tickers()
     logging.info(f"Activos cargados en radar: {len(tkrs)} â†’ {tkrs}")
+    warmup_limit = max(int(BOT_BOOT_WARMUP_TICKER_LIMIT), 0)
+    warmup_tickers = tkrs if warmup_limit == 0 else tkrs[:warmup_limit]
+    if warmup_tickers:
+        _set_boot_warmup_stage("smc_warmup", f"precargando {len(warmup_tickers)}/{len(tkrs)} tickers", update_runtime=True)
+        for idx, tk in enumerate(warmup_tickers, start=1):
+            val = fetch_and_analyze_stock(tk)
+            if isinstance(val, dict):
+                LAST_KNOWN_ANALYSIS[tk] = val
+                update_smc_memory(tk, val)
+            if BOT_BOOT_PHASE_PAUSE_SECONDS > 0 and idx < len(warmup_tickers):
+                time.sleep(BOT_BOOT_PHASE_PAUSE_SECONDS)
+        if len(tkrs) > len(warmup_tickers):
+            logging.info(f"BOOT PHASE: {len(tkrs) - len(warmup_tickers)} tickers restantes se calentarán gradualmente en el loop.")
+    else:
+        logging.info("BOOT PHASE: no hay tickers para warmup SMC inicial.")
 
-    for tk in tkrs:
-        val = fetch_and_analyze_stock(tk)
-        if isinstance(val, dict):
-            LAST_KNOWN_ANALYSIS[tk] = val
-            update_smc_memory(tk, val)
-
-    # PASO INICIAL: Poblar contexto geopolítico al arrancar
+    _set_boot_warmup_stage("geo_warmup", "precargando contexto geopolítico", update_runtime=True)
     try:
         print("DEBUG BOOT: Inicializando contexto geopolitico...")
         genesis_strategic_report_v2(manual=False)
         print(f"DEBUG BOOT: Contexto listo. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
     except Exception as e:
         print(f"DEBUG BOOT: Error inicializando contexto geo: {e}")
+    finally:
+        _set_boot_warmup_stage("ready", "warmup inicial completado", update_runtime=True)
 
 def background_loop_proactivo():
     """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÃAS)"""
     if BOT_BOOT_GRACE_SECONDS > 0:
-        logging.info(f"BOOT LOOP: esperando {BOT_BOOT_GRACE_SECONDS}s antes del bootstrap pesado para priorizar respuesta inicial del bot.")
+        _set_boot_warmup_stage("grace", f"esperando {BOT_BOOT_GRACE_SECONDS}s antes del bootstrap pesado", update_runtime=True)
         time.sleep(BOT_BOOT_GRACE_SECONDS)
     boot_smc_levels_once()
+    boot_light_cycles_remaining = max(int(BOT_BOOT_LIGHT_CYCLES), 0)
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
     protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
     geo_refresh_counter = 0  # Contador para refrescar contexto geopolítico
@@ -9494,6 +9531,18 @@ def background_loop_proactivo():
             # === HEARTBEAT: log cada ciclo ===
             tracked = get_tracked_tickers()
             print(f"DEBUG HEARTBEAT [{now.strftime('%H:%M:%S')}]: Ciclo #{loop_counter} | {len(tracked)} activos en radar | Whale memory: {len(WHALE_MEMORY)}")
+
+            if boot_light_cycles_remaining > 0:
+                current_light_cycle = (max(int(BOT_BOOT_LIGHT_CYCLES), 0) - boot_light_cycles_remaining) + 1
+                logging.info(
+                    "BOOT LOOP: ciclo liviano %s/%s activo; difiriendo escaneos pesados para estabilizar el arranque.",
+                    current_light_cycle,
+                    max(int(BOT_BOOT_LIGHT_CYCLES), 0),
+                )
+                boot_light_cycles_remaining -= 1
+                if boot_light_cycles_remaining == 0:
+                    _set_boot_warmup_stage("ready", "loop operativo completo activado", update_runtime=True)
+                continue
 
             raw_news = check_geopolitical_news_v2()
             unique_news = []
@@ -10181,9 +10230,6 @@ def main():
     _wait_for_bot_leader_lock()
     _update_bot_runtime_lock(stage="boot", notes="lock adquirido", heartbeat=False)
 
-    t = threading.Thread(target=background_loop_proactivo, daemon=True)
-    t.start()
-    
     # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
     print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
     try:
@@ -10198,6 +10244,9 @@ def main():
     _log_telegram_boot_diagnostics()
     _update_bot_runtime_lock(stage="boot", notes="diagnóstico telegram completado", heartbeat=False)
     _start_bot_leader_heartbeat()
+    logging.info("BOOT PHASE: polling listo; lanzando background proactivo tras saneamiento inicial de Telegram.")
+    t = threading.Thread(target=background_loop_proactivo, daemon=True)
+    t.start()
     print("DEBUG BOOT: Iniciando Telegram polling...")
     print(">>> SISTEMA GENESIS ACTIVO <<<")
     while True:
