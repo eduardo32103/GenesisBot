@@ -7693,6 +7693,14 @@ def cmd_start(message):
     logging.info(f"Update recibido | comando=/start | chat={message.chat.id} | from={getattr(getattr(message, 'from_user', None), 'id', '?')}")
     _update_bot_runtime_lock(stage="processing_update", notes=f"/start chat={message.chat.id}", heartbeat=True)
 
+    def _send_start_ready(text, reply_markup):
+        try:
+            bot.reply_to(message, text, reply_markup=reply_markup, parse_mode="HTML")
+            return
+        except Exception as exc:
+            logging.exception(f"/start: fallo reply_to final: {exc}")
+        bot.send_message(message.chat.id, text, reply_markup=reply_markup, parse_mode="HTML")
+
     from telebot.types import ReplyKeyboardMarkup, KeyboardButton
     reply_kbd = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     reply_kbd.add(
@@ -7709,8 +7717,11 @@ def cmd_start(message):
     tkrs = []
     startup_note = None
     try:
-        restore_state_from_telegram()
         tkrs = get_tracked_tickers()
+        if not tkrs:
+            logging.info("/start: radar vacío, intentando restauración bajo demanda.")
+            restore_state_from_telegram()
+            tkrs = get_tracked_tickers()
     except Exception as e:
         logging.exception(f"/start: error preparando contexto inicial: {e}")
         startup_note = "La restauración sigue en curso; el bot responderá aunque los datos tarden un poco."
@@ -7736,7 +7747,7 @@ def cmd_start(message):
         ],
         icon="🧠"
     )
-    bot.reply_to(message, reply_text, reply_markup=markup, parse_mode="HTML")
+    _send_start_ready(reply_text, markup)
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
     """Comando oculto para resetear la ganancia mensual a $0.00"""
