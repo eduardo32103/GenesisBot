@@ -66,6 +66,9 @@ const genesisTickerStopwords = new Set([
   "DATOS", "DICE", "DICEN", "DIRECTO", "DIRECTOS", "DISPONIBLES", "OPINA", "OPINAS",
   "OPINION", "COMPARA", "COMPARAR", "CONTRA", "VERSUS", "MUNDO", "MACRO", "GRANDE",
   "AHORA", "VIENDO", "REVISA", "REVISAR",
+  "ES", "BUENA", "BUEN", "BUENO", "MALA", "MALO", "IDEA", "COMPRAR", "COMPRA", "COMPRO",
+  "COMPRAS", "VENDER", "VENTA", "VENDO", "VENDES", "VALE", "PENA", "DEBERIA", "DEBO",
+  "PUEDO", "PUEDES", "SERIA", "MEJOR", "PEOR",
 ]);
 
 function sanitizeShellCopy(value) {
@@ -198,13 +201,13 @@ function escapeHtml(value) {
 
 function formatHeartbeatAge(seconds) {
   if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
-    return "Sin heartbeat confirmado";
+    return "Sin senal reciente confirmada";
   }
-  return `${seconds}s desde el ultimo heartbeat`;
+  return `${seconds}s desde la ultima senal`;
 }
 
 function formatIso(value) {
-  if (!value) return "Sin timestamp";
+  if (!value) return "Sin fecha confirmada";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
@@ -473,9 +476,13 @@ function createGenesisFallbackBlocks(reason = "snapshots") {
   return {
     summary: copy.summary,
     executive_read: copy.executive,
+    decision: "No concluyente",
     main_signals: ["Contexto visible del panel conservado.", "Sin datos nuevos confirmados."],
     risks: [copy.risk],
     money_flow: "Sin ballena identificada; confirmar entidad y monto antes de concluir.",
+    macro_news: "Sin contexto macro/noticias activo.",
+    scenarios: ["Alcista: requiere confirmacion.", "Neutral: mantener vigilancia.", "Bajista: evitar si aumenta el riesgo."],
+    missing_evidence: ["datos confirmados"],
     reliability: "no concluyente",
     next_step: copy.next,
   };
@@ -512,9 +519,13 @@ function normalizeGenesisBlocks(blocks, reason = "payload_incomplete") {
   return {
     summary: humanizeGenesisCopy(blocks.summary, fallback.summary),
     executive_read: humanizeGenesisCopy(blocks.executive_read, fallback.executive_read),
+    decision: humanizeGenesisCopy(blocks.decision, fallback.decision),
     main_signals: normalizeGenesisList(blocks.main_signals, fallback.main_signals[0]),
     risks: normalizeGenesisList(blocks.risks, fallback.risks[0]),
     money_flow: humanizeGenesisCopy(blocks.money_flow, fallback.money_flow),
+    macro_news: humanizeGenesisCopy(blocks.macro_news, fallback.macro_news),
+    scenarios: normalizeGenesisList(blocks.scenarios, fallback.scenarios[0]),
+    missing_evidence: normalizeGenesisList(blocks.missing_evidence, fallback.missing_evidence[0]),
     reliability: humanizeGenesisCopy(blocks.reliability, fallback.reliability) || "no concluyente",
     next_step: humanizeGenesisCopy(blocks.next_step, fallback.next_step),
   };
@@ -554,6 +565,10 @@ function renderGenesisBlocks(blocks) {
         <p>${escapeHtml(blocks.executive_read || "Sin lectura ejecutiva suficiente.")}</p>
       </section>
       <section>
+        <span>Comprar, esperar o evitar</span>
+        <p>${escapeHtml(blocks.decision || "No concluyente")}</p>
+      </section>
+      <section>
         <span>Que apoya</span>
         ${renderList(signals, "Sin senal suficiente en lecturas guardadas actuales.")}
       </section>
@@ -566,8 +581,20 @@ function renderGenesisBlocks(blocks) {
         <p>${escapeHtml(blocks.money_flow || "Sin ballena identificada en esta lectura.")}</p>
       </section>
       <section>
+        <span>Noticias / Macro</span>
+        <p>${escapeHtml(blocks.macro_news || "Sin contexto macro/noticias activo.")}</p>
+      </section>
+      <section>
+        <span>Escenarios</span>
+        ${renderList(blocks.scenarios || [], "Sin escenarios suficientes.")}
+      </section>
+      <section>
         <span>Confiabilidad</span>
         <p>${escapeHtml(blocks.reliability || "no concluyente")}</p>
+      </section>
+      <section>
+        <span>Falta confirmar</span>
+        ${renderList(blocks.missing_evidence || [], "Falta evidencia suficiente.")}
       </section>
       <section>
         <span>Siguiente paso</span>
@@ -1585,7 +1612,7 @@ function renderMoneyFlowError(message) {
   setText("money-flow-cause-count", "0");
   setTokenValue("money-flow-detection-status", "Lectura limitada", "state-degraded");
   setTokenValue("money-flow-causal-status", "Sin entidad", "state-degraded");
-  setText("money-flow-table-note", "No pude cargar la lectura de flujo desde el endpoint local.");
+  setText("money-flow-table-note", "No pude cargar la lectura de flujo desde el panel local.");
 
   const tableBody = document.getElementById("money-flow-table-body");
   if (tableBody) {
@@ -1657,23 +1684,23 @@ function renderOperationalHealth(payload) {
 
   setStateToken("metric-system-state", formatSystemStateToken(system));
   setText("metric-system-summary", sanitizeShellCopy(system.summary || "Sin resumen operativo"));
-  setText("metric-boot-stage", bot.boot_stage || "unknown");
-  setText("metric-runtime-note", bot.runtime_note || "Sin nota de runtime");
+  setText("metric-boot-stage", humanizeDashboardCopy(bot.boot_stage || "Sin dato"));
+  setText("metric-runtime-note", humanizeDashboardCopy(bot.runtime_note || "Sin nota del sistema local"));
   setText("metric-last-update", system.last_update || "Sin actualizacion");
   setText("metric-heartbeat-age", formatHeartbeatAge(bot.heartbeat_age_seconds));
   setText("metric-radar-size", `${radar.size ?? 0}`);
 
   setText("detail-bot-status", bot.configured ? "Configurado y visible para el dashboard." : "Modo local activo.");
   setText("detail-leader", provider?.note ? "Datos del panel disponibles." : "Panel operativo.");
-  setText("detail-boot-stage", bot.boot_stage || "unknown");
-  setText("detail-last-update", system.last_update || "Sin timestamp");
+  setText("detail-boot-stage", humanizeDashboardCopy(bot.boot_stage || "Sin dato"));
+  setText("detail-last-update", system.last_update || "Sin fecha confirmada");
   setText("detail-radar", `${radar.size ?? 0} activos vigilados.`);
   setText("provider-note", provider.note || "Sin nota de proveedor.");
 }
 
 function renderOperationalHealthError(message) {
   setText("status-system-label", "Sistema");
-  setText("status-system-value", "Sin conexion al endpoint local");
+  setText("status-system-value", "Sin conexion al panel local");
   setStatusPillState("status-pill-system", "degraded");
   setText("status-leader-label", "Datos");
   setText("status-leader-value", "Lectura limitada");
@@ -1682,16 +1709,16 @@ function renderOperationalHealthError(message) {
   setStateToken("metric-system-state", "offline");
   setText("metric-system-summary", message);
   setText("metric-boot-stage", "sin datos");
-  setText("metric-runtime-note", "El shell sigue navegable sin backend.");
+  setText("metric-runtime-note", "El panel sigue navegable con lectura limitada.");
   setText("metric-last-update", "Sin datos");
-  setText("metric-heartbeat-age", "Sin heartbeat confirmado");
+  setText("metric-heartbeat-age", "Sin senal reciente confirmada");
   setText("metric-radar-size", "0");
   setText("detail-bot-status", message);
   setText("detail-leader", "Sin datos");
   setText("detail-boot-stage", "Sin datos");
   setText("detail-last-update", "Sin datos");
   setText("detail-radar", "Sin datos");
-  setText("provider-note", "El shell del dashboard sigue disponible aunque el endpoint local no este activo.");
+  setText("provider-note", "El panel sigue disponible aunque la lectura local no este activa.");
 }
 
 function renderRadarSnapshot(payload) {
@@ -1705,7 +1732,7 @@ function renderRadarSnapshot(payload) {
   setText("radar-tracked-count", String(summary.tracked_count ?? 0));
   setText("radar-investment-count", String(summary.investment_count ?? 0));
   setText("radar-reference-count", String(summary.reference_count ?? 0));
-  setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin timestamp");
+  setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin fecha confirmada");
   setText("radar-table-note", "Lista simple de cartera/watchlist. Abre una ficha para ver la lectura tactica completa.");
 
   if (tickerList) {
@@ -1767,7 +1794,7 @@ function renderRadarSnapshotError(message) {
   setText("radar-investment-count", "0");
   setText("radar-reference-count", "0");
   setText("radar-last-update", "Sin datos");
-  setText("radar-table-note", "No pude cargar el snapshot de radar desde el endpoint local.");
+  setText("radar-table-note", "No pude cargar la lectura de Radar / Cartera desde el panel local.");
 
   const tickerList = document.getElementById("radar-ticker-list");
   if (tickerList) {
@@ -1796,7 +1823,7 @@ function renderAlertsSnapshot(payload) {
   setText("alerts-avg-score", formatSignedScore(summary.avg_score));
   setText("alerts-win-rate", formatPercent(summary.win_rate));
   setText("alerts-pass-rate", formatPercent(summary.pass_rate));
-  setText("alerts-list-note", `Ventana: ${summary.window_days ?? 0} dias. Origen: ${summary.data_origin || "unknown"}. Update: ${summary.last_update ? formatIso(summary.last_update) : "sin timestamp"}.`);
+  setText("alerts-list-note", `Ventana: ${summary.window_days ?? 0} dias. Fuente: ${humanizeDashboardCopy(summary.data_origin || "Sin dato")}. Ultima revision: ${summary.last_update ? formatIso(summary.last_update) : "sin fecha confirmada"}.`);
 
   if (!recentList) return;
 
@@ -1851,7 +1878,7 @@ function renderAlertsSnapshotError(message) {
   setText("alerts-avg-score", "N/D");
   setText("alerts-win-rate", "N/D");
   setText("alerts-pass-rate", "N/D");
-  setText("alerts-list-note", "No pude cargar el snapshot de alertas desde el endpoint local.");
+  setText("alerts-list-note", "No pude cargar la lectura de alertas desde el panel local.");
 
   const recentList = document.getElementById("alerts-recent-list");
   if (recentList) {
@@ -1870,15 +1897,15 @@ function renderDependenciesSnapshot(payload) {
   const lastIncident = payload.last_incident || {};
 
   setText("dependencies-summary-note", provider.note || "Sin nota de proveedor.");
-  setStateToken("dependencies-status", provider.status || "DEGRADED");
+  setStateToken("dependencies-status", provider.status || "Datos parciales");
   setText("dependencies-cooldown-active", String(signals.cooldown_active ?? 0));
   setText("dependencies-cache-hit-total", String(signals.cache_hit ?? 0));
   setText("dependencies-quota-total", String(signals.quota ?? 0));
   setText("dependencies-access-total", String(signals.access ?? 0));
-  setText("dependencies-last-snapshot", payload.generated_at ? formatIso(payload.generated_at) : "Sin timestamp");
+  setText("dependencies-last-snapshot", payload.generated_at ? formatIso(payload.generated_at) : "Sin fecha confirmada");
   setText(
     "dependencies-endpoint-note",
-    `Origen: ${(payload.meta || {}).source || "unknown"}. Ventana de resumen: ${provider.summary_window_seconds ?? 0}s. El dashboard no dispara consultas nuevas.`
+    `Fuente: ${humanizeDashboardCopy((payload.meta || {}).source || "Sin dato")}. Ventana de resumen: ${provider.summary_window_seconds ?? 0}s. El dashboard no dispara consultas nuevas.`
   );
 
   const signalList = document.getElementById("dependencies-signal-list");
@@ -1927,13 +1954,13 @@ function renderDependenciesSnapshot(payload) {
 
 function renderDependenciesSnapshotError(message) {
   setText("dependencies-summary-note", message);
-  setStateToken("dependencies-status", "DEGRADED");
+  setStateToken("dependencies-status", "Datos parciales");
   setText("dependencies-cooldown-active", "0");
   setText("dependencies-cache-hit-total", "0");
   setText("dependencies-quota-total", "0");
   setText("dependencies-access-total", "0");
   setText("dependencies-last-snapshot", "Sin datos");
-  setText("dependencies-endpoint-note", "No pude cargar el estado de fuentes desde el endpoint local.");
+  setText("dependencies-endpoint-note", "No pude cargar el estado de fuentes desde el panel local.");
   setText("dependencies-incident-note", message);
 
   const signalList = document.getElementById("dependencies-signal-list");
@@ -1981,7 +2008,7 @@ function renderMacroSnapshot(payload) {
   setText("macro-bias-label", macro.bias_label || "macro mixto");
   setText("macro-sentiment-label", `${sentiment.icon || "N/D"} ${sentiment.label || "Neutral"}`);
   setText("macro-confidence", macro.confidence ? `${macro.confidence}%` : "N/D");
-  setText("macro-last-update", macro.last_update ? formatIso(macro.last_update) : "Sin timestamp");
+  setText("macro-last-update", macro.last_update ? formatIso(macro.last_update) : "Sin fecha confirmada");
   setText("macro-sensitive-count", String(sensitive.length));
   setText("macro-high-risk-count", String(highRisk.length));
   setText("macro-dominant-risk-note", macro.dominant_risk || macro.summary || "Sin lectura macro persistida todavía.");
@@ -2029,9 +2056,9 @@ function renderActivitySnapshot(payload) {
   setText("activity-total-events", String(items.length));
   setText("activity-error-count", String(errorCount));
   setText("activity-warning-count", String(warningCount));
-  setText("activity-last-update", lastEvent && lastEvent.occurred_at ? formatIso(lastEvent.occurred_at) : "Sin timestamp");
-  setText("activity-source-label", `${(payload.meta || {}).activity_source || "unknown"}`);
-  setText("activity-event-note", `Origen: ${(payload.meta || {}).activity_source || "unknown"}. La vista resume solo eventos utiles del sistema local.`);
+  setText("activity-last-update", lastEvent && lastEvent.occurred_at ? formatIso(lastEvent.occurred_at) : "Sin fecha confirmada");
+  setText("activity-source-label", humanizeDashboardCopy((payload.meta || {}).activity_source || "Sin dato"));
+  setText("activity-event-note", `Fuente: ${humanizeDashboardCopy((payload.meta || {}).activity_source || "Sin dato")}. La vista resume solo eventos utiles del sistema local.`);
 
   const eventList = document.getElementById("activity-event-list");
   if (!eventList) return;

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.dashboard.get_alerts_snapshot import get_alerts_snapshot
+from services.dashboard.get_asset_decision_packet import get_asset_decision_packet
 from services.dashboard.get_executive_queue_snapshot import get_executive_queue_snapshot
 from services.dashboard.get_fmp_dependencies_snapshot import get_fmp_dependencies_snapshot
 from services.dashboard.get_macro_activity_snapshot import get_macro_activity_snapshot
@@ -75,6 +76,30 @@ _TICKER_STOPWORDS = {
     "REVISAR",
     "MUNDO",
     "MACRO",
+    "ES",
+    "BUENA",
+    "BUEN",
+    "BUENO",
+    "MALA",
+    "MALO",
+    "IDEA",
+    "COMPRAR",
+    "COMPRA",
+    "COMPRO",
+    "COMPRAS",
+    "VENDER",
+    "VENTA",
+    "VENDO",
+    "VENDES",
+    "VALE",
+    "PENA",
+    "DEBERIA",
+    "DEBO",
+    "PUEDO",
+    "PUEDES",
+    "SERIA",
+    "MEJOR",
+    "PEOR",
 }
 _TECHNICAL_TRANSLATIONS = {
     "alerts_origin": "origen de alertas",
@@ -150,7 +175,12 @@ def get_genesis_answer(
         **source_status,
         "panel_context": "provided" if clean_panel_context else "empty",
     }
-    blocks = _build_response_blocks(answer, evidence, source_status, clean_context, intent, clean_panel_context)
+    asset_packet = source_status.pop("_asset_packet", None)
+    blocks = (
+        _build_asset_packet_blocks(asset_packet)
+        if isinstance(asset_packet, dict)
+        else _build_response_blocks(answer, evidence, source_status, clean_context, intent, clean_panel_context)
+    )
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -573,6 +603,14 @@ def _answer_overview() -> tuple[str, list[str], dict[str, str]]:
 
 def _answer_asset_priority(ticker: str = "") -> tuple[str, list[str], dict[str, str]]:
     if ticker:
+        packet = _safe_dashboard_snapshot(
+            lambda: get_asset_decision_packet(ticker),
+            lambda: {"ticker": ticker, "decision_label": "No concluyente", "missing_evidence": ["datos del activo"]},
+            "asset_decision_packet",
+        )
+        if isinstance(packet, dict) and packet.get("ticker"):
+            return _answer_asset_packet(packet)
+
         detail = _safe_dashboard_snapshot(
             lambda: get_dashboard_radar_ticker_drilldown(ticker),
             lambda: {"found": False, "ticker": ticker, "error": "ticker_not_found"},
@@ -664,6 +702,70 @@ def _answer_ticker_comparison(tickers: list[str]) -> tuple[str, list[str], dict[
         "queue_source": "comparacion de fichas tacticas",
         "market_data": "available" if any_price else "unavailable",
         "snapshots": _snapshot_status(*details),
+    }
+
+
+def _answer_asset_packet(packet: dict[str, Any]) -> tuple[str, list[str], dict[str, Any]]:
+    ticker = str(packet.get("ticker") or "").strip().upper()
+    name = str(packet.get("company_name") or ticker).strip()
+    price = packet.get("price")
+    decision = str(packet.get("decision_label") or "No concluyente").strip()
+    confidence = str(packet.get("confidence") or "no concluyente").strip()
+    price_text = f"precio actual {price}" if price is not None else "sin precio actual confirmado"
+    if (packet.get("source_status") or {}).get("fmp_live_ready") and price is not None:
+        price_text = f"{price_text} con datos directos"
+
+    answer = (
+        f"{ticker} ({name}): {price_text}. Decision operativa: {decision}. "
+        f"{packet.get('technical_read') or 'Lectura tecnica no concluyente'} "
+        f"No promete ganancias; la lectura exige confirmar evidencia antes de operar."
+    )
+    evidence = [
+        *(str(item) for item in packet.get("supports") or []),
+        *(str(item) for item in packet.get("risks") or []),
+        str(packet.get("money_flow_read") or ""),
+        str(packet.get("macro_read") or ""),
+    ]
+    return answer, _compact_evidence(evidence), {
+        "reliability": confidence,
+        "market_data": "available" if price is not None else "unavailable",
+        "money_flow": "available" if (packet.get("source_status") or {}).get("money_flow_available") else "unavailable",
+        "macro": "available" if (packet.get("source_status") or {}).get("macro_available") else "unavailable",
+        "_asset_packet": packet,
+    }
+
+
+def _build_asset_packet_blocks(packet: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(packet.get("ticker") or "").strip().upper()
+    name = str(packet.get("company_name") or ticker).strip()
+    price = packet.get("price")
+    price_text = f"Precio actual: {price}." if price is not None else "Precio actual no confirmado."
+    decision = str(packet.get("decision_label") or "No concluyente").strip()
+    scenarios = packet.get("scenarios") if isinstance(packet.get("scenarios"), dict) else {}
+    missing = packet.get("missing_evidence") if isinstance(packet.get("missing_evidence"), list) else []
+    return {
+        "summary": f"{ticker} ({name}). {price_text} Lectura rapida: {decision}.",
+        "executive_read": str(packet.get("technical_read") or "Lectura no concluyente con datos disponibles."),
+        "decision": decision,
+        "main_signals": [str(item) for item in (packet.get("supports") or [])][:4] or ["Sin apoyos suficientes confirmados."],
+        "risks": [str(item) for item in (packet.get("risks") or [])][:4] or ["Faltan riesgos confirmados, la lectura sigue conservadora."],
+        "money_flow": " ".join(
+            part
+            for part in (
+                str(packet.get("money_flow_read") or "Sin lectura de Dinero Grande confirmada."),
+                str(packet.get("whale_read") or "Sin ballena identificada con la fuente activa."),
+            )
+            if part
+        ),
+        "macro_news": f"{packet.get('news_read') or 'Sin noticias activas.'} {packet.get('macro_read') or 'Sin contexto macro activo.'}".strip(),
+        "scenarios": [
+            f"Alcista: {scenarios.get('alcista') or 'requiere confirmacion de precio y volumen.'}",
+            f"Neutral: {scenarios.get('neutral') or 'mantener vigilancia mientras faltan datos.'}",
+            f"Bajista: {scenarios.get('bajista') or 'riesgo aumenta si fallan precio y volumen.'}",
+        ],
+        "reliability": str(packet.get("confidence") or "no concluyente"),
+        "next_step": str(packet.get("next_step") or "Esperar confirmacion antes de operar."),
+        "missing_evidence": [str(item) for item in missing][:6],
     }
 
 

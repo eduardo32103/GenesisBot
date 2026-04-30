@@ -77,41 +77,52 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "asset_priority")
         self.assertIn("BNO", payload["answer"])
 
-    @patch("services.dashboard.get_genesis_answer.get_dashboard_radar_ticker_drilldown")
-    def test_genesis_uses_manual_ticker_drilldown_when_available(self, mock_drilldown) -> None:
-        mock_drilldown.return_value = {
-            "found": True,
+    @patch("services.dashboard.get_genesis_answer.get_asset_decision_packet")
+    def test_genesis_uses_asset_decision_packet_when_available(self, mock_packet) -> None:
+        mock_packet.return_value = {
             "ticker": "NVDA",
-            "current_price": 525.0,
-            "quote_timestamp": "2026-04-30T15:00:00+00:00",
-            "decision": "vigilar",
-            "main_reason": "Hay referencia directa disponible.",
-            "dominant_signal": "Precio live disponible",
-            "current_reliability": "media",
-            "reliability_note": "Cotizacion confirmada en consulta manual.",
-            "alert_state_summary": "Sin alertas recientes asociadas",
-            "profile": {"name": "NVIDIA", "sector": "Technology", "industry": "Semiconductors"},
-            "market_data": {"live_ready": True, "quote_available": True},
+            "company_name": "NVIDIA",
+            "price": 525.0,
+            "technical_read": "Precio disponible y tendencia positiva.",
+            "money_flow_read": "Sin ballena identificada.",
+            "macro_read": "Sin contexto macro activo.",
+            "news_read": "Sin noticias activas.",
+            "supports": ["Precio confirmado por datos directos."],
+            "risks": ["Falta volumen relativo."],
+            "missing_evidence": ["volumen relativo"],
+            "confidence": "media",
+            "decision_label": "Esperar confirmacion",
+            "next_step": "Esperar confirmacion de volumen.",
+            "scenarios": {"alcista": "sube si confirma volumen", "neutral": "vigilar", "bajista": "pierde soporte"},
+            "source_status": {"fmp_live_ready": True, "money_flow_available": True, "macro_available": False},
         }
 
         payload = get_genesis_answer("Analiza NVDA con los datos disponibles", context="general")
 
-        mock_drilldown.assert_called_once_with("NVDA")
+        mock_packet.assert_called_once_with("NVDA")
         self.assertEqual(payload["intent"], "asset_priority")
         self.assertIn("NVDA", payload["answer"])
         self.assertIn("525.0", payload["answer"])
+        self.assertEqual(payload["blocks"]["decision"], "Esperar confirmacion")
         self.assertEqual(payload["source_status"]["market_data"], "available")
 
-    @patch("services.dashboard.get_genesis_answer.get_dashboard_radar_ticker_drilldown")
-    def test_explicit_question_ticker_overrides_active_context(self, mock_drilldown) -> None:
-        mock_drilldown.return_value = {
-            "found": True,
+    @patch("services.dashboard.get_genesis_answer.get_asset_decision_packet")
+    def test_explicit_question_ticker_overrides_active_context(self, mock_packet) -> None:
+        mock_packet.return_value = {
             "ticker": "NVDA",
-            "current_price": 525.0,
-            "decision": "vigilar",
-            "main_reason": "Datos directos disponibles.",
-            "current_reliability": "media",
-            "market_data": {"live_ready": True, "quote_available": True, "source": "datos_directos"},
+            "company_name": "NVIDIA",
+            "price": 525.0,
+            "technical_read": "Datos directos disponibles.",
+            "money_flow_read": "Sin ballena identificada.",
+            "macro_read": "Sin contexto macro activo.",
+            "supports": ["Precio confirmado."],
+            "risks": ["Falta volumen."],
+            "missing_evidence": ["volumen relativo"],
+            "confidence": "media",
+            "decision_label": "Vigilar",
+            "next_step": "Vigilar continuidad.",
+            "scenarios": {"alcista": "confirma", "neutral": "vigilar", "bajista": "pierde soporte"},
+            "source_status": {"fmp_live_ready": True, "money_flow_available": True, "macro_available": False},
         }
 
         payload = get_genesis_answer(
@@ -121,10 +132,35 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
             panel_context={"scope": "ticker", "ticker": "BNO", "active_view": "radar"},
         )
 
-        mock_drilldown.assert_called_once_with("NVDA")
+        mock_packet.assert_called_once_with("NVDA")
         self.assertEqual(payload["context"]["ticker"], "NVDA")
         self.assertIn("NVDA", payload["answer"])
         self.assertNotIn("BNO:", payload["answer"])
+
+    @patch("services.dashboard.get_genesis_answer.get_asset_decision_packet")
+    def test_operational_question_uses_explicit_ticker(self, mock_packet) -> None:
+        mock_packet.return_value = {
+            "ticker": "NVDA",
+            "company_name": "NVIDIA",
+            "price": 525.0,
+            "technical_read": "Datos directos disponibles.",
+            "money_flow_read": "Sin ballena identificada.",
+            "macro_read": "Sin contexto macro activo.",
+            "supports": ["Precio confirmado."],
+            "risks": ["Falta confirmacion adicional."],
+            "missing_evidence": ["volumen relativo"],
+            "confidence": "media",
+            "decision_label": "Vigilar",
+            "next_step": "Validar volumen y zona de entrada antes de operar.",
+            "source_status": {"fmp_live_ready": True, "quote": True},
+        }
+
+        payload = get_genesis_answer("es buena idea comprar NVDA?", context="general", ticker="BNO")
+
+        mock_packet.assert_called_once_with("NVDA")
+        self.assertEqual(payload["context"]["ticker"], "NVDA")
+        self.assertEqual(payload["blocks"]["decision"], "Vigilar")
+        self.assertIn("NVDA", payload["answer"])
 
     @patch("services.dashboard.get_genesis_answer.get_dashboard_radar_ticker_drilldown")
     def test_genesis_comparison_uses_both_explicit_tickers(self, mock_drilldown) -> None:
