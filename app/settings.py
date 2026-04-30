@@ -17,6 +17,10 @@ def mask_secret(value: str, keep: int = 4) -> str:
     return f"{'*' * (len(raw) - keep)}{raw[-keep:]}"
 
 
+def _env_flag(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
 @dataclass(frozen=True)
 class Settings:
     env: str
@@ -24,6 +28,7 @@ class Settings:
     chat_id: str
     backup_chat_id: str
     fmp_api_key: str
+    fmp_live_enabled: bool
     openai_api_key: str
     gemini_api_key: str
     database_url: str
@@ -46,6 +51,7 @@ class Settings:
             "telegram": self.has_telegram,
             "database": self.has_database,
             "fmp_key": bool(self.fmp_api_key),
+            "fmp_live_enabled": self.fmp_live_enabled,
             "openai_key": bool(self.openai_api_key),
             "gemini_key": bool(self.gemini_api_key),
             "redis": bool(self.redis_url),
@@ -62,6 +68,7 @@ def load_settings() -> Settings:
         chat_id=chat_id,
         backup_chat_id=backup_chat_id,
         fmp_api_key=_clean_ascii_secret(os.getenv("FMP_API_KEY", "")),
+        fmp_live_enabled=_env_flag(os.getenv("FMP_LIVE_ENABLED", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         database_url=os.getenv("DATABASE_URL", "").strip(),

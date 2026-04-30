@@ -252,7 +252,7 @@ class FmpClient:
                 if row:
                     return row
             except Exception as exc:
-                self.logger.debug("FMP profile error para %s en %s: %s", tk, url, exc)
+                self.logger.debug("FMP profile error para %s: %s", tk, exc)
         return None
 
     def get_stock_news(self, ticker: str, limit: int = 3, symbol_map: dict[str, str] | None = None) -> list[dict]:

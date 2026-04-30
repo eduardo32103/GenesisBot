@@ -1,0 +1,125 @@
+--- main_original_from_github.py
++++ main.py
+@@ -7496,6 +7496,100 @@
+ 
+ @bot.message_handler(commands=['check_db'])
+ def test_db(message):
++    if str(message.chat.id) != str(CHAT_ID):
++        return
++
++    logging.error("ZZZ CHECK_DB REAL 777 | handler_hit | archivo=%s", __file__)
++    result = {"ok": False, "error": "timeout"}
++
++    def _safe_text(text):
++        if text is None:
++            return ""
++        return str(text).encode("utf-8", errors="ignore").decode("utf-8")
++
++    def _reply_check_db(text, phase):
++        cleaned = _safe_text(text)
++        logging.info(
++            "CHECK_DB REAL ROUTE %s | file=%s | func=test_db | chat_id=%s | text=%s",
++            phase,
++            __file__,
++            getattr(getattr(message, "chat", None), "id", "?"),
++            cleaned[:160],
++        )
++        try:
++            bot.reply_to(message, cleaned)
++            logging.info(
++                "CHECK_DB REAL ROUTE %s OK | file=%s | func=test_db | chat_id=%s",
++                phase,
++                __file__,
++                getattr(getattr(message, "chat", None), "id", "?"),
++            )
++            return
++        except Exception as exc:
++            logging.exception(
++                "CHECK_DB REAL ROUTE %s FAIL | file=%s | func=test_db | chat_id=%s | exc=%s",
++                phase,
++                __file__,
++                getattr(getattr(message, "chat", None), "id", "?"),
++                _safe_text(exc),
++            )
++        try:
++            bot.send_message(chat_id=message.chat.id, text=cleaned)
++            logging.info(
++                "CHECK_DB REAL ROUTE %s FALLBACK SEND OK | file=%s | func=test_db | chat_id=%s",
++                phase,
++                __file__,
++                getattr(getattr(message, "chat", None), "id", "?"),
++            )
++        except Exception as exc:
++            logging.exception(
++                "CHECK_DB REAL ROUTE %s FALLBACK SEND FAIL | file=%s | func=test_db | chat_id=%s | exc=%s",
++                phase,
++                __file__,
++                getattr(getattr(message, "chat", None), "id", "?"),
++                _safe_text(exc),
++            )
++
++    def _probe():
++        print("Intentando conectar con Supabase (Timeout de 5 segundos)...")
++        try:
++            conn = get_db_connection()
++            if not conn:
++                result["error"] = "conn es None"
++                print("ERROR DE RED O AUTENTICACION: conn es None")
++                return
++            c = conn.cursor()
++            c.execute('SELECT version();')
++            v = c.fetchone()[0]
++            result["ok"] = True
++            print(f"CONEXION ESTABLECIDA\\nPostgreSQL OK. Base de Datos en linea y funcional.\\n\\nDetalle: {v}")
++        except Exception as exc:
++            result["error"] = str(exc)
++            print(f"ERROR DE RED O AUTENTICACION\\nSupabase ha rechazado la conexion.\\n\\nLog Tecnico: {exc}")
++
++    logging.info(
++        "CHECK_DB REAL ROUTE ENTER | file=%s | func=test_db | chat_id=%s | text=%s",
++        __file__,
++        getattr(getattr(message, "chat", None), "id", "?"),
++        str(getattr(message, "text", "") or "")[:160],
++    )
++    _reply_check_db("CHECK_DB HANDLER ACTIVO", "PRE_SEND")
++
++    worker = threading.Thread(target=_probe, daemon=True)
++    worker.start()
++    worker.join(timeout=5)
++
++    if worker.is_alive():
++        _reply_check_db("DB ERROR: timeout", "FINAL_SEND")
++        return
++
++    if result["ok"]:
++        _reply_check_db("DB OK. Base de datos en linea.", "FINAL_SEND")
++        return
++
++    error_detail = _safe_text(result.get("error") or "desconocido").replace("\r", " ").replace("\n", " ")
++    _reply_check_db(f"DB ERROR: {error_detail[:160]}", "FINAL_SEND")
++    return
+     print("â ³ Intentando conectar con Supabase (Timeout de 5 segundos)...")
+     try:
+         conn = get_db_connection()
+@@ -7617,6 +7711,8 @@
+ 
+ @bot.message_handler(commands=['backup'])
+ def cmd_backup(message):
++    bot.reply_to(message, "BACKUP RUTA NUEVA 777")
++    return
+     """Forzar un backup manual visible"""
+     if str(message.chat.id) != str(CHAT_ID): return
+     save_state_to_telegram()
+@@ -9379,6 +9475,7 @@
+ 
+ # ----------------- MAIN -----------------
+ def main():
++    logging.error("ZZZ ENTRYPOINT REAL 777 | archivo=%s | version=prueba_checkdb_01", __file__)
+     logging.info("Identidad de esta instancia | self=%s | host=%s | pid=%s | takeover_forzado=%ss | heartbeat=%ss", INSTANCE_ID, INSTANCE_HOSTNAME, INSTANCE_PID, BOT_LOCK_FORCE_AFTER_SECONDS, BOT_LOCK_HEARTBEAT_SECONDS)
+     logging.info("Iniciando Génesis 1.0 â€” Persistencia: Telegram Cloud + SQLite local + Base64 logs")
+     _update_bot_runtime_lock(stage="boot", notes="arranque inicial", heartbeat=False)
+@@ -9432,4 +9529,3 @@
+ 
+ if __name__ == "__main__":
+     main()
+-

@@ -22,7 +22,6 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
-from services.analysis.money_flow_jarvis import build_money_flow_jarvis_briefing, should_handle_money_flow_intent
 
 # Configuración extendida de logs para Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -265,182 +264,13 @@ BOT_LOCK_STALE_SECONDS = int(os.environ.get("BOT_LOCK_STALE_SECONDS", "20"))
 BOT_LOCK_HEARTBEAT_SECONDS = int(os.environ.get("BOT_LOCK_HEARTBEAT_SECONDS", "10"))
 BOT_LOCK_GUARD_SECONDS = int(os.environ.get("BOT_LOCK_GUARD_SECONDS", "5"))
 BOT_LOCK_FORCE_AFTER_SECONDS = int(os.environ.get("BOT_LOCK_FORCE_AFTER_SECONDS", "12"))
-BOT_BOOT_GRACE_SECONDS = int(os.environ.get("BOT_BOOT_GRACE_SECONDS", "15"))
-BOT_BOOT_LIGHT_CYCLES = int(os.environ.get("BOT_BOOT_LIGHT_CYCLES", "2"))
-BOT_BOOT_WARMUP_TICKER_LIMIT = int(os.environ.get("BOT_BOOT_WARMUP_TICKER_LIMIT", "4"))
-BOT_BOOT_PHASE_PAUSE_SECONDS = float(os.environ.get("BOT_BOOT_PHASE_PAUSE_SECONDS", "1.0"))
 _BOT_LEADER_ACTIVE = False
 _BOT_RUNTIME_STAGE = "boot"
 _BOT_RUNTIME_NOTES = "inicio"
-_BOT_BOOT_WARMUP_STAGE = "idle"
 _LAST_LOCK_DIAG = {"holder": None, "logged_at": 0.0}
-_LOG_EVENT_MEMORY = {}
-MACRO_DASHBOARD_SNAPSHOT_PATH = os.environ.get(
-    "MACRO_DASHBOARD_SNAPSHOT_PATH",
-    os.path.join(os.path.dirname(__file__), "infra", "runtime", "macro_snapshot.json"),
-)
-ACTIVITY_DASHBOARD_SNAPSHOT_PATH = os.environ.get(
-    "ACTIVITY_DASHBOARD_SNAPSHOT_PATH",
-    os.path.join(os.path.dirname(__file__), "infra", "runtime", "activity_snapshot.json"),
-)
-_DASHBOARD_ACTIVITY_EVENTS = deque(maxlen=24)
-_DASHBOARD_ACTIVITY_EVENT_NAMES = {
-    "BOOT PHASE",
-    "BOOT TAKEOVER",
-    "POLLING",
-    "GEO REFRESH",
-    "SMC REFRESH",
-    "ANALYSIS FALLBACK SNAPSHOT",
-    "ANALYSIS FALLBACK HISTORICAL",
-    "ANALYSIS BLOCKED",
-    "CHART FALLBACK",
-    "CHART FAILURE",
-    "THROTTLE",
-    "FMP BLOCKED",
-    "FMP QUOTA",
-    "FMP ACCESS",
-    "ALERT EMITTED",
-}
 
 _db_local = threading.local()
 _db_bootstrap_lock = threading.Lock()
-
-
-def _format_log_field(value, limit=180):
-    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
-    text = re.sub(r"\s+", " ", text)
-    return text[:limit]
-
-
-def _write_dashboard_runtime_snapshot(path, payload):
-    try:
-        target_dir = os.path.dirname(path)
-        if target_dir:
-            os.makedirs(target_dir, exist_ok=True)
-        temp_path = f"{path}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        os.replace(temp_path, path)
-        return True
-    except Exception as exc:
-        logging.debug(f"Dashboard snapshot write error for {path}: {exc}")
-        return False
-
-
-def _dashboard_iso(value):
-    if isinstance(value, datetime):
-        try:
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-            return value.astimezone(timezone.utc).isoformat()
-        except Exception:
-            return value.isoformat()
-    text = str(value or "").strip()
-    return text
-
-
-def _dashboard_activity_summary(event_name, fields):
-    preferred_fields = {
-        "BOOT PHASE": ("stage", "note", "detail"),
-        "BOOT TAKEOVER": ("state", "holder", "stage", "remaining", "reason", "detail"),
-        "POLLING": ("state", "mode", "wait", "detail"),
-        "GEO REFRESH": ("sentiment", "high_risk", "detail"),
-        "SMC REFRESH": ("refreshed", "detail"),
-        "ANALYSIS FALLBACK SNAPSHOT": ("ticker", "reason"),
-        "ANALYSIS FALLBACK HISTORICAL": ("ticker", "reason"),
-        "ANALYSIS BLOCKED": ("ticker", "reason", "detail"),
-        "CHART FALLBACK": ("ticker", "renderer", "reason"),
-        "CHART FAILURE": ("ticker", "text_sent_only", "reason", "detail"),
-        "THROTTLE": ("kind", "ticker", "category", "remaining"),
-        "FMP BLOCKED": ("ticker", "issue", "detail"),
-        "FMP QUOTA": ("ticker", "status", "detail"),
-        "FMP ACCESS": ("ticker", "status", "detail"),
-        "ALERT EMITTED": ("ticker", "alert_type", "source", "title"),
-    }
-    ordered_keys = preferred_fields.get(event_name, tuple(fields.keys()))
-    parts = []
-    for key in ordered_keys:
-        if key not in fields:
-            continue
-        cleaned = _format_log_field(fields.get(key), limit=80)
-        if not cleaned:
-            continue
-        parts.append(f"{key}={cleaned}")
-    if not parts:
-        return "Sin detalle adicional."
-    return " | ".join(parts[:4])
-
-
-def _persist_dashboard_activity_event(level, event_name, fields):
-    normalized_event = str(event_name or "").strip().upper() or "EVENT"
-    if normalized_event not in _DASHBOARD_ACTIVITY_EVENT_NAMES:
-        return False
-
-    occurred_at = datetime.now(timezone.utc).isoformat()
-    entry = {
-        "event": normalized_event,
-        "level": str(level or "info").strip().lower() or "info",
-        "occurred_at": occurred_at,
-        "summary": _dashboard_activity_summary(normalized_event, fields),
-        "fields": {
-            key: _format_log_field(value, limit=120)
-            for key, value in fields.items()
-            if value is not None and _format_log_field(value, limit=120)
-        },
-    }
-    _DASHBOARD_ACTIVITY_EVENTS.appendleft(entry)
-    payload = {
-        "generated_at": occurred_at,
-        "note": "Timeline operativo resumido desde eventos del runtime. No es un dump crudo de logs.",
-        "items": list(_DASHBOARD_ACTIVITY_EVENTS),
-    }
-    return _write_dashboard_runtime_snapshot(ACTIVITY_DASHBOARD_SNAPSHOT_PATH, payload)
-
-
-def _log_operational_event(level, event, dedupe_key=None, dedupe_seconds=0, **fields):
-    event_name = _format_log_field(event, limit=80).upper() or "EVENT"
-    payload = []
-    for key, value in fields.items():
-        if value is None:
-            continue
-        cleaned = _format_log_field(value)
-        if not cleaned:
-            continue
-        payload.append(f"{key}={cleaned}")
-
-    message = " | ".join([event_name] + payload) if payload else event_name
-    if dedupe_seconds and dedupe_key:
-        now_ts = time.time()
-        last_ts = float(_LOG_EVENT_MEMORY.get(dedupe_key, 0.0))
-        if (now_ts - last_ts) < float(dedupe_seconds):
-            return False
-        _LOG_EVENT_MEMORY[dedupe_key] = now_ts
-
-    log_fn = getattr(logging, str(level or "info").lower(), logging.info)
-    log_fn(message)
-    _persist_dashboard_activity_event(level, event_name, fields)
-    return True
-
-
-def _set_boot_warmup_stage(stage, note=None, update_runtime=False):
-    global _BOT_BOOT_WARMUP_STAGE
-    _BOT_BOOT_WARMUP_STAGE = str(stage or "idle").strip().lower() or "idle"
-    _log_operational_event(
-        "info",
-        "BOOT PHASE",
-        dedupe_key=f"boot_phase:{_BOT_BOOT_WARMUP_STAGE}:{_format_log_field(note, 80)}",
-        dedupe_seconds=2,
-        stage=_BOT_BOOT_WARMUP_STAGE,
-        note=note or "",
-    )
-
-    if update_runtime:
-        try:
-            runtime_stage = f"boot_{_BOT_BOOT_WARMUP_STAGE}"[:64]
-            runtime_notes = str(note or _BOT_BOOT_WARMUP_STAGE)[:240]
-            _update_bot_runtime_lock(stage=runtime_stage, notes=runtime_notes, heartbeat=False)
-        except Exception:
-            pass
 
 def get_db_connection():
     conn = getattr(_db_local, "conn", None)
@@ -516,17 +346,6 @@ def get_db_connection():
     print("âŒ FATAL: No se pudo conectar a Supabase después de 3 intentos")
     return None
 
-def close_db_connection():
-    conn = getattr(_db_local, "conn", None)
-    if conn is None:
-        return
-    try:
-        conn.close()
-    except Exception:
-        pass
-    finally:
-        _db_local.conn = None
-
 def init_db():
     try:
         conn = get_db_connection()
@@ -539,7 +358,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS alert_validations (alert_id TEXT, horizon_key TEXT, scheduled_at TEXT, evaluated_at TEXT, current_price REAL, return_pct REAL, signed_return_pct REAL, outcome_label TEXT, score_value REAL, PRIMARY KEY (alert_id, horizon_key))''')
         c.execute('''CREATE TABLE IF NOT EXISTS alert_policy_audit (decision_id TEXT PRIMARY KEY, created_at TEXT, alert_type TEXT, ticker TEXT, raw_signal_strength REAL, normalized_strength REAL, required_strength REAL, was_allowed INTEGER DEFAULT 0, reason TEXT, context_json TEXT)''')
         conn.commit()
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     except Exception as e:
         print(f"âŒ Error: No se pudo conectar a Supabase -> {e}")
         logging.error(f"Error init_db: {e}")
@@ -1016,7 +835,7 @@ def _restore_from_b64(b64_data):
                 ''', (float(rpnl),))
             conn.commit()
         finally:
-            close_db_connection()
+            pass # conn.close() delegado a pooling global
 
         logging.info(f"Restaurados {len(portfolio)} activos desde backup Base64.")
     except Exception as e:
@@ -1054,7 +873,7 @@ def _restore_from_repo_json():
                                 (int(CHAT_ID), tk, int(val.get('is_investment', 1)), float(val.get('amount_usd', 1000.0)), float(val.get('entry_price', 0.0)), datetime.now().isoformat()))
                     conn.commit()
                 finally:
-                    close_db_connection()
+                    pass # conn.close() delegado a pooling global
 
                 logging.info(f"✅ Restauración desde portfolio.json ({json_path}) exitosa: {len(legacy)} activos.")
                 return True
@@ -1112,7 +931,7 @@ def check_and_add_seen_event(event_hash):
         c.execute('INSERT INTO seen_events (hash_id, timestamp) VALUES (%s, %s)', (event_hash, datetime.now().isoformat()))
         conn.commit()
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     return False
 
 def purge_old_events():
@@ -1124,7 +943,7 @@ def purge_old_events():
         c.execute('DELETE FROM seen_events WHERE timestamp < %s', (cutoff_date,))
         conn.commit()
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
 
 def get_tracked_tickers():
     conn = get_db_connection()
@@ -1141,7 +960,7 @@ def get_tracked_tickers():
         print(f"DEBUG WALLET: Error leyendo tickers de Supabase: {e}")
         return []
     finally:
-        close_db_connection()
+        pass
 
 def get_all_portfolio_data():
     pf = {}
@@ -1153,7 +972,7 @@ def get_all_portfolio_data():
         for row in c.fetchall():
             pf[row[1]] = {"is_investment": bool(row[2]), "amount_usd": row[3], "entry_price": row[4], "timestamp": row[5]}
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     return pf
 
 def add_ticker(ticker):
@@ -1173,7 +992,7 @@ def add_ticker(ticker):
         logging.error(f"Error ADD: {e}")
         return "DB_ERROR"
     finally:
-        close_db_connection()
+        if conn: pass # conn.close() delegado a pooling global
 
 def remove_ticker(ticker):
     ticker = remap_ticker(ticker)
@@ -1189,7 +1008,7 @@ def remove_ticker(ticker):
             if ticker in SMC_LEVELS_MEMORY: del SMC_LEVELS_MEMORY[ticker]
             return True
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     return False
 
 def add_investment(ticker, amount_usd, entry_price):
@@ -1206,7 +1025,7 @@ def add_investment(ticker, amount_usd, entry_price):
             c.execute('INSERT INTO wallet (user_id, ticker, is_investment, amount_usd, entry_price, timestamp) VALUES (%s, %s, 1, %s, %s, %s)', (int(CHAT_ID), ticker, amount_usd, entry_price, timestamp))
         conn.commit()
     finally:
-        close_db_connection()
+        if conn: pass # conn.close() delegado a pooling global
     save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def close_investment(ticker):
@@ -1218,7 +1037,7 @@ def close_investment(ticker):
         c.execute('UPDATE wallet SET is_investment = 0, amount_usd = 0, entry_price = 0 WHERE user_id = %s AND ticker = %s', (int(CHAT_ID), ticker))
         conn.commit()
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def get_investments():
@@ -1231,7 +1050,7 @@ def get_investments():
         for row in c.fetchall():
             invs[row[0]] = {'amount_usd': row[1], 'entry_price': row[2]}
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     return invs
 
 def add_realized_pnl(prof_usd):
@@ -1247,7 +1066,7 @@ def add_realized_pnl(prof_usd):
         else: c.execute('INSERT INTO global_stats (key, value) VALUES (%s, %s)', ("realized_pnl", new_val))
         conn.commit()
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     save_state_to_telegram()  # â† PERSISTENCIA EN TELEGRAM
 
 def get_realized_pnl():
@@ -1259,7 +1078,7 @@ def get_realized_pnl():
         res = c.fetchone()
         return res[0] if res else 0.0
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
 
 def reset_realized_pnl():
     """Resetea la ganancia mensual acumulada a $0.00"""
@@ -1271,7 +1090,7 @@ def reset_realized_pnl():
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
     save_state_to_telegram()
     logging.info("🔒„ PnL mensual reseteado a $0.00")
 
@@ -1286,7 +1105,7 @@ def reset_total_db():
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value''')
         conn.commit()
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
 
 
 _ALERT_VALIDATION_HORIZONS = [
@@ -1418,7 +1237,7 @@ def _fetch_alert_policy_stats(alert_type=None, ticker=None, days=35, limit=120):
         logging.error(f"ALERT POLICY: error leyendo estadisticas para {alert_type}/{ticker}: {e}")
         rows = []
     finally:
-        close_db_connection()
+        pass
 
     if not rows:
         return {
@@ -1494,7 +1313,7 @@ def _record_alert_policy_audit(alert_type, ticker, raw_signal_strength, normaliz
     except Exception as e:
         logging.error(f"ALERT POLICY: no pude auditar decision para {alert_type}/{tk}: {e}")
     finally:
-        close_db_connection()
+        pass
 
 
 def _evaluate_alert_dispatch_policy(alert_type, ticker, signal_strength=0.0, metadata=None):
@@ -1597,7 +1416,7 @@ def build_alert_policy_report(days=35, topn=6):
     except Exception as e:
         return _make_card("POLÍTICA DE ALERTAS", [f"No pude construir el reporte de política: {e}"], icon="🛡️")
     finally:
-        close_db_connection()
+        pass
 
     if not audit_rows:
         return _make_card(
@@ -1696,7 +1515,7 @@ def build_alert_strategy_report(days=45, topn=6):
     except Exception as e:
         return _make_card("ESTRATEGIA DE ALERTAS", [f"No pude construir el reporte estratégico: {e}"], icon="🧭")
     finally:
-        close_db_connection()
+        pass
 
     if not validation_rows:
         return _make_card(
@@ -1919,7 +1738,7 @@ def _build_ticker_alert_memory(ticker, days=60):
         logging.error(f"ALERT MEMORY: no pude leer memoria de {tk}: {e}")
         return dict(base_payload)
     finally:
-        close_db_connection()
+        pass
 
     if not validation_rows:
         return dict(base_payload)
@@ -2083,7 +1902,7 @@ def _register_alert_event(alert_type, ticker, direction, entry_price, title="", 
         logging.error(f"ALERT SCORE: fallo registrando alerta {alert_type} para {tk}: {e}")
         return None
     finally:
-        close_db_connection()
+        pass
 
 
 def _send_alert_with_tracking(chat_id, message_text, alert_type=None, ticker=None, direction=None, entry_price=None, title="", summary="", signal_strength=0.0, source="", metadata=None, parse_mode="HTML"):
@@ -2118,14 +1937,6 @@ def _send_alert_with_tracking(chat_id, message_text, alert_type=None, ticker=Non
             logging.error(f"ALERT POLICY: error evaluando politica para {alert_type}/{ticker}: {e}")
 
     sent_message = bot.send_message(chat_id, message_text, parse_mode=parse_mode)
-    _log_operational_event(
-        "info",
-        "ALERT EMITTED",
-        alert_type=alert_type or "manual",
-        ticker=remap_ticker(ticker) if ticker else "",
-        source=source or "runtime",
-        title=title or "",
-    )
     if alert_type and ticker and entry_price:
         try:
             _register_alert_event(
@@ -2259,7 +2070,7 @@ def evaluate_pending_alert_validations(limit=28):
         logging.error(f"ALERT SCORE: error evaluando alertas pendientes: {e}")
         return processed
     finally:
-        close_db_connection()
+        pass
 
 
 def purge_old_alert_validation_records(days=180):
@@ -2274,7 +2085,7 @@ def purge_old_alert_validation_records(days=180):
         c.execute('DELETE FROM alert_events WHERE created_at < %s', (cutoff,))
         conn.commit()
     finally:
-        close_db_connection()
+        pass
 
 
 def _human_alert_outcome_label(outcome_label):
@@ -2346,7 +2157,7 @@ def build_alert_validation_report(days=45, topn=6):
     except Exception as e:
         return _make_card("DASHBOARD DE ALERTAS", [f"No pude construir el reporte de validación: {e}"], icon="📊")
     finally:
-        close_db_connection()
+        pass
 
     if not event_rows:
         return _make_card(
@@ -2631,531 +2442,9 @@ def _get_fmp_symbol(tk):
 
 _FMP_LAST_ERROR = {}  # Cache global para diagnóstico del último error FMP
 
-_FMP_ISSUE_NO_KEY = "NO_KEY"
-_FMP_ISSUE_QUOTA_LIMIT = "QUOTA_LIMIT"
-_FMP_ISSUE_ACCESS_RESTRICTED = "ACCESS_RESTRICTED"
-_FMP_ISSUE_SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
-_FMP_ISSUE_UPSTREAM_ERROR = "UPSTREAM_ERROR"
-_FMP_ISSUE_PRIORITY = {
-    _FMP_ISSUE_NO_KEY: 5,
-    _FMP_ISSUE_QUOTA_LIMIT: 4,
-    _FMP_ISSUE_ACCESS_RESTRICTED: 3,
-    _FMP_ISSUE_SYMBOL_NOT_FOUND: 2,
-    _FMP_ISSUE_UPSTREAM_ERROR: 1,
-}
-FMP_QUOTE_CACHE = {}
-FMP_EOD_CACHE = {}
-FMP_INTRADAY_CACHE = {}
-FMP_QUOTE_TTL_SECONDS = int(os.environ.get("FMP_QUOTE_TTL_SECONDS", "15"))
-FMP_EOD_TTL_SECONDS = int(os.environ.get("FMP_EOD_TTL_SECONDS", "120"))
-FMP_INTRADAY_TTL_SECONDS = int(os.environ.get("FMP_INTRADAY_TTL_SECONDS", "45"))
-FMP_QUOTA_COOLDOWN_SECONDS = int(os.environ.get("FMP_QUOTA_COOLDOWN_SECONDS", "25"))
-FMP_ACCESS_COOLDOWN_SECONDS = int(os.environ.get("FMP_ACCESS_COOLDOWN_SECONDS", "20"))
-FMP_UPSTREAM_COOLDOWN_SECONDS = int(os.environ.get("FMP_UPSTREAM_COOLDOWN_SECONDS", "12"))
-FMP_USAGE_SUMMARY_INTERVAL_SECONDS = int(os.environ.get("FMP_USAGE_SUMMARY_INTERVAL_SECONDS", "600"))
-FMP_USAGE_STATS = {}
-_FMP_USAGE_LAST_SUMMARY_AT = 0.0
-_FMP_USAGE_LOCK = threading.Lock()
-FMP_DASHBOARD_SNAPSHOT_PATH = os.environ.get(
-    "FMP_DASHBOARD_SNAPSHOT_PATH",
-    os.path.join(os.path.dirname(__file__), "infra", "runtime", "fmp_snapshot.json"),
-)
-_FMP_LAST_INCIDENT = {}
-_FMP_SNAPSHOT_LAST_WRITE_AT = 0.0
-
-
-def _get_fmp_cache_bucket(kind):
-    if kind == "quote":
-        return FMP_QUOTE_CACHE
-    if kind == "eod":
-        return FMP_EOD_CACHE
-    return FMP_INTRADAY_CACHE
-
-
-def _ensure_fmp_usage_bucket(kind):
-    bucket = FMP_USAGE_STATS.get(kind)
-    if bucket is None:
-        bucket = {
-            "fetch": 0,
-            "ok": 0,
-            "cache_hit": 0,
-            "throttle": 0,
-            "quota": 0,
-            "access": 0,
-            "no_data": 0,
-            "upstream": 0,
-            "no_key": 0,
-            "bytes": 0,
-        }
-        FMP_USAGE_STATS[kind] = bucket
-    return bucket
-
-
-def _snapshot_fmp_usage_stats():
-    with _FMP_USAGE_LOCK:
-        snapshot = {}
-        for kind in ("quote", "eod", "intraday", "news"):
-            snapshot[kind] = dict(_ensure_fmp_usage_bucket(kind))
-    return snapshot
-
-
-def _snapshot_fmp_cooldowns():
-    summary = {
-        "active": 0,
-        "quota": 0,
-        "access": 0,
-        "upstream": 0,
-        "no_key": 0,
-    }
-    for kind in ("quote", "eod", "intraday"):
-        bucket = _get_fmp_cache_bucket(kind)
-        for entry in bucket.values():
-            if not isinstance(entry, dict) or entry.get("status_ok"):
-                continue
-            category = str(entry.get("issue_category") or _FMP_ISSUE_UPSTREAM_ERROR).strip().upper() or _FMP_ISSUE_UPSTREAM_ERROR
-            fetched_at = float(entry.get("fetched_at") or 0.0)
-            if not fetched_at:
-                continue
-            age = time.time() - fetched_at
-            cooldown = _get_fmp_failure_cooldown(category)
-            if age > cooldown:
-                continue
-            summary["active"] = int(summary.get("active", 0) or 0) + 1
-            if category == _FMP_ISSUE_QUOTA_LIMIT:
-                summary["quota"] = int(summary.get("quota", 0) or 0) + 1
-            elif category == _FMP_ISSUE_ACCESS_RESTRICTED:
-                summary["access"] = int(summary.get("access", 0) or 0) + 1
-            elif category == _FMP_ISSUE_NO_KEY:
-                summary["no_key"] = int(summary.get("no_key", 0) or 0) + 1
-            else:
-                summary["upstream"] = int(summary.get("upstream", 0) or 0) + 1
-    return summary
-
-
-def _set_fmp_last_incident(category, ticker="", detail="", status_code=None):
-    global _FMP_LAST_INCIDENT
-    normalized_category = str(category or _FMP_ISSUE_UPSTREAM_ERROR).strip().upper() or _FMP_ISSUE_UPSTREAM_ERROR
-    _FMP_LAST_INCIDENT = {
-        "category": normalized_category,
-        "ticker": remap_ticker(ticker) if ticker else "",
-        "status_code": int(status_code) if str(status_code or "").isdigit() else None,
-        "detail": _normalize_fmp_issue_detail(detail),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return dict(_FMP_LAST_INCIDENT)
-
-
-def _derive_fmp_provider_state(usage_snapshot, cooldown_snapshot):
-    if not FMP_API_KEY:
-        return "DEGRADED", "FMP_API_KEY no está configurada. El proveedor queda degradado para datos de mercado."
-
-    incident_category = str(_FMP_LAST_INCIDENT.get("category") or "").strip().upper()
-    total_quota = sum(int(values.get("quota", 0) or 0) for values in usage_snapshot.values())
-    total_access = sum(int(values.get("access", 0) or 0) for values in usage_snapshot.values())
-    total_upstream = sum(int(values.get("upstream", 0) or 0) for values in usage_snapshot.values())
-    total_fetch = sum(int(values.get("fetch", 0) or 0) for values in usage_snapshot.values())
-    total_ok = sum(int(values.get("ok", 0) or 0) for values in usage_snapshot.values())
-    total_cache = sum(int(values.get("cache_hit", 0) or 0) for values in usage_snapshot.values())
-
-    if cooldown_snapshot.get("quota", 0) or total_quota > 0 or incident_category == _FMP_ISSUE_QUOTA_LIMIT:
-        return "QUOTA_LIMIT", "FMP está degradado por cuota/ancho de banda del plan."
-    if cooldown_snapshot.get("access", 0) or total_access > 0 or incident_category == _FMP_ISSUE_ACCESS_RESTRICTED:
-        return "ACCESS_RESTRICTED", "FMP está degradado por permisos o restricciones del plan."
-    if total_upstream > 0 or incident_category in {_FMP_ISSUE_UPSTREAM_ERROR, _FMP_ISSUE_NO_KEY}:
-        return "DEGRADED", "FMP presenta degradación operativa, pero sin una señal dominante de cuota o permisos."
-    if total_ok > 0 or total_cache > 0:
-        return "OK", "FMP no muestra incidencias dominantes en el snapshot actual."
-    if total_fetch > 0:
-        return "DEGRADED", "FMP tiene actividad registrada, pero aún sin señales suficientes para declararlo estable."
-    return "DEGRADED", "Todavía no hay actividad FMP persistida para este runtime."
-
-
-def _persist_fmp_dashboard_snapshot(force=False):
-    global _FMP_SNAPSHOT_LAST_WRITE_AT
-    now_ts = time.time()
-    if not force and (now_ts - float(_FMP_SNAPSHOT_LAST_WRITE_AT or 0.0)) < 2.0:
-        return False
-
-    usage_snapshot = _snapshot_fmp_usage_stats()
-    cooldown_snapshot = _snapshot_fmp_cooldowns()
-    total_cache_hit = sum(int(values.get("cache_hit", 0) or 0) for values in usage_snapshot.values())
-    total_throttle = sum(int(values.get("throttle", 0) or 0) for values in usage_snapshot.values())
-    total_quota = sum(int(values.get("quota", 0) or 0) for values in usage_snapshot.values())
-    total_access = sum(int(values.get("access", 0) or 0) for values in usage_snapshot.values())
-    status, note = _derive_fmp_provider_state(usage_snapshot, cooldown_snapshot)
-
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "provider": {
-            "status": status,
-            "degraded": status != "OK",
-            "key_configured": bool(FMP_API_KEY),
-            "note": note,
-            "summary_window_seconds": max(int(FMP_USAGE_SUMMARY_INTERVAL_SECONDS), 0),
-        },
-        "usage": usage_snapshot,
-        "signals": {
-            "cache_hit": total_cache_hit,
-            "throttle": total_throttle,
-            "cooldown_active": int(cooldown_snapshot.get("active", 0) or 0),
-            "quota": total_quota,
-            "access": total_access,
-            "cooldown_breakdown": cooldown_snapshot,
-        },
-        "last_incident": dict(_FMP_LAST_INCIDENT) if _FMP_LAST_INCIDENT else {},
-        "meta": {
-            "source": "runtime_memory",
-            "snapshot_path": FMP_DASHBOARD_SNAPSHOT_PATH,
-        },
-    }
-
-    try:
-        target_dir = os.path.dirname(FMP_DASHBOARD_SNAPSHOT_PATH)
-        if target_dir:
-            os.makedirs(target_dir, exist_ok=True)
-        temp_path = f"{FMP_DASHBOARD_SNAPSHOT_PATH}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        os.replace(temp_path, FMP_DASHBOARD_SNAPSHOT_PATH)
-        _FMP_SNAPSHOT_LAST_WRITE_AT = now_ts
-        return True
-    except Exception as exc:
-        logging.debug(f"FMP snapshot persist error: {exc}")
-        return False
-
-
-def _emit_fmp_usage_summary_if_due(force=False):
-    global _FMP_USAGE_LAST_SUMMARY_AT
-    interval = max(int(FMP_USAGE_SUMMARY_INTERVAL_SECONDS), 0)
-    now_ts = time.time()
-    if not force and not _FMP_USAGE_LAST_SUMMARY_AT:
-        _FMP_USAGE_LAST_SUMMARY_AT = now_ts
-        return False
-    if not force and interval and (now_ts - float(_FMP_USAGE_LAST_SUMMARY_AT or 0.0)) < interval:
-        return False
-
-    with _FMP_USAGE_LOCK:
-        snapshot = {
-            kind: dict(values)
-            for kind, values in FMP_USAGE_STATS.items()
-            if isinstance(values, dict)
-        }
-        _FMP_USAGE_LAST_SUMMARY_AT = now_ts
-
-    if not snapshot:
-        return False
-
-    for kind, values in snapshot.items():
-        if not any(int(values.get(field, 0) or 0) for field in ("fetch", "cache_hit", "throttle", "quota", "access", "no_data", "upstream", "no_key")):
-            continue
-        _log_operational_event(
-            "info",
-            "FMP USAGE",
-            kind=kind,
-            fetch=values.get("fetch", 0),
-            ok=values.get("ok", 0),
-            cache_hit=values.get("cache_hit", 0),
-            throttle=values.get("throttle", 0),
-            quota=values.get("quota", 0),
-            access=values.get("access", 0),
-            no_data=values.get("no_data", 0),
-            upstream=values.get("upstream", 0),
-            no_key=values.get("no_key", 0),
-            bytes=values.get("bytes", 0),
-            window=f"{interval}s" if interval else "manual",
-        )
-    return True
-
-
-def _record_fmp_usage_event(kind, outcome, response_bytes=0):
-    normalized_kind = str(kind or "unknown").strip().lower() or "unknown"
-    normalized_outcome = str(outcome or "upstream").strip().lower() or "upstream"
-    with _FMP_USAGE_LOCK:
-        bucket = _ensure_fmp_usage_bucket(normalized_kind)
-        bucket[normalized_outcome] = int(bucket.get(normalized_outcome, 0) or 0) + 1
-        if response_bytes:
-            bucket["bytes"] = int(bucket.get("bytes", 0) or 0) + max(int(response_bytes), 0)
-    _persist_fmp_dashboard_snapshot(force=False)
-    _emit_fmp_usage_summary_if_due(force=False)
-
-
-def _record_fmp_issue_usage(kind, category, response_bytes=0):
-    category_map = {
-        _FMP_ISSUE_NO_KEY: "no_key",
-        _FMP_ISSUE_QUOTA_LIMIT: "quota",
-        _FMP_ISSUE_ACCESS_RESTRICTED: "access",
-        _FMP_ISSUE_SYMBOL_NOT_FOUND: "no_data",
-        _FMP_ISSUE_UPSTREAM_ERROR: "upstream",
-    }
-    _record_fmp_usage_event(kind, category_map.get(category, "upstream"), response_bytes=response_bytes)
-
-
-def _get_fmp_cache_ttl(kind):
-    if kind == "quote":
-        return FMP_QUOTE_TTL_SECONDS
-    if kind == "eod":
-        return FMP_EOD_TTL_SECONDS
-    return FMP_INTRADAY_TTL_SECONDS
-
-
-def _get_fmp_failure_cooldown(category):
-    if category == _FMP_ISSUE_NO_KEY:
-        return 60
-    if category == _FMP_ISSUE_QUOTA_LIMIT:
-        return FMP_QUOTA_COOLDOWN_SECONDS
-    if category == _FMP_ISSUE_ACCESS_RESTRICTED:
-        return FMP_ACCESS_COOLDOWN_SECONDS
-    return FMP_UPSTREAM_COOLDOWN_SECONDS
-
-
-def _copy_fmp_cached_data(data):
-    if isinstance(data, dict):
-        return dict(data)
-    if isinstance(data, list):
-        return list(data)
-    return data
-
-
-def _store_fmp_cache_success(kind, cache_key, data):
-    bucket = _get_fmp_cache_bucket(kind)
-    bucket[cache_key] = {
-        "status_ok": True,
-        "data": _copy_fmp_cached_data(data),
-        "fetched_at": time.time(),
-        "issue_category": None,
-        "issue_detail": "",
-        "status_code": 200,
-        "last_logged_at": 0.0,
-    }
-    return bucket[cache_key]
-
-
-def _store_fmp_cache_failure(kind, cache_key, category, detail="", status_code=None):
-    normalized_category = str(category or _FMP_ISSUE_UPSTREAM_ERROR).strip().upper()
-    bucket = _get_fmp_cache_bucket(kind)
-    bucket[cache_key] = {
-        "status_ok": False,
-        "data": None,
-        "fetched_at": time.time(),
-        "issue_category": normalized_category,
-        "issue_detail": _normalize_fmp_issue_detail(detail),
-        "status_code": status_code,
-        "last_logged_at": 0.0,
-    }
-    return bucket[cache_key]
-
-
-def _get_fmp_success_cache(kind, cache_key, ticker, min_items=0):
-    entry = _get_fmp_cache_bucket(kind).get(cache_key)
-    if not entry or not entry.get("status_ok"):
-        return None
-
-    age = time.time() - float(entry.get("fetched_at") or 0.0)
-    if age > _get_fmp_cache_ttl(kind):
-        return None
-
-    data = entry.get("data")
-    if min_items and isinstance(data, list) and len(data) < int(min_items):
-        return None
-
-    _record_fmp_usage_event(kind, "cache_hit")
-    now_ts = time.time()
-    if (now_ts - float(entry.get("last_logged_at") or 0.0)) >= 5:
-        _log_operational_event(
-            "info",
-            "CACHE HIT",
-            source="fmp",
-            kind=kind,
-            ticker=remap_ticker(ticker),
-            age=f"{int(age)}s",
-        )
-        entry["last_logged_at"] = now_ts
-    return _copy_fmp_cached_data(data)
-
-
-def _is_fmp_throttled(kind, cache_key, ticker):
-    entry = _get_fmp_cache_bucket(kind).get(cache_key)
-    if not entry or entry.get("status_ok"):
-        return False
-
-    category = str(entry.get("issue_category") or _FMP_ISSUE_UPSTREAM_ERROR).strip().upper()
-    age = time.time() - float(entry.get("fetched_at") or 0.0)
-    cooldown = _get_fmp_failure_cooldown(category)
-    if age > cooldown:
-        return False
-
-    detail = entry.get("issue_detail") or ""
-    if detail:
-        _set_fmp_issue(ticker, category, detail)
-    remaining = max(int(cooldown - age), 0)
-    _record_fmp_usage_event(kind, "throttle")
-    now_ts = time.time()
-    if (now_ts - float(entry.get("last_logged_at") or 0.0)) >= 5:
-        _log_operational_event(
-            "info",
-            "THROTTLE",
-            source="fmp",
-            kind=kind,
-            ticker=remap_ticker(ticker),
-            category=category,
-            remaining=f"{remaining}s",
-        )
-        entry["last_logged_at"] = now_ts
-    return True
-
-
-def _normalize_fmp_issue_detail(detail, limit=240):
-    text = str(detail or "").replace("\r", " ").replace("\n", " ").strip()
-    text = re.sub(r"\s+", " ", text)
-    return text[:limit]
-
-
-def _set_fmp_issue(ticker, category, detail=""):
-    tk = remap_ticker(ticker)
-    normalized_category = str(category or _FMP_ISSUE_UPSTREAM_ERROR).strip().upper()
-    normalized_detail = _normalize_fmp_issue_detail(detail)
-    current_raw = _FMP_LAST_ERROR.get(tk)
-    if current_raw:
-        current_category, current_detail = _get_fmp_issue_snapshot(ticker=tk)
-        current_priority = _FMP_ISSUE_PRIORITY.get(current_category, 0)
-        new_priority = _FMP_ISSUE_PRIORITY.get(normalized_category, 0)
-        if current_priority > new_priority:
-            return current_raw
-        if current_priority == new_priority and current_detail and not normalized_detail:
-            return current_raw
-    _FMP_LAST_ERROR[tk] = f"{normalized_category}|{normalized_detail}" if normalized_detail else normalized_category
-    return _FMP_LAST_ERROR[tk]
-
-
-def _get_fmp_issue_snapshot(ticker=None, detail=None):
-    raw_value = detail
-    if raw_value is None and ticker is not None:
-        raw_value = _FMP_LAST_ERROR.get(remap_ticker(ticker), "")
-
-    raw_text = str(raw_value or "").strip()
-    if not raw_text:
-        return _FMP_ISSUE_UPSTREAM_ERROR, ""
-
-    if "|" in raw_text:
-        category, payload = raw_text.split("|", 1)
-        category = str(category or "").strip().upper() or _FMP_ISSUE_UPSTREAM_ERROR
-        return category, _normalize_fmp_issue_detail(payload)
-
-    text = raw_text.lower()
-    if "fmp_api_key no detectada" in text:
-        return _FMP_ISSUE_NO_KEY, _normalize_fmp_issue_detail(raw_text)
-    if any(marker in text for marker in ("429", "bandwidth limit", "limit reach", "please upgrade your plan", "too many requests", "rate limit")):
-        return _FMP_ISSUE_QUOTA_LIMIT, _normalize_fmp_issue_detail(raw_text)
-    if any(marker in text for marker in ("401", "402", "403", "permission", "forbidden", "unauthorized", "restringido", "restricted")):
-        return _FMP_ISSUE_ACCESS_RESTRICTED, _normalize_fmp_issue_detail(raw_text)
-    if any(marker in text for marker in ("sin datos", "no devolvió datos", "not found", "no data", "respuesta vacia", "respuesta vacía")):
-        return _FMP_ISSUE_SYMBOL_NOT_FOUND, _normalize_fmp_issue_detail(raw_text)
-    return _FMP_ISSUE_UPSTREAM_ERROR, _normalize_fmp_issue_detail(raw_text)
-
-
-def _get_fmp_issue_category(ticker=None, detail=None):
-    category, _ = _get_fmp_issue_snapshot(ticker=ticker, detail=detail)
-    return category
-
-
-def _is_fmp_bandwidth_limited(ticker=None, detail=None):
-    return _get_fmp_issue_category(ticker=ticker, detail=detail) == _FMP_ISSUE_QUOTA_LIMIT
-
-
-def _get_fmp_user_issue_text(ticker, default_message="FMP no respondió correctamente en este momento."):
-    category, detail = _get_fmp_issue_snapshot(ticker=ticker)
-    if category == _FMP_ISSUE_NO_KEY:
-        return "FMP_API_KEY no está configurada en el entorno."
-    if category == _FMP_ISSUE_QUOTA_LIMIT:
-        return "FMP alcanzó el límite de ancho de banda del plan. La API key está cargada, pero la cuota actual no permite más consultas."
-    if category == _FMP_ISSUE_ACCESS_RESTRICTED:
-        return "FMP rechazó esta consulta por permisos o restricciones del plan."
-    if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
-        return "FMP no devolvió datos para ese activo."
-    if category == _FMP_ISSUE_UPSTREAM_ERROR and detail:
-        return "FMP no respondió correctamente en este momento."
-    return default_message
-
-
-def _log_fmp_issue(symbol, category, detail="", status_code=None):
-    safe_symbol = str(symbol or "UNKNOWN").strip().upper()
-    clean_detail = _normalize_fmp_issue_detail(detail)
-    _set_fmp_last_incident(category, ticker=safe_symbol, detail=clean_detail, status_code=status_code)
-    if category == _FMP_ISSUE_QUOTA_LIMIT:
-        quota_code = status_code if status_code == 429 else 429
-        _log_operational_event(
-            "error",
-            "FMP QUOTA",
-            dedupe_key=f"fmp:quota:{safe_symbol}:{quota_code}",
-            dedupe_seconds=15,
-            ticker=safe_symbol,
-            status=quota_code,
-            detail=clean_detail or "plan_limit_reached",
-        )
-        _persist_fmp_dashboard_snapshot(force=True)
-        return
-    if category == _FMP_ISSUE_ACCESS_RESTRICTED:
-        access_code = status_code if status_code in (401, 402, 403) else 403
-        _log_operational_event(
-            "error",
-            "FMP ACCESS",
-            dedupe_key=f"fmp:access:{safe_symbol}:{access_code}",
-            dedupe_seconds=15,
-            ticker=safe_symbol,
-            status=access_code,
-            detail=clean_detail or "plan_restricted",
-        )
-        _persist_fmp_dashboard_snapshot(force=True)
-        return
-    if category == _FMP_ISSUE_SYMBOL_NOT_FOUND:
-        _log_operational_event(
-            "warning",
-            "FMP NO_DATA",
-            dedupe_key=f"fmp:nodata:{safe_symbol}",
-            dedupe_seconds=15,
-            ticker=safe_symbol,
-        )
-        _persist_fmp_dashboard_snapshot(force=True)
-        return
-    if clean_detail:
-        _log_operational_event(
-            "warning",
-            "FMP UPSTREAM",
-            dedupe_key=f"fmp:upstream:{safe_symbol}:{clean_detail[:80]}",
-            dedupe_seconds=10,
-            ticker=safe_symbol,
-            detail=clean_detail,
-        )
-        _persist_fmp_dashboard_snapshot(force=True)
-        return
-    _log_operational_event(
-        "warning",
-        "FMP UPSTREAM",
-        dedupe_key=f"fmp:upstream:{safe_symbol}:generic",
-        dedupe_seconds=10,
-        ticker=safe_symbol,
-        detail="unexpected_response",
-    )
-    _persist_fmp_dashboard_snapshot(force=True)
-
-
 def _fetch_fmp_quote(tk):
     """Consulta precio en vivo EXCLUSIVAMENTE desde FMP - /stable/quote"""
     global _FMP_LAST_ERROR
-    tk = remap_ticker(tk)
-
-    def _clean_error_detail(raw_text):
-        text = str(raw_text or "").replace("\r", " ").replace("\n", " ").strip()
-        text = re.sub(r"\s+", " ", text)
-        return text[:220]
-
-    def _payload_error_message(payload):
-        if isinstance(payload, dict):
-            for key in ("Error Message", "error", "message", "Message", "note", "Note"):
-                value = payload.get(key)
-                if value:
-                    return _clean_error_detail(value)
-        return ""
 
     def _to_float(value, default=0.0):
         try:
@@ -3167,26 +2456,9 @@ def _fetch_fmp_quote(tk):
             return default
 
     if not FMP_API_KEY:
-        _log_operational_event(
-            "error",
-            "FMP NO_KEY",
-            dedupe_key=f"fmp:nokey:quote:{tk}",
-            dedupe_seconds=30,
-            ticker=tk,
-        )
-        _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
-        _record_fmp_issue_usage("quote", _FMP_ISSUE_NO_KEY)
-        _store_fmp_cache_failure("quote", tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
+        logging.error("ERROR: La variable FMP_API_KEY no existe en el sistema")
+        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
         return None
-
-    cached_quote = _get_fmp_success_cache("quote", tk, tk)
-    if isinstance(cached_quote, dict):
-        return cached_quote
-
-    if _is_fmp_throttled("quote", tk, tk):
-        return None
-
-    logging.info(f"FMP FETCH: quote {tk} live request")
 
     fmp_symbol = _get_fmp_symbol(tk)
     symbols_to_try = [fmp_symbol]
@@ -3204,30 +2476,16 @@ def _fetch_fmp_quote(tk):
         try:
             # === STABLE API (nuevo) ===
             url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
-            _record_fmp_usage_event("quote", "fetch")
             resp = requests.get(url, timeout=10)
-            raw_text = _clean_error_detail(resp.text)
-            response_bytes = len(resp.content or b"")
+
+            print(f"DEBUG FMP HTTP Status: {resp.status_code} para {symbol}")
+            if resp.status_code != 200:
+                print(f"DEBUG FMP Respuesta Cruda: {resp.text[:300]}")
 
             if resp.status_code == 200:
                 data = resp.json()
-                payload_error = _payload_error_message(data)
-                if payload_error:
-                    category = _get_fmp_issue_category(detail=payload_error)
-                    _set_fmp_issue(tk, category, f"FMP {symbol}: {payload_error}")
-                    _record_fmp_issue_usage("quote", category, response_bytes=response_bytes)
-                    _log_fmp_issue(symbol, category, detail=payload_error)
-                    continue
                 if not data or len(data) == 0:
-                    if raw_text and raw_text not in {"[]", "{}"}:
-                        category = _get_fmp_issue_category(detail=raw_text)
-                        _set_fmp_issue(tk, category, f"FMP {symbol}: {raw_text}")
-                        _record_fmp_issue_usage("quote", category, response_bytes=response_bytes)
-                        _log_fmp_issue(symbol, category, detail=raw_text)
-                    else:
-                        _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {symbol}")
-                        _record_fmp_issue_usage("quote", _FMP_ISSUE_SYMBOL_NOT_FOUND, response_bytes=response_bytes)
-                        _log_fmp_issue(symbol, _FMP_ISSUE_SYMBOL_NOT_FOUND)
+                    print(f"DEBUG FMP: respuesta vac\u00eda para {symbol}")
                     continue
                 
                 # /stable/quote puede devolver lista o dict
@@ -3236,19 +2494,13 @@ def _fetch_fmp_quote(tk):
                 elif isinstance(data, dict):
                     quote = data
                 else:
-                    detail = f"Formato inesperado para {symbol}: {str(data)[:200]}"
-                    _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
-                    _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
-                    _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
+                    print(f"DEBUG FMP: formato inesperado para {symbol}: {str(data)[:200]}")
                     continue
 
                 if isinstance(quote, dict):
                     price = quote.get('price')
                     if price is None:
-                        detail = f"Precio nulo para {symbol}"
-                        _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
-                        _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
-                        _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
+                        print(f"DEBUG FMP: precio nulo para {symbol}. Datos: {quote}")
                         continue
                         
                     price = float(price)
@@ -3265,15 +2517,8 @@ def _fetch_fmp_quote(tk):
                     previous_close = _to_float(quote.get('previousClose'))
                     last_timestamp = quote.get('timestamp') or quote.get('lastUpdated') or quote.get('date') or ""
                     if price > 0:
-                        _record_fmp_usage_event("quote", "ok", response_bytes=response_bytes)
-                        _log_operational_event(
-                            "info",
-                            "FMP FETCH OK",
-                            ticker=tk,
-                            symbol=symbol,
-                            price=f"${fmt_price(price)}",
-                        )
-                        quote_payload = {
+                        logging.info(f"FMP OK {tk} ({symbol}): ${fmt_price(price)}")
+                        return {
                             'price': price,
                             'vol': volume,
                             'volume': volume,
@@ -3289,39 +2534,20 @@ def _fetch_fmp_quote(tk):
                             'previousClose': previous_close,
                             'timestamp': last_timestamp,
                         }
-                        _store_fmp_cache_success("quote", tk, quote_payload)
-                        return quote_payload
                     else:
-                        detail = f"Precio inválido para {symbol}"
-                        _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, detail)
-                        _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
-                        _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=detail)
+                        print(f"DEBUG FMP: precio=0 para {symbol}. Datos: {quote}")
 
-            elif resp.status_code in (401, 402, 403, 429):
-                detail = raw_text or f"HTTP {resp.status_code}"
-                category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=detail) else _FMP_ISSUE_ACCESS_RESTRICTED
-                _set_fmp_issue(tk, category, f"HTTP {resp.status_code} - {detail}")
-                _record_fmp_issue_usage("quote", category, response_bytes=response_bytes)
-                _log_fmp_issue(symbol, category, detail=detail, status_code=resp.status_code)
-                _store_fmp_cache_failure("quote", tk, category, f"HTTP {resp.status_code} - {detail}", status_code=resp.status_code)
+            elif resp.status_code in (401, 403):
+                _FMP_LAST_ERROR[tk] = f"{resp.status_code} - Key rechazada o plan insuficiente"
+                logging.error(f"FMP: {resp.status_code} para {symbol}. Verifica FMP_API_KEY en Railway.")
                 return None
-            else:
-                if raw_text:
-                    _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"HTTP {resp.status_code} - {raw_text}")
-                    _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
-                    _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=f"HTTP {resp.status_code} - {raw_text}")
 
         except Exception as e:
-            _set_fmp_issue(tk, _FMP_ISSUE_UPSTREAM_ERROR, f"{type(e).__name__}: {e}")
-            _record_fmp_issue_usage("quote", _FMP_ISSUE_UPSTREAM_ERROR)
-            _log_fmp_issue(symbol, _FMP_ISSUE_UPSTREAM_ERROR, detail=f"{type(e).__name__}: {e}")
+            logging.error(f"FMP error fetching {symbol}: {e}")
+            print(f"DEBUG FMP Excepción: {e}")
 
-    if not _FMP_LAST_ERROR.get(tk):
-        _set_fmp_issue(tk, _FMP_ISSUE_SYMBOL_NOT_FOUND, f"Sin datos para {tk}")
-    category, detail = _get_fmp_issue_snapshot(ticker=tk)
-    _log_fmp_issue(tk, category, detail=detail)
-    category, detail = _get_fmp_issue_snapshot(ticker=tk)
-    _store_fmp_cache_failure("quote", tk, category, detail)
+    _FMP_LAST_ERROR[tk] = "Activo no encontrado en FMP"
+    logging.warning(f"FMP falló para {tk}. Activo no localizado.")
     return None
 
 
@@ -3349,26 +2575,8 @@ def _parse_fmp_historical_payload(raw):
 def _fetch_fmp_historical_eod(ticker, limit=None):
     tk = remap_ticker(ticker)
     if not FMP_API_KEY:
-        _log_operational_event(
-            "error",
-            "FMP NO_KEY",
-            dedupe_key=f"fmp:nokey:eod:{tk}",
-            dedupe_seconds=30,
-            ticker=tk,
-        )
-        _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
-        _record_fmp_issue_usage("eod", _FMP_ISSUE_NO_KEY)
-        _store_fmp_cache_failure("eod", tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
+        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
         return None
-
-    cached_hist = _get_fmp_success_cache("eod", tk, tk)
-    if isinstance(cached_hist, list) and cached_hist:
-        return cached_hist[:int(limit)] if limit else cached_hist
-
-    if _is_fmp_throttled("eod", tk, tk):
-        return None
-
-    logging.info(f"FMP FETCH: eod {tk} live request")
 
     symbol = _get_fmp_symbol(tk)
     if _is_crypto_ticker(tk):
@@ -3381,49 +2589,25 @@ def _fetch_fmp_historical_eod(ticker, limit=None):
     ]
 
     last_status = None
-    last_category = None
-    last_detail = ""
     for endpoint_name, url in endpoints:
         try:
-            _record_fmp_usage_event("eod", "fetch")
             resp = requests.get(url, timeout=10)
             last_status = resp.status_code
             logging.debug(f"FMP historical {endpoint_name} status {resp.status_code} para {tk}")
-            raw_text = _normalize_fmp_issue_detail(resp.text)
-            response_bytes = len(resp.content or b"")
             if resp.status_code != 200:
-                if resp.status_code in (401, 402, 403, 429):
-                    last_category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=raw_text) else _FMP_ISSUE_ACCESS_RESTRICTED
-                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
-                else:
-                    last_category = _FMP_ISSUE_UPSTREAM_ERROR
-                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
                 continue
 
-            payload = resp.json()
-            hist = _parse_fmp_historical_payload(payload)
+            hist = _parse_fmp_historical_payload(resp.json())
             if hist:
-                _record_fmp_usage_event("eod", "ok", response_bytes=response_bytes)
-                _store_fmp_cache_success("eod", tk, hist)
                 return hist[:int(limit)] if limit else hist
-            if raw_text and raw_text not in {"[]", "{}"}:
-                last_category = _get_fmp_issue_category(detail=raw_text)
-                last_detail = f"Histórico {safe_symbol}: {raw_text}"
-            else:
-                last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
-                last_detail = f"Sin datos históricos para {safe_symbol}"
         except Exception as e:
             logging.debug(f"FMP historical {endpoint_name} error para {tk}: {e}")
-            last_category = _FMP_ISSUE_UPSTREAM_ERROR
-            last_detail = f"{type(e).__name__}: {e}"
 
-    if not last_category:
-        last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
-        last_detail = f"Sin datos históricos para {safe_symbol}"
-    _set_fmp_issue(tk, last_category, last_detail)
-    _record_fmp_issue_usage("eod", last_category)
-    _log_fmp_issue(safe_symbol, last_category, detail=last_detail, status_code=last_status)
-    _store_fmp_cache_failure("eod", tk, last_category, last_detail, status_code=last_status)
+    if last_status in (401, 403):
+        _FMP_LAST_ERROR[tk] = f"Histórico FMP no disponible para {tk}: HTTP {last_status}"
+        logging.warning(f"FMP histórico restringido para {tk} (HTTP {last_status}). Se usará fallback local.")
+    else:
+        _FMP_LAST_ERROR[tk] = f"Histórico FMP no disponible para {tk}"
     return None
 
 
@@ -3507,28 +2691,9 @@ def _aggregate_intraday_rows(rows, group_hours=4, limit=None):
 
 def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
     tk = remap_ticker(ticker)
-    cache_key = f"{tk}|{str(interval or '1hour').strip().lower()}"
     if not FMP_API_KEY:
-        _log_operational_event(
-            "error",
-            "FMP NO_KEY",
-            dedupe_key=f"fmp:nokey:intraday:{cache_key}",
-            dedupe_seconds=30,
-            ticker=f"{tk}:{interval}",
-        )
-        _set_fmp_issue(tk, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
-        _record_fmp_issue_usage("intraday", _FMP_ISSUE_NO_KEY)
-        _store_fmp_cache_failure("intraday", cache_key, _FMP_ISSUE_NO_KEY, "FMP_API_KEY no detectada.")
+        _FMP_LAST_ERROR[tk] = "FMP_API_KEY no detectada."
         return None
-
-    cached_intraday = _get_fmp_success_cache("intraday", cache_key, f"{tk}:{interval}")
-    if isinstance(cached_intraday, list) and cached_intraday:
-        return cached_intraday[:int(limit)] if limit else cached_intraday
-
-    if _is_fmp_throttled("intraday", cache_key, f"{tk}:{interval}"):
-        return None
-
-    logging.info(f"FMP FETCH: intraday {tk} interval={interval} live request")
 
     symbol = _get_fmp_symbol(tk)
     if _is_crypto_ticker(tk):
@@ -3541,49 +2706,24 @@ def _fetch_fmp_intraday_history(ticker, interval="1hour", limit=None):
     ]
 
     last_status = None
-    last_category = None
-    last_detail = ""
     for endpoint_name, url in endpoints:
         try:
-            _record_fmp_usage_event("intraday", "fetch")
             resp = requests.get(url, timeout=12)
             last_status = resp.status_code
             logging.debug(f"FMP intraday {interval} {endpoint_name} status {resp.status_code} para {tk}")
-            raw_text = _normalize_fmp_issue_detail(resp.text)
-            response_bytes = len(resp.content or b"")
             if resp.status_code != 200:
-                if resp.status_code in (401, 402, 403, 429):
-                    last_category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 or _is_fmp_bandwidth_limited(detail=raw_text) else _FMP_ISSUE_ACCESS_RESTRICTED
-                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
-                else:
-                    last_category = _FMP_ISSUE_UPSTREAM_ERROR
-                    last_detail = f"HTTP {resp.status_code} - {raw_text or endpoint_name}"
                 continue
 
-            payload = resp.json()
-            hist = _parse_fmp_historical_payload(payload)
+            hist = _parse_fmp_historical_payload(resp.json())
             if hist:
-                _record_fmp_usage_event("intraday", "ok", response_bytes=response_bytes)
-                _store_fmp_cache_success("intraday", cache_key, hist)
                 return hist[:int(limit)] if limit else hist
-            if raw_text and raw_text not in {"[]", "{}"}:
-                last_category = _get_fmp_issue_category(detail=raw_text)
-                last_detail = f"Intradía {safe_symbol}: {raw_text}"
-            else:
-                last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
-                last_detail = f"Sin datos intradía para {safe_symbol}"
         except Exception as exc:
             logging.debug(f"FMP intraday {interval} {endpoint_name} error para {tk}: {exc}")
-            last_category = _FMP_ISSUE_UPSTREAM_ERROR
-            last_detail = f"{type(exc).__name__}: {exc}"
 
-    if not last_category:
-        last_category = _FMP_ISSUE_SYMBOL_NOT_FOUND
-        last_detail = f"Sin datos intradía para {safe_symbol}"
-    _set_fmp_issue(tk, last_category, last_detail)
-    _record_fmp_issue_usage("intraday", last_category)
-    _log_fmp_issue(safe_symbol, last_category, detail=last_detail, status_code=last_status)
-    _store_fmp_cache_failure("intraday", cache_key, last_category, last_detail, status_code=last_status)
+    if last_status in (401, 403):
+        _FMP_LAST_ERROR[tk] = f"Histórico intradía FMP no disponible para {tk}: HTTP {last_status}"
+    else:
+        _FMP_LAST_ERROR[tk] = f"Histórico intradía FMP no disponible para {tk}"
     return None
 
 
@@ -3610,38 +2750,15 @@ def get_safe_ticker_price(ticker, force_validation=False):
     # FMP es la fuente única para TODOS los activos
     result = _fetch_fmp_quote(tk)
     if result and _sanity_check_price(tk, result['price']):
-        live_result = dict(result)
-        live_result['cache_only'] = False
-        LAST_KNOWN_PRICES[tk] = live_result
-        return dict(live_result)
+        LAST_KNOWN_PRICES[tk] = result
+        return result
 
     # Cache como único respaldo si FMP no responde
     if tk in LAST_KNOWN_PRICES:
-        issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
-        _log_operational_event(
-            "info",
-            "FMP FALLBACK CACHE",
-            dedupe_key=f"fmp:fallback_cache:{tk}",
-            dedupe_seconds=10,
-            ticker=tk,
-            issue=_get_fmp_issue_category(ticker=tk),
-            price=f"${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}",
-        )
-        cached_result = dict(LAST_KNOWN_PRICES[tk])
-        cached_result['cache_only'] = True
-        return cached_result
+        logging.warning(f"{tk}: FMP no respondió. Usando cache: ${fmt_price(LAST_KNOWN_PRICES[tk]['price'])}")
+        return LAST_KNOWN_PRICES[tk]
 
-    issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
-    _log_operational_event(
-        "warning",
-        "FMP BLOCKED",
-        dedupe_key=f"fmp:blocked:{tk}:{_get_fmp_issue_category(ticker=tk)}",
-        dedupe_seconds=10,
-        ticker=tk,
-        issue=_get_fmp_issue_category(ticker=tk),
-        detail=issue_text,
-        cache="none",
-    )
+    logging.error(f"{tk}: FMP falló y no hay cache disponible.")
     return None
 
 def verify_1m_realtime_data(ticker):
@@ -3661,7 +2778,6 @@ def verify_1m_realtime_data(ticker):
 
 def _fetch_fmp_news(limit=10):
     if not FMP_API_KEY:
-        _record_fmp_issue_usage("news", _FMP_ISSUE_NO_KEY)
         return []
 
     all_news = []
@@ -3687,27 +2803,17 @@ def _fetch_fmp_news(limit=10):
     for ticker in symbols:
         try:
             url = f"https://financialmodelingprep.com/stable/stock-news?symbol={ticker}&limit=2&apikey={FMP_API_KEY}"
-            _record_fmp_usage_event("news", "fetch")
             resp = requests.get(url, timeout=5)
-            response_bytes = len(resp.content or b"")
             if resp.status_code == 200:
+                logging.info(f"LOG FMP [stable/stock-news {ticker}]: Status 200")
                 data = resp.json()
                 if isinstance(data, list):
-                    if data:
-                        _record_fmp_usage_event("news", "ok", response_bytes=response_bytes)
-                    else:
-                        _record_fmp_issue_usage("news", _FMP_ISSUE_SYMBOL_NOT_FOUND, response_bytes=response_bytes)
                     all_news.extend(data)
-                else:
-                    _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
             else:
-                category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 else (_FMP_ISSUE_ACCESS_RESTRICTED if resp.status_code in (401, 402, 403) else _FMP_ISSUE_UPSTREAM_ERROR)
-                _record_fmp_issue_usage("news", category, response_bytes=response_bytes)
                 logging.debug(f"FMP stock-news {ticker}: HTTP {resp.status_code}")
             if len(all_news) >= limit:
                 break
         except Exception as e:
-            _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR)
             logging.debug(f"FMP stock-news fallback error for {ticker}: {e}")
 
     unique = []
@@ -3879,68 +2985,6 @@ def _classify_sentiment(score):
         return {'label': 'Bajista', 'icon': '🔒´', 'bull_pct': 100 - bear, 'bear_pct': bear, 'raw': s}
     else:
         return {'label': 'Neutral', 'icon': 'ðŸŸ¡', 'bull_pct': 50, 'bear_pct': 50, 'raw': s}
-
-
-def _safe_dashboard_float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def _persist_macro_dashboard_snapshot():
-    ctx = GENESIS_RISK_CONTEXT if isinstance(GENESIS_RISK_CONTEXT, dict) else {}
-    sentiment_raw = _safe_dashboard_float(ctx.get("sentiment_global"), 0.0)
-    sentiment = _classify_sentiment(sentiment_raw)
-    last_update = _dashboard_iso(ctx.get("last_update"))
-    news_digest = ctx.get("news_digest") if isinstance(ctx.get("news_digest"), list) else []
-    wallet_impacts = ctx.get("wallet_impacts") if isinstance(ctx.get("wallet_impacts"), list) else []
-    geo_verdict = ctx.get("geo_verdict") if isinstance(ctx.get("geo_verdict"), dict) else {}
-
-    headlines = []
-    for item in news_digest[:4]:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title_es") or item.get("title") or "").strip()
-        if not title:
-            continue
-        headlines.append(
-            {
-                "title": _truncate_text(title, 120),
-                "source": str(item.get("source") or item.get("site") or "Fuente").strip(),
-                "published_at": str(item.get("published_label") or item.get("publishedDate") or "").strip(),
-                "impact_summary": _truncate_text(str(item.get("impact_summary") or "").strip(), 140),
-            }
-        )
-
-    available = bool(last_update or news_digest or wallet_impacts or geo_verdict)
-    note = "Todavía no hay snapshot macro persistido desde el runtime."
-    if available:
-        note = "Snapshot macro construido desde GENESIS_RISK_CONTEXT del runtime."
-
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "macro": {
-            "available": available,
-            "note": note,
-            "last_update": last_update,
-            "sentiment": {
-                "raw": round(sentiment_raw, 3),
-                "label": sentiment.get("label"),
-                "icon": sentiment.get("icon"),
-                "bull_pct": sentiment.get("bull_pct"),
-                "bear_pct": sentiment.get("bear_pct"),
-            },
-            "bias_label": str(geo_verdict.get("action") or "macro mixto"),
-            "confidence": int(geo_verdict.get("confidence") or 0),
-            "summary": str(geo_verdict.get("thesis") or geo_verdict.get("dominant_risk") or "Sin catalizador macro dominante por ahora."),
-            "dominant_risk": str(geo_verdict.get("dominant_risk") or ""),
-            "high_risk_tickers": [str(tk or "").strip().upper() for tk in (ctx.get("high_risk_tickers") or []) if str(tk or "").strip()],
-            "sensitive_tickers": [str(item.get("ticker") or "").strip().upper() for item in wallet_impacts[:6] if isinstance(item, dict) and str(item.get("ticker") or "").strip()],
-            "headlines": headlines,
-        },
-    }
-    return _write_dashboard_runtime_snapshot(MACRO_DASHBOARD_SNAPSHOT_PATH, payload)
 
 
 _PROFILE_ALIAS_CACHE = {}
@@ -5001,7 +4045,6 @@ def _collect_geopolitical_market_snapshot(limit=8, force_refresh=False):
         "wallet_impacts": wallet_impacts,
         "geo_verdict": verdict,
     }
-    _persist_macro_dashboard_snapshot()
     logging.info(
         "GEO SNAPSHOT: %s noticias enriquecidas | %s impactos cartera | sentimiento %.2f",
         len(top_items),
@@ -5203,7 +4246,6 @@ def genesis_strategic_report(manual=True):
         'last_update': datetime.now(),
         'news_digest': news_data[:6],
     }
-    _persist_macro_dashboard_snapshot()
 
     # === PASO 4: Construir reporte ===
     lines = []
@@ -5325,7 +4367,7 @@ def genesis_strategic_report(manual=True):
 
 def generar_reporte_macro_manual():
     """Wrapper para el botón Geopolítica â€” usa el motor unificado"""
-    return genesis_strategic_report_v2(manual=False)
+    return genesis_strategic_report_v2(manual=True)
 
 
 def fetch_intraday_data(ticker):
@@ -5535,40 +4577,16 @@ def _is_winner_whale_setup(price, intra, topol=None, analysis=None):
         return False, "Relación beneficio/riesgo insuficiente."
 
     return True, "Compra institucional en zona táctica de soporte."
-def _get_cached_smc_analysis(ticker):
-    tk = remap_ticker(ticker)
-    cached = LAST_KNOWN_ANALYSIS.get(tk)
-    if not isinstance(cached, dict) or not cached:
-        return None
-
-    snapshot = dict(cached)
-    live_cache = LAST_KNOWN_PRICES.get(tk)
-    if isinstance(live_cache, dict):
-        cached_price = _safe_float(live_cache.get('price'), _safe_float(snapshot.get('price'), 0.0))
-        if cached_price > 0:
-            snapshot['price'] = cached_price
-    snapshot['cache_only'] = True
-    snapshot['cache_reason'] = _FMP_LAST_ERROR.get(tk, "")
-    return snapshot
-
-
 def fetch_and_analyze_stock(ticker):
     """Calcula RSI, MACD, SMC usando datos diarios de FMP."""
     clean_ticker = str(ticker).strip().upper()
     tk = remap_ticker(clean_ticker)
-    logging.debug(f"SMC TRACE | ticker={tk} | step=start")
+    print(f"DEBUG SMC: Consultando niveles para {tk}...")
     try:
         safe_check = get_safe_ticker_price(tk)
         if not safe_check:
-            issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
-            cached_analysis = _get_cached_smc_analysis(tk)
-            if cached_analysis:
-                logging.warning(
-                    f"SMC {tk}: {issue_text} Usando último análisis en caché."
-                )
-                return cached_analysis
-            logging.debug(f"SMC TRACE | ticker={tk} | step=no_safe_price")
-            return f"⚠️ {issue_text}"
+            print(f"DEBUG SMC: get_safe_ticker_price falló para {tk}")
+            return "\u26a0\ufe0f Error de conexi\u00f3n con FMP"
             
         def _get_fallback_smc():
             latest_price = _safe_float(safe_check.get('price'), 0.0)
@@ -5590,7 +4608,7 @@ def fetch_and_analyze_stock(ticker):
             }
 
         hist = _fetch_fmp_historical_eod(tk, limit=260) or []
-        logging.debug(f"SMC TRACE | ticker={tk} | historical_rows={len(hist)}")
+        print(f"DEBUG SMC: Histórico recibido para {tk}: {len(hist)} velas")
 
         if not hist or not isinstance(hist, list) or len(hist) < 5:
             logging.warning(f"SMC fallback para {tk}: histórico FMP insuficiente o no disponible.")
@@ -5605,7 +4623,7 @@ def fetch_and_analyze_stock(ticker):
         lows = pd.Series([_safe_float(d.get('low'), 0.0) for d in hist])
 
         if len(closes) < 15:
-            logging.debug(f"SMC TRACE | ticker={tk} | insufficient_closes={len(closes)}")
+            print(f"DEBUG SMC: closes length {len(closes)} < 15 para {tk}")
             return _get_fallback_smc()
 
         # RSI
@@ -5733,7 +4751,7 @@ def fetch_and_analyze_stock(ticker):
         LAST_KNOWN_ANALYSIS[tk] = result
         return result
     except Exception as e:
-        logging.exception(f"SMC BUG | ticker={tk} | stage=compute")
+        print(f"ERROR CR\u00cdTICO SMC: {e}")
         try:
             return _get_fallback_smc()
         except:
@@ -5741,18 +4759,7 @@ def fetch_and_analyze_stock(ticker):
 
 def update_smc_memory(ticker, analysis):
     tk = remap_ticker(ticker)
-    if not isinstance(analysis, dict):
-        logging.debug(f"SMC {tk}: se omite memoria porque el análisis no es dict.")
-        return False
-
-    support = _safe_float(analysis.get('smc_sup'), 0.0)
-    resistance = _safe_float(analysis.get('smc_res'), 0.0)
-    if support <= 0 or resistance <= 0:
-        logging.debug(f"SMC {tk}: se omite memoria por niveles inválidos. sup={support} res={resistance}")
-        return False
-
-    SMC_LEVELS_MEMORY[tk] = {'sup': support, 'res': resistance, 'update_date': datetime.now()}
-    return True
+    SMC_LEVELS_MEMORY[tk] = {'sup': analysis['smc_sup'], 'res': analysis['smc_res'], 'update_date': datetime.now()}
 
 def analyze_breakout_gpt(ticker, level_type, price):
     tk = remap_ticker(ticker)
@@ -5892,7 +4899,6 @@ def _fetch_fmp_profile(ticker):
 
 def _fetch_fmp_ticker_news(ticker, limit=3):
     if not FMP_API_KEY:
-        _record_fmp_issue_usage("news", _FMP_ISSUE_NO_KEY)
         return []
 
     tk = remap_ticker(ticker)
@@ -5907,24 +4913,12 @@ def _fetch_fmp_ticker_news(ticker, limit=3):
     url = f"https://financialmodelingprep.com/stable/stock-news?symbol={urllib.parse.quote(symbol)}&limit={int(limit)}&apikey={FMP_API_KEY}"
 
     try:
-        _record_fmp_usage_event("news", "fetch")
         resp = requests.get(url, timeout=10)
-        response_bytes = len(resp.content or b"")
         if resp.status_code != 200:
-            category = _FMP_ISSUE_QUOTA_LIMIT if resp.status_code == 429 else (_FMP_ISSUE_ACCESS_RESTRICTED if resp.status_code in (401, 402, 403) else _FMP_ISSUE_UPSTREAM_ERROR)
-            _record_fmp_issue_usage("news", category, response_bytes=response_bytes)
             return []
         data = resp.json()
-        if isinstance(data, list):
-            if data:
-                _record_fmp_usage_event("news", "ok", response_bytes=response_bytes)
-            else:
-                _record_fmp_issue_usage("news", _FMP_ISSUE_SYMBOL_NOT_FOUND, response_bytes=response_bytes)
-            return data
-        _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR, response_bytes=response_bytes)
-        return []
+        return data if isinstance(data, list) else []
     except Exception as e:
-        _record_fmp_issue_usage("news", _FMP_ISSUE_UPSTREAM_ERROR)
         logging.debug(f"FMP ticker news error for {tk}: {e}")
         return []
 
@@ -6588,229 +5582,6 @@ def _build_chart_pack(ticker, candles=110, timeframe="1D"):
     return pack
 
 
-def _get_local_snapshot_pack(ticker, analysis=None, timeframe="1D"):
-    tk = remap_ticker(ticker)
-    tf = _normalize_chart_timeframe(timeframe)
-    snapshot = analysis if isinstance(analysis, dict) else {}
-    if not snapshot and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
-        snapshot = LAST_KNOWN_ANALYSIS.get(tk) or {}
-
-    closes = _sanitize_numeric_series(snapshot.get("closes_series") or snapshot.get("closes") or [], default=0.0)
-    opens = _sanitize_numeric_series(snapshot.get("opens_series") or snapshot.get("opens") or [], default=0.0)
-    highs = _sanitize_numeric_series(snapshot.get("highs_series") or snapshot.get("highs") or [], default=0.0)
-    lows = _sanitize_numeric_series(snapshot.get("lows_series") or snapshot.get("lows") or [], default=0.0)
-    dates = list(snapshot.get("dates_series") or snapshot.get("dates") or [])
-
-    if len(closes) < 12:
-        return None
-    if not (len(opens) == len(closes) == len(highs) == len(closes) == len(lows) == len(closes)):
-        return None
-    if dates and len(dates) != len(closes):
-        return None
-
-    price = _safe_float(snapshot.get("price"), _safe_float(closes[-1], 0.0))
-    support = _safe_float(snapshot.get("support") or snapshot.get("smc_sup"), 0.0)
-    resistance = _safe_float(snapshot.get("resistance") or snapshot.get("smc_res"), 0.0)
-    if price <= 0 or support <= 0 or resistance <= 0:
-        return None
-
-    divergence = snapshot.get("divergence") if isinstance(snapshot.get("divergence"), dict) else {}
-    if not divergence:
-        divergence = {"active": False, "summary": "Sin divergencia operable fuerte por ahora."}
-
-    projection = _sanitize_numeric_series(snapshot.get("projection") or [], default=price)
-    timeframe_label = snapshot.get("chart_snapshot_timeframe_label") or snapshot.get("chart_timeframe_label") or ("Diaria (1D)" if tf == "1D" else f"Intradía ({tf})")
-
-    return {
-        "ticker": tk,
-        "timeframe_label": f"{timeframe_label} | snapshot local",
-        "source_label": "Snapshot local",
-        "session_label": "Último snapshot disponible (sin cotización en vivo)",
-        "live_candle": False,
-        "snapshot_only": True,
-        "dates": dates[-110:] if dates else [f"S-{len(closes) - idx - 1}" for idx in range(min(len(closes), 110))],
-        "opens": opens[-110:],
-        "closes": closes[-110:],
-        "highs": highs[-110:],
-        "lows": lows[-110:],
-        "support": support,
-        "resistance": resistance,
-        "price": price,
-        "rsi": _safe_float(snapshot.get("rsi"), 50.0),
-        "macd_line": _safe_float(snapshot.get("macd_line"), 0.0),
-        "macd_signal": _safe_float(snapshot.get("macd_signal"), 0.0),
-        "ema50": _safe_float(snapshot.get("ema50"), price),
-        "ema200": _safe_float(snapshot.get("ema200"), price),
-        "golden_pocket_low": _safe_float(snapshot.get("golden_pocket_low"), min(support, price)),
-        "golden_pocket_high": _safe_float(snapshot.get("golden_pocket_high"), max(resistance, price)),
-        "divergence": divergence,
-        "projection": projection,
-    }
-
-
-def _format_snapshot_label(raw_value):
-    text = str(raw_value or "").strip()
-    if not text:
-        return ""
-    try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return _truncate_text(text, 32)
-
-
-def _get_local_snapshot_analysis(ticker, analysis=None, timeframe="1D"):
-    tk = remap_ticker(ticker)
-    snapshot = analysis if isinstance(analysis, dict) else {}
-    if not snapshot and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
-        snapshot = LAST_KNOWN_ANALYSIS.get(tk) or {}
-    if not snapshot:
-        return None
-
-    snapshot_pack = _get_local_snapshot_pack(tk, snapshot, timeframe=timeframe)
-    price = _safe_float(snapshot.get("price"), _safe_float((snapshot_pack or {}).get("price"), 0.0))
-    support = _safe_float(snapshot.get("support") or snapshot.get("smc_sup"), _safe_float((snapshot_pack or {}).get("support"), 0.0))
-    resistance = _safe_float(snapshot.get("resistance") or snapshot.get("smc_res"), _safe_float((snapshot_pack or {}).get("resistance"), 0.0))
-    if price <= 0 or support <= 0 or resistance <= 0:
-        return None
-
-    snapshot_info = dict(snapshot)
-    snapshot_info["snapshot_only"] = True
-    snapshot_info["snapshot_pack"] = snapshot_pack
-    snapshot_info["snapshot_timeframe_label"] = (snapshot_pack or {}).get("timeframe_label") or snapshot.get("chart_snapshot_timeframe_label") or snapshot.get("chart_timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})")
-    snapshot_info["snapshot_source_label"] = (snapshot_pack or {}).get("source_label") or snapshot.get("chart_snapshot_source_label") or "Snapshot local"
-    snapshot_info["snapshot_generated_at"] = snapshot.get("chart_snapshot_generated_at") or snapshot.get("snapshot_generated_at") or ""
-    return snapshot_info
-
-
-def _build_snapshot_analysis_card(ticker, snapshot_info, timeframe="1D"):
-    tk = remap_ticker(ticker)
-    display_name = get_display_name(tk)
-    snapshot_info = snapshot_info if isinstance(snapshot_info, dict) else {}
-    if not snapshot_info:
-        return None
-
-    snapshot_pack = snapshot_info.get("snapshot_pack") if isinstance(snapshot_info.get("snapshot_pack"), dict) else {}
-    price = _safe_float(snapshot_info.get("price"), _safe_float(snapshot_pack.get("price"), 0.0))
-    support = _safe_float(snapshot_info.get("support") or snapshot_info.get("smc_sup"), _safe_float(snapshot_pack.get("support"), 0.0))
-    resistance = _safe_float(snapshot_info.get("resistance") or snapshot_info.get("smc_res"), _safe_float(snapshot_pack.get("resistance"), 0.0))
-    if price <= 0 or support <= 0 or resistance <= 0:
-        return None
-
-    timeframe_label = snapshot_info.get("snapshot_timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})")
-    source_label = snapshot_info.get("snapshot_source_label") or "Snapshot local"
-    snapshot_stamp = _format_snapshot_label(snapshot_info.get("snapshot_generated_at"))
-    rsi = _safe_float(snapshot_info.get("rsi"), 50.0)
-    macd_line = _safe_float(snapshot_info.get("macd_line"), 0.0)
-    macd_signal = _safe_float(snapshot_info.get("macd_signal"), 0.0)
-    projection = _sanitize_numeric_series(snapshot_info.get("projection") or snapshot_pack.get("projection") or [], default=price)
-    projection_target = _safe_float(snapshot_info.get("projection_target"), _safe_float(projection[-1] if projection else price, price))
-    projection_bias = str(snapshot_info.get("projection_bias") or ("alcista" if projection and projection_target >= price else ("bajista" if projection and projection_target < price else "mixto")))
-    smc_trend = str(snapshot_info.get("smc_trend") or "Lectura previa del motor")
-
-    lines = [
-        "⚠️ Usé el último snapshot local disponible porque FMP no entregó datos frescos.",
-        f"• Temporalidad del snapshot: <b>{_escape_html(timeframe_label)}</b>",
-        f"• Fuente: <b>{_escape_html(source_label)}</b>",
-        f"• Precio del snapshot: <b>${fmt_price(price)}</b> (no verificado en vivo)",
-        f"• Soporte: ${fmt_price(support)} | Resistencia: ${fmt_price(resistance)}",
-        f"• Tendencia previa: <b>{_escape_html(smc_trend)}</b>",
-        f"• RSI: {rsi:.1f} | MACD: {macd_line:.3f} vs señal {macd_signal:.3f}",
-    ]
-    if projection:
-        lines.append(f"• Ruta previa del motor: sesgo <b>{_escape_html(projection_bias)}</b> hacia ${fmt_price(projection_target)}.")
-    if snapshot_stamp:
-        lines.append(f"• Último snapshot guardado: {_escape_html(snapshot_stamp)}")
-    lines.append("• El precio en vivo no pudo verificarse; la lectura es de contingencia y no reemplaza una cotización real.")
-
-    return _make_card(
-        f"ANÁLISIS DE CONTINGENCIA | {display_name}",
-        lines,
-        icon="📉",
-        footer="Snapshot local; úsalo solo como referencia hasta recuperar la cotización en vivo."
-    )
-
-
-def _build_historical_contingency_card(ticker, pack, timeframe="1D"):
-    tk = remap_ticker(ticker)
-    display_name = get_display_name(tk)
-    pack = pack if isinstance(pack, dict) else {}
-    if not pack:
-        return None
-
-    price = _safe_float(pack.get("price"), 0.0)
-    support = _safe_float(pack.get("support"), 0.0)
-    resistance = _safe_float(pack.get("resistance"), 0.0)
-    if price <= 0 or support <= 0 or resistance <= 0:
-        return None
-
-    timeframe_label = pack.get("timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})")
-    source_label = pack.get("source_label") or "Histórico confirmado"
-    session_label = pack.get("session_label") or "Sin cotización en vivo; usando histórico confirmado"
-    rsi = _safe_float(pack.get("rsi"), 50.0)
-    macd_line = _safe_float(pack.get("macd_line"), 0.0)
-    macd_signal = _safe_float(pack.get("macd_signal"), 0.0)
-    projection = _sanitize_numeric_series(pack.get("projection") or [], default=price)
-    projection_target = _safe_float(projection[-1] if projection else price, price)
-    projection_bias = "alcista" if projection and projection_target >= price else ("bajista" if projection and projection_target < price else "mixto")
-
-    lines = [
-        "⚠️ Usé histórico confirmado de contingencia porque FMP no entregó cotización en vivo.",
-        f"• Temporalidad de referencia: <b>{_escape_html(timeframe_label)}</b>",
-        f"• Fuente: <b>{_escape_html(source_label)}</b>",
-        f"• Sesión mostrada: <b>{_escape_html(session_label)}</b>",
-        f"• Último cierre confirmado: <b>${fmt_price(price)}</b> (no verificado en vivo)",
-        f"• Soporte: ${fmt_price(support)} | Resistencia: ${fmt_price(resistance)}",
-        f"• RSI: {rsi:.1f} | MACD: {macd_line:.3f} vs señal {macd_signal:.3f}",
-    ]
-    if projection:
-        lines.append(f"• Ruta de contingencia: sesgo <b>{_escape_html(projection_bias)}</b> hacia ${fmt_price(projection_target)}.")
-    lines.append("• El precio en vivo no pudo verificarse; esta lectura sirve como referencia táctica, no como cotización actual.")
-
-    return _make_card(
-        f"ANÁLISIS DE CONTINGENCIA | {display_name}",
-        lines,
-        icon="📉",
-        footer="Histórico confirmado de contingencia; úsalo solo como referencia hasta recuperar la cotización en vivo."
-    )
-
-
-def _cache_chart_snapshot(ticker, chart_pack, analysis=None, timeframe="1D"):
-    tk = remap_ticker(ticker)
-    if not isinstance(chart_pack, dict) or chart_pack.get("snapshot_only"):
-        return False
-
-    def _pick_series(*keys):
-        for key in keys:
-            value = chart_pack.get(key)
-            if isinstance(value, list) and len(value) >= 12:
-                return list(value)
-        return []
-
-    dates = _pick_series("dates", "dates_series")
-    opens = _pick_series("opens", "opens_series")
-    closes = _pick_series("closes", "closes_series")
-    highs = _pick_series("highs", "highs_series")
-    lows = _pick_series("lows", "lows_series")
-    if not dates or not closes or not (len(dates) == len(closes) == len(opens) == len(highs) == len(lows)):
-        return False
-
-    snapshot = dict(analysis if isinstance(analysis, dict) else ((LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else {}) or {}))
-    snapshot.update({
-        "dates_series": dates,
-        "opens_series": opens,
-        "closes_series": closes,
-        "highs_series": highs,
-        "lows_series": lows,
-        "chart_snapshot_generated_at": datetime.now().isoformat(),
-        "chart_snapshot_timeframe_key": _normalize_chart_timeframe(timeframe),
-        "chart_snapshot_timeframe_label": chart_pack.get("timeframe_label") or ("Diaria (1D)" if _normalize_chart_timeframe(timeframe) == "1D" else f"Intradía ({_normalize_chart_timeframe(timeframe)})"),
-        "chart_snapshot_source_label": chart_pack.get("source_label") or "FMP",
-    })
-    LAST_KNOWN_ANALYSIS[tk] = snapshot
-    return True
-
-
 def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
     tk = remap_ticker(ticker)
     tf = _normalize_chart_timeframe(timeframe)
@@ -6818,29 +5589,34 @@ def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
     if not analysis and isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict):
         analysis = LAST_KNOWN_ANALYSIS.get(tk) or {}
 
-    snapshot_pack = _get_local_snapshot_pack(tk, analysis, timeframe=tf)
-    if snapshot_pack:
-        return snapshot_pack
-
-    quote = get_safe_ticker_price(tk) or {}
+    quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
     hist = _fetch_fmp_historical_eod(tk, limit=90) or []
-    if not isinstance(hist, list) or len(hist) < 12:
-        return None
+    closes = []
 
-    hist = list(reversed(hist[:90]))
-    closes = [_safe_float(row.get("close"), 0.0) for row in hist]
-    opens = [_safe_float(row.get("open"), closes[idx] if idx < len(closes) else 0.0) for idx, row in enumerate(hist)]
-    highs = [_safe_float(row.get("high"), max(opens[idx], closes[idx])) for idx, row in enumerate(hist)]
-    lows = [_safe_float(row.get("low"), min(opens[idx], closes[idx])) for idx, row in enumerate(hist)]
-    dates = [str(row.get("date") or row.get("label") or "") for row in hist]
-    if any(value <= 0 for value in closes) or any(value <= 0 for value in highs) or any(value <= 0 for value in lows):
-        return None
+    if isinstance(hist, list) and hist:
+        hist = list(reversed(hist[:90]))
+        closes = [_safe_float(row.get("close"), 0.0) for row in hist]
+        closes = [value for value in closes if value > 0]
 
-    quote_is_live = isinstance(quote, dict) and not bool(quote.get("cache_only"))
-    live_price = _safe_float(quote.get("price"), 0.0) if quote_is_live else 0.0
-    price = live_price if live_price > 0 else _safe_float(closes[-1], 0.0)
+    price = _safe_float(quote.get("price") or analysis.get("price") or (closes[-1] if closes else 0.0), 0.0)
     if price <= 0:
         return None
+
+    if len(closes) < 12:
+        change_pct = _safe_float(quote.get("changesPercentage"), 0.0)
+        direction = -1 if change_pct < 0 else 1
+        step = max(price * 0.0025, 0.01)
+        closes = [max(0.01, price - (direction * step * (15 - idx))) for idx in range(16)]
+        closes[-1] = price
+
+    opens = [closes[0]] + closes[:-1]
+    highs = []
+    lows = []
+    for open_value, close_value in zip(opens, closes):
+        candle_spread = max(price * 0.0035, abs(close_value - open_value) * 0.55, 0.01)
+        highs.append(max(open_value, close_value) + candle_spread)
+        lows.append(max(0.01, min(open_value, close_value) - candle_spread))
+    dates = [f"D-{len(closes) - idx - 1}" for idx in range(len(closes))]
 
     window = closes[-min(len(closes), 20):]
     base_support = min(window) if window else price * 0.97
@@ -6867,11 +5643,10 @@ def _build_chart_pack_failsafe(ticker, analysis=None, timeframe="1D"):
 
     pack = {
         "ticker": tk,
-        "timeframe_label": "Diaria (1D) de contingencia" if tf == "1D" else (f"Intradía ({tf}) de contingencia"),
-        "source_label": "Histórico FMP de contingencia" if live_price > 0 else "Último cierre confirmado",
-        "session_label": "Sin cotización en vivo; usando histórico confirmado",
+        "timeframe_label": "Diaria (1D) estimada" if tf == "1D" else (f"Intradía ({tf}) estimada"),
+        "source_label": "FMP fallback",
+        "session_label": "Modo de contingencia visual",
         "live_candle": False,
-        "snapshot_only": True,
         "dates": dates[-60:],
         "opens": opens[-60:],
         "closes": closes[-60:],
@@ -6930,7 +5705,6 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         return None, None
 
     display_name = get_display_name(tk)
-    snapshot_only = bool(pack.get("snapshot_only"))
     divergence = pack.get("divergence") or {}
     macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
     macro_score = _safe_float(macro_context.get("score"), _safe_float(analysis.get("macro_score"), 0.0))
@@ -6959,8 +5733,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     if not isinstance(dates, list):
         dates = []
 
-    timeframe_label = pack.get("timeframe_label") or "Diaria (1D)"
-    source_label = pack.get("source_label") or "FMP"
+    timeframe_label = "Diaria (1D)"
     candles_used = len(closes)
     horizon_sessions = len(projection)
     projection_target = projection[-1] if projection else price_value
@@ -7003,7 +5776,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
     draw.text((56, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
-    draw.text((58, 64), ("Snapshot local de contingencia con velas guardadas previamente." if snapshot_only else "Precio confirmado en temporalidad diaria y escenario probable generado con el motor institucional."), fill="#5D687A", font=font_sub)
+    draw.text((58, 64), "Precio confirmado en temporalidad diaria y escenario probable generado con el motor institucional.", fill="#5D687A", font=font_sub)
 
     def _draw_chip(x, y, text, fill, text_fill="#10233E"):
         bbox = draw.textbbox((0, 0), text, font=font_small)
@@ -7016,7 +5789,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     chip_x = 58
     chip_y = 88
     chip_x = _draw_chip(chip_x, chip_y, f"Temporalidad: {timeframe_label}", (223, 232, 243, 255))
-    chip_x = _draw_chip(chip_x, chip_y, f"{'Snapshot' if snapshot_only else 'Histórico'}: {candles_used} sesiones", (236, 232, 223, 255))
+    chip_x = _draw_chip(chip_x, chip_y, f"Histórico: {candles_used} sesiones", (236, 232, 223, 255))
     chip_x = _draw_chip(chip_x, chip_y, future_label, (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
     _draw_chip(chip_x, chip_y, f"Dirección: {direction_arrow} {projection_hint}", (225, 241, 231, 255) if projection_hint == "alcista" else (247, 228, 225, 255), "#0F5132" if projection_hint == "alcista" else "#842029")
 
@@ -7056,8 +5829,8 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         y = usable_y1 + ((usable_y2 - usable_y1) * idx / 5)
         draw.line((x1 + 22, y, x2 - 22, y), fill="#ECE6D9", width=1)
 
-    draw.text((x1 + 28, y1 + 16), "Tramo confirmado" if not snapshot_only else "Tramo del snapshot", fill="#10233E", font=font_bold)
-    draw.text((split_x + 18, y1 + 16), "Escenario probable" if not snapshot_only else "Escenario previo del motor", fill=projection_color, font=font_bold)
+    draw.text((x1 + 28, y1 + 16), "Tramo confirmado", fill="#10233E", font=font_bold)
+    draw.text((split_x + 18, y1 + 16), "Escenario probable", fill=projection_color, font=font_bold)
     draw.text((split_x + 18, y1 + 42), f"{direction_arrow} {direction_label} {projection_delta_text}", fill=projection_color, font=font_metric)
 
     for value in (price_max, (price_max + price_min) / 2, price_min):
@@ -7121,7 +5894,7 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         draw.rounded_rectangle((x_left, y_top, x_left + tag_w, y_top + tag_h), radius=10, fill=fill)
         draw.text((x_left + 9, y_top + 5), text, fill=text_fill, font=font_small)
 
-    _draw_price_tag(px, py, f"{'Ahora' if not snapshot_only else 'Snapshot'} ${fmt_price(price_value)}", "#132B45")
+    _draw_price_tag(px, py, f"Ahora ${fmt_price(price_value)}", "#132B45")
     if projection_pts:
         lx, ly = projection_pts[-1]
         _draw_price_tag(lx, ly, f"Objetivo ${fmt_price(projection_target)}", projection_color)
@@ -7176,11 +5949,11 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         return y_cursor + 14
 
     sidebar_y = side_panel[1] + 54
-    sidebar_y = _draw_section(sidebar_y, "Contexto" if not snapshot_only else "Contexto del snapshot", [
+    sidebar_y = _draw_section(sidebar_y, "Contexto", [
         f"Temporalidad: {timeframe_label}",
-        f"{'Velas guardadas' if snapshot_only else 'Histórico analizado'}: {candles_used} sesiones",
-        f"Fuente visual: {source_label}",
-        f"{'Ruta previa del motor' if snapshot_only else 'Dirección esperada'}: {direction_arrow} {projection_hint} ({projection_delta_text})",
+        f"Histórico analizado: {candles_used} sesiones",
+        f"Horizonte proyectado: {future_label}",
+        f"Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text})",
     ])
     sidebar_y = _draw_section(sidebar_y, "Macro y sentimiento", [
         f"Sesgo macro: {macro_bias_label}.",
@@ -7201,10 +5974,10 @@ def _render_stock_analysis_chart(ticker, analysis=None):
         f"Lectura: {memory_summary}",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
-        f"{'Precio del snapshot' if snapshot_only else 'Precio actual'}: ${fmt_price(price_value)}",
+        f"Precio actual: ${fmt_price(price_value)}",
         f"Soporte principal: ${fmt_price(support)}",
         f"Resistencia principal: ${fmt_price(resistance)}",
-        f"{'Objetivo previo' if snapshot_only else 'Objetivo probable'}: ${fmt_price(projection_target)}",
+        f"Objetivo probable: ${fmt_price(projection_target)}",
     ])
     sidebar_y = _draw_section(sidebar_y, "Motor interno", [
         f"RSI: {rsi_value:.1f}",
@@ -7222,13 +5995,13 @@ def _render_stock_analysis_chart(ticker, analysis=None):
     caption = _make_card(
         f"GRÁFICO TÁCTICO | {display_name}",
         [
-            f"• {'Temporalidad del snapshot' if snapshot_only else 'Temporalidad'}: {timeframe_label} | {'Velas guardadas' if snapshot_only else 'Histórico'}: {candles_used} sesiones | Fuente: {source_label}.",
-            f"• {'Referencia visual' if snapshot_only else 'Tramo real'}: {'último snapshot local disponible' if snapshot_only else f'precio confirmado hasta {now_label}.'}",
-            f"• {'Ruta previa del motor' if snapshot_only else 'Dirección esperada'}: {direction_arrow} {projection_hint} ({projection_delta_text}) hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• Temporalidad: {timeframe_label} | Histórico: {candles_used} sesiones",
+            f"• Tramo real: precio confirmado hasta {now_label}.",
+            f"• Dirección esperada: {direction_arrow} {projection_hint} ({projection_delta_text}) hacia ${fmt_price(projection_target)} en {future_label}.",
             f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
-        footer="Snapshot local: referencia visual de contingencia; no reemplaza una cotización en vivo." if snapshot_only else "Gráfico claro: precio actual + ruta probable calculada con el motor institucional."
+        footer="Gráfico claro: precio actual + ruta probable calculada con el motor institucional."
     )
     return chart_path, caption
 
@@ -7451,7 +6224,6 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         return None, None
 
     display_name = get_display_name(tk)
-    snapshot_only = bool(pack.get("snapshot_only"))
     divergence = pack.get("divergence") or {}
     macro_context = analysis.get("macro_context") if isinstance(analysis.get("macro_context"), dict) else {}
     alert_memory = analysis.get("alert_memory") if isinstance(analysis.get("alert_memory"), dict) else {}
@@ -7623,7 +6395,7 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         draw.rounded_rectangle(panel, radius=30, fill=(255, 255, 255, 245), outline="#D8D0C2", width=2)
 
     draw.text((54, 28), f"Ruta táctica de {display_name}", fill="#12263F", font=font_title)
-    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con tecnica, sentimiento y contexto macro." if not snapshot_only else "Snapshot local de contingencia con velas guardadas previamente y escenario previo del motor.", fill="#5D687A", font=font_sub)
+    draw.text((56, 70), "Velas japonesas confirmadas + escenario probable trazado con tecnica, sentimiento y contexto macro.", fill="#5D687A", font=font_sub)
 
     def _draw_chip(x, y, text, fill, text_fill="#10233E"):
         bbox = draw.textbbox((0, 0), text, font=font_small)
@@ -7698,8 +6470,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         draw.line((x_level, chart_y1, x_level, chart_y2), fill=(233, 227, 218, 155), width=1)
 
     draw.line((split_x, chart_y1 - 8, split_x, chart_y2 + 8), fill="#BEC7D4", width=2)
-    draw.text((chart_x1 + 8, y1 + 20), "Tramo real" if not snapshot_only else "Tramo del snapshot", fill="#10233E", font=font_bold)
-    draw.text((split_x + 18, y1 + 20), "Escenario probable" if not snapshot_only else "Escenario previo del motor", fill=projection_color, font=font_bold)
+    draw.text((chart_x1 + 8, y1 + 20), "Tramo real", fill="#10233E", font=font_bold)
+    draw.text((split_x + 18, y1 + 20), "Escenario probable", fill=projection_color, font=font_bold)
     draw.text((split_x + 18, y1 + 46), f"{direction_arrow} {direction_label} {projection_delta_text}", fill=projection_color, font=font_badge)
     draw.text((split_x + 18, y1 + 78), f"Confianza visual: {orientation_confidence}%", fill=projection_color, font=font_metric)
 
@@ -7848,19 +6620,19 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         return y_cursor + 18
 
     sidebar_y = side_panel[1] + 54
-    sidebar_y = _draw_section(sidebar_y, "Orientación" if not snapshot_only else "Orientación del snapshot", [
+    sidebar_y = _draw_section(sidebar_y, "Orientación", [
         f"Lectura dominante: {orientation_summary}.",
         f"Escenario base: {direction_arrow} {direction_label}.",
         f"Confianza visual estimada: {orientation_confidence}%.",
-        f"{'Ruta previa del motor' if snapshot_only else 'Ruta probable'}: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+        f"Ruta probable: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
     ])
-    sidebar_y = _draw_section(sidebar_y, "Contexto" if not snapshot_only else "Contexto del snapshot", [
-        f"{'Temporalidad del snapshot' if snapshot_only else 'Temporalidad real'}: {timeframe_label}.",
+    sidebar_y = _draw_section(sidebar_y, "Contexto", [
+        f"Temporalidad real: {timeframe_label}.",
         f"Fuente visual: {source_label}.",
         f"Sesión mostrada: {session_label}.",
     ])
     sidebar_y = _draw_section(sidebar_y, "Niveles clave", [
-        f"{'Precio del snapshot' if snapshot_only else 'Precio actual'}: ${fmt_price(price_value)}",
+        f"Precio actual: ${fmt_price(price_value)}",
         f"Soporte principal: ${fmt_price(support)}",
         f"Resistencia principal: ${fmt_price(resistance)}",
         f"Zona dorada: ${fmt_price(golden_pocket_low)} - ${fmt_price(golden_pocket_high)}",
@@ -7876,8 +6648,8 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
         f"Lectura de medias: EMA50/EMA200 con sesgo {ema_bias}.",
     ])
     _draw_section(sidebar_y, "Cómo leerlo", [
-        "Las velas muestran el último snapshot local disponible." if snapshot_only else "Las velas sólidas muestran el precio confirmado.",
-        "La ruta translúcida conserva el último escenario del motor y no reemplaza una cotización en vivo." if snapshot_only else "Las velas translúcidas muestran la trayectoria más probable, no precio garantizado.",
+        "Las velas sólidas muestran el precio confirmado.",
+        "Las velas translúcidas muestran la trayectoria más probable, no precio garantizado.",
         "El eje derecho replica la referencia rápida de niveles, al estilo TradingView.",
     ])
 
@@ -7885,15 +6657,15 @@ def _render_stock_analysis_chart_v2(ticker, analysis=None, timeframe="1D"):
     caption = _make_card(
         f"GRÁFICO TÁCTICO | {display_name}",
         [
-            f"• {'Temporalidad del snapshot' if snapshot_only else 'Temporalidad'}: {timeframe_label} | {'Velas guardadas' if snapshot_only else 'Velas reales'}: {candles_used} | Fuente: {source_label}.",
-            f"• {'Orientación del snapshot' if snapshot_only else 'Orientación probable'}: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
-            f"• {'Ruta previa del motor' if snapshot_only else 'Ruta esperada'}: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
+            f"• Temporalidad: {timeframe_label} | Velas reales: {candles_used} | Fuente: {source_label}.",
+            f"• Orientación probable: <b>{orientation_summary}</b> | {direction_arrow} {projection_hint} ({projection_delta_text}) con confianza visual {orientation_confidence}%.",
+            f"• Ruta esperada: desde ${fmt_price(price_value)} hacia ${fmt_price(projection_target)} en {future_label}.",
             f"• Memoria del motor: <b>{_escape_html(memory_label)}</b> | acierto {memory_win_rate:.1f}% | score {memory_avg_score:+.2f}.",
             f"• EMA50 ${fmt_price(ema50_value)} | EMA200 ${fmt_price(ema200_value)} | RSI {rsi_value:.1f} | MACD {macd_bias}.",
             f"• Divergencia: {divergence_text}",
         ],
         icon="🖼️",
-        footer="Snapshot local: referencia visual de contingencia; no reemplaza una cotización en vivo." if snapshot_only else "Velas confirmadas + escenario probable del motor institucional."
+        footer="Velas confirmadas + escenario probable del motor institucional."
     )
     return chart_path, caption
 
@@ -7911,52 +6683,28 @@ def _render_stock_analysis_chart_safe(ticker, analysis=None, timeframe="1D"):
             chart_path, chart_caption = renderer()
             if chart_path and os.path.exists(chart_path):
                 if renderer_name != "principal":
-                    _log_operational_event("warning", "CHART FALLBACK", ticker=tk, renderer="respaldo", reason="principal_failed")
-                return chart_path, chart_caption, render_errors
+                    logging.warning(f"Gráfico táctico de {tk} generado con renderer de respaldo.")
+                return chart_path, chart_caption
             render_errors.append(f"{renderer_name}: sin archivo válido")
-            _log_operational_event("warning", "CHART FALLBACK", ticker=tk, renderer=renderer_name, reason="no_valid_file")
+            logging.warning(f"Renderer {renderer_name} no produjo un archivo de gráfico válido para {tk}.")
         except Exception as exc:
             render_errors.append(f"{renderer_name}: {type(exc).__name__}: {exc}")
-            _log_operational_event("warning", "CHART FALLBACK", ticker=tk, renderer=renderer_name, reason=f"{type(exc).__name__}: {exc}")
+            logging.exception(f"Error generando gráfico táctico con renderer {renderer_name} para {tk}")
 
-    return None, None, render_errors
-
-
-def _send_stock_analysis_message(chat_id, text, parse_mode="HTML", label="analysis_text", attempts=2):
-    payload = text if isinstance(text, str) else str(text or "")
-    if not payload:
-        return False
-
-    for attempt in range(1, attempts + 1):
-        try:
-            bot.send_message(chat_id, payload, parse_mode=parse_mode if parse_mode else None)
-            return True
-        except Exception as exc:
-            _log_operational_event("warning", "TELEGRAM SEND RETRY", target=label, chat=chat_id, attempt=f"{attempt}/{attempts}", detail=exc)
-            time.sleep(0.8)
-
-    if parse_mode == "HTML":
-        plain_payload = _strip_html_for_telegram(payload)
-        for attempt in range(1, attempts + 1):
-            try:
-                bot.send_message(chat_id, plain_payload)
-                return True
-            except Exception as exc:
-                _log_operational_event("warning", "TELEGRAM SEND RETRY", target=f"{label}:plain", chat=chat_id, attempt=f"{attempt}/{attempts}", detail=exc)
-                time.sleep(0.8)
-
-    return False
+    logging.error(
+        f"Fallo total al generar gráfico táctico para {tk} | detalle={' | '.join(render_errors) if render_errors else 'sin detalle'}"
+    )
+    return None, None
 
 
 def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
     tf = _normalize_chart_timeframe(timeframe)
     analysis_text = None
-    analysis_context = {"mode": "unknown"}
     try:
-        analysis_text, analysis_context = _perform_deep_analysis_fmp(tk, timeframe=tf, return_context=True)
+        analysis_text = perform_deep_analysis(tk, timeframe=tf)
     except Exception:
-        logging.exception(f"ANALYSIS BUG | ticker={tk} | stage=text_generation")
+        logging.exception(f"Error generando análisis textual para {tk}")
         analysis_text = _make_card(
             f"ANÁLISIS FMP | {get_display_name(tk)}",
             [
@@ -7967,53 +6715,43 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
             icon="📉",
             footer="El gráfico táctico se intentará enviar de todas formas."
         )
-        analysis_context = {"mode": "contingency"}
 
     if analysis_text:
-        if not _send_stock_analysis_message(chat_id, analysis_text, parse_mode="HTML", label=f"analysis_text:{tk}"):
-            _log_operational_event("error", "ANALYSIS BUG", ticker=tk, stage="text_delivery", detail="message_send_exhausted")
+        try:
+            bot.send_message(chat_id, analysis_text, parse_mode="HTML")
+        except Exception:
+            logging.exception(f"Error enviando análisis textual para {tk}")
+            try:
+                bot.send_message(chat_id, _strip_html_for_telegram(analysis_text))
+            except Exception:
+                logging.exception(f"Error enviando análisis textual en modo plano para {tk}")
 
     chart_path = None
     chart_caption = None
-    render_errors = []
     try:
-        chart_path, chart_caption, render_errors = _render_stock_analysis_chart_safe(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
+        chart_path, chart_caption = _render_stock_analysis_chart_safe(tk, LAST_KNOWN_ANALYSIS.get(tk), timeframe=tf)
     except Exception:
-        logging.exception(f"CHART BUG | ticker={tk} | stage=render")
-        if analysis_context.get("mode") != "blocked":
-            _log_operational_event("error", "CHART FAILURE", ticker=tk, text_sent_only="true", reason="render_exception")
-            _send_stock_analysis_message(
-                chat_id,
-                _make_card(
-                    "GRÁFICO TÁCTICO",
-                    ["El análisis textual quedó listo, pero no pude generar el gráfico táctico en esta ejecución."],
-                    icon="🖼️"
-                ),
-                parse_mode="HTML",
-                label=f"chart_failure:{tk}"
-            )
-        return
-
-    if not chart_path or not os.path.exists(chart_path):
-        if analysis_context.get("mode") == "blocked":
-            _log_operational_event("warning", "ANALYSIS BLOCKED", ticker=tk, reason="no_honest_chart_basis")
-            return
-        _log_operational_event(
-            "error",
-            "CHART FAILURE",
-            ticker=tk,
-            text_sent_only="true",
-            detail=" | ".join(render_errors) if render_errors else "sin_detalle",
-        )
-        _send_stock_analysis_message(
+        logging.exception(f"Error generando gráfico táctico para {tk}")
+        bot.send_message(
             chat_id,
             _make_card(
                 "GRÁFICO TÁCTICO",
-                ["El análisis textual quedó listo, pero no pude generar el gráfico táctico en esta ejecución."],
+                ["No pude generar el gráfico visual en este momento, pero el análisis textual sí quedó listo."],
                 icon="🖼️"
             ),
-            parse_mode="HTML",
-            label=f"chart_failure:{tk}"
+            parse_mode="HTML"
+        )
+        return
+
+    if not chart_path or not os.path.exists(chart_path):
+        bot.send_message(
+            chat_id,
+            _make_card(
+                "GRÁFICO TÁCTICO",
+                ["No encontré un archivo de gráfico válido para enviarlo, aunque el análisis textual sí quedó listo."],
+                icon="🖼️"
+            ),
+            parse_mode="HTML"
         )
         return
 
@@ -8021,55 +6759,29 @@ def _send_stock_analysis_with_chart(chat_id, ticker, timeframe="1D"):
         with open(chart_path, "rb") as chart_file:
             bot.send_photo(chat_id, chart_file, caption=chart_caption, parse_mode="HTML")
     except Exception:
-        logging.exception(f"CHART BUG | ticker={tk} | stage=send_with_caption")
+        logging.exception(f"Error enviando gráfico táctico con caption para {tk}")
         try:
             with open(chart_path, "rb") as chart_file:
                 bot.send_photo(chat_id, chart_file)
             if chart_caption:
-                _send_stock_analysis_message(chat_id, chart_caption, parse_mode="HTML", label=f"chart_caption:{tk}")
+                bot.send_message(chat_id, chart_caption, parse_mode="HTML")
         except Exception:
-            logging.exception(f"CHART BUG | ticker={tk} | stage=send_without_caption")
-            if analysis_context.get("mode") != "blocked":
-                _log_operational_event("error", "CHART FAILURE", ticker=tk, text_sent_only="true", reason="send_photo_failed")
-                _send_stock_analysis_message(
-                    chat_id,
-                    _make_card(
-                        "GRÁFICO TÁCTICO",
-                        ["El análisis textual quedó listo, pero no pude enviar el gráfico táctico en esta ejecución."],
-                        icon="🖼️"
-                    ),
-                    parse_mode="HTML",
-                    label=f"chart_send_failure:{tk}"
-                )
+            logging.exception(f"Error enviando gráfico táctico sin caption para {tk}")
+            bot.send_message(
+                chat_id,
+                _make_card(
+                    "GRÁFICO TÁCTICO",
+                    ["No pude enviar el gráfico visual en este momento, pero el análisis textual sí quedó listo."],
+                    icon="🖼️"
+                ),
+                parse_mode="HTML"
+            )
     finally:
         if chart_path and os.path.exists(chart_path):
             try:
                 os.remove(chart_path)
             except Exception:
                 pass
-
-
-def _run_stock_analysis_request(chat_id, ticker, timeframe="1D"):
-    tk = remap_ticker(ticker)
-    try:
-        _send_stock_analysis_with_chart(chat_id, tk, timeframe=timeframe)
-    except Exception as exc:
-        logging.exception(f"ANALYSIS BUG | ticker={tk} | stage=request_runner")
-        _send_stock_analysis_message(
-            chat_id,
-            _make_card(
-                f"ANÁLISIS FMP | {get_display_name(tk)}",
-                [
-                    "⚠️ El análisis no pudo completarse en esta ejecución.",
-                    "• El motor activó una salida de contingencia para no dejar la solicitud abierta.",
-                    f"• Detalle técnico breve: {_escape_html(_truncate_text(str(exc), 120))}",
-                ],
-                icon="📉",
-                footer="Reintenta en unos segundos si quieres volver a consultar."
-            ),
-            parse_mode="HTML",
-            label=f"analysis_unhandled:{tk}"
-        )
 
 
 def _monitor_quality_divergences(tracked):
@@ -8132,17 +6844,12 @@ def _monitor_quality_divergences(tracked):
         alerts_sent += 1
 
 
-def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
+def _perform_deep_analysis_fmp(ticker, timeframe="1D"):
     tk = remap_ticker(ticker)
     display_name = get_display_name(tk)
     tf = _normalize_chart_timeframe(timeframe)
 
-    def _finalize(payload, mode="live"):
-        if return_context:
-            return payload, {"mode": mode}
-        return payload
-
-    quote = get_safe_ticker_price(tk) or {}
+    quote = _fetch_fmp_quote(tk) or get_safe_ticker_price(tk) or {}
     try:
         tech = fetch_and_analyze_stock(tk)
     except Exception:
@@ -8151,36 +6858,15 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
     if not isinstance(tech, dict):
         tech = LAST_KNOWN_ANALYSIS.get(tk) if isinstance(LAST_KNOWN_ANALYSIS.get(tk), dict) else None
 
-    quote_is_live = isinstance(quote, dict) and not bool(quote.get("cache_only"))
-    live_price = _safe_float(quote.get("price"), 0.0) if quote_is_live else 0.0
-    if isinstance(tech, dict) and live_price > 0:
-        tech["price"] = live_price
+    if isinstance(tech, dict) and quote.get("price"):
+        tech["price"] = quote["price"]
 
-    if live_price <= 0:
-        snapshot_info = _get_local_snapshot_analysis(tk, tech, timeframe=tf)
-        if snapshot_info:
-            _log_operational_event("info", "ANALYSIS FALLBACK SNAPSHOT", ticker=tk, reason="fmp_unavailable")
-            return _finalize(_build_snapshot_analysis_card(tk, snapshot_info, timeframe=tf), mode="snapshot")
-
-        historical_pack = _build_chart_pack_failsafe(tk, tech, timeframe=tf) or {}
-        if historical_pack:
-            _log_operational_event("info", "ANALYSIS FALLBACK HISTORICAL", ticker=tk, reason="fmp_unavailable")
-            return _finalize(_build_historical_contingency_card(tk, historical_pack, timeframe=tf), mode="contingency")
-
-        _log_operational_event("warning", "ANALYSIS BLOCKED", ticker=tk, reason="no_live_price_no_snapshot")
+    price = _safe_float(quote.get("price") or ((tech or {}).get("price")))
+    if price <= 0:
         fmp_sym = _get_fmp_symbol(tk)
-        issue_text = _get_fmp_user_issue_text(tk, "Sin información de error")
-        issue_category = _get_fmp_issue_category(ticker=tk)
-        diag = _escape_html(issue_text)
+        diag = _escape_html(_FMP_LAST_ERROR.get(tk, "Sin información de error"))
         key_len = len(FMP_API_KEY) if FMP_API_KEY else 0
-        footer_text = {
-            _FMP_ISSUE_NO_KEY: "Configura FMP_API_KEY en el entorno antes de reintentar.",
-            _FMP_ISSUE_QUOTA_LIMIT: "Espera al reinicio de cuota o amplía el plan antes de reintentar.",
-            _FMP_ISSUE_ACCESS_RESTRICTED: "El plan actual no permite esta consulta de FMP.",
-            _FMP_ISSUE_SYMBOL_NOT_FOUND: "Verifica el ticker solo si esperabas datos para ese activo.",
-            _FMP_ISSUE_UPSTREAM_ERROR: "Intenta de nuevo en unos minutos.",
-        }.get(issue_category, "Intenta de nuevo en unos minutos.")
-        return _finalize(_make_card(
+        return _make_card(
             f"ANÁLISIS FMP | {display_name}",
             [
                 "⚠️ No pude obtener un precio válido desde FMP.",
@@ -8190,10 +6876,8 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
                 "🛡️ El análisis se bloqueó para evitar inventar datos.",
             ],
             icon="📉",
-            footer=footer_text
-        ), mode="blocked")
-
-    price = live_price
+            footer="Revisa FMP_API_KEY o el símbolo del activo."
+        )
 
     profile = _fetch_fmp_profile(tk) or {}
     news_items = _fetch_fmp_ticker_news(tk, limit=5)
@@ -8334,11 +7018,8 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
         "macro_score": macro_score,
         "macro_context": macro_context,
         "alert_memory": alert_memory,
-        "chart_timeframe_key": tf,
-        "chart_timeframe_label": chart_timeframe_label,
     })
     LAST_KNOWN_ANALYSIS[tk] = analysis_cache
-    _cache_chart_snapshot(tk, chart_pack, analysis_cache, timeframe=tf)
 
     reward_pct = ((take_profit - price) / price * 100) if price > 0 else 0.0
     risk_pct = ((price - stop_loss) / price * 100) if price > 0 else 0.0
@@ -8626,16 +7307,16 @@ def _perform_deep_analysis_fmp(ticker, timeframe="1D", return_context=False):
         f"• Lectura final: {_escape_html(thesis)}",
     ])
 
-    return _finalize(_make_card(
+    return _make_card(
         f"ANÁLISIS FMP | {display_name}",
         lines,
         icon="📈",
         footer="Análisis institucional con datos FMP."
-    ), mode="live")
+    )
 
 
 def perform_deep_analysis(ticker, timeframe="1D"):
-    return _perform_deep_analysis_fmp(ticker, timeframe=timeframe, return_context=False)
+    return _perform_deep_analysis_fmp(ticker, timeframe=timeframe)
 
     # Bloque legacy conservado debajo por compatibilidad temporal.
     tk = remap_ticker(ticker)
@@ -8815,73 +7496,18 @@ def build_wallet_dashboard():
 
 @bot.message_handler(commands=['check_db'])
 def test_db(message):
-    if str(message.chat.id) != str(CHAT_ID):
-        return
-
-    result = {"ok": False, "error": "timeout"}
-    logging.info("CHECK_DB: comando recibido | chat_id=%s", getattr(getattr(message, "chat", None), "id", "?"))
-    probe_timeout_seconds = 18
-
-    def _safe_text(text):
-        if text is None:
-            return ""
-        return str(text).encode("utf-8", errors="ignore").decode("utf-8")
-
-    def _reply_check_db(text):
-        cleaned = _safe_text(text)
-        try:
-            bot.reply_to(message, cleaned)
-            return
-        except Exception as exc:
-            logging.exception(
-                "CHECK_DB: fallo reply_to | chat_id=%s | exc=%s",
-                getattr(getattr(message, "chat", None), "id", "?"),
-                _safe_text(exc),
-            )
-        try:
-            bot.send_message(chat_id=message.chat.id, text=cleaned)
-        except Exception as exc:
-            logging.exception(
-                "CHECK_DB: fallo send_message fallback | chat_id=%s | exc=%s",
-                getattr(getattr(message, "chat", None), "id", "?"),
-                _safe_text(exc),
-            )
-
-    def _probe():
-        logging.info("CHECK_DB: iniciando prueba de conexión | chat_id=%s", getattr(getattr(message, "chat", None), "id", "?"))
-        try:
-            conn = get_db_connection()
-            if not conn:
-                result["error"] = "conn es None"
-                logging.warning("CHECK_DB: get_db_connection devolvió None")
-                return
-            c = conn.cursor()
-            c.execute('SELECT version();')
-            c.fetchone()
-            result["ok"] = True
-            logging.info("CHECK_DB: conexión validada correctamente")
-        except Exception as exc:
-            result["error"] = _safe_text(exc).replace("\r", " ").replace("\n", " ")[:160]
-            logging.warning("CHECK_DB: error durante la prueba de conexión | detail=%s", result["error"])
-        finally:
-            close_db_connection()
-
-    worker = threading.Thread(target=_probe, daemon=True)
-    worker.start()
-    worker.join(timeout=probe_timeout_seconds)
-
-    if worker.is_alive():
-        logging.warning("CHECK_DB: timeout esperando resultado")
-        _reply_check_db("DB ERROR: timeout")
-        return
-
-    if result["ok"]:
-        _reply_check_db("DB OK. Base de datos en línea.")
-        return
-
-    error_detail = _safe_text(result.get("error") or "desconocido").replace("\r", " ").replace("\n", " ")
-    _reply_check_db(f"DB ERROR: {error_detail[:160]}")
-    return
+    print("â ³ Intentando conectar con Supabase (Timeout de 5 segundos)...")
+    try:
+        conn = get_db_connection()
+        if not conn:
+             print("â Œ ERROR DE RED O AUTENTICACIÓN: conn es None")
+             return
+        c = conn.cursor()
+        c.execute('SELECT version();')
+        v = c.fetchone()[0]
+        print(f"✅ CONEXIÓN ESTABLECIDA\nPostgreSQL OK. Base de Datos en línea y funcional.\n\nDetalle: {v}")
+    except Exception as e:
+        print(f"â Œ ERROR DE RED O AUTENTICACIÓN\nSupabase ha rechazado la conexión.\n\nLog Técnico: {e}")
 
 @bot.message_handler(commands=['clear_all'])
 def command_clear_all(message):
@@ -8897,51 +7523,17 @@ def command_clear_all(message):
     except Exception as e:
         bot.reply_to(message, f"âŒ Fallo al limpiar DB: {e}")
     finally:
-        close_db_connection()
+        pass # conn.close() delegado a pooling global
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if str(message.chat.id) != str(CHAT_ID): return
     logging.info(f"Update recibido | comando=/start | chat={message.chat.id} | from={getattr(getattr(message, 'from_user', None), 'id', '?')}")
     _update_bot_runtime_lock(stage="processing_update", notes=f"/start chat={message.chat.id}", heartbeat=True)
-
-    def _send_start_ready(text, reply_markup):
-        try:
-            bot.reply_to(message, text, reply_markup=reply_markup, parse_mode="HTML")
-            return
-        except Exception as exc:
-            logging.exception(f"/start: fallo reply_to final: {exc}")
-        bot.send_message(message.chat.id, text, reply_markup=reply_markup, parse_mode="HTML")
-
-    from telebot.types import ReplyKeyboardMarkup, KeyboardButton
-    reply_kbd = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    reply_kbd.add(
-        KeyboardButton("🌍 Geopolítica"),
-        KeyboardButton("🐋 Radar de Ballenas")
-    )
-    reply_kbd.add(
-        KeyboardButton("🦅 Niveles SMC"),
-        KeyboardButton("💼 Mi Cartera")
-    )
-
-    bot.send_message(message.chat.id, "🔄 Inicializando Base de Operaciones...", reply_markup=reply_kbd)
-
-    tkrs = []
-    startup_note = None
-    try:
-        tkrs = get_tracked_tickers()
-        if not tkrs:
-            if _BOT_BOOT_WARMUP_STAGE not in {"idle", "ready"}:
-                logging.info(f"/start: warmup activo ({_BOT_BOOT_WARMUP_STAGE}), omitiendo restauración bajo demanda para responder rápido.")
-                startup_note = "El warmup inicial sigue en curso; el radar terminará de poblarse en breve sin bloquear el bot."
-            else:
-                logging.info("/start: radar vacío, intentando restauración bajo demanda.")
-                restore_state_from_telegram()
-                tkrs = get_tracked_tickers()
-    except Exception as e:
-        logging.exception(f"/start: error preparando contexto inicial: {e}")
-        startup_note = "La restauración sigue en curso; el bot responderá aunque los datos tarden un poco."
-
+    restore_state_from_telegram()
+    tkrs = get_tracked_tickers()
+    
+    # 1. INLINE KEYBOARD (Flotante)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton(text="🌍 Geopolítica", callback_data="geopolitics"),
@@ -8952,6 +7544,20 @@ def cmd_start(message):
         InlineKeyboardButton(text="💼 Mi Cartera", callback_data="wallet_status")
     )
 
+    # 2. REPLY KEYBOARD (Botones fijos abajo)
+    from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+    reply_kbd = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    reply_kbd.add(
+        KeyboardButton("🌍 Geopolítica"),
+        KeyboardButton("🐋 Radar de Ballenas")
+    )
+    reply_kbd.add(
+        KeyboardButton("🦅 Niveles SMC"),
+        KeyboardButton("💼 Mi Cartera")
+    )
+    
+    bot.send_message(message.chat.id, "🔄 Inicializando Base de Operaciones...", reply_markup=reply_kbd)
+
     reply_text = _make_card(
         "GÉNESIS 1.0",
         [
@@ -8959,11 +7565,10 @@ def cmd_start(message):
             f"📊 <b>Radar activo:</b> {len(tkrs)} activos",
             "🛡️ <b>Persistencia:</b> cartera protegida y lista para operar",
             "🎛️ Usa los botones de abajo o el panel flotante para navegar",
-            startup_note,
         ],
         icon="🧠"
     )
-    _send_start_ready(reply_text, markup)
+    bot.reply_to(message, reply_text, reply_markup=markup, parse_mode="HTML")
 @bot.message_handler(commands=['reset_pnl'])
 def cmd_reset_pnl(message):
     """Comando oculto para resetear la ganancia mensual a $0.00"""
@@ -9012,12 +7617,11 @@ def cmd_recover(message):
 
 @bot.message_handler(commands=['backup'])
 def cmd_backup(message):
-    if str(message.chat.id) != str(CHAT_ID):
-        return
+    """Forzar un backup manual visible"""
+    if str(message.chat.id) != str(CHAT_ID): return
     save_state_to_telegram()
     tkrs = get_tracked_tickers()
     bot.reply_to(message, f"✅ Backup forzado completado.\n📊 {len(tkrs)} activos guardados en Telegram Cloud.")
-    return
 
 
 @bot.message_handler(commands=['score_alertas'])
@@ -9056,35 +7660,22 @@ from openai import OpenAI
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     if str(message.chat.id) != str(CHAT_ID): return
-
-    def _edit_photo_result(text):
-        bot.edit_message_text(text, chat_id=message.chat.id, message_id=msg.message_id, parse_mode="HTML")
     msg = bot.reply_to(message, "👁️ Analizando gráfica con Visión GÉNESIS y lectura técnica avanzada...")
-    if not OPENAI_API_KEY:
-        _edit_photo_result("⚠️ Error de configuración del modelo: OPENAI_API_KEY no detectada.")
-        return
-
-    if not getattr(message, "photo", None):
-        _edit_photo_result("⚠️ No recibí una imagen válida para analizar.")
-        return
-
     try:
+        if not OPENAI_API_KEY:
+            bot.edit_message_text("⚠️ Error de configuración del modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
+            return
+
         file_info = bot.get_file(message.photo[-1].file_id)
         image_bytes = bot.download_file(file_info.file_path)
         base_img = base64.b64encode(image_bytes).decode('utf-8')
-    except Exception as e:
-        logging.error(f"Error descargando foto de Telegram: {e}")
-        _edit_photo_result("⚠️ No pude descargar la imagen desde Telegram. Intenta enviarla de nuevo.")
-        return
 
-    try:
         client = OpenAI(api_key=OPENAI_API_KEY)
         prompt = (
             "Eres Visión GÉNESIS, un analista técnico institucional.\n\n"
             "Analiza SOLO lo que sea realmente visible en la imagen. No inventes datos, niveles ni indicadores.\n"
             "Mantén un tono profesional, claro y fácil de entender para una persona no experta, pero con criterio serio de mesa institucional.\n"
             "Debes evaluar, si se ven en la imagen: estructura SMC, liquidez, BOS, CHoCH, order blocks, RSI, MACD, volumen, EMA 50, EMA 200, SMA 50, SMA 200, retrocesos de Fibonacci, golden pocket, bandas de Bollinger, canales de Donchian, OBV y divergencias.\n"
-            "Si la imagen no es una gráfica útil o no tiene suficiente contexto visual para una lectura seria, responde EXACTAMENTE: SIN CONTEXTO UTIL.\n"
             "No expliques teoría. Entrega lectura operativa.\n\n"
             "Responde EXACTAMENTE en ESPAÑOL con este formato:\n"
             "📊 CONTEXTO TÉCNICO: [tendencia actual, estructura y liquidez en 2 o 3 líneas].\n"
@@ -9107,33 +7698,65 @@ def handle_photo(message):
             max_tokens=950
         )
 
-        vision_report = ((res.choices[0].message.content or "").strip() if getattr(res, "choices", None) else "")
-        if not vision_report:
-            _edit_photo_result("⚠️ El análisis visual no devolvió contenido útil. Intenta con una imagen más clara.")
-            return
-
-        if vision_report.strip().upper() == "SIN CONTEXTO UTIL":
-            _edit_photo_result("⚠️ No encontré contexto visual suficiente para una lectura seria. Intenta con una gráfica más clara o con más indicadores visibles.")
-            return
-
+        vision_report = res.choices[0].message.content.strip()
         report_lines = []
         for raw_line in vision_report.splitlines():
             cleaned_line = raw_line.strip()
             report_lines.append(_escape_html(cleaned_line) if cleaned_line else "")
 
-        _edit_photo_result(
+        bot.edit_message_text(
             _make_card(
                 "REPORTE VISUAL GÉNESIS",
                 report_lines,
                 icon="👁️",
                 footer="Lectura institucional basada en lo visible en la imagen."
-            )
+            ),
+            chat_id=message.chat.id,
+            message_id=msg.message_id,
+            parse_mode="HTML"
         )
         return
     except Exception as e:
         logging.error(f"Error de visión OpenAI: {e}")
-        _edit_photo_result("⚠️ No pude completar el análisis visual en este momento.")
+        bot.edit_message_text("⚠️ No pude completar el análisis visual en este momento.", chat_id=message.chat.id, message_id=msg.message_id)
         return
+    msg = bot.reply_to(message, "ðŸ‘ï¸ Analizando gráfica con GÉNESIS Vision (GPT-4o OpenAI)...")
+    try:
+        if not OPENAI_API_KEY:
+            bot.edit_message_text("⚠️ Error de configuración de modelo: OPENAI_API_KEY no detectada.", chat_id=message.chat.id, message_id=msg.message_id)
+            return
+
+        file_info = bot.get_file(message.photo[-1].file_id)
+        image_bytes = bot.download_file(file_info.file_path)
+        base_img = base64.b64encode(image_bytes).decode('utf-8')
+        
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        
+        prompt = (
+            "Actúa como una herramienta educativa de análisis técnico. Este análisis es puramente para fines de estudio y simulación, no es asesoría financiera. Analiza la siguiente imagen de manera objetiva.\n\n"
+            "Analiza bajo conceptos Smart Money Concepts (SMC). PROHIBIDO explicar qué significa SMC, Order Blocks, BOS o CHoCH. CERO TEORÃA.\n\n"
+            "Tu respuesta DEBE seguir ESTRICTAMENTE este formato, sin agregar introducciones ni despedidas. Tono frío, analítico y directo a los datos duros:\n\n"
+            "📊 CONTEXTO TÉCNICO: [1 o 2 líneas sobre la tendencia actual y la acción del precio evaluando liquidez y estructura].\n"
+            "🎯 NIVELES CLAVE: [Soportes, Resistencias u Order Blocks con PRECIOS EXACTOS según la gráfica].\n"
+            "⚠️ RIESGO DE INVERSIÓN: [Bajo / Medio / Alto] - [Razón técnica directa].\n"
+            "⚖️ SESGO DIRECCIONAL: [Fuerte Alcista / Fuerte Bajista / Neutral / Esperar Confirmación] - [Justificación descriptiva en una línea, ej. 'Alta probabilidad de rebote en FVG en $150']."
+        )
+
+        res = client.chat.completions.create(
+            model="gpt-4o", 
+            messages=[
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt}, 
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base_img}"}}
+                ]}
+            ], 
+            max_tokens=800
+        )
+        
+        bot.edit_message_text(f"---\n📊 *REPORTE VISUAL GÉNESIS*\n---\n{res.choices[0].message.content.strip()}", chat_id=message.chat.id, message_id=msg.message_id, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Error de visión OpenAI: {e}")
+        bot.edit_message_text("\u26a0\ufe0f Error de configuraci\u00f3n de modelo", chat_id=message.chat.id, message_id=msg.message_id)
 
 def _normalize_menu_text(text):
     cleaned = _clean_outgoing_text((text or "").replace("\ufe0f", ""))
@@ -9503,36 +8126,16 @@ def _send_super_radar_report(chat_id):
             pass
 
 
-def _send_geopolitics_report(chat_id, loading_message_id=None):
+def _send_geopolitics_report(chat_id):
     try:
         report = generar_reporte_macro_manual()
         if report:
-            if loading_message_id:
-                try:
-                    bot.edit_message_text(report, chat_id=chat_id, message_id=loading_message_id, parse_mode="HTML")
-                    return
-                except Exception:
-                    pass
             bot.send_message(chat_id, report, parse_mode="HTML")
         else:
-            fallback_text = "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
-            if loading_message_id:
-                try:
-                    bot.edit_message_text(fallback_text, chat_id=chat_id, message_id=loading_message_id, parse_mode="HTML")
-                    return
-                except Exception:
-                    pass
-            bot.send_message(chat_id, fallback_text, parse_mode="HTML")
+            bot.send_message(chat_id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
     except Exception as e:
         logging.error(f"Error en Geopolítica: {e}")
-        fallback_text = "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa."
-        if loading_message_id:
-            try:
-                bot.edit_message_text(fallback_text, chat_id=chat_id, message_id=loading_message_id, parse_mode="HTML")
-                return
-            except Exception:
-                pass
-        bot.send_message(chat_id, fallback_text, parse_mode="HTML")
+        bot.send_message(chat_id, "☕ Sin eventos de riesgo detectados en este momento. Vigilancia activa.", parse_mode="HTML")
 
 
 def _send_smc_levels_report(chat_id):
@@ -9553,10 +8156,6 @@ def _send_smc_levels_report(chat_id):
         analysis = LAST_KNOWN_ANALYSIS.get(tk)
         if not analysis:
             analysis = fetch_and_analyze_stock(tk)
-        if not isinstance(analysis, dict):
-            cached_analysis = _get_cached_smc_analysis(tk)
-            if cached_analysis:
-                analysis = cached_analysis
         d_name = get_display_name(tk)
 
         if analysis and isinstance(analysis, dict):
@@ -9583,8 +8182,6 @@ def _send_smc_levels_report(chat_id):
                 f"• SL: ${fmt_price(analysis.get('stop_loss', 0))}",
                 f"⚖️ <b>Veredicto:</b> <b>{veredicto}</b>",
             ])
-            if analysis.get('cache_only'):
-                report_lines.append("• Fuente: caché local. FMP está limitado temporalmente.")
         elif isinstance(analysis, str):
             report_lines.extend(["", f"🏦 <b>{d_name}</b>", f"• {analysis}"])
         else:
@@ -9617,11 +8214,6 @@ def handle_text(message):
     if normalized_text == "radar de ballenas":
         bot.reply_to(message, "🐋 Activando Radar de Ballenas...")
         _send_super_radar_report(message.chat.id)
-        return
-
-    if should_handle_money_flow_intent(normalized_text):
-        bot.reply_to(message, "Leyendo Flujo de Capital con Money Flow 5.2 + 5.3...")
-        bot.send_message(message.chat.id, build_money_flow_jarvis_briefing(normalized_text), parse_mode="HTML")
         return
 
     if normalized_text == "niveles smc":
@@ -9659,11 +8251,39 @@ def handle_text(message):
         tf = _extract_analysis_timeframe(intent_text, default="1D")
         display_name = get_display_name(tk)
         bot.reply_to(message, f"📈 Consultando FMP y construyendo un análisis integral en español para {display_name} en {tf}...")
-        threading.Thread(
-            target=_run_stock_analysis_request,
-            args=(message.chat.id, tk, tf),
-            daemon=True
-        ).start()
+        _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
+        return
+
+    # === BOTONES MENÚ RÃPIDO ===
+    if normalized_text in {"🌍 geopolítica", "🛡 geopolítica", "geopolítica"}:
+        bot.reply_to(message, "🌍 Generando Reporte Estratégico GÉNESIS...")
+        _send_geopolitics_report(message.chat.id)
+        return
+
+    if normalized_text in {"🐋 radar de ballenas", "radar de ballenas"}:
+        bot.reply_to(message, "🐋 Activando Radar de Ballenas...")
+        _send_super_radar_report(message.chat.id)
+        return
+
+    if normalized_text in {"🦅 niveles smc", "niveles smc"}:
+        bot.reply_to(message, "🦅 Forzando datos frescos y analizando niveles SMC...")
+        _send_smc_levels_report(message.chat.id)
+        return
+
+    if normalized_text in {"💼 mi cartera", "💼 mi wallet", "💰 mi cartera", "💰 mi wallet", "mi cartera", "mi wallet"}:
+        bot.reply_to(message, "💼 Extrayendo datos robustos y valuando métricas en vivo...")
+        _send_wallet_status(message.chat.id)
+        return
+
+    # === EXPRESIONES REGULARES INTELIGENTES NLP ===
+    if re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text):
+        match = re.search(r'\bANALIZA\b\s+([A-Z0-9\-]+)', intent_text)
+        if match:
+            tk = remap_ticker(match.group(1))
+            tf = _extract_analysis_timeframe(intent_text, default="1D")
+            display_name = get_display_name(tk)
+            bot.reply_to(message, f"🔍 Análisis profundo institucional en {display_name} con gráfico táctico en {tf}...")
+            _send_stock_analysis_with_chart(message.chat.id, tk, timeframe=tf)
         return
 
     if re.search(r'\b(?:ELIMINA|BORRA|BORRAR|ELIMINAR)\b\s+([A-Z0-9\-]+)', intent_text):
@@ -9687,8 +8307,7 @@ def handle_text(message):
 
              validation = get_safe_ticker_price(tk)
              if validation is None:
-                 issue_text = _get_fmp_user_issue_text(tk, "FMP no devolvió datos para ese activo.")
-                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", [f"⚠️ {_escape_html(issue_text)}"], icon="🗂️"), parse_mode="HTML")
+                 bot.reply_to(message, _make_card("GESTIÓN DE CARTERA", ["⚠️ Activo no encontrado en FMP. No se agregó."], icon="🗂️"), parse_mode="HTML")
                  return
              res = add_ticker(tk)
              if res == "DB_ERROR":
@@ -9726,8 +8345,7 @@ def handle_text(message):
                     parse_mode="HTML"
                 )
             else:
-                issue_text = _get_fmp_user_issue_text(tk, "FMP no respondió correctamente en este momento.")
-                bot.reply_to(message, _make_card("CAPITAL REGISTRADO", [f"❌ {_escape_html(issue_text)}"], icon="💰"), parse_mode="HTML")
+                bot.reply_to(message, _make_card("CAPITAL REGISTRADO", [f"❌ No pude fijar el precio real de {display_name} ahora mismo."], icon="💰"), parse_mode="HTML")
         return
 
     if re.search(r'\bVENDI\b', intent_text):
@@ -10043,52 +8661,28 @@ def monitor_proteccion_activos():
 # ----------------- BUCLE CENTINELA HFT PRECISIÓN QUIRÚRGICA -----------------
 def boot_smc_levels_once():
     logging.info("Arrancando Centinela Quirúrgico (30s)...")
-    _set_boot_warmup_stage("restore", "verificando radar inicial", update_runtime=True)
-    tkrs = get_tracked_tickers()
-    if not tkrs:
-        logging.info("BOOT SMC: radar vacío al arrancar, intentando restauración inicial.")
-        restore_state_from_telegram()
-        tkrs = get_tracked_tickers()
-    logging.info(f"Activos cargados en radar: {len(tkrs)} â†’ {tkrs}")
-    warmup_limit = max(int(BOT_BOOT_WARMUP_TICKER_LIMIT), 0)
-    warmup_tickers = tkrs if warmup_limit == 0 else tkrs[:warmup_limit]
-    if warmup_tickers:
-        _set_boot_warmup_stage("smc_warmup", f"precargando {len(warmup_tickers)}/{len(tkrs)} tickers", update_runtime=True)
-        for idx, tk in enumerate(warmup_tickers, start=1):
-            val = fetch_and_analyze_stock(tk)
-            if isinstance(val, dict):
-                LAST_KNOWN_ANALYSIS[tk] = val
-                update_smc_memory(tk, val)
-            if BOT_BOOT_PHASE_PAUSE_SECONDS > 0 and idx < len(warmup_tickers):
-                time.sleep(BOT_BOOT_PHASE_PAUSE_SECONDS)
-        if len(tkrs) > len(warmup_tickers):
-            logging.info(f"BOOT PHASE: {len(tkrs) - len(warmup_tickers)} tickers restantes se calentarán gradualmente en el loop.")
-    else:
-        logging.info("BOOT PHASE: no hay tickers para warmup SMC inicial.")
 
-    _set_boot_warmup_stage("geo_warmup", "precargando contexto geopolítico", update_runtime=True)
+    # PASO CRÃTICO: Restaurar datos ANTES de hacer cualquier otra cosa
+    restore_state_from_telegram()
+
+    tkrs = get_tracked_tickers()
+    logging.info(f"Activos cargados en radar: {len(tkrs)} â†’ {tkrs}")
+
+    for tk in tkrs:
+        val = fetch_and_analyze_stock(tk)
+        if val: update_smc_memory(tk, val)
+
+    # PASO INICIAL: Poblar contexto geopolítico al arrancar
     try:
-        logging.info("BOOT PHASE | stage=geo_warmup | note=inicializando contexto geopolitico")
+        print("DEBUG BOOT: Inicializando contexto geopolitico...")
         genesis_strategic_report_v2(manual=False)
-        _log_operational_event(
-            "info",
-            "BOOT PHASE",
-            stage="geo_ready",
-            sentiment=GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A'),
-            high_risk=len(GENESIS_RISK_CONTEXT.get('high_risk_tickers', []) or []),
-        )
+        print(f"DEBUG BOOT: Contexto listo. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
     except Exception as e:
-        _log_operational_event("warning", "BOOT PHASE", stage="geo_warmup", detail=e)
-    finally:
-        _set_boot_warmup_stage("ready", "warmup inicial completado", update_runtime=True)
+        print(f"DEBUG BOOT: Error inicializando contexto geo: {e}")
 
 def background_loop_proactivo():
     """BUCLE DE ALTA LATENCIA CON DOBLE VERIFICACIÓN Y ANTI-SPAM (TTL 7 DÃAS)"""
-    if BOT_BOOT_GRACE_SECONDS > 0:
-        _set_boot_warmup_stage("grace", f"esperando {BOT_BOOT_GRACE_SECONDS}s antes del bootstrap pesado", update_runtime=True)
-        time.sleep(BOT_BOOT_GRACE_SECONDS)
     boot_smc_levels_once()
-    boot_light_cycles_remaining = max(int(BOT_BOOT_LIGHT_CYCLES), 0)
     sentinel_tick_counter = 0  # Contador para noticias de cartera cada ~20 min
     protection_tick_counter = 0  # Contador para monitor de protección cada ~5 min
     geo_refresh_counter = 0  # Contador para refrescar contexto geopolítico
@@ -10116,20 +8710,7 @@ def background_loop_proactivo():
 
             # === HEARTBEAT: log cada ciclo ===
             tracked = get_tracked_tickers()
-            if loop_counter == 1 or loop_counter % 10 == 0:
-                _log_operational_event("info", "LOOP HEARTBEAT", cycle=loop_counter, tracked=len(tracked), whale_memory=len(WHALE_MEMORY))
-
-            if boot_light_cycles_remaining > 0:
-                current_light_cycle = (max(int(BOT_BOOT_LIGHT_CYCLES), 0) - boot_light_cycles_remaining) + 1
-                logging.info(
-                    "BOOT LOOP: ciclo liviano %s/%s activo; difiriendo escaneos pesados para estabilizar el arranque.",
-                    current_light_cycle,
-                    max(int(BOT_BOOT_LIGHT_CYCLES), 0),
-                )
-                boot_light_cycles_remaining -= 1
-                if boot_light_cycles_remaining == 0:
-                    _set_boot_warmup_stage("ready", "loop operativo completo activado", update_runtime=True)
-                continue
+            print(f"DEBUG HEARTBEAT [{now.strftime('%H:%M:%S')}]: Ciclo #{loop_counter} | {len(tracked)} activos en radar | Whale memory: {len(WHALE_MEMORY)}")
 
             raw_news = check_geopolitical_news_v2()
             unique_news = []
@@ -10156,16 +8737,17 @@ def background_loop_proactivo():
             if geo_refresh_counter >= _GEO_REFRESH_INTERVAL:
                 geo_refresh_counter = 0
                 try:
+                    print(f"DEBUG GEO REFRESH: Actualizando contexto geopolitico...")
                     genesis_strategic_report_v2(manual=False)  # Actualiza GENESIS_RISK_CONTEXT sin enviar
-                    _log_operational_event("info", "GEO REFRESH", sentiment=GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A'), high_risk=len(GENESIS_RISK_CONTEXT.get('high_risk_tickers', []) or []))
+                    print(f"DEBUG GEO REFRESH: Contexto actualizado. Sentimiento: {GENESIS_RISK_CONTEXT.get('sentiment_global', 'N/A')} | High risk: {GENESIS_RISK_CONTEXT.get('high_risk_tickers', [])}")
                 except Exception as e:
-                    _log_operational_event("warning", "GEO REFRESH", detail=e)
+                    print(f"DEBUG GEO REFRESH ERROR: {e}")
 
             if smc_refresh_counter >= _SMC_REFRESH_INTERVAL:
                 smc_refresh_counter = 0
                 try:
                     refreshed = _refresh_smc_snapshot(tracked, force=True)
-                    _log_operational_event("info", "SMC REFRESH", refreshed=refreshed)
+                    print(f"DEBUG SMC REFRESH: {refreshed} niveles actualizados")
                 except Exception as e:
                     logging.error(f"Error refrescando niveles SMC: {e}")
 
@@ -10214,7 +8796,7 @@ def background_loop_proactivo():
                 try:
                     intra = fetch_intraday_data(tk)
                     if not intra:
-                        logging.debug(f"WHALE TRACE | ticker={tk} | intraday=none")
+                        print(f"DEBUG WHALE SCAN: {tk} -> fetch_intraday_data devolvio None")
                         continue
                     cur_price = intra['latest_price']
                     display_name = get_display_name(tk)
@@ -10310,7 +8892,7 @@ def background_loop_proactivo():
 
                         # DEBUG: logear ratios de volumen significativos
                         if spike > 1.0:
-                            logging.debug(f"WHALE TRACE | ticker={tk} | spike={spike:.2f}x | threshold={whale_threshold:.2f}x")
+                            print(f"DEBUG WHALE SCAN {tk}: latest_vol={intra['latest_vol']:,.0f} | avg_vol={intra['avg_vol']:,.0f} | spike={spike:.2f}x | threshold={whale_threshold}x | {'WHALE!' if spike >= whale_threshold else 'no trigger'}")
 
                         if spike >= whale_threshold:
                             current_time = time.time()
@@ -10394,20 +8976,21 @@ def background_loop_proactivo():
                                 else:
                                     vol_display = f"{valid_vol:,} unidades"
 
-                                logging.debug(f"WHALE TRACE | ticker={tk} | winner=true | volume={vol_display} | type={intra['vol_type']} | spike={spike:.2f}x")
+                                print(f"DEBUG WHALE SMART DETECTADA: {display_name} vol={vol_display} tipo={intra['vol_type']} spike={spike:.2f}x")
 
                                 bot_msg = f"---\n{smart_msg}\n---\n<b>{display_name} ({tk})</b>\n\ud83d\udcb0 Capital transferido: <b>${vol_usd:,.0f} USD</b>\n\ud83d\udcca Riesgo T\u00e9cnico: RSI {rsi_w:.1f} | Precio: ${fmt_price(cur_price)}\n\ud83e\udde0 Filtro ganador: {whale_reason}{note}"
                                 _send_alert_with_tracking(CHAT_ID, bot_msg, alert_type="whale_winner", ticker=tk, direction="alcista", entry_price=cur_price, title="Ballena ganadora detectada", summary=whale_reason, signal_strength=max(spike, 1.0), source="radar_ballenas", metadata={"vol_usd": vol_usd, "spike": spike, "rsi": rsi_w, "winner_only": True}, parse_mode="HTML")
                         else:
                             if intra['avg_vol'] == 0:
-                                logging.debug(f"WHALE TRACE | ticker={tk} | avg_vol=0")
+                                print(f"DEBUG WHALE SCAN {tk}: avg_vol=0, no se puede calcular spike")
                 except Exception as e:
                     logging.error(f'Error ticker {tk}: {e}')
                     continue
             # === HEARTBEAT BALLENAS: resumen del escaneo ===
-            _log_operational_event("info", "WHALE LOOP", scanned=f"{whale_scan_count}/{len(tracked)}", detected=whale_detected_count)
+            print(f"DEBUG WHALE SCAN COMPLETADO: {whale_scan_count}/{len(tracked)} escaneados | {whale_detected_count} ballenas detectadas")
 
         except Exception as e:
+            print(f"DEBUG ERROR HFT LOOP: {e}")
             logging.error(f"Error HFT: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "super_radar_24h")
@@ -10424,12 +9007,7 @@ def callback_geopolitics(call):
         bot.answer_callback_query(call.id, text="🌍 Generando Reporte Estratégico GÉNESIS...")
     except Exception:
         pass
-    loading_message = None
-    try:
-        loading_message = bot.send_message(call.message.chat.id, "🌍 Generando reporte estratégico GÉNESIS...")
-    except Exception:
-        loading_message = None
-    _send_geopolitics_report(call.message.chat.id, loading_message_id=getattr(loading_message, "message_id", None))
+    _send_geopolitics_report(call.message.chat.id)
     return
     bot.answer_callback_query(call.id, "🌍 Generando Reporte Estratégico GÉNESIS...")
     _send_geopolitics_report(call.message.chat.id)
@@ -10497,7 +9075,7 @@ def _acquire_bot_leader_lock():
         conn.commit()
 
         if row and row[0] == INSTANCE_ID:
-            _log_operational_event("info", "BOOT TAKEOVER", state="leader_acquired", holder=INSTANCE_ID)
+            logging.info(f"Candado de líder adquirido por {INSTANCE_ID}; esta instancia controlará Telegram.")
             return True
 
         cursor.execute(
@@ -10527,45 +9105,35 @@ def _acquire_bot_leader_lock():
             or (time.time() - float(_LAST_LOCK_DIAG.get("logged_at", 0.0))) >= 60
         )
         if should_log:
-            _log_operational_event(
-                "warning",
-                "BOOT TAKEOVER",
-                dedupe_key=f"boot_takeover_wait:{holder_summary}",
-                dedupe_seconds=30,
-                state="waiting",
-                holder=holder_id,
-                host=holder_host,
-                pid=holder_pid,
-                stage=holder_stage,
-                heartbeat=heartbeat_age,
-                notes=holder_notes or "sin_notas",
+            logging.warning(
+                "Telegram ocupado por otra instancia | holder=%s | host=%s | pid=%s | etapa=%s | heartbeat=%s | notas=%s",
+                holder_id,
+                holder_host,
+                holder_pid,
+                holder_stage,
+                heartbeat_age,
+                holder_notes or "sin notas",
             )
             if holder_host and str(holder_host) != str(INSTANCE_HOSTNAME):
-                _log_operational_event(
-                    "error",
-                    "BOOT TAKEOVER",
-                    dedupe_key=f"boot_takeover_conflict:{holder_host}:{holder_id}",
-                    dedupe_seconds=30,
-                    state="conflict",
-                    self_host=INSTANCE_HOSTNAME,
-                    holder_host=holder_host,
-                    self_id=INSTANCE_ID,
-                    holder_id=holder_id,
+                logging.error(
+                    "Diagnóstico Telegram: hay al menos dos hosts activos intentando operar el bot | self_host=%s | holder_host=%s | self=%s | holder=%s",
+                    INSTANCE_HOSTNAME,
+                    holder_host,
+                    INSTANCE_ID,
+                    holder_id,
                 )
             _LAST_LOCK_DIAG = {"holder": holder_summary, "logged_at": time.time()}
         return False
     except Exception as e:
-        _log_operational_event("warning", "BOOT TAKEOVER", state="lock_check_failed", detail=e)
+        logging.warning(f"No pude adquirir el candado de líder: {e}")
         return True
-    finally:
-        close_db_connection()
 
 
 def _force_bot_leader_takeover(reason):
     try:
         conn = get_db_connection()
         if not conn:
-            _log_operational_event("warning", "BOOT TAKEOVER", state="force_skipped", detail="sin_conexion_db")
+            logging.warning("No pude forzar takeover de Telegram: sin conexión a base de datos.")
             return False
 
         now = datetime.now(timezone.utc)
@@ -10614,21 +9182,17 @@ def _force_bot_leader_takeover(reason):
                 f"id={previous_holder[0]} | host={previous_holder[1]} | pid={previous_holder[2]} | "
                 f"stage={previous_holder[3]} | notes={previous_holder[4]} | heartbeat={previous_holder[5]}"
             )
-        _log_operational_event(
-            "warning",
-            "BOOT TAKEOVER",
-            state="forced",
-            holder=INSTANCE_ID,
-            reason=reason,
-            previous=previous_summary,
+        logging.warning(
+            "TAKEOVER FORZADO DE TELEGRAM | nuevo_holder=%s | motivo=%s | previo=%s",
+            INSTANCE_ID,
+            reason,
+            previous_summary,
         )
         _update_bot_runtime_lock(stage="force_takeover", notes=reason, heartbeat=True)
         return True
     except Exception as e:
-        _log_operational_event("warning", "BOOT TAKEOVER", state="force_failed", detail=e)
+        logging.warning(f"No pude forzar takeover de Telegram: {e}")
         return False
-    finally:
-        close_db_connection()
 
 
 def _get_bot_lock_snapshot():
@@ -10657,8 +9221,6 @@ def _get_bot_lock_snapshot():
     except Exception as e:
         logging.debug(f"No pude leer snapshot del lock de Telegram: {e}")
         return None
-    finally:
-        close_db_connection()
 
 
 def _update_bot_runtime_lock(stage=None, notes=None, heartbeat=False):
@@ -10698,8 +9260,6 @@ def _update_bot_runtime_lock(stage=None, notes=None, heartbeat=False):
     except Exception as e:
         logging.debug(f"No pude actualizar runtime_locks: {e}")
         return False
-    finally:
-        close_db_connection()
 
 
 def _bot_leader_heartbeat_loop():
@@ -10716,23 +9276,19 @@ def _bot_leader_heartbeat_loop():
                 or (time.time() - float(_LAST_LOCK_DIAG.get("guard_logged_at", 0.0))) >= 30
             )
             if should_log:
-                _log_operational_event(
-                    "error",
-                    "BOOT TAKEOVER",
-                    dedupe_key=f"boot_takeover_lost:{holder_id}:{holder_stage}",
-                    dedupe_seconds=30,
-                    state="lock_lost",
-                    self_id=INSTANCE_ID,
-                    holder=holder_id,
-                    stage=holder_stage,
-                    notes=holder_notes or "sin_notas",
+                logging.error(
+                    "Esta instancia perdió el liderazgo de Telegram y soltará el polling | self=%s | holder=%s | etapa=%s | notas=%s",
+                    INSTANCE_ID,
+                    holder_id,
+                    holder_stage,
+                    holder_notes or "sin notas",
                 )
                 _LAST_LOCK_DIAG["guard_holder"] = guard_summary
                 _LAST_LOCK_DIAG["guard_logged_at"] = time.time()
             try:
                 bot.stop_polling()
             except Exception as stop_error:
-                _log_operational_event("warning", "BOOT TAKEOVER", state="stop_polling_failed", detail=stop_error)
+                logging.warning(f"No pude detener polling tras perder el liderazgo: {stop_error}")
             _update_bot_runtime_lock(stage="lock_lost", notes=f"holder={holder_id} etapa={holder_stage}"[:240], heartbeat=False)
             time.sleep(BOT_LOCK_GUARD_SECONDS)
             continue
@@ -10793,34 +9349,30 @@ def _wait_for_bot_leader_lock(retry_seconds=5):
         _update_bot_runtime_lock(stage="esperando_lock", notes=f"reintento en {retry_seconds}s", heartbeat=False)
         if _acquire_bot_leader_lock():
             if waiting_logged:
-                _log_operational_event("info", "BOOT TAKEOVER", state="recovered", self_id=INSTANCE_ID)
+                logging.info("GÉNESIS recuperó el control de Telegram y continuará con el arranque.")
             return True
 
         if not waiting_logged:
-            _log_operational_event("warning", "BOOT TAKEOVER", state="retrying", self_id=INSTANCE_ID)
+            logging.warning("Esta instancia reintentará el control de Telegram automáticamente hasta quedar activa.")
             waiting_logged = True
 
         waited = time.time() - wait_started
         remaining = max(BOT_LOCK_FORCE_AFTER_SECONDS - int(waited), 0)
         if int(waited) == 0 or int(waited) % 5 == 0:
             snapshot = _get_bot_lock_snapshot() or {}
-            _log_operational_event(
-                "warning",
-                "BOOT TAKEOVER",
-                dedupe_key=f"boot_takeover_pending:{snapshot.get('instance_id', 'sin_holder')}:{remaining}",
-                dedupe_seconds=5,
-                state="pending",
-                self_id=INSTANCE_ID,
-                holder=snapshot.get("instance_id", "sin_holder"),
-                stage=snapshot.get("stage", "desconocida"),
-                remaining=f"{remaining}s",
+            logging.warning(
+                "Esperando takeover de Telegram | self=%s | holder=%s | etapa=%s | faltan=%ss para takeover forzado",
+                INSTANCE_ID,
+                snapshot.get("instance_id", "sin_holder"),
+                snapshot.get("stage", "desconocida"),
+                remaining,
             )
         if not force_attempted and waited >= BOT_LOCK_FORCE_AFTER_SECONDS:
             force_attempted = True
             reason = f"espera de {int(waited)}s sin obtener Telegram"
-            _log_operational_event("warning", "BOOT TAKEOVER", state="forcing", threshold=f"{BOT_LOCK_FORCE_AFTER_SECONDS}s")
+            logging.warning("Se alcanzó el umbral de takeover forzado (%ss). Intentando tomar Telegram.", BOT_LOCK_FORCE_AFTER_SECONDS)
             if _force_bot_leader_takeover(reason):
-                _log_operational_event("warning", "BOOT TAKEOVER", state="forced_ready", self_id=INSTANCE_ID)
+                logging.warning("Takeover forzado ejecutado. Esta instancia intentará iniciar polling.")
                 return True
 
         time.sleep(retry_seconds)
@@ -10833,24 +9385,25 @@ def main():
     _wait_for_bot_leader_lock()
     _update_bot_runtime_lock(stage="boot", notes="lock adquirido", heartbeat=False)
 
+    t = threading.Thread(target=background_loop_proactivo, daemon=True)
+    t.start()
+    
     # 1. FORZAR CIERRE DE CONEXIÓN: Elimina conflicto getUpdates
-    _log_operational_event("info", "BOOT PHASE", stage="webhook_cleanup", note="limpiando webhook para evitar conflictos getUpdates")
+    print("DEBUG BOOT: Limpiando webhook para evitar conflictos getUpdates...")
     try:
         _update_bot_runtime_lock(stage="boot", notes="limpiando webhook", heartbeat=False)
         bot.delete_webhook(drop_pending_updates=True)
         time.sleep(1)
     except Exception as e:
-        _log_operational_event("warning", "BOOT PHASE", stage="webhook_cleanup", detail=f"ignored_error: {e}")
+        print(f"DEBUG BOOT: Webhook clear error (ignorado): {e}")
         _update_bot_runtime_lock(stage="boot", notes=f"webhook clear error: {e}", heartbeat=False)
 
     # Polling con auto-reconexion
     _log_telegram_boot_diagnostics()
     _update_bot_runtime_lock(stage="boot", notes="diagnóstico telegram completado", heartbeat=False)
     _start_bot_leader_heartbeat()
-    _log_operational_event("info", "BOOT PHASE", stage="polling_ready", note="lanzando background proactivo tras saneamiento inicial de Telegram")
-    t = threading.Thread(target=background_loop_proactivo, daemon=True)
-    t.start()
-    _log_operational_event("info", "BOOT PHASE", stage="polling_start", note="sistema activo")
+    print("DEBUG BOOT: Iniciando Telegram polling...")
+    print(">>> SISTEMA GENESIS ACTIVO <<<")
     while True:
         if not _acquire_bot_leader_lock():
             _update_bot_runtime_lock(stage="esperando_lock", notes="liderazgo perdido antes de polling", heartbeat=False)
@@ -10858,12 +9411,12 @@ def main():
             _log_telegram_boot_diagnostics()
         try:
             _update_bot_runtime_lock(stage="polling", notes="infinity_polling activo", heartbeat=True)
-            _log_operational_event("info", "POLLING", state="active", mode="infinity_polling")
+            print("GENESIS ESTA VIVO Y ESCUCHANDO...")
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
             _update_bot_runtime_lock(stage="polling_error", notes=str(e)[:240], heartbeat=True)
+            print(f"X TELEGRAM POLLING CAIDO: {e}")
             wait_seconds = 30 if "409" in str(e) else 5
-            _log_operational_event("error", "POLLING", state="error", wait=f"{wait_seconds}s", detail=e)
             if "409" in str(e):
                 try:
                     bot.delete_webhook(drop_pending_updates=False)
@@ -10873,8 +9426,10 @@ def main():
                     _wait_for_bot_leader_lock()
                     continue
             _log_telegram_boot_diagnostics()
+            print(f"DEBUG: Reconectando en {wait_seconds} segundos...")
             time.sleep(wait_seconds)
-            _log_operational_event("warning", "POLLING", state="retrying")
+            print("DEBUG: Reintentando polling...")
 
 if __name__ == "__main__":
     main()
+
