@@ -975,6 +975,20 @@ body:has(#view-command-center.is-visible) .topbar-search {
   background: rgba(169, 189, 201, 0.08);
 }
 
+.asset-action-button {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 6px 9px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(169, 189, 201, 0.09);
+  border: 1px solid rgba(220, 229, 240, 0.09);
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .table-note {
   margin: 10px 0 0;
   color: var(--muted);

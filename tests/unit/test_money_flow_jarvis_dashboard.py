@@ -45,6 +45,7 @@ class MoneyFlowJarvisDashboardTests(unittest.TestCase):
         self.assertIn("NVDA merece atencion", payload["answer"])
         self.assertIn("strong_inflow", payload["answer"])
         self.assertIn("compatible con reaccion a earnings", payload["answer"])
+        self.assertIn("no tengo entidad confirmada", payload["answer"])
         self.assertFalse(payload["source_status"]["fmp_live_queries_enabled"])
 
     @patch("services.dashboard.get_money_flow_jarvis_answer.get_money_flow_causal_snapshot")
@@ -75,6 +76,31 @@ class MoneyFlowJarvisDashboardTests(unittest.TestCase):
         self.assertNotIn("institucionales comprando", serialized)
         self.assertNotIn("causa confirmada", serialized)
         self.assertNotIn("compra recomendada", serialized)
+
+    @patch("services.dashboard.get_money_flow_jarvis_answer.get_money_flow_causal_snapshot")
+    @patch("services.dashboard.get_money_flow_jarvis_answer.get_money_flow_detection_snapshot")
+    def test_global_question_does_not_treat_common_words_as_tickers(self, mock_detection: Mock, mock_causal: Mock) -> None:
+        mock_detection.return_value = {
+            "status": "detection_ready_causality_disabled",
+            "items": [{"ticker": "BNO", "primary_signal": "insufficient_confirmation"}],
+        }
+        mock_causal.return_value = {
+            "status": "probable_causality_ready",
+            "items": [
+                {
+                    "ticker": "BNO",
+                    "money_flow_primary_signal": "insufficient_confirmation",
+                    "probable_cause": "inconclusive",
+                    "probable_cause_label": "No concluyente",
+                    "confidence": "low",
+                }
+            ],
+        }
+
+        payload = get_money_flow_jarvis_answer("que esta viendo Dinero Grande ahora")
+
+        self.assertEqual(payload["matched_ticker"], "")
+        self.assertIn("Ballenas identificadas: ninguna entidad confirmada", payload["answer"])
 
 
 if __name__ == "__main__":

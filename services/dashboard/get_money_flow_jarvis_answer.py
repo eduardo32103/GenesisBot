@@ -17,6 +17,10 @@ _STOP_WORDS = {
     "ACTIVO",
     "FLUJO",
     "CAPITAL",
+    "DINERO",
+    "GRANDE",
+    "VIENDO",
+    "AHORA",
     "MONEY",
     "FLOW",
     "SENAL",
@@ -93,10 +97,26 @@ def _normalize_item(item: dict[str, Any]) -> dict[str, Any]:
     signal = str(item.get("money_flow_primary_signal") or item.get("primary_signal") or "insufficient_confirmation").strip()
     cause = str(item.get("probable_cause") or "").strip()
     non_conclusive = signal == "insufficient_confirmation" or cause == "inconclusive"
+    whale = item.get("whale") if isinstance(item.get("whale"), dict) else {}
+    whale_entity = str(
+        whale.get("entity")
+        or item.get("entity")
+        or item.get("institution")
+        or item.get("fund")
+        or item.get("holder")
+        or item.get("insider")
+        or ""
+    ).strip()
+    whale_identified = bool(whale.get("identified") or whale_entity)
     return {
         "ticker": str(item.get("ticker") or "").strip().upper(),
         "signal": signal,
         "signal_label": str(item.get("money_flow_primary_label") or item.get("primary_label") or signal).strip(),
+        "flow_detected": bool(item.get("flow_detected", signal != "insufficient_confirmation")),
+        "whale_identified": whale_identified,
+        "whale_entity": whale_entity,
+        "whale_note": str(whale.get("note") or "Flujo detectado, sin ballena identificada.").strip(),
+        "movement_value": str(whale.get("movement_value") or item.get("movement_value") or item.get("amount_usd") or "").strip(),
         "probable_cause": cause or "inconclusive",
         "probable_cause_label": str(item.get("probable_cause_label") or "No concluyente").strip(),
         "confidence": _format_confidence(item.get("confidence")),
@@ -127,14 +147,29 @@ def _extract_requested_ticker(question: str, items: list[dict[str, Any]]) -> str
 
 
 def _answer_for_item(item: dict[str, Any]) -> str:
+    flow_text = "Flujo detectado" if item.get("flow_detected") else "Flujo no concluyente"
+    signal_text = (
+        f"{item['signal']} ({item['signal_label']})"
+        if item.get("signal_label") and item["signal_label"] != item["signal"]
+        else item["signal"]
+    )
+    whale_text = (
+        f"Ballena identificada: {item['whale_entity']}."
+        if item.get("whale_identified")
+        else "Ballena identificada: no tengo entidad confirmada."
+    )
+    amount_text = f"Monto: {item['movement_value']}." if item.get("movement_value") else "Monto: no confirmado."
+    when_text = f"Fecha util: {item['timestamp']}." if item.get("timestamp") else "Fecha util: no confirmada."
     if item["attention"] == "no concluyente":
         return (
-            f"{item['ticker']} queda no concluyente. Senal: {item['signal']}. "
+            f"{item['ticker']} queda no concluyente. {flow_text}: {signal_text}. "
+            f"{whale_text} {amount_text} {when_text} "
             f"Causa probable: {item['probable_cause_label']}. Confiabilidad: {item['confidence']}. "
             "Faltan datos suficientes para elevar la lectura."
         )
     return (
-        f"{item['ticker']} merece atencion. Senal: {item['signal']} ({item['signal_label']}). "
+        f"{item['ticker']} merece atencion. {flow_text}: {signal_text}. "
+        f"{whale_text} {amount_text} {when_text} "
         f"Causa probable: {item['probable_cause_label']}. Confiabilidad: {item['confidence']}. "
         "No es recomendacion de compra o venta."
     )
@@ -142,15 +177,24 @@ def _answer_for_item(item: dict[str, Any]) -> str:
 
 def _answer_global(items: list[dict[str, Any]]) -> str:
     actionable = [item for item in items if item["attention"] == "merece atencion"]
+    identified_whales = [item for item in items if item.get("whale_identified")]
     if actionable:
         tickers = ", ".join(item["ticker"] for item in actionable[:3])
         first = actionable[0]
+        whale_text = (
+            f"Ballenas identificadas: {', '.join(item['whale_entity'] for item in identified_whales[:3])}."
+            if identified_whales
+            else "Ballenas identificadas: ninguna entidad confirmada."
+        )
         return (
-            f"Atencion primero en {tickers}. Principal: {first['ticker']} con {first['signal']}. "
-            f"Causa probable: {first['probable_cause_label']}. Confiabilidad: {first['confidence']}."
+            f"Atencion primero en {tickers}. Flujo detectado: {first['ticker']} con {first['signal']} ({first['signal_label']}). "
+            f"{whale_text} Causa probable: {first['probable_cause_label']}. Confiabilidad: {first['confidence']}."
         )
     tickers = ", ".join(item["ticker"] for item in items[:3])
-    return f"No hay Money Flow concluyente en {tickers}. Mantener vigilancia; faltan confirmaciones reales."
+    return (
+        f"No hay Money Flow concluyente en {tickers}. "
+        "Ballenas identificadas: ninguna entidad confirmada. Mantener vigilancia; faltan confirmaciones reales."
+    )
 
 
 def _format_confidence(value: Any) -> str:

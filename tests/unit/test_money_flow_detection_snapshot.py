@@ -89,6 +89,8 @@ class MoneyFlowDetectionSnapshotTests(unittest.TestCase):
         self.assertTrue(nvda_signals["rotation"]["detected"])
         self.assertTrue(bno_signals["strong_outflow"]["detected"])
         self.assertTrue(iau_signals["price_volume_divergence"]["detected"])
+        self.assertFalse(by_ticker["NVDA"]["whale"]["identified"])
+        self.assertIn("sin ballena identificada", by_ticker["NVDA"]["whale"]["note"])
         self.assertEqual(by_ticker["NVDA"]["language_guardrail"], "No se afirma institucionalidad ni causalidad.")
 
     @patch("services.dashboard.get_money_flow_detection_snapshot.get_macro_activity_snapshot")

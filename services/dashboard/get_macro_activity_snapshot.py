@@ -22,9 +22,9 @@ def _empty_macro_snapshot(note: str) -> dict[str, Any]:
             "bull_pct": 50,
             "bear_pct": 50,
         },
-        "bias_label": "macro mixto",
+        "bias_label": "sin contexto macro activo",
         "confidence": 0,
-        "summary": "Sin contexto macro persistido todavía.",
+        "summary": "Sin contexto macro activo.",
         "dominant_risk": "",
         "high_risk_tickers": [],
         "sensitive_tickers": [],
@@ -53,7 +53,7 @@ def _normalize_macro(raw: Any) -> dict[str, Any]:
     headlines = macro.get("headlines") if isinstance(macro.get("headlines"), list) else []
     return {
         "available": bool(macro.get("available", False)),
-        "note": str(macro.get("note") or "Sin snapshot macro disponible.").strip(),
+        "note": str(macro.get("note") or "Sin contexto macro activo.").strip(),
         "last_update": str(macro.get("last_update") or "").strip(),
         "sentiment": {
             "raw": float(sentiment.get("raw", 0.0) or 0.0),
@@ -62,9 +62,9 @@ def _normalize_macro(raw: Any) -> dict[str, Any]:
             "bull_pct": int(sentiment.get("bull_pct", 50) or 50),
             "bear_pct": int(sentiment.get("bear_pct", 50) or 50),
         },
-        "bias_label": str(macro.get("bias_label") or "macro mixto").strip(),
+        "bias_label": str(macro.get("bias_label") or "sin contexto macro activo").strip(),
         "confidence": int(macro.get("confidence", 0) or 0),
-        "summary": str(macro.get("summary") or "Sin contexto macro persistido todavía.").strip(),
+        "summary": str(macro.get("summary") or "Sin contexto macro activo.").strip(),
         "dominant_risk": str(macro.get("dominant_risk") or "").strip(),
         "high_risk_tickers": [str(item or "").strip().upper() for item in macro.get("high_risk_tickers", []) if str(item or "").strip()],
         "sensitive_tickers": [str(item or "").strip().upper() for item in macro.get("sensitive_tickers", []) if str(item or "").strip()],
@@ -98,7 +98,7 @@ def _normalize_activity(raw: Any) -> dict[str, Any]:
             }
         )
     return {
-        "note": str(payload.get("note") or "Sin actividad operativa persistida todavía.").strip(),
+        "note": str(payload.get("note") or "Sin actividad operativa guardada.").strip(),
         "generated_at": str(payload.get("generated_at") or "").strip(),
         "items": normalized_items,
     }
@@ -110,11 +110,11 @@ def get_macro_activity_snapshot() -> dict[str, Any]:
 
     macro = _normalize_macro((macro_payload or {}).get("macro"))
     if not macro_payload:
-        macro = _empty_macro_snapshot("Todavía no hay snapshot macro persistido desde el runtime.")
+        macro = _empty_macro_snapshot("Sin contexto macro activo.")
 
     activity = _normalize_activity(activity_payload)
     if not activity_payload:
-        activity = _empty_activity_snapshot("Todavía no hay actividad operativa persistida desde el runtime.")
+        activity = _empty_activity_snapshot("Sin actividad operativa guardada.")
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),

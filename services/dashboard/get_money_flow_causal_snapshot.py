@@ -367,6 +367,15 @@ def _build_item(item: dict[str, Any], database_url: str, macro: dict[str, Any]) 
         "money_flow_timestamp": str(item.get("timestamp") or "").strip(),
         "related_alerts_count": len(related_alerts),
         "related_alerts": related_alerts,
+        "whale": item.get("whale") if isinstance(item.get("whale"), dict) else {
+            "identified": False,
+            "entity": "",
+            "movement_value": "",
+            "movement_type": "",
+            "source": "",
+            "confidence": "no concluyente",
+            "note": "Flujo detectado, sin ballena identificada.",
+        },
         **reading,
     }
 

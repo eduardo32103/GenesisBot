@@ -89,6 +89,18 @@ def _detected_signal(signal_type: str, *, label: str, reason: str, evidence: dic
     }
 
 
+def _empty_whale_state() -> dict[str, Any]:
+    return {
+        "identified": False,
+        "entity": "",
+        "movement_value": "",
+        "movement_type": "",
+        "source": "",
+        "confidence": "no concluyente",
+        "note": "Flujo detectado, sin ballena identificada.",
+    }
+
+
 def _extract_market_metrics(item: dict[str, Any], persisted_metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
     ticker = _normalize_ticker(item.get("ticker"))
     metrics = persisted_metrics.get(ticker) or {}
@@ -264,11 +276,13 @@ def _detect_for_item(item: dict[str, Any], macro: dict[str, Any], persisted_metr
         "ticker": ticker,
         "primary_signal": primary["type"],
         "primary_label": primary["label"],
+        "flow_detected": primary["type"] != "insufficient_confirmation",
         "detected_signal_count": len(detected),
         "signals": signals,
         "timestamp": metrics.get("timestamp") or "",
         "source": metrics.get("source") or "",
         "origin": metrics.get("origin") or "",
+        "whale": _empty_whale_state(),
         "language_guardrail": "No se afirma institucionalidad ni causalidad.",
     }
 

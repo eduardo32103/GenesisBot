@@ -55,15 +55,31 @@ _TICKER_STOPWORDS = {
     "ANALISIS",
     "ANALIZA",
     "ANALIZAR",
+    "CONTRA",
     "DATOS",
+    "DICE",
+    "DICEN",
+    "DIRECTO",
+    "DIRECTOS",
     "DISPONIBLES",
+    "GRANDE",
+    "AHORA",
+    "VIENDO",
+    "OPINA",
+    "OPINAS",
+    "OPINION",
+    "COMPARA",
+    "COMPARAR",
+    "VERSUS",
     "REVISA",
     "REVISAR",
+    "MUNDO",
+    "MACRO",
 }
 _TECHNICAL_TRANSLATIONS = {
     "alerts_origin": "origen de alertas",
     "causal": "causalidad probable",
-    "degraded": "degradado",
+    "degraded": "datos parciales",
     "detection": "deteccion Money Flow",
     "detection_ready_causality_disabled": "deteccion lista; causalidad no confirmada",
     "Faltan credenciales de Telegram en el entorno.": "Hay una dependencia legacy sin configurar en el entorno.",
@@ -76,7 +92,7 @@ _TECHNICAL_TRANSLATIONS = {
     "snapshot_failure": "snapshots no disponibles",
     "snapshots": "snapshots activos",
     "ticker_not_found": "ticker sin datos suficientes",
-    "unavailable": "sin dato disponible",
+    "unavailable": "sin datos disponibles",
     "available": "disponible",
     "unknown": "sin dato",
 }
@@ -90,24 +106,31 @@ def get_genesis_answer(
 ) -> dict[str, Any]:
     clean_question = str(question or "").strip()
     clean_panel_context = _normalize_panel_context(panel_context)
-    detected_ticker = _detect_ticker_from_question(clean_question)
+    detected_tickers = _detect_tickers_from_question(clean_question)
+    detected_ticker = detected_tickers[0] if detected_tickers else ""
     requested_context = _normalize_context(context or "general")
     panel_scope = _normalize_context(clean_panel_context.get("scope") or "general")
     clean_context = panel_scope if requested_context == "general" and panel_scope != "general" else requested_context
     if detected_ticker and clean_context == "general":
         clean_context = "ticker"
-    clean_ticker = str(ticker or detected_ticker or clean_panel_context.get("ticker") or "").strip().upper()
+    clean_ticker = str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
     intent = _resolve_intent(clean_question, clean_context)
+    is_comparison = intent == "asset_priority" and _is_comparison_question(clean_question) and len(detected_tickers) >= 2
 
     try:
         if intent == "system":
             answer, evidence, source_status = _answer_system()
         elif intent == "asset_priority":
-            answer, evidence, source_status = _answer_asset_priority(clean_ticker)
+            if is_comparison:
+                answer, evidence, source_status = _answer_ticker_comparison(detected_tickers[:2])
+            else:
+                answer, evidence, source_status = _answer_asset_priority(clean_ticker)
         elif intent == "money_flow":
             answer, evidence, source_status = _answer_money_flow(clean_question, clean_ticker)
         elif intent == "alerts":
             answer, evidence, source_status = _answer_alerts()
+        elif intent == "macro":
+            answer, evidence, source_status = _answer_macro()
         elif intent == "reliability":
             answer, evidence, source_status = _answer_reliability()
         else:
@@ -138,6 +161,7 @@ def get_genesis_answer(
         "context": {
             "scope": clean_context,
             "ticker": clean_ticker,
+            "tickers": detected_tickers,
             "active_view": clean_panel_context.get("active_view") or "",
             "label": clean_panel_context.get("label") or "",
             "signals": {
@@ -165,13 +189,14 @@ def get_genesis_fallback_answer(
 ) -> dict[str, Any]:
     clean_question = str(question or "").strip()
     clean_panel_context = _normalize_panel_context(panel_context)
-    detected_ticker = _detect_ticker_from_question(clean_question)
+    detected_tickers = _detect_tickers_from_question(clean_question)
+    detected_ticker = detected_tickers[0] if detected_tickers else ""
     requested_context = _normalize_context(context or "general")
     panel_scope = _normalize_context(clean_panel_context.get("scope") or "general")
     clean_context = panel_scope if requested_context == "general" and panel_scope != "general" else requested_context
     if detected_ticker and clean_context == "general":
         clean_context = "ticker"
-    clean_ticker = str(ticker or detected_ticker or clean_panel_context.get("ticker") or "").strip().upper()
+    clean_ticker = str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
     intent = _resolve_intent(clean_question, clean_context)
     answer = _fallback_answer_for_reason(reason, clean_ticker)
     evidence = _compact_evidence(
@@ -199,6 +224,7 @@ def get_genesis_fallback_answer(
         "context": {
             "scope": clean_context,
             "ticker": clean_ticker,
+            "tickers": detected_tickers,
             "active_view": clean_panel_context.get("active_view") or "",
             "label": clean_panel_context.get("label") or "",
             "signals": {
@@ -227,16 +253,27 @@ def _fallback_answer_for_reason(reason: str, ticker: str = "") -> str:
 
 
 def _detect_ticker_from_question(question: str) -> str:
+    tickers = _detect_tickers_from_question(question)
+    return tickers[0] if tickers else ""
+
+
+def _detect_tickers_from_question(question: str) -> list[str]:
     normalized_question = _normalize(question).upper()
+    tickers: list[str] = []
     for raw in re.findall(r"\b[A-Z][A-Z0-9.]{1,9}\b", normalized_question):
         token = raw.strip().upper().rstrip(".")
         if token in _TICKER_STOPWORDS:
             continue
         if any(char.isdigit() for char in token) and not any(char.isalpha() for char in token):
             continue
-        if 2 <= len(token) <= 10:
-            return token
-    return ""
+        if 2 <= len(token) <= 10 and token not in tickers:
+            tickers.append(token)
+    return tickers
+
+
+def _is_comparison_question(question: str) -> bool:
+    text = f" {_normalize(question)} "
+    return any(token in text for token in (" compara ", " comparar ", " contra ", " versus ", " vs "))
 
 
 def _normalize(value: str) -> str:
@@ -246,7 +283,7 @@ def _normalize(value: str) -> str:
 
 def _normalize_context(value: str) -> str:
     normalized = _normalize(value).replace("-", "_").replace(" ", "_")
-    if normalized in {"ticker", "radar", "alerts", "money_flow", "general", "reliability", "executive_queue"}:
+    if normalized in {"ticker", "radar", "alerts", "money_flow", "general", "reliability", "executive_queue", "macro"}:
         return normalized
     if normalized in {"alertas"}:
         return "alerts"
@@ -256,17 +293,23 @@ def _normalize_context(value: str) -> str:
         return "reliability"
     if normalized in {"cola_ejecutiva", "prioridad_global"}:
         return "executive_queue"
+    if normalized in {"mundo", "macro", "noticias", "geopolitica"}:
+        return "macro"
     return "general"
 
 
 def _resolve_intent(question: str, context: str = "general") -> str:
     text = _normalize(question)
-    if any(token in text for token in ("flujo", "capital", "money flow", "senal money")):
+    if any(token in text for token in ("flujo", "capital", "money flow", "senal money", "dinero grande", "ballena", "ballenas")):
         return "money_flow"
     if any(token in text for token in ("alerta", "alertas", "evento", "eventos")):
         return "alerts"
+    if any(token in text for token in ("macro", "mundo", "noticia", "noticias", "geopolit", "geopolitica")):
+        return "macro"
     if any(token in text for token in ("confiable", "confiabilidad", "confianza", "fiable")):
         return "reliability"
+    if _is_comparison_question(question):
+        return "asset_priority"
     if any(token in text for token in ("sistema", "salud", "estado", "runtime")):
         return "system"
     if any(token in text for token in ("activo", "revisar", "prioridad", "mirar primero", "que mirar")):
@@ -277,6 +320,8 @@ def _resolve_intent(question: str, context: str = "general") -> str:
         return "alerts"
     if context == "reliability":
         return "reliability"
+    if context == "macro":
+        return "macro"
     if context == "executive_queue":
         return "asset_priority"
     if context in {"ticker", "radar"}:
@@ -362,6 +407,7 @@ def _build_response_blocks(
         "executive_read": _executive_read(intent, context, reliability),
         "main_signals": signals[:3],
         "risks": risks[:3],
+        "money_flow": _money_flow_block(intent, source_status, evidence, panel_context),
         "reliability": reliability,
         "next_step": _next_step(intent, reliability),
     }
@@ -426,6 +472,27 @@ def _resolve_risks(evidence: list[str], source_status: dict[str, str], reliabili
     return _compact_evidence(risks) or ["Sin freno dominante visible, pero la lectura sigue siendo conservadora."]
 
 
+def _money_flow_block(
+    intent: str,
+    source_status: dict[str, str],
+    evidence: list[str],
+    panel_context: dict[str, Any],
+) -> str:
+    if intent == "money_flow":
+        clean = _compact_evidence(evidence)
+        return clean[0] if clean else "Flujo detectado y ballenas separadas; sin entidad confirmada si no aparece en fuentes reales."
+    section = panel_context.get("money_flow") or {}
+    summary = _humanize_text(section.get("summary", ""))
+    detected = _humanize_text(section.get("detected", ""))
+    if summary:
+        return summary
+    if detected:
+        return f"Dinero Grande reporta {detected}; confirmar entidad antes de hablar de ballena."
+    if source_status.get("market_data") == "available":
+        return "Datos directos disponibles para precio; sin ballena identificada en esta lectura."
+    return "Sin lectura de ballena identificada; cualquier flujo queda no concluyente hasta confirmar entidad y monto."
+
+
 def _executive_read(intent: str, context: str, reliability: str) -> str:
     if reliability in {"baja", "no concluyente"}:
         base = "Lectura util como orientacion, no como decision fuerte."
@@ -446,7 +513,7 @@ def _executive_read(intent: str, context: str, reliability: str) -> str:
 
 def _next_step(intent: str, reliability: str) -> str:
     if reliability in {"baja", "no concluyente"}:
-        return "Esperar confirmacion o revisar la fuente degradada antes de actuar."
+        return "Esperar confirmacion o revisar la fuente limitada antes de actuar."
     if intent == "alerts":
         return "Revisar la alerta principal y su validacion."
     if intent == "money_flow":
@@ -551,6 +618,55 @@ def _answer_asset_priority(ticker: str = "") -> tuple[str, list[str], dict[str, 
     }
 
 
+def _answer_ticker_comparison(tickers: list[str]) -> tuple[str, list[str], dict[str, str]]:
+    details = []
+    for ticker in tickers[:2]:
+        normalized = str(ticker or "").strip().upper()
+        if not normalized:
+            continue
+        detail = _safe_dashboard_snapshot(
+            lambda normalized=normalized: get_dashboard_radar_ticker_drilldown(normalized),
+            lambda normalized=normalized: {"found": False, "ticker": normalized, "error": "ticker_not_found"},
+            f"radar_drilldown_{normalized}",
+        )
+        details.append(detail if isinstance(detail, dict) else {"found": False, "ticker": normalized})
+
+    labels = [str(detail.get("ticker") or detail.get("symbol") or "").strip().upper() for detail in details]
+    labels = [label for label in labels if label]
+    summaries = []
+    evidence = []
+    any_price = False
+    for detail in details:
+        ticker = str(detail.get("ticker") or detail.get("symbol") or "").strip().upper()
+        if not ticker:
+            continue
+        price = detail.get("current_price")
+        decision = str(detail.get("decision") or "no concluyente").strip()
+        reason = _clean_sentence(detail.get("main_reason") or detail.get("error") or "sin evidencia suficiente")
+        if detail.get("found") and price is not None:
+            summaries.append(f"{ticker}: precio actual {price} con datos directos; lectura {decision}")
+            evidence.append(f"{ticker}: {reason}")
+            any_price = True
+        elif detail.get("found"):
+            summaries.append(f"{ticker}: sin precio directo confirmado; lectura {decision}")
+            evidence.append(f"{ticker}: {reason}")
+        else:
+            summaries.append(f"{ticker}: sin datos suficientes dentro del panel")
+            evidence.append(f"{ticker}: no concluyente por falta de evidencia")
+
+    title = " contra ".join(labels[:2]) if labels else "comparacion solicitada"
+    answer = (
+        f"Comparacion {title}: " + "; ".join(summaries) + ". "
+        "No mezclo el contexto anterior; cada ticker queda evaluado con su propia ficha disponible."
+    )
+    return answer, _compact_evidence(evidence), {
+        "reliability": "media" if any_price else "no concluyente",
+        "queue_source": "comparacion de fichas tacticas",
+        "market_data": "available" if any_price else "unavailable",
+        "snapshots": _snapshot_status(*details),
+    }
+
+
 def _answer_asset_drilldown(detail: dict[str, Any]) -> tuple[str, list[str], dict[str, str]]:
     ticker = str(detail.get("ticker") or detail.get("symbol") or "").strip().upper()
     current_price = detail.get("current_price")
@@ -559,8 +675,11 @@ def _answer_asset_drilldown(detail: dict[str, Any]) -> tuple[str, list[str], dic
     profile = detail.get("profile") if isinstance(detail.get("profile"), dict) else {}
     market_data = detail.get("market_data") if isinstance(detail.get("market_data"), dict) else {}
 
+    direct_data_available = bool(current_price is not None and (market_data.get("live_ready") or market_data.get("source") == "datos_directos"))
     if current_price is None:
         price_text = "sin precio actual confirmado"
+    elif direct_data_available:
+        price_text = f"precio actual {current_price} con datos directos"
     else:
         price_text = f"precio actual {current_price}"
 
@@ -629,7 +748,7 @@ def _answer_reliability() -> tuple[str, list[str], dict[str, str]]:
     rel = reliability.get("reliability") or {}
     answer = (
         f"Confiabilidad {rel.get('level') or 'sin dato'}: {rel.get('decision_note') or 'no concluyente'}. "
-        f"Live {rel.get('live_count', 0)}, fallback {rel.get('fallback_count', 0)}, degradado {rel.get('degraded_count', 0)}."
+        f"Datos directos {rel.get('live_count', 0)}, datos locales {rel.get('fallback_count', 0)}, datos parciales {rel.get('degraded_count', 0)}."
     )
     evidence = [str(rel.get("summary") or ""), ", ".join(rel.get("degraded_parts") or [])]
     return answer, _compact_evidence(evidence), {
@@ -660,6 +779,46 @@ def _answer_alerts() -> tuple[str, list[str], dict[str, str]]:
         "alerts_origin": str(summary.get("data_origin") or "unknown"),
         "total_recent": str(summary.get("total_recent", 0)),
         "snapshots": _snapshot_status(alerts),
+    }
+
+
+def _answer_macro() -> tuple[str, list[str], dict[str, str]]:
+    payload = _safe_dashboard_snapshot(
+        get_macro_activity_snapshot,
+        lambda: {"macro": {"available": False}, "meta": {"macro_source": "unavailable"}},
+        "macro",
+    )
+    macro = payload.get("macro") if isinstance(payload.get("macro"), dict) else {}
+    if not bool(macro.get("available", False)):
+        answer = (
+            "Sin contexto macro activo. Genesis puede operar con datos del panel, "
+            "pero no confirmar entorno macro, noticias o geopolitica ahora."
+        )
+        evidence = [
+            "No hay snapshot macro/noticias activo.",
+            "La lectura queda no concluyente para entorno externo.",
+        ]
+        return answer, evidence, {
+            "reliability": "no concluyente",
+            "macro": "unavailable",
+            "snapshots": _snapshot_status(payload),
+        }
+
+    headlines = macro.get("headlines") if isinstance(macro.get("headlines"), list) else []
+    risk = _clean_sentence(macro.get("dominant_risk") or macro.get("summary") or "sin riesgo dominante")
+    answer = (
+        f"Mundo/Macro: {macro.get('bias_label') or 'sesgo sin confirmar'}. "
+        f"Riesgo principal: {risk}. Titulares utiles: {len(headlines)}. "
+        f"Confiabilidad: {macro.get('confidence') or 0}%."
+    )
+    evidence = [
+        str(macro.get("summary") or ""),
+        *(str((item or {}).get("impact_summary") or (item or {}).get("title") or "") for item in headlines[:2]),
+    ]
+    return answer, _compact_evidence(evidence), {
+        "reliability": "media" if int(macro.get("confidence") or 0) >= 50 else "no concluyente",
+        "macro": "available",
+        "snapshots": _snapshot_status(payload),
     }
 
 

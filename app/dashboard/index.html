@@ -78,14 +78,14 @@
             <article class="status-pill">
               <span class="dot dot-warn"></span>
               <div>
-                <strong id="status-leader-label">Coordinacion</strong>
-                <small id="status-leader-value">Pendiente</small>
+                <strong id="status-leader-label">Datos</strong>
+                <small id="status-leader-value">Panel operativo</small>
               </div>
             </article>
             <article class="status-pill">
               <span class="dot dot-muted"></span>
               <div>
-                <strong id="status-radar-label">Radar</strong>
+                <strong id="status-radar-label">Activos</strong>
                 <small id="status-radar-value">Pendiente</small>
               </div>
             </article>
@@ -159,7 +159,7 @@
             </div>
             <ul class="module-list">
               <li><strong>Panel local</strong><span id="detail-bot-status">Cargando estado local...</span></li>
-              <li><strong>Coordinacion</strong><span id="detail-leader">Cargando coordinacion...</span></li>
+              <li><strong>Datos</strong><span id="detail-leader">Cargando lectura actual...</span></li>
               <li><strong>Arranque</strong><span id="detail-boot-stage">Cargando estado de arranque...</span></li>
               <li><strong>Ultima actualizacion</strong><span id="detail-last-update">Cargando fecha...</span></li>
               <li><strong>Radar</strong><span id="detail-radar">Cargando tamano del radar...</span></li>
@@ -352,15 +352,15 @@
               <strong id="money-flow-non-conclusive-count">...</strong>
             </div>
             <div class="mini-stat">
-              <span>Causa probable</span>
+              <span>Ballenas identificadas</span>
               <strong id="money-flow-cause-count">...</strong>
             </div>
             <div class="mini-stat">
-              <span>5.2</span>
+              <span>Flujo</span>
               <strong id="money-flow-detection-status" class="state-token state-loading">...</strong>
             </div>
             <div class="mini-stat">
-              <span>5.3</span>
+              <span>Causa</span>
               <strong id="money-flow-causal-status" class="state-token state-loading">...</strong>
             </div>
           </div>
@@ -383,11 +383,11 @@
               <thead>
                 <tr>
                   <th>Activo</th>
-                  <th>Senal</th>
-                  <th>Causa probable</th>
-                  <th>Confiabilidad</th>
-                  <th>Timestamp util</th>
-                  <th>Lectura ejecutiva</th>
+                  <th>Flujo detectado</th>
+                  <th>Ballena identificada</th>
+                  <th>Movimiento</th>
+                  <th>Lectura probable</th>
+                  <th>Falta confirmar</th>
                 </tr>
               </thead>
               <tbody id="money-flow-table-body">
@@ -396,7 +396,7 @@
             </table>
           </div>
           <p class="table-note" id="money-flow-table-note">
-            Lectura probable. Sin causalidad confirmada ni institucionalidad.
+            Flujo detectado no equivale a ballena identificada. Sin entidad real, la lectura queda no concluyente para ballena especifica.
           </p>
         </article>
       </section>
@@ -439,25 +439,26 @@
 
           <article class="card panel-card">
             <p class="eyebrow">Lectura guardada</p>
-            <h4>Radar operativo</h4>
+            <h4>Cartera / watchlist</h4>
             <div class="table-wrap">
               <table class="table-shell table-shell-wide">
                 <thead>
                   <tr>
                     <th>Ticker</th>
-                    <th>Senal</th>
-                    <th>Referencia</th>
-                    <th>Fuente</th>
-                    <th>Actualizado</th>
+                    <th>Nombre</th>
+                    <th>Precio actual</th>
+                    <th>Cambio</th>
+                    <th>Estado</th>
+                    <th>Accion</th>
                   </tr>
                 </thead>
                 <tbody id="radar-table-body">
-                  <tr><td colspan="5">Cargando radar...</td></tr>
+                  <tr><td colspan="6">Cargando activos...</td></tr>
                 </tbody>
               </table>
             </div>
             <p class="table-note" id="radar-table-note">
-              Fuente: datos directos, datos guardados o respaldo.
+              Lista simple. La ficha tactica conserva el detalle pesado.
             </p>
           </article>
         </div>

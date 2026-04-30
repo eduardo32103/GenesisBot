@@ -102,6 +102,79 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertIn("525.0", payload["answer"])
         self.assertEqual(payload["source_status"]["market_data"], "available")
 
+    @patch("services.dashboard.get_genesis_answer.get_dashboard_radar_ticker_drilldown")
+    def test_explicit_question_ticker_overrides_active_context(self, mock_drilldown) -> None:
+        mock_drilldown.return_value = {
+            "found": True,
+            "ticker": "NVDA",
+            "current_price": 525.0,
+            "decision": "vigilar",
+            "main_reason": "Datos directos disponibles.",
+            "current_reliability": "media",
+            "market_data": {"live_ready": True, "quote_available": True, "source": "datos_directos"},
+        }
+
+        payload = get_genesis_answer(
+            "analiza NVDA con datos directos",
+            context="ticker",
+            ticker="BNO",
+            panel_context={"scope": "ticker", "ticker": "BNO", "active_view": "radar"},
+        )
+
+        mock_drilldown.assert_called_once_with("NVDA")
+        self.assertEqual(payload["context"]["ticker"], "NVDA")
+        self.assertIn("NVDA", payload["answer"])
+        self.assertNotIn("BNO:", payload["answer"])
+
+    @patch("services.dashboard.get_genesis_answer.get_dashboard_radar_ticker_drilldown")
+    def test_genesis_comparison_uses_both_explicit_tickers(self, mock_drilldown) -> None:
+        def fake_drilldown(ticker: str) -> dict:
+            return {
+                "found": True,
+                "ticker": ticker,
+                "current_price": 100.0 if ticker == "NVDA" else 60.0,
+                "decision": "vigilar",
+                "main_reason": f"{ticker} con ficha disponible.",
+                "current_reliability": "media",
+                "market_data": {"live_ready": True, "quote_available": True, "source": "datos_directos"},
+            }
+
+        mock_drilldown.side_effect = fake_drilldown
+        payload = get_genesis_answer("compara NVDA contra BNO", context="general", ticker="BNO")
+
+        self.assertEqual([call.args[0] for call in mock_drilldown.call_args_list], ["NVDA", "BNO"])
+        self.assertEqual(payload["context"]["ticker"], "NVDA")
+        self.assertIn("NVDA", payload["answer"])
+        self.assertIn("BNO", payload["answer"])
+
+    @patch("services.dashboard.get_genesis_answer.get_macro_activity_snapshot")
+    def test_genesis_macro_is_honest_when_no_context_exists(self, mock_macro) -> None:
+        mock_macro.return_value = {
+            "macro": {"available": False},
+            "meta": {"macro_source": "unavailable", "activity_source": "unavailable"},
+        }
+
+        payload = get_genesis_answer("que dice Mundo/Macro", context="general")
+
+        self.assertEqual(payload["intent"], "macro")
+        self.assertEqual(payload["context"]["ticker"], "")
+        self.assertIn("Sin contexto macro activo", payload["answer"])
+        self.assertEqual(payload["blocks"]["reliability"], "no concluyente")
+
+    @patch("services.dashboard.get_genesis_answer.get_money_flow_jarvis_answer")
+    def test_genesis_understands_dinero_grande_as_money_flow(self, mock_money_flow) -> None:
+        mock_money_flow.return_value = {
+            "answer": "No hay Money Flow concluyente. Ballenas identificadas: ninguna entidad confirmada.",
+            "items": [],
+            "source_status": {"detection_status": "ready", "causal_status": "ready"},
+            "honesty_note": "Lectura conservadora.",
+        }
+
+        payload = get_genesis_answer("que esta viendo Dinero Grande ahora", context="general")
+
+        self.assertEqual(payload["intent"], "money_flow")
+        self.assertIn("Ballenas identificadas", payload["answer"])
+
     def test_genesis_blocks_do_not_expose_internal_keys(self) -> None:
         payload = get_genesis_answer("que esta pasando con BNO", context="general")
         rendered_text = " ".join(

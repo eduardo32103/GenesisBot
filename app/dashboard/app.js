@@ -59,6 +59,15 @@ let currentViewKey = "command-center";
 let genesisContext = { scope: "general", ticker: "", label: "General" };
 let genesisMessageId = 0;
 
+const genesisTickerStopwords = new Set([
+  "QUE", "CON", "COMO", "CUAL", "CUANDO", "DONDE", "ESTA", "ESTAN", "PASA", "PASANDO",
+  "LEE", "LEER", "SALUD", "SISTEMA", "GENESIS", "RADAR", "ALERTA", "ALERTAS", "FLUJO",
+  "CAPITAL", "DINERO", "ESTADO", "ACTIVO", "ACTIVOS", "ANALISIS", "ANALIZA", "ANALIZAR",
+  "DATOS", "DICE", "DICEN", "DIRECTO", "DIRECTOS", "DISPONIBLES", "OPINA", "OPINAS",
+  "OPINION", "COMPARA", "COMPARAR", "CONTRA", "VERSUS", "MUNDO", "MACRO", "GRANDE",
+  "AHORA", "VIENDO", "REVISA", "REVISAR",
+]);
+
 function sanitizeShellCopy(value) {
   return String(value ?? "")
     .replace(/Faltan credenciales de Telegram en el entorno\./gi, "Datos del panel disponibles.")
@@ -290,17 +299,48 @@ function resolveGenesisContext(viewKey = currentViewKey) {
   return createGenesisContext("general", "General", radarSelectedTicker || "", viewKey);
 }
 
+function extractExplicitTickersFromQuestion(question) {
+  const normalized = String(question || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+  const tickers = [];
+  const matches = normalized.match(/\b[A-Z][A-Z0-9.]{1,9}\b/g) || [];
+  matches.forEach((raw) => {
+    const token = raw.replace(/\.$/, "");
+    if (genesisTickerStopwords.has(token)) return;
+    if (/^\d+$/.test(token)) return;
+    if (token.length >= 2 && token.length <= 10 && !tickers.includes(token)) {
+      tickers.push(token);
+    }
+  });
+  return tickers;
+}
+
+function hasComparisonIntent(question) {
+  const normalized = ` ${String(question || "").toLocaleLowerCase("es-MX").normalize("NFD").replace(/[\u0300-\u036f]/g, "")} `;
+  return [" compara ", " comparar ", " contra ", " versus ", " vs "].some((token) => normalized.includes(token));
+}
+
 function refineGenesisContextForQuestion(question, context) {
   const text = String(question || "").toLocaleLowerCase("es-MX");
   const normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const explicitTickers = extractExplicitTickersFromQuestion(question);
+  const explicitTicker = explicitTickers[0] || "";
   if (normalized.includes("confiab") || normalized.includes("confianza")) {
-    return createGenesisContext("reliability", "Confiabilidad", context.ticker || radarSelectedTicker || "", context.view || currentViewKey);
+    return createGenesisContext("reliability", "Confiabilidad", explicitTicker || context.ticker || "", context.view || currentViewKey);
   }
-  if (normalized.includes("flujo") || normalized.includes("capital") || normalized.includes("money flow")) {
-    return createGenesisContext("money_flow", "Dinero Grande", context.ticker || radarSelectedTicker || "", context.view || currentViewKey);
+  if (normalized.includes("flujo") || normalized.includes("capital") || normalized.includes("money flow") || normalized.includes("dinero grande") || normalized.includes("ballena")) {
+    return createGenesisContext("money_flow", "Dinero Grande", explicitTicker || context.ticker || "", context.view || currentViewKey);
   }
   if (normalized.includes("alerta") || normalized.includes("evento")) {
-    return createGenesisContext("alerts", "Alertas", context.ticker || "", context.view || currentViewKey);
+    return createGenesisContext("alerts", "Alertas", explicitTicker || context.ticker || "", context.view || currentViewKey);
+  }
+  if (normalized.includes("macro") || normalized.includes("mundo") || normalized.includes("noticia") || normalized.includes("geopolit")) {
+    return createGenesisContext("macro", "Mundo", explicitTicker || "", context.view || currentViewKey);
+  }
+  if (explicitTicker) {
+    return createGenesisContext("ticker", hasComparisonIntent(question) && explicitTickers.length > 1 ? "Comparacion" : "Ticker activo", explicitTicker, context.view || currentViewKey);
   }
   return context;
 }
@@ -310,7 +350,7 @@ function buildGenesisPanelContext(context) {
     active_view: context.view || currentViewKey,
     scope: context.scope || "general",
     label: context.label || "General",
-    ticker: context.ticker || radarSelectedTicker || "",
+    ticker: context.ticker || "",
     radar: {
       selected_ticker: radarSelectedTicker || "",
       tracked: readPanelText("radar-tracked-count", readPanelText("metric-radar-size")),
@@ -435,6 +475,7 @@ function createGenesisFallbackBlocks(reason = "snapshots") {
     executive_read: copy.executive,
     main_signals: ["Contexto visible del panel conservado.", "Sin datos nuevos confirmados."],
     risks: [copy.risk],
+    money_flow: "Sin ballena identificada; confirmar entidad y monto antes de concluir.",
     reliability: "no concluyente",
     next_step: copy.next,
   };
@@ -473,6 +514,7 @@ function normalizeGenesisBlocks(blocks, reason = "payload_incomplete") {
     executive_read: humanizeGenesisCopy(blocks.executive_read, fallback.executive_read),
     main_signals: normalizeGenesisList(blocks.main_signals, fallback.main_signals[0]),
     risks: normalizeGenesisList(blocks.risks, fallback.risks[0]),
+    money_flow: humanizeGenesisCopy(blocks.money_flow, fallback.money_flow),
     reliability: humanizeGenesisCopy(blocks.reliability, fallback.reliability) || "no concluyente",
     next_step: humanizeGenesisCopy(blocks.next_step, fallback.next_step),
   };
@@ -512,12 +554,16 @@ function renderGenesisBlocks(blocks) {
         <p>${escapeHtml(blocks.executive_read || "Sin lectura ejecutiva suficiente.")}</p>
       </section>
       <section>
-        <span>Senales principales</span>
+        <span>Que apoya</span>
         ${renderList(signals, "Sin senal suficiente en lecturas guardadas actuales.")}
       </section>
       <section>
-        <span>Riesgos / frenos</span>
+        <span>Que frena</span>
         ${renderList(risks, "Sin freno dominante visible.")}
+      </section>
+      <section>
+        <span>Dinero Grande / flujo</span>
+        <p>${escapeHtml(blocks.money_flow || "Sin ballena identificada en esta lectura.")}</p>
       </section>
       <section>
         <span>Confiabilidad</span>
@@ -1363,6 +1409,13 @@ function formatMoneyFlowConfidence(value) {
   return normalized || "No concluyente";
 }
 
+function formatMoneyFlowAmount(value) {
+  if (value === null || value === undefined || value === "") return "Monto no confirmado";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return humanizeDashboardCopy(value);
+  return `$${numeric.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+}
+
 function getMoneyFlowSignalTone(signalType) {
   const normalized = String(signalType || "").trim();
   if (normalized === "strong_inflow" || normalized === "volume_breakout") return "ok";
@@ -1422,6 +1475,19 @@ function normalizeMoneyFlowItem(item, detectionItem = {}) {
   const reason = String(item.reason || item.context_note || "").trim();
   const signalLabel = item.money_flow_primary_label || item.primary_label || detectionItem.primary_label || signalType || "senal Money Flow";
   const causeLabel = item.probable_cause_label || (nonConclusive ? "no concluyente" : "sin causa probable disponible");
+  const whale = item.whale && typeof item.whale === "object" ? item.whale : {};
+  const whaleEntity = String(
+    whale.entity ||
+    item.entity ||
+    item.institution ||
+    item.fund ||
+    item.holder ||
+    detectionItem.entity ||
+    ""
+  ).trim();
+  const whaleIdentified = Boolean(whale.identified || whaleEntity);
+  const movementValue = whale.movement_value || item.movement_value || item.amount_usd || "";
+  const flowDetected = Boolean(item.flow_detected ?? detectionItem.flow_detected ?? !nonConclusive);
   const executiveRead = nonConclusive
     ? `No concluyente: ${reason || "falta evidencia suficiente."}`
     : `${signalType}: ${signalLabel}. Causa probable: ${causeLabel}.`;
@@ -1432,11 +1498,19 @@ function normalizeMoneyFlowItem(item, detectionItem = {}) {
     signal_code: signalType,
     signal_label: signalLabel,
     signal_tone: getMoneyFlowSignalTone(signalType),
+    flow_detected: flowDetected,
+    whale_identified: whaleIdentified,
+    whale_entity: whaleEntity,
+    whale_note: whale.note || "Flujo detectado, sin ballena identificada",
+    movement_value: movementValue,
     probable_cause_label: causeLabel,
     confidence: item.confidence || "no concluyente",
     timestamp: item.money_flow_timestamp || item.timestamp || detectionItem.timestamp || "",
     status: nonConclusive ? "no_conclusive" : "active",
     executive_read: executiveRead,
+    missing_confirmation: whaleIdentified
+      ? "Causalidad final y continuidad del movimiento"
+      : "Entidad, monto real y causalidad final",
   };
 }
 
@@ -1449,7 +1523,7 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
   const totalAssets = rawSummary.total_assets ?? detectionSummary.total_assets ?? items.length;
   const nonConclusiveCount = rawSummary.non_conclusive_count ?? rawSummary.assets_inconclusive ?? detectionSummary.assets_insufficient_confirmation ?? items.filter((item) => item.status === "no_conclusive").length;
   const detectedCount = rawSummary.detected_count ?? detectionSummary.assets_with_detected_flow ?? Math.max(0, Number(totalAssets) - Number(nonConclusiveCount));
-  const causeCount = rawSummary.with_probable_cause ?? rawSummary.assets_with_probable_cause ?? 0;
+  const whaleCount = items.filter((item) => item.whale_identified).length;
   const detectionStatus = detectionPayload.status || sourceStatus.money_flow_detection_status || "detection_ready_causality_disabled";
   const causalStatus = sourceStatus.money_flow_causal_status || causalPayload.status || "probable_causality_ready";
 
@@ -1457,18 +1531,18 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
   setText("money-flow-total-assets", String(totalAssets ?? 0));
   setText("money-flow-detected-count", String(detectedCount ?? 0));
   setText("money-flow-non-conclusive-count", String(nonConclusiveCount ?? 0));
-  setText("money-flow-cause-count", String(causeCount ?? 0));
+  setText("money-flow-cause-count", String(whaleCount));
   setTokenValue(
     "money-flow-detection-status",
-    "5.2",
+    detectedCount > 0 ? "Flujo detectado" : "No concluyente",
     getMoneyFlowStatusTone(detectionStatus)
   );
   setTokenValue(
     "money-flow-causal-status",
-    "5.3",
+    whaleCount > 0 ? "Entidad visible" : "Sin entidad",
     getMoneyFlowStatusTone(causalStatus)
   );
-  setText("money-flow-table-note", `5.2 ${detectionStatus} + 5.3 ${causalStatus}. Lectura probable, sin causalidad confirmada.`);
+  setText("money-flow-table-note", "Flujo detectado separado de ballenas identificadas. Si no hay entidad real, Genesis lo marca no concluyente.");
 
   if (!tableBody) return;
   if (!items.length) {
@@ -1490,10 +1564,13 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
             <small class="money-flow-signal-label">${escapeHtml(humanizeDashboardCopy(item.signal_label || "Sin lectura de senal"))}</small>
             ${statusNote}
           </td>
-          <td>${escapeHtml(humanizeDashboardCopy(item.probable_cause_label || "sin causa probable disponible"))}</td>
-          <td>${escapeHtml(formatMoneyFlowConfidence(item.confidence))}</td>
-          <td class="detail-value-time">${escapeHtml(item.timestamp ? formatIso(item.timestamp) : "Sin timestamp")}</td>
-          <td>${escapeHtml(humanizeDashboardCopy(item.executive_read || "Sin lectura ejecutiva disponible."))}</td>
+          <td>${escapeHtml(item.whale_identified ? item.whale_entity : "Flujo detectado, sin ballena identificada")}</td>
+          <td>
+            <strong>${escapeHtml(formatMoneyFlowAmount(item.movement_value))}</strong>
+            <small class="money-flow-signal-label">${escapeHtml(item.timestamp ? formatIso(item.timestamp) : "Fecha no confirmada")}</small>
+          </td>
+          <td>${escapeHtml(humanizeDashboardCopy(item.executive_read || item.probable_cause_label || "Sin lectura ejecutiva disponible."))}</td>
+          <td>${escapeHtml(humanizeDashboardCopy(item.missing_confirmation || "Entidad, monto real y causalidad final"))}</td>
         </tr>
       `;
     })
@@ -1506,8 +1583,8 @@ function renderMoneyFlowError(message) {
   setText("money-flow-detected-count", "0");
   setText("money-flow-non-conclusive-count", "0");
   setText("money-flow-cause-count", "0");
-  setTokenValue("money-flow-detection-status", "5.2", "state-degraded");
-  setTokenValue("money-flow-causal-status", "5.3", "state-degraded");
+  setTokenValue("money-flow-detection-status", "Lectura limitada", "state-degraded");
+  setTokenValue("money-flow-causal-status", "Sin entidad", "state-degraded");
   setText("money-flow-table-note", "No pude cargar la lectura de flujo desde el endpoint local.");
 
   const tableBody = document.getElementById("money-flow-table-body");
@@ -1519,10 +1596,9 @@ function renderMoneyFlowError(message) {
 function renderMoneyFlowJarvisAnswer(payload) {
   const node = document.getElementById("money-flow-jarvis-answer");
   if (!node) return;
-  const source = payload.source_status || {};
   node.innerHTML = `
     <strong>${escapeHtml(humanizeDashboardCopy(payload.answer || "No hay respuesta disponible."))}</strong>
-    <small>Fuente: 5.2 ${escapeHtml(humanizeDashboardCopy(source.detection_status || "unknown"))} + 5.3 ${escapeHtml(humanizeDashboardCopy(source.causal_status || "unknown"))}</small>
+    <small>Fuente: lectura guardada de flujo y contexto probable.</small>
     <small>${escapeHtml(humanizeDashboardCopy(payload.honesty_note || "Lectura conservadora."))}</small>
   `;
 }
@@ -1574,9 +1650,9 @@ function renderOperationalHealth(payload) {
   setText("status-system-label", "Sistema");
   setText("status-system-value", formatSystemTopbarValue(system));
   setStatusPillState("status-pill-system", systemTopbarTone(system));
-  setText("status-leader-label", "Coordinacion");
-  setText("status-leader-value", `${bot.hostname || "n/a"} | ${bot.leader || "sin registro"}`);
-  setText("status-radar-label", "Radar");
+  setText("status-leader-label", "Datos");
+  setText("status-leader-value", provider?.note ? "Lectura actual disponible" : "Panel operativo");
+  setText("status-radar-label", "Activos");
   setText("status-radar-value", `${radar.size ?? 0} activos`);
 
   setStateToken("metric-system-state", formatSystemStateToken(system));
@@ -1588,7 +1664,7 @@ function renderOperationalHealth(payload) {
   setText("metric-radar-size", `${radar.size ?? 0}`);
 
   setText("detail-bot-status", bot.configured ? "Configurado y visible para el dashboard." : "Modo local activo.");
-  setText("detail-leader", `${bot.leader || "sin registro"} en ${bot.hostname || "local"}`);
+  setText("detail-leader", provider?.note ? "Datos del panel disponibles." : "Panel operativo.");
   setText("detail-boot-stage", bot.boot_stage || "unknown");
   setText("detail-last-update", system.last_update || "Sin timestamp");
   setText("detail-radar", `${radar.size ?? 0} activos vigilados.`);
@@ -1599,10 +1675,10 @@ function renderOperationalHealthError(message) {
   setText("status-system-label", "Sistema");
   setText("status-system-value", "Sin conexion al endpoint local");
   setStatusPillState("status-pill-system", "degraded");
-  setText("status-leader-label", "Coordinacion");
-  setText("status-leader-value", "No disponible");
-  setText("status-radar-label", "Radar");
-  setText("status-radar-value", "No disponible");
+  setText("status-leader-label", "Datos");
+  setText("status-leader-value", "Lectura limitada");
+  setText("status-radar-label", "Activos");
+  setText("status-radar-value", "Sin datos disponibles");
   setStateToken("metric-system-state", "offline");
   setText("metric-system-summary", message);
   setText("metric-boot-stage", "sin datos");
@@ -1630,7 +1706,7 @@ function renderRadarSnapshot(payload) {
   setText("radar-investment-count", String(summary.investment_count ?? 0));
   setText("radar-reference-count", String(summary.reference_count ?? 0));
   setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin timestamp");
-  setText("radar-table-note", `Origen: ${summary.data_origin || "unknown"}. Fuente: datos directos, cache o contingencia.`);
+  setText("radar-table-note", "Lista simple de cartera/watchlist. Abre una ficha para ver la lectura tactica completa.");
 
   if (tickerList) {
     if (!items.length) {
@@ -1648,18 +1724,24 @@ function renderRadarSnapshot(payload) {
 
   if (tableBody) {
     if (!items.length) {
-      tableBody.innerHTML = '<tr><td colspan="5">Sin activos vigilados todavia.</td></tr>';
+      tableBody.innerHTML = '<tr><td colspan="6">Sin activos vigilados todavia.</td></tr>';
     } else {
       tableBody.innerHTML = items
         .map((item) => {
-          const updated = item.updated_at ? formatIso(item.updated_at) : "Sin timestamp";
+          const ticker = item.ticker || "n/a";
+          const name = item.name || item.display_name || ticker;
+          const price = item.current_price ?? item.reference_price;
+          const change = item.change_pct ?? item.pnl_pct ?? "";
+          const state = item.is_investment ? "Posicion abierta" : humanizeDashboardCopy(item.signal || "Vigilancia");
+          const action = item.is_investment ? "Revisar posicion" : "Ver ficha";
           return `
             <tr class="table-row-action" data-drilldown-ticker="${escapeHtml(item.ticker || "")}" tabindex="0">
-              <td><strong>${escapeHtml(item.ticker || "n/a")}</strong></td>
-              <td>${escapeHtml(humanizeDashboardCopy(item.signal || "Sin senal"))}</td>
-              <td>${escapeHtml(formatPrice(item.reference_price))}</td>
-              <td>${sourceBadgeMarkup(item.source, item.source_label, item.source_note)}</td>
-              <td>${escapeHtml(updated)}</td>
+              <td><strong>${escapeHtml(ticker)}</strong></td>
+              <td>${escapeHtml(name)}</td>
+              <td>${escapeHtml(formatPrice(price))}</td>
+              <td>${escapeHtml(change === "" ? "N/D" : formatPercent(change))}</td>
+              <td>${escapeHtml(state)}</td>
+              <td><span class="asset-action-button">${escapeHtml(action)}</span></td>
             </tr>
           `;
         })
@@ -1694,7 +1776,7 @@ function renderRadarSnapshotError(message) {
 
   const tableBody = document.getElementById("radar-table-body");
   if (tableBody) {
-    tableBody.innerHTML = `<tr><td colspan="5">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
   }
 
   radarSelectedTicker = "";
@@ -1871,6 +1953,29 @@ function renderMacroSnapshot(payload) {
   const highRisk = Array.isArray(macro.high_risk_tickers) ? macro.high_risk_tickers : [];
   const sensitive = Array.isArray(macro.sensitive_tickers) ? macro.sensitive_tickers : [];
   const headlines = Array.isArray(macro.headlines) ? macro.headlines : [];
+  const macroAvailable = Boolean(macro.available);
+
+  if (!macroAvailable) {
+    setText("macro-summary-note", "Sin contexto macro activo.");
+    setText("macro-bias-label", "Sin contexto macro");
+    setText("macro-sentiment-label", "Sin datos macro");
+    setText("macro-confidence", "No concluyente");
+    setText("macro-last-update", "Sin datos macro");
+    setText("macro-sensitive-count", "0");
+    setText("macro-high-risk-count", "0");
+    setText("macro-dominant-risk-note", "Genesis puede operar con datos del panel, pero no confirmar entorno macro ahora.");
+    setText("macro-headline-note", "Sin noticias, macro o geopolitica activa en el panel.");
+
+    const macroChips = document.getElementById("macro-high-risk-list");
+    if (macroChips) {
+      macroChips.innerHTML = '<span class="chip chip-muted">Sin tickers macro confirmados</span>';
+    }
+    const headlineList = document.getElementById("macro-headline-list");
+    if (headlineList) {
+      headlineList.innerHTML = '<div class="activity-item"><span class="dot dot-muted"></span><div><strong>Sin contexto macro activo</strong><small>Genesis no confirma noticias ni geopolitica con la lectura actual.</small></div></div>';
+    }
+    return;
+  }
 
   setText("macro-summary-note", macro.note || "Sin lectura macro guardada.");
   setText("macro-bias-label", macro.bias_label || "macro mixto");
@@ -1880,7 +1985,7 @@ function renderMacroSnapshot(payload) {
   setText("macro-sensitive-count", String(sensitive.length));
   setText("macro-high-risk-count", String(highRisk.length));
   setText("macro-dominant-risk-note", macro.dominant_risk || macro.summary || "Sin lectura macro persistida todavía.");
-  setText("macro-headline-note", `Origen: ${(payload.meta || {}).macro_source || "unknown"}. La vista reutiliza lectura guardada del sistema local.`);
+  setText("macro-headline-note", "Lectura macro guardada disponible para orientar, no para confirmar causalidad.");
 
   const macroChips = document.getElementById("macro-high-risk-list");
   if (macroChips) {
@@ -1968,7 +2073,7 @@ function renderMacroActivityError(message) {
   setText("activity-error-count", "0");
   setText("activity-warning-count", "0");
   setText("activity-last-update", "Sin datos");
-  setText("activity-source-label", "unavailable");
+  setText("activity-source-label", "Sin datos disponibles");
   setText("activity-event-note", "No pude cargar la lectura de Mundo / Historial desde la consulta local.");
 
   const macroChips = document.getElementById("macro-high-risk-list");
