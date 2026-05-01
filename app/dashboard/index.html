@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis Dashboard</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=phase67b-r512-no-grid">
+  <link rel="stylesheet" href="./styles.css?v=phase67c-portfolio">
 </head>
 <body>
   <div class="shell">
@@ -24,8 +24,8 @@
           <small>Centro de control</small>
         </button>
         <button class="nav-link" data-view="radar">
-          <span>Activos</span>
-          <small>Radar y cartera</small>
+          <span>Cartera</span>
+          <small>Posiciones</small>
         </button>
         <button class="nav-link" data-view="money-flow">
           <span>Dinero Grande</span>
@@ -85,7 +85,7 @@
             <article class="status-pill">
               <span class="dot dot-muted"></span>
               <div>
-                <strong id="status-radar-label">Activos</strong>
+                <strong id="status-radar-label">Cartera</strong>
                 <small id="status-radar-value">Pendiente</small>
               </div>
             </article>
@@ -401,66 +401,88 @@
       </section>
 
       <section class="view" id="view-radar">
-        <div class="grid grid-columns">
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Radar / Cartera</p>
-              <h4>Resumen de activos</h4>
-              </div>
-              <span class="badge">Fase 3.3</span>
+        <article class="card panel-card portfolio-card">
+          <div class="portfolio-head">
+            <div>
+              <p class="eyebrow">Cartera</p>
+              <h3>Cartera</h3>
+              <p class="portfolio-subtitle">Vision simple de tu portafolio</p>
             </div>
-            <p class="placeholder-copy is-loading" id="radar-summary-note">
-              Cargando Radar / Cartera...
-            </p>
-            <div class="radar-stats-grid">
-              <div class="mini-stat">
-                <span>Activos vigilados</span>
+            <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
+          </div>
+
+          <div class="portfolio-layout">
+            <div class="portfolio-donut-panel">
+              <div class="portfolio-donut" id="portfolio-donut" aria-label="Distribucion de cartera">
+                <div class="portfolio-donut-center">
+                  <strong id="portfolio-total-value">...</strong>
+                  <span id="portfolio-day-return">Hoy</span>
+                  <small id="portfolio-donut-caption">Cargando cartera</small>
+                </div>
+              </div>
+              <div class="portfolio-legend" id="radar-ticker-list">
+                <span class="chip chip-muted chip-loading">Cargando cartera...</span>
+              </div>
+            </div>
+
+            <div class="portfolio-summary">
+              <div class="portfolio-stat">
+                <span>Valor total</span>
+                <strong id="portfolio-total-stat">...</strong>
+              </div>
+              <div class="portfolio-stat">
+                <span>Rendimiento del dia</span>
+                <strong id="portfolio-day-stat">...</strong>
+              </div>
+              <div class="portfolio-stat">
+                <span>Activos en cartera</span>
                 <strong id="radar-tracked-count">...</strong>
               </div>
-              <div class="mini-stat">
-                <span>Posiciones abiertas</span>
-                <strong id="radar-investment-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Referencias disponibles</span>
-                <strong id="radar-reference-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Ultima actualizacion</span>
+              <div class="portfolio-stat">
+                <span>Actualizacion</span>
                 <strong id="radar-last-update">...</strong>
               </div>
+              <div class="portfolio-perspective">
+                <span>Perspectiva Genesis</span>
+                <p class="placeholder-copy is-loading" id="radar-summary-note">
+                  Cargando lectura de cartera...
+                </p>
+              </div>
+              <span class="visually-hidden" id="radar-investment-count">...</span>
+              <span class="visually-hidden" id="radar-reference-count">...</span>
             </div>
-            <div class="chip-list" id="radar-ticker-list">
-              <span class="chip chip-muted chip-loading">Cargando radar...</span>
-            </div>
-          </article>
+          </div>
+        </article>
 
-          <article class="card panel-card">
-            <p class="eyebrow">Lectura guardada</p>
-            <h4>Cartera / watchlist</h4>
-            <div class="table-wrap">
-              <table class="table-shell table-shell-wide">
-                <thead>
-                  <tr>
-                    <th>Ticker</th>
-                    <th>Nombre</th>
-                    <th>Precio actual</th>
-                    <th>Cambio</th>
-                    <th>Estado</th>
-                    <th>Accion</th>
-                  </tr>
-                </thead>
-                <tbody id="radar-table-body">
-                  <tr><td colspan="6">Cargando activos...</td></tr>
-                </tbody>
-              </table>
+        <article class="card panel-card portfolio-positions-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Posiciones</p>
+              <h4>Lista simple</h4>
             </div>
-            <p class="table-note" id="radar-table-note">
-              Lista simple. La ficha tactica conserva el detalle pesado.
-            </p>
-          </article>
-        </div>
+            <span class="badge badge-soft">Abrir ficha</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table-shell table-shell-wide portfolio-table">
+              <thead>
+                <tr>
+                  <th>Activo</th>
+                  <th>Nombre</th>
+                  <th>Peso</th>
+                  <th>Valor total</th>
+                  <th>Cambio diario</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="radar-table-body">
+                <tr><td colspan="6">Cargando activos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note" id="radar-table-note">
+            Lista simple. La ficha tactica conserva el detalle pesado.
+          </p>
+        </article>
 
         <article class="card panel-card drilldown-card" id="radar-drilldown-card">
           <div class="section-heading">
@@ -877,6 +899,6 @@
     </main>
   </div>
 
-  <script src="./app.js?v=phase67b-r512-no-grid"></script>
+  <script src="./app.js?v=phase67c-portfolio"></script>
 </body>
 </html>
