@@ -44,6 +44,19 @@ def _round_optional(value: float | None, digits: int = 2) -> float | None:
     return round(value, digits) if value is not None else None
 
 
+def _safe_market_timestamp(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    numeric = _coerce_optional_float(value)
+    if numeric is not None:
+        timestamp = numeric / 1000 if numeric > 10_000_000_000 else numeric
+        try:
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return ""
+    return _safe_iso(value)
+
+
 def _max_timestamp(values: list[str]) -> str:
     cleaned = [str(value or "").strip() for value in values if str(value or "").strip()]
     if not cleaned:
@@ -111,9 +124,7 @@ def _apply_position_metrics(item: dict[str, Any]) -> None:
     item["unrealized_pnl_pct"] = _round_optional(unrealized_pnl_pct, 2)
     item["daily_pnl"] = _round_optional(daily_pnl, 2)
 
-    if units <= 0:
-        item["status"] = "watchlist"
-    elif current_price <= 0:
+    if current_price <= 0:
         item["status"] = "no_concluyente"
     elif daily_change_pct is not None and daily_change_pct > 0:
         item["status"] = "en_alza"
@@ -121,6 +132,8 @@ def _apply_position_metrics(item: dict[str, Any]) -> None:
         item["status"] = "a_la_baja"
     elif daily_change_pct == 0:
         item["status"] = "sin_cambio"
+    elif units <= 0:
+        item["status"] = "watchlist"
     else:
         item["status"] = "valor_calculado"
 
@@ -191,11 +204,19 @@ def _apply_live_quote(item: dict[str, Any], quote: dict[str, Any]) -> None:
     item["source"] = "live"
     item["source_label"] = _SOURCE_LABELS["live"]
     item["source_note"] = _source_note("live")
+    item["signal"] = _signal_text(bool(item.get("is_investment")), "live")
     item["daily_change"] = _round_optional(_coerce_optional_float(quote.get("change")), 4)
     item["daily_change_pct"] = _round_optional(_coerce_optional_float(quote.get("changesPercentage")), 4)
     item["change_pct"] = item["daily_change_pct"]
     item["percent_change"] = item["daily_change_pct"]
-    item["quote_timestamp"] = quote.get("timestamp") or quote.get("lastUpdated") or quote.get("date") or ""
+    item["previous_close"] = _round_optional(_coerce_optional_float(quote.get("previousClose")), 4)
+    item["day_high"] = _round_optional(_coerce_optional_float(quote.get("dayHigh")), 4)
+    item["day_low"] = _round_optional(_coerce_optional_float(quote.get("dayLow")), 4)
+    item["volume"] = _round_optional(_coerce_optional_float(quote.get("volume") or quote.get("vol")), 0)
+    item["avg_volume"] = _round_optional(_coerce_optional_float(quote.get("avgVolume")), 0)
+    item["quote_timestamp"] = _safe_market_timestamp(quote.get("timestamp") or quote.get("lastUpdated") or quote.get("date") or "")
+    if item["quote_timestamp"]:
+        item["updated_at"] = item["quote_timestamp"]
     if quote.get("name"):
         item["name"] = str(quote.get("name") or "").strip()
         item["display_name"] = item["name"]
@@ -396,8 +417,20 @@ def _apply_portfolio_totals(items: list[dict[str, Any]]) -> dict[str, Any]:
     position_count = sum(1 for item in items if _coerce_float(item.get("units")) > 0)
     watchlist_count = sum(1 for item in items if _coerce_float(item.get("units")) <= 0)
 
+    live_watchlist = [item for item in items if _coerce_float(item.get("units")) <= 0 and _coerce_float(item.get("current_price")) > 0]
     if not valued and position_count:
         perspective = "Genesis: hay posiciones con cantidades, pero falta precio actual para calcular valor y peso."
+    elif not valued and live_watchlist:
+        movers = [
+            item
+            for item in live_watchlist
+            if _coerce_optional_float(item.get("daily_change_pct")) is not None
+        ]
+        movers.sort(key=lambda item: abs(_coerce_float(item.get("daily_change_pct"))), reverse=True)
+        perspective = "Genesis: watchlist con datos directos activos. Aun no puedo calcular concentracion sin cantidades."
+        if movers:
+            top = movers[0]
+            perspective += f" Movimiento mas visible: {top.get('ticker')} {round(_coerce_float(top.get('daily_change_pct')), 2)}%."
     elif not valued:
         perspective = "Genesis: cartera en modo watchlist. Faltan cantidades para calcular pesos y concentracion."
     elif top_concentration.get("weight_pct") and float(top_concentration["weight_pct"]) >= 45:

@@ -68,6 +68,66 @@ class DashboardRadarDrilldownTests(unittest.TestCase):
         client_instance.get_quote.assert_called_once_with("NVDA")
         client_instance.get_profile.assert_called_once_with("NVDA")
 
+    @patch("services.dashboard.get_radar_snapshot.load_settings")
+    @patch("services.dashboard.get_radar_snapshot.FmpClient")
+    @patch("services.dashboard.get_radar_snapshot._fetch_wallet_rows")
+    @patch("services.dashboard.get_radar_snapshot._parse_portfolio_fallback")
+    def test_radar_snapshot_adds_live_price_to_watchlist_without_units(
+        self,
+        mock_fallback: Mock,
+        mock_wallet: Mock,
+        mock_fmp_client: Mock,
+        mock_settings: Mock,
+    ) -> None:
+        mock_wallet.return_value = []
+        mock_fallback.return_value = [
+            _shape_item(
+                "BNO",
+                reference_price=61.39,
+                origin="portfolio_fallback",
+            )
+        ]
+        mock_settings.return_value = SimpleNamespace(
+            database_url="",
+            chat_id="",
+            fmp_api_key="test-key",
+            fmp_live_enabled=True,
+        )
+        client_instance = mock_fmp_client.return_value
+        client_instance.get_quote.return_value = {
+            "price": 64.25,
+            "change": 1.25,
+            "changesPercentage": 1.98,
+            "previousClose": 63.0,
+            "dayHigh": 65.0,
+            "dayLow": 62.5,
+            "volume": 123456,
+            "name": "United States Brent Oil Fund",
+            "timestamp": 1777618398,
+        }
+
+        snapshot = get_radar_snapshot()
+
+        item = snapshot["items"][0]
+        self.assertEqual(item["ticker"], "BNO")
+        self.assertEqual(item["current_price"], 64.25)
+        self.assertEqual(item["daily_change"], 1.25)
+        self.assertEqual(item["daily_change_pct"], 1.98)
+        self.assertEqual(item["previous_close"], 63.0)
+        self.assertEqual(item["day_high"], 65.0)
+        self.assertEqual(item["day_low"], 62.5)
+        self.assertEqual(item["volume"], 123456.0)
+        self.assertEqual(item["source"], "live")
+        self.assertEqual(item["status"], "en_alza")
+        self.assertEqual(item["market_value"], 0.0)
+        self.assertIsNone(item["weight_pct"])
+        self.assertIn("T", item["quote_timestamp"])
+        self.assertEqual(snapshot["summary"]["total_value"], 0.0)
+        self.assertEqual(snapshot["summary"]["watchlist_count"], 1)
+        self.assertIn("watchlist con datos directos activos", snapshot["summary"]["genesis_perspective"])
+        client_instance.get_quote.assert_called_once_with("BNO")
+        client_instance.get_profile.assert_not_called()
+
     @patch("services.dashboard.get_radar_ticker_drilldown.load_settings")
     @patch("services.dashboard.get_radar_ticker_drilldown.FmpClient")
     @patch("services.dashboard.get_radar_ticker_drilldown.get_radar_snapshot")

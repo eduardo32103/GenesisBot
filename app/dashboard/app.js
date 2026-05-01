@@ -221,7 +221,11 @@ function formatHeartbeatAge(seconds) {
 
 function formatIso(value) {
   if (!value) return "Sin fecha confirmada";
-  const parsed = new Date(value);
+  const raw = String(value).trim();
+  const numeric = Number(raw);
+  const parsed = Number.isFinite(numeric) && /^\d+(\.\d+)?$/.test(raw)
+    ? new Date(numeric > 10000000000 ? numeric : numeric * 1000)
+    : new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
   }
@@ -1976,7 +1980,7 @@ function portfolioStateLabel(item, change, hasValue) {
     return "No concluyente";
   }
   if (status === "watchlist") {
-    return "En vigilancia";
+    return getPortfolioPrice(item) === null ? "No concluyente" : "En vigilancia";
   }
   const numericChange = parseFiniteNumber(change);
   if (numericChange !== null && numericChange > 0) {
@@ -2018,7 +2022,9 @@ function buildPortfolioModel(items) {
   const weightedDailyChange = hasDistribution
     ? distribution.reduce((total, row) => total + ((row.dailyChange ?? 0) * row.weight) / 100, 0)
     : null;
-  return { rows, distribution, totalValue, hasDistribution, weightedDailyChange };
+  const hasPositions = rows.some((row) => row.units !== null);
+  const hasDirectPrices = rows.some((row) => parsePositiveNumber(row.item.current_price) !== null || parsePositiveNumber(row.item.price) !== null);
+  return { rows, distribution, totalValue, hasDistribution, weightedDailyChange, hasPositions, hasDirectPrices };
 }
 
 function buildPortfolioGradient(distribution) {
@@ -2043,6 +2049,17 @@ function buildPortfolioPerspective(model, items) {
   if (!model.hasDistribution) {
     if (positionCount > 0) {
       return "Genesis: hay posiciones con cantidades, pero falta precio actual para calcular valor y peso.";
+    }
+    if (model.hasDirectPrices) {
+      const movers = model.rows
+        .filter((row) => parseFiniteNumber(row.dailyChange) !== null)
+        .sort((a, b) => Math.abs(b.dailyChange) - Math.abs(a.dailyChange));
+      const base = "Genesis: watchlist con datos directos activos. Aun no puedo calcular concentracion sin cantidades.";
+      if (movers.length) {
+        const top = movers[0];
+        return `${base} Movimiento mas visible: ${top.ticker} ${formatPortfolioPercent(top.dailyChange)}.`;
+      }
+      return base;
     }
     return "Genesis: cartera en modo watchlist. No hay cantidades suficientes para evaluar concentracion completa.";
   }
@@ -2070,8 +2087,7 @@ function portfolioDataState(model, items) {
   if (!items.length) {
     return "Sin activos visibles";
   }
-  const hasDirectPrices = items.some((item) => parsePositiveNumber(item.current_price) !== null || parsePositiveNumber(item.price) !== null);
-  if (model.hasDistribution && hasDirectPrices) {
+  if (model.hasDirectPrices) {
     return "Datos directos activos";
   }
   if (model.hasDistribution) {
@@ -2092,6 +2108,7 @@ function renderRadarSnapshot(payload) {
   const summary = payload.summary || {};
   const items = Array.isArray(payload.items) ? payload.items : [];
   const tickerList = document.getElementById("radar-ticker-list");
+  const tableHead = document.getElementById("radar-table-head");
   const tableBody = document.getElementById("radar-table-body");
   const availableTickers = new Set(items.map((item) => String(item?.ticker || "").trim().toUpperCase()).filter(Boolean));
   const model = buildPortfolioModel(items);
@@ -2117,7 +2134,9 @@ function renderRadarSnapshot(payload) {
     ? (model.rows.some((row) => row.units === null)
         ? "Posiciones calculadas y activos en vigilancia sin cantidades. Abre un activo para ver la ficha tactica completa."
         : "Lista simple de posiciones. Abre un activo para ver la ficha tactica completa.")
-    : "Watchlist simple. Valor, peso y rendimiento quedan sin calcular hasta tener cantidades reales.");
+    : (model.hasDirectPrices
+        ? "Watchlist con precios directos. Valor y peso quedan sin calcular hasta tener cantidades reales."
+        : "Watchlist simple. Valor, peso y rendimiento quedan sin calcular hasta tener cantidades reales."));
 
   const donut = document.getElementById("portfolio-donut");
   if (donut) {
@@ -2146,7 +2165,7 @@ function renderRadarSnapshot(payload) {
           <button type="button" class="portfolio-legend-item portfolio-legend-muted chip-action" data-drilldown-ticker="${escapeHtml(ticker)}">
             <span class="portfolio-dot" style="background:${portfolioColors[index % portfolioColors.length]}"></span>
             <strong>${escapeHtml(ticker || "Activo")}</strong>
-            <small>sin peso</small>
+            <small>${escapeHtml(getPortfolioPrice(item) === null ? "sin precio" : "watchlist")}</small>
           </button>
         `;
         })
@@ -2154,9 +2173,33 @@ function renderRadarSnapshot(payload) {
     }
   }
 
+  if (tableHead) {
+    tableHead.innerHTML = model.hasPositions
+      ? `
+        <tr>
+          <th>Activo</th>
+          <th>Cantidad</th>
+          <th>Precio</th>
+          <th>Valor</th>
+          <th>Peso</th>
+          <th>P/L</th>
+          <th>Cambio diario</th>
+          <th>Estado</th>
+        </tr>
+      `
+      : `
+        <tr>
+          <th>Activo</th>
+          <th>Precio</th>
+          <th>Cambio diario</th>
+          <th>Estado</th>
+        </tr>
+      `;
+  }
+
   if (tableBody) {
     if (!items.length) {
-      tableBody.innerHTML = '<tr><td colspan="6">Sin activos vigilados todavia.</td></tr>';
+      tableBody.innerHTML = `<tr><td colspan="${model.hasPositions ? 8 : 4}">Sin activos vigilados todavia.</td></tr>`;
     } else {
       tableBody.innerHTML = model.rows
         .map((row) => {
@@ -2173,17 +2216,42 @@ function renderRadarSnapshot(payload) {
           const dailyPnlText = row.dailyPnl === null
             ? "Diario sin calcular"
             : formatSignedPortfolioMoney(row.dailyPnl);
+          const sourceText = parsePositiveNumber(row.item.current_price) !== null || parsePositiveNumber(row.item.price) !== null
+            ? "Datos directos"
+            : "Sin precio directo";
+          if (!model.hasPositions) {
+            return `
+              <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
+                <td>
+                  <strong>${escapeHtml(ticker)}</strong>
+                  <small>${escapeHtml(row.name)}</small>
+                </td>
+                <td>
+                  <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
+                  <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
+                </td>
+                <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(formatPortfolioPercent(row.dailyChange, "Sin cambio"))}</span></td>
+                <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
+              </tr>
+            `;
+          }
           return `
             <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
               <td>
                 <strong>${escapeHtml(ticker)}</strong>
-                <small>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</small>
+                <small>${escapeHtml(row.name)}</small>
               </td>
-              <td>${escapeHtml(row.name)}</td>
-              <td>${escapeHtml(formatPortfolioWeight(weight))}</td>
+              <td>${escapeHtml(row.units === null ? "Watchlist" : formatDetailUnits(row.units))}</td>
+              <td>
+                <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
+                <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
+              </td>
               <td>
                 <strong>${escapeHtml(valueText)}</strong>
-                <small class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</small>
+              </td>
+              <td>${escapeHtml(formatPortfolioWeight(weight))}</td>
+              <td>
+                <span class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</span>
               </td>
               <td>
                 <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(formatPortfolioPercent(row.dailyChange, "Sin cambio"))}</span>
@@ -2238,7 +2306,7 @@ function renderRadarSnapshotError(message) {
 
   const tableBody = document.getElementById("radar-table-body");
   if (tableBody) {
-    tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="4">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
   }
 
   radarSelectedTicker = "";
