@@ -972,9 +972,15 @@ body:has(#view-command-center.is-visible) .status-strip {
 
 .portfolio-app-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: start;
+}
+
+.portfolio-main-donut {
+  display: grid;
+  justify-content: center;
+  margin-top: 16px;
 }
 
 .portfolio-app-section {
@@ -986,6 +992,10 @@ body:has(#view-command-center.is-visible) .status-strip {
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+
+.portfolio-section-list-only {
+  grid-template-columns: 1fr;
 }
 
 .portfolio-donut-panel {

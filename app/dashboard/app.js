@@ -60,6 +60,8 @@ let radarSelectedTicker = "";
 let radarDrilldownRequestId = 0;
 let portfolioModalMode = "add";
 let marketSearchResult = null;
+let portfolioRefreshTimer = null;
+let portfolioRefreshInFlight = false;
 const alertsDrilldownCache = new Map();
 let alertsSelectedId = "";
 let alertsDrilldownRequestId = 0;
@@ -1296,7 +1298,7 @@ function renderAssetDetailView(detail) {
   const symbol = String(detail?.ticker || detail?.symbol || "").trim().toUpperCase();
   const row = getPortfolioRow(symbol);
   if (!detail?.found && !row) {
-    renderAssetDetailError(symbol, "No encontre este activo dentro de Cartera.");
+    renderAssetDetailError(symbol, "No pude abrir datos de mercado para este activo.");
     return;
   }
 
@@ -2571,15 +2573,6 @@ function buildPortfolioModel(items) {
   return { rows, distribution, totalValue, totalDailyPnl, hasDistribution, weightedDailyChange, hasPositions, hasDirectPrices };
 }
 
-function buildEqualWeightDistribution(rows) {
-  const visibleRows = Array.isArray(rows) ? rows.filter((row) => row?.ticker) : [];
-  if (!visibleRows.length) {
-    return [];
-  }
-  const weight = 100 / visibleRows.length;
-  return visibleRows.map((row) => ({ ...row, weight }));
-}
-
 function renderPortfolioLegendItems(rows, emptyText) {
   if (!Array.isArray(rows) || !rows.length) {
     return `<span class="chip chip-muted">${escapeHtml(emptyText)}</span>`;
@@ -2595,15 +2588,31 @@ function renderPortfolioLegendItems(rows, emptyText) {
     .join("");
 }
 
-function getWatchlistMovementCaption(rows) {
-  const movers = (Array.isArray(rows) ? rows : [])
-    .filter((row) => parseFiniteNumber(row.dailyChange) !== null)
-    .sort((a, b) => Math.abs(parseFiniteNumber(b.dailyChange) ?? 0) - Math.abs(parseFiniteNumber(a.dailyChange) ?? 0));
-  if (!movers.length) {
-    return "Sin movimiento visible";
+async function refreshPortfolioPricesFromTimer() {
+  if (currentViewKey !== "radar" || portfolioRefreshInFlight) {
+    return;
   }
-  const top = movers[0];
-  return `${top.ticker} ${formatPortfolioPercent(top.dailyChange)}`;
+  portfolioRefreshInFlight = true;
+  try {
+    await loadRadarSnapshot(true);
+  } finally {
+    portfolioRefreshInFlight = false;
+  }
+}
+
+function startPortfolioAutoRefresh() {
+  if (portfolioRefreshTimer) {
+    return;
+  }
+  portfolioRefreshTimer = window.setInterval(refreshPortfolioPricesFromTimer, 60000);
+}
+
+function stopPortfolioAutoRefresh() {
+  if (!portfolioRefreshTimer) {
+    return;
+  }
+  window.clearInterval(portfolioRefreshTimer);
+  portfolioRefreshTimer = null;
 }
 
 function buildPortfolioGradient(distribution) {
@@ -2807,7 +2816,6 @@ function renderRadarSnapshot(payload) {
   const summary = payload.summary || {};
   const items = Array.isArray(payload.items) ? payload.items : [];
   const tickerList = document.getElementById("radar-ticker-list");
-  const watchlistLegend = document.getElementById("watchlist-donut-legend");
   const tableBody = document.getElementById("portfolio-watchlist-body") || document.getElementById("radar-table-body");
   const positionsBody = document.getElementById("portfolio-positions-body");
   const availableTickers = new Set(items.map((item) => String(item?.ticker || "").trim().toUpperCase()).filter(Boolean));
@@ -2815,7 +2823,6 @@ function renderRadarSnapshot(payload) {
   const genesisPerspective = buildPortfolioPerspective(model, items);
   const watchlistRows = model.rows.filter((row) => row.units === null);
   const positionRows = model.rows.filter((row) => row.units !== null);
-  const watchlistDistribution = buildEqualWeightDistribution(watchlistRows);
   portfolioRowsByTicker.clear();
   model.rows.forEach((row) => {
     if (row.ticker) {
@@ -2839,9 +2846,6 @@ function renderRadarSnapshot(payload) {
     : (positionRows.length ? "Sin valor calculado" : "para calcular pesos");
 
   setText("portfolio-data-state", portfolioDataState(model, items));
-  setText("watchlist-count", String(watchlistRows.length));
-  setText("watchlist-donut-subtitle", watchlistRows.length === 1 ? "activo seguido" : "activos seguidos");
-  setText("watchlist-donut-caption", watchlistRows.length ? getWatchlistMovementCaption(watchlistRows) : "Agrega con +");
   setText("portfolio-total-value", centerValueText);
   setText("portfolio-total-stat", formatPortfolioMoney(model.totalValue));
   setText("portfolio-day-return", centerDayText);
@@ -2866,16 +2870,6 @@ function renderRadarSnapshot(payload) {
     donut.style.background = buildPortfolioGradient(model.distribution);
     donut.classList.toggle("portfolio-donut-empty", !model.hasDistribution);
   }
-  const watchlistDonut = document.getElementById("watchlist-donut");
-  if (watchlistDonut) {
-    watchlistDonut.style.background = buildPortfolioGradient(watchlistDistribution);
-    watchlistDonut.classList.toggle("portfolio-donut-empty", !watchlistDistribution.length);
-  }
-
-  if (watchlistLegend) {
-    watchlistLegend.innerHTML = renderPortfolioLegendItems(watchlistDistribution, "Sin activos en seguimiento");
-  }
-
   if (tickerList) {
     tickerList.innerHTML = renderPortfolioLegendItems(model.distribution, positionRows.length
       ? "Posiciones sin precio para ponderar"
@@ -2914,9 +2908,6 @@ function renderRadarSnapshot(payload) {
 function renderRadarSnapshotError(message) {
   setText("radar-summary-note", message);
   setText("portfolio-data-state", "Lectura limitada");
-  setText("watchlist-count", "0");
-  setText("watchlist-donut-subtitle", "Sin seguimiento");
-  setText("watchlist-donut-caption", "Sin datos");
   setText("portfolio-total-value", "Sin valor calculado");
   setText("portfolio-total-stat", "Sin valor calculado");
   setText("portfolio-day-return", "Sin rendimiento calculado");
@@ -2935,19 +2926,9 @@ function renderRadarSnapshotError(message) {
     donut.style.background = buildPortfolioGradient([]);
     donut.classList.add("portfolio-donut-empty");
   }
-  const watchlistDonut = document.getElementById("watchlist-donut");
-  if (watchlistDonut) {
-    watchlistDonut.style.background = buildPortfolioGradient([]);
-    watchlistDonut.classList.add("portfolio-donut-empty");
-  }
-
   const tickerList = document.getElementById("radar-ticker-list");
   if (tickerList) {
     tickerList.innerHTML = '<span class="chip chip-muted">Sin datos</span>';
-  }
-  const watchlistLegend = document.getElementById("watchlist-donut-legend");
-  if (watchlistLegend) {
-    watchlistLegend.innerHTML = '<span class="chip chip-muted">Sin datos</span>';
   }
 
   const tableBody = document.getElementById("portfolio-watchlist-body") || document.getElementById("radar-table-body");
@@ -3436,6 +3417,9 @@ function activateView(viewKey) {
   }
   if (targetViewKey === "radar") {
     loadRadarSnapshot();
+    startPortfolioAutoRefresh();
+  } else {
+    stopPortfolioAutoRefresh();
   }
   if (targetViewKey === "alerts") {
     loadAlertsSnapshot();

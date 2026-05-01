@@ -432,6 +432,20 @@
           <span class="visually-hidden" id="radar-summary-note">...</span>
           <span class="visually-hidden" id="radar-investment-count">...</span>
           <span class="visually-hidden" id="radar-reference-count">...</span>
+          <div class="portfolio-main-donut">
+            <div class="portfolio-donut-panel">
+              <div class="portfolio-donut" id="portfolio-donut" aria-label="Distribucion de compradas">
+                <div class="portfolio-donut-center">
+                  <strong id="portfolio-total-value">...</strong>
+                  <span id="portfolio-day-return">Hoy</span>
+                  <small id="portfolio-donut-caption">Cargando compradas</small>
+                </div>
+              </div>
+              <div class="portfolio-legend" id="radar-ticker-list">
+                <span class="chip chip-muted chip-loading">Cargando compradas...</span>
+              </div>
+            </div>
+          </div>
         </article>
 
         <div class="portfolio-app-grid">
@@ -443,19 +457,7 @@
               </div>
               <span class="badge badge-soft">Precio visible</span>
             </div>
-            <div class="portfolio-section-layout">
-              <div class="portfolio-donut-panel">
-                <div class="portfolio-donut" id="watchlist-donut" aria-label="Distribucion de seguimiento">
-                  <div class="portfolio-donut-center">
-                    <strong id="watchlist-count">...</strong>
-                    <span id="watchlist-donut-subtitle">activos seguidos</span>
-                    <small id="watchlist-donut-caption">Cargando seguimiento</small>
-                  </div>
-                </div>
-                <div class="portfolio-legend" id="watchlist-donut-legend">
-                  <span class="chip chip-muted chip-loading">Cargando seguimiento...</span>
-                </div>
-              </div>
+            <div class="portfolio-section-layout portfolio-section-list-only">
               <div class="portfolio-list" id="portfolio-watchlist-body">
                 <div class="portfolio-list-empty">Cargando seguimiento...</div>
               </div>
@@ -473,19 +475,7 @@
               </div>
               <span class="badge badge-soft">Paper trading</span>
             </div>
-            <div class="portfolio-section-layout">
-              <div class="portfolio-donut-panel">
-                <div class="portfolio-donut" id="portfolio-donut" aria-label="Distribucion de compradas">
-                  <div class="portfolio-donut-center">
-                    <strong id="portfolio-total-value">...</strong>
-                    <span id="portfolio-day-return">Hoy</span>
-                    <small id="portfolio-donut-caption">Cargando compradas</small>
-                  </div>
-                </div>
-                <div class="portfolio-legend" id="radar-ticker-list">
-                  <span class="chip chip-muted chip-loading">Cargando compradas...</span>
-                </div>
-              </div>
+            <div class="portfolio-section-layout portfolio-section-list-only">
               <div class="portfolio-list" id="portfolio-positions-body">
                 <div class="portfolio-list-empty">Sin compras simuladas.</div>
               </div>
@@ -981,6 +971,6 @@
     </main>
   </div>
 
-    <script src="./app.js?v=phase67d-r22-two-circles"></script>
+    <script src="./app.js?v=phase67d-r23-single-circle-live"></script>
   </body>
 </html>
