@@ -92,6 +92,9 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
             "missing_evidence": ["volumen relativo"],
             "confidence": "media",
             "decision_label": "Esperar confirmacion",
+            "decision_reason": "la tendencia ayuda, pero faltan confirmaciones completas.",
+            "action_plan": "Esperar confirmacion de volumen antes de operar. Genesis ahora no entraria todavia.",
+            "invalidation": "Se invalida si pierde soporte.",
             "next_step": "Esperar confirmacion de volumen.",
             "scenarios": {"alcista": "sube si confirma volumen", "neutral": "vigilar", "bajista": "pierde soporte"},
             "source_status": {"fmp_live_ready": True, "money_flow_available": True, "macro_available": False},
@@ -103,7 +106,9 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "asset_priority")
         self.assertIn("NVDA", payload["answer"])
         self.assertIn("525.0", payload["answer"])
-        self.assertEqual(payload["blocks"]["decision"], "Esperar confirmacion")
+        self.assertIn("Esperar confirmacion", payload["blocks"]["decision"])
+        self.assertIn("Genesis ahora", payload["blocks"]["next_step"])
+        self.assertIn("invalida", payload["blocks"]["next_step"].lower())
         self.assertEqual(payload["source_status"]["market_data"], "available")
 
     @patch("services.dashboard.get_genesis_answer.get_asset_decision_packet")
@@ -159,8 +164,66 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
 
         mock_packet.assert_called_once_with("NVDA")
         self.assertEqual(payload["context"]["ticker"], "NVDA")
-        self.assertEqual(payload["blocks"]["decision"], "Vigilar")
+        self.assertIn("Vigilar", payload["blocks"]["decision"])
         self.assertIn("NVDA", payload["answer"])
+
+    @patch("services.dashboard.get_genesis_answer.get_asset_decision_packet")
+    def test_buy_question_has_decision_core_blocks_without_hype(self, mock_packet) -> None:
+        mock_packet.return_value = {
+            "ticker": "NVDA",
+            "company_name": "NVIDIA",
+            "price": 525.0,
+            "percent_change": 1.6,
+            "technical_read": "Precio actual: 525.0. Tendencia: positiva. Zona simple 30 dias: soporte 500.00, resistencia 525.00.",
+            "money_flow_read": "Sin senal confiable de Dinero Grande.",
+            "whale_read": "Sin ballena identificada con la fuente activa.",
+            "macro_read": "Sin contexto macro/noticias activo.",
+            "news_read": "Sin catalizador macro/noticias confirmado en esta lectura.",
+            "supports": ["Precio actual confirmado por datos directos.", "Tendencia positiva en el historico corto."],
+            "risks": ["Volumen relativo no confirmado.", "Sin ballena identificada con la fuente activa."],
+            "missing_evidence": ["volumen relativo", "ballena identificada"],
+            "confidence": "media",
+            "verdict": "Esperar confirmacion",
+            "decision_label": "Esperar confirmacion",
+            "decision_reason": "la tendencia ayuda, pero faltan confirmaciones completas.",
+            "action_plan": "Esperar confirmacion de volumen antes de operar. Genesis ahora no entraria todavia.",
+            "invalidation": "Se invalida si pierde soporte.",
+            "scenarios": {
+                "alcista": "NVDA mejora si rompe resistencia con volumen.",
+                "neutral": "NVDA queda en espera si no confirma direccion.",
+                "bajista": "NVDA se deteriora si pierde soporte.",
+            },
+            "source_status": {"fmp_live_ready": True, "quote_available": True, "money_flow_available": False},
+        }
+
+        payload = get_genesis_answer("es buena idea comprar NVDA?", context="general", ticker="BNO")
+        rendered_text = " ".join(
+            [
+                payload["answer"],
+                payload["blocks"]["decision"],
+                payload["blocks"]["summary"],
+                payload["blocks"]["executive_read"],
+                payload["blocks"]["money_flow"],
+                payload["blocks"]["macro_news"],
+                payload["blocks"]["next_step"],
+                " ".join(payload["blocks"]["main_signals"]),
+                " ".join(payload["blocks"]["risks"]),
+                " ".join(payload["blocks"]["scenarios"]),
+            ]
+        )
+
+        mock_packet.assert_called_once_with("NVDA")
+        self.assertEqual(payload["context"]["ticker"], "NVDA")
+        self.assertIn("VEREDICTO", payload["answer"])
+        self.assertIn("Esperar confirmacion", payload["blocks"]["decision"])
+        self.assertTrue(payload["blocks"]["main_signals"])
+        self.assertTrue(payload["blocks"]["risks"])
+        self.assertIn("Genesis ahora", payload["blocks"]["next_step"])
+        self.assertIn("Sin ballena identificada", payload["blocks"]["money_flow"])
+        self.assertNotIn("compra segura", rendered_text.lower())
+        self.assertNotIn("garantiza", rendered_text.lower())
+        for forbidden in ("probability ready", "probability disabled", "causalidad probabilidad", "insufficient_confirmation"):
+            self.assertNotIn(forbidden, rendered_text)
 
     @patch("services.dashboard.get_genesis_answer.get_dashboard_radar_ticker_drilldown")
     def test_genesis_comparison_uses_both_explicit_tickers(self, mock_drilldown) -> None:
@@ -209,7 +272,9 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         payload = get_genesis_answer("que esta viendo Dinero Grande ahora", context="general")
 
         self.assertEqual(payload["intent"], "money_flow")
-        self.assertIn("Ballenas identificadas", payload["answer"])
+        self.assertIn("Sin senal confiable de Dinero Grande", payload["answer"])
+        self.assertNotIn("Money Flow", payload["answer"])
+        self.assertNotIn("probability disabled", payload["answer"])
 
     def test_genesis_blocks_do_not_expose_internal_keys(self) -> None:
         payload = get_genesis_answer("que esta pasando con BNO", context="general")

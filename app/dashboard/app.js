@@ -38,6 +38,11 @@ const genesisTechnicalReplacements = [
   ["degraded", "datos parciales"],
   ["insufficient_confirmation", "no concluyente"],
   ["portfolio_fallback", "datos locales"],
+  ["Money Flow ready causalidad probabilidad probability disabled", "Dinero Grande sin confirmacion suficiente"],
+  ["probability disabled", "sin confirmacion suficiente"],
+  ["probability ready", "probabilidad disponible"],
+  ["causalidad probabilidad", "causalidad probable"],
+  ["detection ready", "deteccion disponible"],
 ];
 
 const genesisRawErrorPatterns = [
@@ -85,6 +90,11 @@ function sanitizeShellCopy(value) {
 function humanizeDashboardCopy(value) {
   return String(value ?? "")
     .replace(/Dependencias\s*\/\s*FMP/gi, "Fuentes")
+    .replace(/Money Flow ready causalidad probabilidad probability disabled/gi, "Dinero Grande sin confirmacion suficiente")
+    .replace(/probability disabled/gi, "sin confirmacion suficiente")
+    .replace(/probability ready/gi, "probabilidad disponible")
+    .replace(/causalidad probabilidad/gi, "causalidad probable")
+    .replace(/detection ready/gi, "deteccion disponible")
     .replace(/\bFMP\b/gi, "datos de mercado")
     .replace(/\bMoney Flow\b/gi, "flujo")
     .replace(/\bTelegram\b/gi, "panel local")
@@ -551,57 +561,29 @@ function renderGenesisBlocks(blocks) {
   const signals = Array.isArray(blocks.main_signals) ? blocks.main_signals : [];
   const risks = Array.isArray(blocks.risks) ? blocks.risks : [];
   const renderList = (items, fallback) => {
-    const values = items.length ? items : [fallback];
+    const values = (items.length ? items : [fallback]).slice(0, 4);
     return `<ul>${values.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   };
-  return `
-    <div class="genesis-blocks">
+  const section = (title, body) => `
       <section>
-        <span>Resumen</span>
-        <p>${escapeHtml(blocks.summary || "Lectura no concluyente.")}</p>
+        <span>${escapeHtml(title)}</span>
+        ${body}
       </section>
-      <section>
-        <span>Lectura ejecutiva</span>
-        <p>${escapeHtml(blocks.executive_read || "Sin lectura ejecutiva suficiente.")}</p>
-      </section>
-      <section>
-        <span>Comprar, esperar o evitar</span>
-        <p>${escapeHtml(blocks.decision || "No concluyente")}</p>
-      </section>
-      <section>
-        <span>Que apoya</span>
-        ${renderList(signals, "Sin senal suficiente en lecturas guardadas actuales.")}
-      </section>
-      <section>
-        <span>Que frena</span>
-        ${renderList(risks, "Sin freno dominante visible.")}
-      </section>
-      <section>
-        <span>Dinero Grande / flujo</span>
-        <p>${escapeHtml(blocks.money_flow || "Sin ballena identificada en esta lectura.")}</p>
-      </section>
-      <section>
-        <span>Noticias / Macro</span>
-        <p>${escapeHtml(blocks.macro_news || "Sin contexto macro/noticias activo.")}</p>
-      </section>
-      <section>
-        <span>Escenarios</span>
-        ${renderList(blocks.scenarios || [], "Sin escenarios suficientes.")}
-      </section>
-      <section>
-        <span>Confiabilidad</span>
-        <p>${escapeHtml(blocks.reliability || "no concluyente")}</p>
-      </section>
-      <section>
-        <span>Falta confirmar</span>
-        ${renderList(blocks.missing_evidence || [], "Falta evidencia suficiente.")}
-      </section>
-      <section>
-        <span>Siguiente paso</span>
-        <p>${escapeHtml(blocks.next_step || "Esperar confirmacion.")}</p>
-      </section>
-    </div>
-  `;
+    `;
+  const sections = [
+    section("Veredicto", `<p>${escapeHtml(blocks.decision || "No concluyente")}</p>`),
+    section(
+      "Lectura simple",
+      `<p>${escapeHtml(blocks.summary || "Lectura no concluyente.")}</p><p>${escapeHtml(blocks.executive_read || "Sin lectura ejecutiva suficiente.")}</p>`
+    ),
+    section("Que apoya", renderList(signals, "Sin senal suficiente en lecturas guardadas actuales.")),
+    section("Que frena", renderList(risks, "Sin freno dominante visible.")),
+    section("Dinero Grande", `<p>${escapeHtml(blocks.money_flow || "Sin senal confiable de Dinero Grande.")}</p>`),
+  ];
+  sections.push(section("Noticias / Macro", `<p>${escapeHtml(blocks.macro_news || "Sin catalizador macro/noticias confirmado en esta lectura.")}</p>`));
+  sections.push(section("Escenarios", renderList(blocks.scenarios || [], "Sin escenarios suficientes.")));
+  sections.push(section("Plan de accion", `<p>${escapeHtml(blocks.next_step || "Esperar confirmacion.")}</p>`));
+  return `<div class="genesis-blocks genesis-blocks-compact">${sections.join("")}</div>`;
 }
 
 function updateGenesisMessage(id, text, meta = "", blocks = null, options = {}) {
@@ -1546,6 +1528,7 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
   const detectionSummary = detectionPayload.summary || {};
   const sourceStatus = causalPayload.source_status || {};
   const items = mergeMoneyFlowItems(causalPayload, detectionPayload);
+  const usefulItems = items.filter((item) => item.whale_identified || item.flow_detected);
   const tableBody = document.getElementById("money-flow-table-body");
   const totalAssets = rawSummary.total_assets ?? detectionSummary.total_assets ?? items.length;
   const nonConclusiveCount = rawSummary.non_conclusive_count ?? rawSummary.assets_inconclusive ?? detectionSummary.assets_insufficient_confirmation ?? items.filter((item) => item.status === "no_conclusive").length;
@@ -1572,12 +1555,18 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
   setText("money-flow-table-note", "Flujo detectado separado de ballenas identificadas. Si no hay entidad real, Genesis lo marca no concluyente.");
 
   if (!tableBody) return;
-  if (!items.length) {
-    tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(humanizeDashboardCopy(causalPayload.empty_state || "Sin senales de flujo visibles."))}</td></tr>`;
+  if (!items.length || !usefulItems.length) {
+    tableBody.innerHTML = `
+      <tr>
+        <td colspan="6">
+          Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa. No hay entidad, monto ni causalidad confirmada.
+        </td>
+      </tr>
+    `;
     return;
   }
 
-  tableBody.innerHTML = items
+  tableBody.innerHTML = usefulItems
     .map((item) => {
       const nonConclusive = item.status === "no_conclusive";
       const rowClass = nonConclusive ? "money-flow-row money-flow-row--muted" : "money-flow-row";

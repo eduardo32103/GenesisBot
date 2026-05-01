@@ -21,7 +21,7 @@ from services.dashboard.get_radar_ticker_drilldown import get_dashboard_radar_ti
 _LOGGER = logging.getLogger("genesis.dashboard.genesis")
 _HONESTY_NOTE = "Respuesta local y conservadora. No confirma causalidad, institucionalidad ni compra/venta."
 _SNAPSHOT_FALLBACK_ANSWER = (
-    "No pude leer los snapshots activos. Puedo darte una lectura general, "
+    "No pude leer las lecturas guardadas activas. Puedo darte una lectura general, "
     "pero no confirmar datos del panel ahora."
 )
 _DEGRADED_SOURCE_ANSWER = (
@@ -104,18 +104,24 @@ _TICKER_STOPWORDS = {
 _TECHNICAL_TRANSLATIONS = {
     "alerts_origin": "origen de alertas",
     "causal": "causalidad probable",
+    "causalidad probabilidad": "causalidad probable",
     "degraded": "datos parciales",
-    "detection": "deteccion Money Flow",
+    "detection": "deteccion Dinero Grande",
     "detection_ready_causality_disabled": "deteccion lista; causalidad no confirmada",
-    "Faltan credenciales de Telegram en el entorno.": "Hay una dependencia legacy sin configurar en el entorno.",
+    "detection ready": "deteccion disponible",
+    "Faltan credenciales de Telegram en el entorno.": "Hay una fuente secundaria fuera del panel activo.",
     "fallback": "lectura de respaldo",
     "fmp_status": "estado del proveedor",
     "health_status": "salud del sistema",
+    "Money Flow": "Dinero Grande",
     "panel_context": "contexto del panel",
+    "probability disabled": "sin confirmacion suficiente",
+    "probability ready": "probabilidad disponible",
+    "portfolio_fallback": "datos locales",
     "queue_source": "cola ejecutiva",
     "radar_drilldown_decision_layer": "lectura del radar y cola ejecutiva",
-    "snapshot_failure": "snapshots no disponibles",
-    "snapshots": "snapshots activos",
+    "snapshot_failure": "lecturas guardadas no disponibles",
+    "snapshots": "lecturas guardadas activas",
     "ticker_not_found": "ticker sin datos suficientes",
     "unavailable": "sin datos disponibles",
     "available": "disponible",
@@ -231,7 +237,7 @@ def get_genesis_fallback_answer(
     answer = _fallback_answer_for_reason(reason, clean_ticker)
     evidence = _compact_evidence(
         [
-            "Snapshots activos no confirmados.",
+            "Lecturas guardadas activas no confirmadas.",
             "Lectura no concluyente hasta recuperar evidencia del panel.",
             *_panel_evidence(clean_panel_context, intent),
         ]
@@ -243,7 +249,7 @@ def get_genesis_fallback_answer(
     }
     blocks = _build_response_blocks(answer, evidence, source_status, clean_context, intent, clean_panel_context)
     blocks["reliability"] = "no concluyente"
-    blocks["next_step"] = "Reintentar cuando el panel confirme snapshots o revisar solo los datos visibles."
+    blocks["next_step"] = "Reintentar cuando el panel confirme lecturas guardadas o revisar solo los datos visibles."
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -487,7 +493,7 @@ def _resolve_main_signals(
             signals.append(signal)
     signals.extend(evidence)
     compacted = _compact_evidence(signals)
-    return compacted or ["Sin senal suficiente en snapshots actuales."]
+    return compacted or ["Sin senal suficiente en lecturas guardadas actuales."]
 
 
 def _resolve_risks(evidence: list[str], source_status: dict[str, str], reliability: str) -> list[str]:
@@ -496,7 +502,7 @@ def _resolve_risks(evidence: list[str], source_status: dict[str, str], reliabili
     if reliability in {"baja", "no concluyente"}:
         risks.append("Confiabilidad limitada; conviene esperar confirmacion.")
     if any(token in joined for token in ("fallback", "unavailable", "unknown", "degrad", "insuficiente", "no concluyente")):
-        risks.append("Hay datos incompletos o degradados en la lectura.")
+        risks.append("No hay suficiente evidencia para operar fuerte.")
     if source_status.get("panel_context") == "empty":
         risks.append("Falta contexto activo del panel para afinar la respuesta.")
     return _compact_evidence(risks) or ["Sin freno dominante visible, pero la lectura sigue siendo conservadora."]
@@ -510,7 +516,7 @@ def _money_flow_block(
 ) -> str:
     if intent == "money_flow":
         clean = _compact_evidence(evidence)
-        return clean[0] if clean else "Flujo detectado y ballenas separadas; sin entidad confirmada si no aparece en fuentes reales."
+        return clean[0] if clean else "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa."
     section = panel_context.get("money_flow") or {}
     summary = _humanize_text(section.get("summary", ""))
     detected = _humanize_text(section.get("detected", ""))
@@ -525,15 +531,15 @@ def _money_flow_block(
 
 def _executive_read(intent: str, context: str, reliability: str) -> str:
     if reliability in {"baja", "no concluyente"}:
-        base = "Lectura util como orientacion, no como decision fuerte."
+        base = "No entraria todavia sin mejor confirmacion."
     else:
-        base = "Lectura usable para priorizar revision."
+        base = "La lectura ayuda a decidir con cautela."
     if intent == "money_flow":
-        return f"{base} Flujo de Capital requiere confirmacion antes de concluir."
+        return f"{base} Dinero Grande solo cuenta si hay entidad, monto o flujo confirmable."
     if intent == "alerts":
         return f"{base} La prioridad sale de alertas visibles y su estado actual."
     if intent == "asset_priority":
-        return f"{base} El activo se evalua contra radar y cola ejecutiva."
+        return f"{base} Genesis prioriza calidad de entrada, riesgo y proteccion de capital."
     if intent == "reliability":
         return f"{base} La confiabilidad manda el grado de cautela."
     if intent == "system":
@@ -543,13 +549,13 @@ def _executive_read(intent: str, context: str, reliability: str) -> str:
 
 def _next_step(intent: str, reliability: str) -> str:
     if reliability in {"baja", "no concluyente"}:
-        return "Esperar confirmacion o revisar la fuente limitada antes de actuar."
+        return "Esperar confirmacion; evitar operaciones mediocres y proteger capital."
     if intent == "alerts":
         return "Revisar la alerta principal y su validacion."
     if intent == "money_flow":
-        return "Revisar Flujo de Capital y buscar confirmacion adicional."
+        return "Actuar solo si aparece flujo confiable o ballena identificada."
     if intent == "asset_priority":
-        return "Validar el ticker en Radar antes de decidir."
+        return "Validar precio, volumen y catalizador antes de entrar."
     if intent == "reliability":
         return "Revisar componentes live, fallback y degradados."
     return "Usar la cola ejecutiva para decidir que revisar primero."
@@ -630,7 +636,7 @@ def _answer_asset_priority(ticker: str = "") -> tuple[str, list[str], dict[str, 
     candidate = next((item for item in all_items if str(item.get("ticker") or "").strip().upper() == ticker), None)
     if ticker and candidate is None:
         return (
-            f"{ticker}: lectura no concluyente. No encuentro datos suficientes de ese ticker en los snapshots actuales.",
+            f"{ticker}: lectura no concluyente. No encuentro datos suficientes de ese ticker en las lecturas guardadas actuales.",
             ["El ticker no aparece en la cola ejecutiva actual.", "Conviene revisar Radar o Flujo de Capital y esperar confirmacion."],
             {"queue_source": "ticker_not_found", "snapshots": _snapshot_status(queue)},
         )
@@ -709,16 +715,16 @@ def _answer_asset_packet(packet: dict[str, Any]) -> tuple[str, list[str], dict[s
     ticker = str(packet.get("ticker") or "").strip().upper()
     name = str(packet.get("company_name") or ticker).strip()
     price = packet.get("price")
-    decision = str(packet.get("decision_label") or "No concluyente").strip()
+    decision = str(packet.get("verdict") or packet.get("decision_label") or "No concluyente").strip()
     confidence = str(packet.get("confidence") or "no concluyente").strip()
+    reason = _clean_sentence(packet.get("decision_reason") or "la evidencia disponible es limitada")
     price_text = f"precio actual {price}" if price is not None else "sin precio actual confirmado"
     if (packet.get("source_status") or {}).get("fmp_live_ready") and price is not None:
         price_text = f"{price_text} con datos directos"
 
     answer = (
-        f"{ticker} ({name}): {price_text}. Decision operativa: {decision}. "
-        f"{packet.get('technical_read') or 'Lectura tecnica no concluyente'} "
-        f"No promete ganancias; la lectura exige confirmar evidencia antes de operar."
+        f"VEREDICTO: {decision}. {ticker} ({name}) tiene {price_text}; {reason}. "
+        f"No promete ganancias: hay que validar la condicion marcada antes de operar."
     )
     evidence = [
         *(str(item) for item in packet.get("supports") or []),
@@ -739,33 +745,56 @@ def _build_asset_packet_blocks(packet: dict[str, Any]) -> dict[str, Any]:
     ticker = str(packet.get("ticker") or "").strip().upper()
     name = str(packet.get("company_name") or ticker).strip()
     price = packet.get("price")
+    try:
+        change = float(packet.get("percent_change"))
+    except (TypeError, ValueError):
+        change = None
     price_text = f"Precio actual: {price}." if price is not None else "Precio actual no confirmado."
-    decision = str(packet.get("decision_label") or "No concluyente").strip()
+    if change is not None:
+        price_text = f"{price_text} Cambio diario: {change:.2f}%."
+    decision = str(packet.get("verdict") or packet.get("decision_label") or "No concluyente").strip()
+    reason = _clean_sentence(packet.get("decision_reason") or "evidencia limitada")
+    action_plan = _clean_sentence(packet.get("action_plan") or packet.get("next_step") or packet.get("improve_condition") or "confirmar volumen, tendencia y catalizador")
+    invalidation = _clean_sentence(packet.get("invalidation") or packet.get("invalidation_condition") or "la lectura se invalida si pierde soporte")
+    if "invalida" not in _normalize(action_plan):
+        action_plan = f"{action_plan} Invalida: {invalidation}."
     scenarios = packet.get("scenarios") if isinstance(packet.get("scenarios"), dict) else {}
     missing = packet.get("missing_evidence") if isinstance(packet.get("missing_evidence"), list) else []
-    return {
-        "summary": f"{ticker} ({name}). {price_text} Lectura rapida: {decision}.",
-        "executive_read": str(packet.get("technical_read") or "Lectura no concluyente con datos disponibles."),
-        "decision": decision,
-        "main_signals": [str(item) for item in (packet.get("supports") or [])][:4] or ["Sin apoyos suficientes confirmados."],
-        "risks": [str(item) for item in (packet.get("risks") or [])][:4] or ["Faltan riesgos confirmados, la lectura sigue conservadora."],
-        "money_flow": " ".join(
+    source_status = packet.get("source_status") if isinstance(packet.get("source_status"), dict) else {}
+    money_flow = (
+        " ".join(
             part
             for part in (
-                str(packet.get("money_flow_read") or "Sin lectura de Dinero Grande confirmada."),
-                str(packet.get("whale_read") or "Sin ballena identificada con la fuente activa."),
+                str(packet.get("money_flow_read") or ""),
+                str(packet.get("whale_read") or ""),
             )
             if part
-        ),
-        "macro_news": f"{packet.get('news_read') or 'Sin noticias activas.'} {packet.get('macro_read') or 'Sin contexto macro activo.'}".strip(),
+        )
+        if source_status.get("money_flow_available") or source_status.get("whale_identified")
+        else "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa."
+    )
+    news_macro = str(packet.get("news_read") or "Sin catalizador macro/noticias confirmado en esta lectura.")
+    if "sin noticias relevantes" in _normalize(news_macro):
+        news_macro = "Sin catalizador macro/noticias confirmado en esta lectura."
+    macro_read = str(packet.get("macro_read") or "")
+    if macro_read and "sin contexto macro" not in _normalize(macro_read):
+        news_macro = f"{news_macro} {macro_read}".strip()
+    return {
+        "summary": f"{ticker} ({name}). {price_text} Veredicto: {decision}.",
+        "executive_read": str(packet.get("technical_read") or "Lectura no concluyente con datos disponibles."),
+        "decision": f"{decision}: {reason}.",
+        "main_signals": [str(item) for item in (packet.get("supports") or [])][:4] or ["Sin apoyos suficientes confirmados."],
+        "risks": [str(item) for item in (packet.get("risks") or [])][:4] or ["Faltan riesgos confirmados, la lectura sigue conservadora."],
+        "money_flow": money_flow,
+        "macro_news": news_macro,
         "scenarios": [
             f"Alcista: {scenarios.get('alcista') or 'requiere confirmacion de precio y volumen.'}",
             f"Neutral: {scenarios.get('neutral') or 'mantener vigilancia mientras faltan datos.'}",
             f"Bajista: {scenarios.get('bajista') or 'riesgo aumenta si fallan precio y volumen.'}",
         ],
         "reliability": str(packet.get("confidence") or "no concluyente"),
-        "next_step": str(packet.get("next_step") or "Esperar confirmacion antes de operar."),
-        "missing_evidence": [str(item) for item in missing][:6],
+        "next_step": action_plan,
+        "missing_evidence": [str(item) for item in missing][:4],
     }
 
 
@@ -897,7 +926,7 @@ def _answer_macro() -> tuple[str, list[str], dict[str, str]]:
             "pero no confirmar entorno macro, noticias o geopolitica ahora."
         )
         evidence = [
-            "No hay snapshot macro/noticias activo.",
+            "No hay lectura macro/noticias activa.",
             "La lectura queda no concluyente para entorno externo.",
         ]
         return answer, evidence, {
@@ -934,15 +963,28 @@ def _answer_money_flow(question: str, ticker: str = "") -> tuple[str, list[str],
         _LOGGER.warning("Genesis money flow source unavailable", exc_info=True)
         payload = {}
     if not isinstance(payload, dict) or not payload:
-        return _DEGRADED_SOURCE_ANSWER, ["Flujo de Capital no devolvio contexto suficiente."], {
-            "detection": "degraded",
+        return "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa.", ["Dinero Grande no devolvio contexto suficiente."], {
+            "detection": "no concluyente",
             "causal": "no concluyente",
             "reliability": "no concluyente",
-            "snapshots": "degraded",
+            "snapshots": "datos parciales",
         }
     source = payload.get("source_status") or {}
-    evidence = [str(payload.get("honesty_note") or ""), *(str((item or {}).get("context") or "") for item in payload.get("items") or [])]
-    return str(payload.get("answer") or "Flujo de Capital no concluyente."), _compact_evidence(evidence), {
+    items = [item for item in (payload.get("items") or []) if isinstance(item, dict)]
+    useful_items = [
+        item
+        for item in items
+        if item.get("whale_identified") or item.get("flow_detected") or item.get("attention") == "merece atencion"
+    ]
+    answer = _humanize_text(payload.get("answer") or "Dinero Grande no concluyente.")
+    if not useful_items:
+        answer = (
+            "Sin senal confiable de Dinero Grande. "
+            "Sin ballena identificada con la fuente activa. "
+            "No hay entidad, monto ni causalidad confirmada."
+        )
+    evidence = [str(payload.get("honesty_note") or ""), *(str((item or {}).get("context") or "") for item in useful_items[:3])]
+    return answer, _compact_evidence(evidence), {
         "detection": str(source.get("detection_status") or "unknown"),
         "causal": str(source.get("causal_status") or "unknown"),
     }
@@ -972,12 +1014,12 @@ def _human_source_status(key: str, value: Any) -> str:
     labels = {
         "alerts_origin": "Alertas",
         "causal": "Causalidad probable",
-        "detection": "Money Flow",
+        "detection": "Dinero Grande",
         "fmp_status": "Proveedor",
         "health_status": "Sistema",
         "queue_source": "Cola ejecutiva",
         "reliability": "Confiabilidad",
-        "snapshots": "Snapshots",
+        "snapshots": "Lecturas guardadas",
     }
     return f"{labels.get(key, 'Senal')}: {clean_value}"
 
@@ -986,8 +1028,11 @@ def _humanize_text(value: Any) -> str:
     text = " ".join(str(value or "").split())
     if not text:
         return ""
-    for raw, replacement in _TECHNICAL_TRANSLATIONS.items():
-        text = re.sub(re.escape(raw), replacement, text, flags=re.IGNORECASE)
+    for raw, replacement in sorted(_TECHNICAL_TRANSLATIONS.items(), key=lambda item: len(item[0]), reverse=True):
+        pattern = re.escape(raw)
+        if raw.replace("_", "").replace(" ", "").isalnum():
+            pattern = rf"\b{pattern}\b"
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     text = text.replace("_", " ")
     return text
 
@@ -1044,7 +1089,7 @@ def _fallback_reliability_snapshot() -> dict[str, Any]:
             "live_count": 0,
             "fallback_count": 0,
             "degraded_count": 1,
-            "degraded_parts": ["snapshots activos"],
+            "degraded_parts": ["lecturas guardadas activas"],
             "fmp_status_label": "sin dato suficiente",
         }
     }
@@ -1062,7 +1107,7 @@ def _fallback_alerts_snapshot() -> dict[str, Any]:
     return {
         "summary": {
             "total_recent": 0,
-            "engine_summary": "No pude leer alertas activas desde el snapshot.",
+            "engine_summary": "No pude leer alertas activas desde la lectura guardada.",
             "data_origin": "degraded",
         },
         "recent_alerts": [],
