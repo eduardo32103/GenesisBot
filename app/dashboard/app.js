@@ -433,6 +433,17 @@ function appendGenesisMessage(role, text, meta = "", options = {}) {
   return id;
 }
 
+function scrollGenesisThreadToBottom() {
+  const thread = document.getElementById("genesis-thread");
+  if (!thread) return;
+  const scroll = () => {
+    thread.scrollTop = thread.scrollHeight;
+  };
+  scroll();
+  window.requestAnimationFrame(scroll);
+  window.setTimeout(scroll, 80);
+}
+
 function humanizeGenesisCopy(value, fallback = "") {
   let text = String(value ?? "").replace(/\s+/g, " ").trim();
   if (!text) return fallback;
@@ -457,6 +468,59 @@ function humanizeGenesisNarrative(value, fallback = "") {
   });
   text = humanizeDashboardCopy(text).replace(/_/g, " ").trim();
   return text || fallback;
+}
+
+function getFirstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function getGenesisCompactNarrative(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  return humanizeGenesisNarrative(
+    getFirstString([
+      payload.assistant_narrative,
+      payload.assistantNarrative,
+      payload.response?.assistant_narrative,
+      payload.response?.assistantNarrative,
+      payload.data?.assistant_narrative,
+      payload.data?.assistantNarrative,
+      payload.answer?.assistant_narrative,
+      payload.answer?.assistantNarrative,
+      payload.data?.answer?.assistant_narrative,
+      payload.data?.answer?.assistantNarrative,
+      payload.data?.response?.assistant_narrative,
+      payload.data?.response?.assistantNarrative,
+      payload.response?.answer?.assistant_narrative,
+      payload.response?.answer?.assistantNarrative,
+    ]),
+    ""
+  );
+}
+
+function isGenesisCompactPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  return Boolean(
+    payload.compact_mode ||
+      payload.compactMode ||
+      payload.response?.compact_mode ||
+      payload.response?.compactMode ||
+      payload.data?.compact_mode ||
+      payload.data?.compactMode ||
+      payload.answer?.compact_mode ||
+      payload.answer?.compactMode ||
+      payload.data?.answer?.compact_mode ||
+      payload.data?.answer?.compactMode ||
+      payload.data?.response?.compact_mode ||
+      payload.data?.response?.compactMode ||
+      payload.response?.answer?.compact_mode ||
+      payload.response?.answer?.compactMode ||
+      getGenesisCompactNarrative(payload)
+  );
 }
 
 function getGenesisFallbackCopy(reason = "snapshots") {
@@ -561,14 +625,16 @@ function normalizeGenesisPayload(payload, reason = "payload_incomplete", context
   const fallback = createGenesisFallbackPayload(reason, context);
   if (!payload || typeof payload !== "object") return fallback;
   const blocks = normalizeGenesisBlocks(payload.blocks, reason);
-  const answer = humanizeGenesisCopy(payload.answer, fallback.answer);
+  const assistantNarrative = getGenesisCompactNarrative(payload);
+  const compactMode = isGenesisCompactPayload(payload);
+  const rawAnswer = typeof payload.answer === "string" ? payload.answer : assistantNarrative;
+  const answer = humanizeGenesisCopy(rawAnswer, fallback.answer);
   const honestyNote = humanizeGenesisCopy(payload.honesty_note, fallback.honesty_note);
-  const assistantNarrative = humanizeGenesisNarrative(payload.assistant_narrative, "");
   return {
     ...payload,
     answer: answer || fallback.answer,
-    assistant_narrative: assistantNarrative,
-    compact_mode: Boolean(payload.compact_mode || assistantNarrative),
+    assistant_narrative: assistantNarrative || (compactMode ? humanizeGenesisNarrative(answer, "") : ""),
+    compact_mode: compactMode,
     honesty_note: honestyNote || fallback.honesty_note,
     context: payload.context && typeof payload.context === "object" ? payload.context : fallback.context,
     blocks,
@@ -659,10 +725,7 @@ function updateGenesisMessage(id, text, meta = "", blocks = null, options = {}) 
       <strong>Genesis</strong>
       ${renderGenesisCompactAnswer(options.payload || { answer: text })}
     `;
-    const thread = document.getElementById("genesis-thread");
-    if (thread) {
-      thread.scrollTop = thread.scrollHeight;
-    }
+    scrollGenesisThreadToBottom();
     return;
   }
 
@@ -672,10 +735,7 @@ function updateGenesisMessage(id, text, meta = "", blocks = null, options = {}) 
     ${renderGenesisBlocks(blocks)}
     ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
   `;
-  const thread = document.getElementById("genesis-thread");
-  if (thread) {
-    thread.scrollTop = thread.scrollHeight;
-  }
+  scrollGenesisThreadToBottom();
 }
 
 function renderGenesisAnswer(payload, messageId) {

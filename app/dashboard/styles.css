@@ -497,8 +497,7 @@ body:has(#view-command-center.is-visible) .status-strip {
 }
 
 .genesis-chat-form {
-  position: sticky;
-  bottom: 0;
+  position: relative;
   display: flex;
   gap: 10px;
   z-index: 2;
