@@ -1028,11 +1028,14 @@ body:has(#view-command-center.is-visible) .status-strip {
 }
 
 .portfolio-table td:first-child strong,
-.portfolio-table td:first-child small {
+.portfolio-table td:first-child small,
+.portfolio-table td strong,
+.portfolio-table td small {
   display: block;
 }
 
-.portfolio-table td:first-child small {
+.portfolio-table td:first-child small,
+.portfolio-subvalue {
   margin-top: 3px;
   color: var(--muted);
   font-size: 0.76rem;
@@ -1078,6 +1081,18 @@ body:has(#view-command-center.is-visible) .status-strip {
 }
 
 .portfolio-return-neutral {
+  color: var(--muted);
+}
+
+.portfolio-subvalue-positive {
+  color: var(--ok);
+}
+
+.portfolio-subvalue-negative {
+  color: var(--danger);
+}
+
+.portfolio-subvalue-neutral {
   color: var(--muted);
 }
 

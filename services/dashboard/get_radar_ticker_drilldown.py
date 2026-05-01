@@ -58,12 +58,19 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
 
         is_investment = bool(item.get("is_investment"))
         payload["positions"][ticker] = {
-            "display_name": ticker,
+            "display_name": item.get("display_name") or item.get("name") or ticker,
             "is_investment": is_investment,
             "amount_usd": float(item.get("amount_usd") or 0.0) if is_investment else 0.0,
-            "entry_price": float(item.get("reference_price") or 0.0) if is_investment else 0.0,
+            "units": float(item.get("units") or 0.0) if is_investment else 0.0,
+            "entry_price": float(item.get("entry_price") or item.get("reference_price") or 0.0) if is_investment else 0.0,
+            "reference_price": float(item.get("reference_price") or 0.0),
             "timestamp": item.get("updated_at") or "",
         }
+        if ticker in requested_quotes and float(item.get("current_price") or 0.0) > 0:
+            payload["quotes"][ticker] = {
+                "price": item.get("current_price"),
+                "timestamp": item.get("quote_timestamp") or item.get("updated_at") or "",
+            }
 
     if not requested_quotes:
         return payload
@@ -74,6 +81,8 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
 
     client = FmpClient(settings.fmp_api_key, logger=logging.getLogger("genesis.dashboard"))
     for ticker in requested_quotes:
+        if ticker in payload["quotes"]:
+            continue
         quote = client.get_quote(ticker) or {}
         if not isinstance(quote, dict) or not quote:
             continue

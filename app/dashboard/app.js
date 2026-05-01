@@ -892,6 +892,12 @@ function getDrilldownStatusMeta(status) {
   if (normalized === "unpriced") {
     return { label: "Sin precio live", tone: "state-access" };
   }
+  if (normalized === "priced" || normalized === "valor_calculado") {
+    return { label: "Valor calculado", tone: "state-ok" };
+  }
+  if (normalized === "no_concluyente") {
+    return { label: "No concluyente", tone: "state-access" };
+  }
   if (normalized === "watchlist") {
     return { label: "En vigilancia", tone: "state-loading" };
   }
@@ -1898,6 +1904,14 @@ function getPortfolioDailyChange(item) {
   );
 }
 
+function getPortfolioDailyPnl(item) {
+  return parseFiniteNumber(item.daily_pnl);
+}
+
+function getPortfolioTotalPnl(item) {
+  return parseFiniteNumber(item.unrealized_pnl ?? item.pnl_usd);
+}
+
 function getPortfolioPrice(item) {
   return (
     parsePositiveNumber(item.current_price) ??
@@ -1912,6 +1926,15 @@ function formatPortfolioMoney(value, emptyText = "Sin valor calculado") {
     return emptyText;
   }
   return `$${numeric.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatSignedPortfolioMoney(value, emptyText = "Sin dato") {
+  const numeric = parseFiniteNumber(value);
+  if (numeric === null) {
+    return emptyText;
+  }
+  const sign = numeric >= 0 ? "+" : "-";
+  return `${sign}$${Math.abs(numeric).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatPortfolioPercent(value, emptyText = "Sin dato") {
@@ -1939,6 +1962,22 @@ function portfolioChangeTone(change) {
 }
 
 function portfolioStateLabel(item, change, hasValue) {
+  const status = String(item.status || "").trim().toLowerCase();
+  if (status === "en_alza" || status === "gain") {
+    return "En alza";
+  }
+  if (status === "a_la_baja" || status === "loss") {
+    return "A la baja";
+  }
+  if (status === "sin_cambio" || status === "flat") {
+    return "Sin cambio";
+  }
+  if (status === "no_concluyente" || status === "unpriced") {
+    return "No concluyente";
+  }
+  if (status === "watchlist") {
+    return "En vigilancia";
+  }
   const numericChange = parseFiniteNumber(change);
   if (numericChange !== null && numericChange > 0) {
     return "En alza";
@@ -1963,6 +2002,9 @@ function buildPortfolioModel(items) {
     value: getPortfolioPositionValue(item),
     price: getPortfolioPrice(item),
     dailyChange: getPortfolioDailyChange(item),
+    dailyPnl: getPortfolioDailyPnl(item),
+    totalPnl: getPortfolioTotalPnl(item),
+    units: parsePositiveNumber(item.units),
   }));
   const valuedRows = rows.filter((row) => row.value !== null);
   const totalValue = valuedRows.reduce((total, row) => total + row.value, 0);
@@ -1997,7 +2039,11 @@ function buildPortfolioPerspective(model, items) {
   if (!items.length) {
     return "Genesis: no hay activos suficientes para leer la cartera ahora.";
   }
+  const positionCount = model.rows.filter((row) => row.units !== null).length;
   if (!model.hasDistribution) {
+    if (positionCount > 0) {
+      return "Genesis: hay posiciones con cantidades, pero falta precio actual para calcular valor y peso.";
+    }
     return "Genesis: cartera en modo watchlist. No hay cantidades suficientes para evaluar concentracion completa.";
   }
   const sorted = [...model.distribution].sort((a, b) => b.weight - a.weight);
@@ -2012,6 +2058,10 @@ function buildPortfolioPerspective(model, items) {
   }
   if (negativeCount > positiveCount) {
     return "Genesis: presion diaria visible en parte de la cartera; conviene revisar riesgo antes de ampliar posiciones.";
+  }
+  const watchlistCount = model.rows.filter((row) => row.units === null).length;
+  if (watchlistCount) {
+    return `Genesis: cartera calculable con ${watchlistCount} activos en vigilancia sin cantidades; no entran al peso.`;
   }
   return "Genesis: cartera calculable sin sesgo diario claro; priorizar confirmacion activo por activo.";
 }
@@ -2064,7 +2114,9 @@ function renderRadarSnapshot(payload) {
   setText("radar-reference-count", String(summary.reference_count ?? 0));
   setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin fecha confirmada");
   setText("radar-table-note", model.hasDistribution
-    ? "Lista simple de posiciones. Abre un activo para ver la ficha tactica completa."
+    ? (model.rows.some((row) => row.units === null)
+        ? "Posiciones calculadas y activos en vigilancia sin cantidades. Abre un activo para ver la ficha tactica completa."
+        : "Lista simple de posiciones. Abre un activo para ver la ficha tactica completa.")
     : "Watchlist simple. Valor, peso y rendimiento quedan sin calcular hasta tener cantidades reales.");
 
   const donut = document.getElementById("portfolio-donut");
@@ -2111,7 +2163,16 @@ function renderRadarSnapshot(payload) {
           const ticker = row.ticker || "n/a";
           const weight = model.hasDistribution && row.value !== null ? (row.value / model.totalValue) * 100 : null;
           const changeTone = portfolioChangeTone(row.dailyChange);
+          const dailyPnlTone = portfolioChangeTone(row.dailyPnl);
+          const totalPnlTone = portfolioChangeTone(row.totalPnl);
           const state = portfolioStateLabel(row.item, row.dailyChange, row.value !== null);
+          const valueText = formatPortfolioMoney(row.value);
+          const totalPnlText = row.value === null
+            ? "P/L sin valor"
+            : formatSignedPortfolioMoney(row.totalPnl, "P/L sin entrada");
+          const dailyPnlText = row.dailyPnl === null
+            ? "Diario sin calcular"
+            : formatSignedPortfolioMoney(row.dailyPnl);
           return `
             <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
               <td>
@@ -2120,8 +2181,14 @@ function renderRadarSnapshot(payload) {
               </td>
               <td>${escapeHtml(row.name)}</td>
               <td>${escapeHtml(formatPortfolioWeight(weight))}</td>
-              <td>${escapeHtml(formatPortfolioMoney(row.value))}</td>
-              <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(formatPortfolioPercent(row.dailyChange, "Sin cambio"))}</span></td>
+              <td>
+                <strong>${escapeHtml(valueText)}</strong>
+                <small class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</small>
+              </td>
+              <td>
+                <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(formatPortfolioPercent(row.dailyChange, "Sin cambio"))}</span>
+                <small class="portfolio-subvalue portfolio-subvalue-${dailyPnlTone}">${escapeHtml(dailyPnlText)}</small>
+              </td>
               <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
             </tr>
           `;

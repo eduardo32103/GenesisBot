@@ -15,11 +15,13 @@ def _resolve_quote(raw_portfolio: dict | None, ticker: str) -> dict:
     return {}
 
 
-def _resolve_status(*, has_position: bool, has_live_price: bool, pnl_pct: float | None) -> str:
+def _resolve_status(*, has_position: bool, has_live_price: bool, pnl_pct: float | None, has_entry_price: bool = True) -> str:
     if not has_position:
         return "watchlist"
     if not has_live_price:
         return "unpriced"
+    if not has_entry_price:
+        return "priced"
     if pnl_pct is None:
         return "unpriced"
     if pnl_pct > 0:
@@ -55,15 +57,17 @@ def get_ticker_drilldown(raw_portfolio: dict | None, ticker: str) -> dict:
     quote = _resolve_quote(raw_portfolio, requested_ticker)
     current_price = _coerce_float(quote.get("price"))
     has_live_price = current_price > 0
-    has_position = bool(
-        selected_position["is_investment"]
-        and selected_position["amount_usd"] > 0
-        and selected_position["entry_price"] > 0
-    )
+    units_value = _coerce_float(selected_position.get("units"))
+    entry_price_value = _coerce_float(selected_position.get("entry_price"))
+    amount_value = _coerce_float(selected_position.get("amount_usd"))
+    if units_value <= 0 and amount_value > 0 and entry_price_value > 0:
+        units_value = round(amount_value / entry_price_value, 8)
+    has_position = bool(selected_position["is_investment"] and units_value > 0)
+    has_entry_price = entry_price_value > 0
 
-    amount_usd = selected_position["amount_usd"] if has_position else None
-    entry_price = selected_position["entry_price"] if has_position else None
-    units = round(amount_usd / entry_price, 8) if has_position and entry_price else None
+    amount_usd = round(units_value * entry_price_value, 2) if has_position and has_entry_price else None
+    entry_price = entry_price_value if has_position and has_entry_price else None
+    units = units_value if has_position else None
     current_value = round(units * current_price, 2) if units is not None and has_live_price else None
     pnl_usd = round(current_value - amount_usd, 2) if current_value is not None and amount_usd is not None else None
     pnl_pct = round(((current_price - entry_price) / entry_price) * 100, 2) if has_position and has_live_price and entry_price else None
@@ -82,6 +86,11 @@ def get_ticker_drilldown(raw_portfolio: dict | None, ticker: str) -> dict:
         "current_value": current_value,
         "pnl_usd": pnl_usd,
         "pnl_pct": pnl_pct,
-        "status": _resolve_status(has_position=has_position, has_live_price=has_live_price, pnl_pct=pnl_pct),
+        "status": _resolve_status(
+            has_position=has_position,
+            has_live_price=has_live_price,
+            pnl_pct=pnl_pct,
+            has_entry_price=has_entry_price,
+        ),
         "quote_timestamp": quote.get("timestamp") or quote.get("updated_at") or "",
     }

@@ -35,6 +35,31 @@ class PortfolioDrilldownTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["investment_count"], 1)
         self.assertEqual(snapshot["summary"]["invested_capital"], 1500.0)
 
+    def test_portfolio_snapshot_accepts_positions_list_with_units(self) -> None:
+        snapshot = get_portfolio_snapshot(
+            {
+                "positions": [
+                    {
+                        "ticker": "nvda",
+                        "name": "NVIDIA",
+                        "units": 10,
+                        "entry_price": 150,
+                    },
+                    {
+                        "ticker": "bno",
+                    },
+                ],
+            }
+        )
+
+        nvda = next(position for position in snapshot["positions"] if position["ticker"] == "NVDA")
+        bno = next(position for position in snapshot["positions"] if position["ticker"] == "BNO")
+        self.assertEqual(nvda["units"], 10.0)
+        self.assertEqual(nvda["amount_usd"], 1500.0)
+        self.assertTrue(nvda["is_investment"])
+        self.assertFalse(bno["is_investment"])
+        self.assertEqual(snapshot["summary"]["unit_position_count"], 1)
+
     def test_drilldown_returns_live_position_metrics(self) -> None:
         detail = get_ticker_drilldown(
             {
@@ -100,6 +125,35 @@ class PortfolioDrilldownTests(unittest.TestCase):
         self.assertIsNone(detail["current_value"])
         self.assertIsNone(detail["pnl_usd"])
         self.assertIsNone(detail["pnl_pct"])
+
+    def test_drilldown_calculates_value_without_total_pnl_when_entry_missing(self) -> None:
+        detail = get_ticker_drilldown(
+            {
+                "positions": [
+                    {
+                        "ticker": "NVDA",
+                        "display_name": "NVIDIA",
+                        "units": 5,
+                    }
+                ],
+                "quotes": {
+                    "NVDA": {
+                        "price": 200.0,
+                        "timestamp": "2026-05-01T14:30:00+00:00",
+                    }
+                },
+            },
+            "NVDA",
+        )
+
+        self.assertTrue(detail["found"])
+        self.assertEqual(detail["units"], 5.0)
+        self.assertEqual(detail["current_value"], 1000.0)
+        self.assertIsNone(detail["entry_price"])
+        self.assertIsNone(detail["amount_usd"])
+        self.assertIsNone(detail["pnl_usd"])
+        self.assertIsNone(detail["pnl_pct"])
+        self.assertEqual(detail["status"], "priced")
 
     def test_drilldown_returns_not_found_for_unknown_ticker(self) -> None:
         detail = get_ticker_drilldown({"positions": {}}, "MSFT")
