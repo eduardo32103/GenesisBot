@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from api.routes.dashboard import (
+    add_dashboard_portfolio_ticker,
     get_dashboard_alert_drilldown,
     get_dashboard_alerts,
     get_dashboard_executive_queue,
@@ -24,6 +25,7 @@ from api.routes.dashboard import (
     get_dashboard_reliability,
     get_dashboard_radar_drilldown,
     get_dashboard_radar,
+    simulate_dashboard_portfolio_purchase,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
 
@@ -45,6 +47,8 @@ def create_app() -> dict[str, str]:
         "money_flow_jarvis_endpoint": "/api/dashboard/money-flow/jarvis?q={question}",
         "radar_endpoint": "/api/dashboard/radar",
         "radar_drilldown_endpoint": "/api/dashboard/radar/drilldown?ticker={symbol}",
+        "portfolio_add_endpoint": "/api/dashboard/portfolio/watchlist",
+        "portfolio_paper_endpoint": "/api/dashboard/portfolio/paper",
         "alerts_endpoint": "/api/dashboard/alerts",
         "alerts_drilldown_endpoint": "/api/dashboard/alerts/drilldown?alert_id={id}",
         "fmp_endpoint": "/api/dashboard/fmp",
@@ -55,6 +59,50 @@ def create_app() -> dict[str, str]:
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, directory: str | None = None, **kwargs):
         super().__init__(*args, directory=directory or str(_DASHBOARD_DIR), **kwargs)
+
+    def _write_json(self, payload_data: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        payload = json.dumps(payload_data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _read_json_body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return {}
+        try:
+            raw = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        body = self._read_json_body()
+
+        if parsed.path == "/api/dashboard/portfolio/watchlist":
+            result = add_dashboard_portfolio_ticker(str(body.get("ticker") or ""))
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._write_json(result, status)
+            return
+
+        if parsed.path == "/api/dashboard/portfolio/paper":
+            result = simulate_dashboard_portfolio_purchase(
+                str(body.get("ticker") or ""),
+                units=body.get("units"),
+                entry_price=body.get("entry_price"),
+            )
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._write_json(result, status)
+            return
+
+        self._write_json({"ok": False, "message": "Consulta no disponible."}, HTTPStatus.NOT_FOUND)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)

@@ -64,11 +64,18 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
             "units": float(item.get("units") or 0.0) if is_investment else 0.0,
             "entry_price": float(item.get("entry_price") or item.get("reference_price") or 0.0) if is_investment else 0.0,
             "reference_price": float(item.get("reference_price") or 0.0),
+            "mode": str(item.get("mode") or "").strip(),
             "timestamp": item.get("updated_at") or "",
         }
         if ticker in requested_quotes and float(item.get("current_price") or 0.0) > 0:
             payload["quotes"][ticker] = {
                 "price": item.get("current_price"),
+                "change": item.get("daily_change"),
+                "changesPercentage": item.get("daily_change_pct"),
+                "previousClose": item.get("previous_close"),
+                "dayHigh": item.get("day_high"),
+                "dayLow": item.get("day_low"),
+                "volume": item.get("volume"),
                 "timestamp": item.get("quote_timestamp") or item.get("updated_at") or "",
             }
 
@@ -88,6 +95,12 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
             continue
         payload["quotes"][ticker] = {
             "price": quote.get("price"),
+            "change": quote.get("change"),
+            "changesPercentage": quote.get("changesPercentage"),
+            "previousClose": quote.get("previousClose"),
+            "dayHigh": quote.get("dayHigh"),
+            "dayLow": quote.get("dayLow"),
+            "volume": quote.get("volume") or quote.get("vol"),
             "timestamp": quote.get("timestamp") or quote.get("updated_at") or "",
         }
 

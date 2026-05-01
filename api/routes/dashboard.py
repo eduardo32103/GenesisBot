@@ -14,6 +14,7 @@ from services.dashboard.get_operational_reliability_snapshot import get_operatio
 from services.dashboard.get_radar_ticker_drilldown import get_dashboard_portfolio, get_dashboard_radar_ticker_drilldown
 from services.dashboard.get_operational_health import get_operational_health
 from services.dashboard.get_radar_snapshot import get_radar_snapshot
+from services.portfolio.update_portfolio import add_ticker_to_portfolio, simulate_paper_position
 
 
 def get_dashboard_health() -> dict:
@@ -63,6 +64,14 @@ def get_dashboard_portfolio_snapshot() -> dict:
 
 def get_dashboard_radar_drilldown(ticker: str) -> dict:
     return get_dashboard_radar_ticker_drilldown(ticker)
+
+
+def add_dashboard_portfolio_ticker(ticker: str = "") -> dict:
+    return add_ticker_to_portfolio(ticker)
+
+
+def simulate_dashboard_portfolio_purchase(ticker: str = "", units: object = None, entry_price: object = None) -> dict:
+    return simulate_paper_position(ticker, units=units, entry_price=entry_price)
 
 
 def get_dashboard_alerts() -> dict:

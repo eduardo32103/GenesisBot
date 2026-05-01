@@ -408,7 +408,11 @@
               <h3>Cartera</h3>
               <p class="portfolio-subtitle">Vision simple de tu portafolio</p>
             </div>
-            <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
+            <div class="portfolio-head-actions">
+              <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
+              <button type="button" class="portfolio-action-button" id="portfolio-add-button">+ Agregar accion</button>
+              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-sim-buy-button">Simular compra</button>
+            </div>
           </div>
 
           <div class="portfolio-layout">
@@ -478,11 +482,72 @@
             </table>
           </div>
           <p class="table-note" id="radar-table-note">
-            Lista simple. La ficha tactica conserva el detalle pesado.
+            Lista simple. Abre un activo para verlo como app.
           </p>
         </article>
 
-        <article class="card panel-card drilldown-card" id="radar-drilldown-card">
+        <aside class="portfolio-asset-panel" id="portfolio-asset-panel" hidden>
+          <div class="portfolio-asset-shell">
+            <div class="portfolio-asset-head">
+              <div>
+                <p class="eyebrow">Activo</p>
+                <strong id="portfolio-asset-symbol">Sin seleccionar</strong>
+                <span id="portfolio-asset-name">Selecciona un ticker de Cartera</span>
+              </div>
+              <button type="button" class="portfolio-icon-button" id="portfolio-asset-close" aria-label="Cerrar detalle">Cerrar</button>
+            </div>
+            <div class="portfolio-asset-price">
+              <strong id="portfolio-asset-price">Sin precio</strong>
+              <span id="portfolio-asset-change" class="portfolio-change portfolio-change-neutral">Sin cambio</span>
+            </div>
+            <div class="portfolio-asset-metrics">
+              <div><span>Rango del dia</span><strong id="portfolio-asset-range">Sin dato</strong></div>
+              <div><span>Volumen</span><strong id="portfolio-asset-volume">Sin dato</strong></div>
+              <div><span>Actualizacion</span><strong id="portfolio-asset-updated">Sin fecha</strong></div>
+              <div><span>Estado</span><strong id="portfolio-asset-mode">Watchlist</strong></div>
+            </div>
+            <div class="portfolio-asset-genesis">
+              <span>Genesis</span>
+              <h4 id="portfolio-asset-verdict">Vigilar</h4>
+              <p id="portfolio-asset-entry">Entrada condicional pendiente de confirmacion.</p>
+              <p id="portfolio-asset-invalidation">Invalidacion pendiente de datos suficientes.</p>
+              <p id="portfolio-asset-plan">Vigilar y validar antes de operar.</p>
+            </div>
+            <button type="button" class="portfolio-action-button" id="portfolio-asset-sim-buy">Simular compra</button>
+          </div>
+        </aside>
+
+        <div class="portfolio-modal" id="portfolio-action-modal" hidden>
+          <div class="portfolio-modal-dialog">
+            <div class="portfolio-modal-head">
+              <div>
+                <p class="eyebrow">Cartera</p>
+                <h4 id="portfolio-modal-title">Agregar accion</h4>
+              </div>
+              <button type="button" class="portfolio-icon-button" id="portfolio-modal-close" aria-label="Cerrar">Cerrar</button>
+            </div>
+            <form class="portfolio-form" id="portfolio-modal-form">
+              <label>
+                Ticker
+                <input id="portfolio-modal-ticker" name="ticker" autocomplete="off" placeholder="NVDA" required>
+              </label>
+              <div class="portfolio-sim-fields" id="portfolio-sim-fields" hidden>
+                <label>
+                  Unidades
+                  <input id="portfolio-modal-units" name="units" type="number" min="0" step="0.000001" placeholder="10">
+                </label>
+                <label>
+                  Precio de entrada
+                  <input id="portfolio-modal-entry-price" name="entry_price" type="number" min="0" step="0.0001" placeholder="199.57">
+                </label>
+              </div>
+              <p class="portfolio-modal-note" id="portfolio-modal-note">Agrega un ticker directo a tu watchlist.</p>
+              <button type="submit" class="portfolio-action-button" id="portfolio-modal-submit">Agregar</button>
+            </form>
+          </div>
+        </div>
+
+        <article class="card panel-card drilldown-card" id="radar-drilldown-card" hidden>
           <div class="section-heading">
             <div>
               <p class="eyebrow">Ficha tactica por activo</p>
@@ -897,6 +962,6 @@
     </main>
   </div>
 
-  <script src="./app.js?v=phase67d-r1-watchlist-live"></script>
-</body>
+    <script src="./app.js?v=phase67d-r2-portfolio-app"></script>
+  </body>
 </html>

@@ -60,6 +60,7 @@ def get_ticker_drilldown(raw_portfolio: dict | None, ticker: str) -> dict:
     units_value = _coerce_float(selected_position.get("units"))
     entry_price_value = _coerce_float(selected_position.get("entry_price"))
     amount_value = _coerce_float(selected_position.get("amount_usd"))
+    mode = str(selected_position.get("mode") or "").strip()
     if units_value <= 0 and amount_value > 0 and entry_price_value > 0:
         units_value = round(amount_value / entry_price_value, 8)
     has_position = bool(selected_position["is_investment"] and units_value > 0)
@@ -78,12 +79,20 @@ def get_ticker_drilldown(raw_portfolio: dict | None, ticker: str) -> dict:
         "display_name": selected_position["display_name"],
         "found": True,
         "is_investment": selected_position["is_investment"],
+        "mode": mode,
+        "position_mode": mode or ("position" if has_position else "watchlist"),
         "amount_usd": amount_usd,
         "entry_price": entry_price,
         "opened_at": selected_position["opened_at"],
         "units": units,
         "current_price": round(current_price, 4) if has_live_price else None,
         "current_value": current_value,
+        "daily_change": quote.get("change"),
+        "daily_change_pct": quote.get("changesPercentage"),
+        "previous_close": quote.get("previousClose"),
+        "day_high": quote.get("dayHigh"),
+        "day_low": quote.get("dayLow"),
+        "volume": quote.get("volume"),
         "pnl_usd": pnl_usd,
         "pnl_pct": pnl_pct,
         "status": _resolve_status(

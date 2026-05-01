@@ -55,8 +55,10 @@ const genesisRawErrorPatterns = [
 
 const loadedViews = new Set();
 const radarDrilldownCache = new Map();
+const portfolioRowsByTicker = new Map();
 let radarSelectedTicker = "";
 let radarDrilldownRequestId = 0;
+let portfolioModalMode = "add";
 const alertsDrilldownCache = new Map();
 let alertsSelectedId = "";
 let alertsDrilldownRequestId = 0;
@@ -1143,10 +1145,10 @@ async function loadRadarDrilldown(ticker, forceRefresh = false) {
 
   radarSelectedTicker = normalized;
   updateRadarDrilldownSelection(normalized);
-  renderRadarDrilldownLoading(normalized);
+  renderAssetDetailLoading(normalized);
 
   if (!forceRefresh && radarDrilldownCache.has(normalized)) {
-    renderRadarDrilldown(radarDrilldownCache.get(normalized));
+    renderAssetDetailView(radarDrilldownCache.get(normalized));
     return;
   }
 
@@ -1161,12 +1163,12 @@ async function loadRadarDrilldown(ticker, forceRefresh = false) {
     if (requestId !== radarDrilldownRequestId) {
       return;
     }
-    renderRadarDrilldown(payload);
+    renderAssetDetailView(payload);
   } catch (error) {
     if (requestId !== radarDrilldownRequestId) {
       return;
     }
-    renderRadarDrilldownEmpty(`No pude cargar la ficha tactica de ${normalized} (${error.message}).`, normalized);
+    renderAssetDetailError(normalized, `No pude abrir ${normalized}. Intenta de nuevo desde Cartera.`);
   }
 }
 
@@ -1197,6 +1199,284 @@ function bindRadarDrilldownTargets() {
       loadRadarDrilldown(node.dataset.drilldownTicker);
     });
   });
+}
+
+function getPortfolioRow(ticker) {
+  const normalized = String(ticker || "").trim().toUpperCase();
+  return normalized ? portfolioRowsByTicker.get(normalized) : null;
+}
+
+function showPortfolioAssetPanel() {
+  const panel = document.getElementById("portfolio-asset-panel");
+  if (panel) {
+    panel.hidden = false;
+  }
+}
+
+function closePortfolioAssetPanel() {
+  const panel = document.getElementById("portfolio-asset-panel");
+  if (panel) {
+    panel.hidden = true;
+  }
+}
+
+function setPortfolioAssetChange(value) {
+  const node = document.getElementById("portfolio-asset-change");
+  if (!node) return;
+  const tone = portfolioChangeTone(value);
+  node.classList.remove("portfolio-change-positive", "portfolio-change-negative", "portfolio-change-neutral");
+  node.classList.add(`portfolio-change-${tone}`);
+}
+
+function formatVolume(value) {
+  const numeric = parseFiniteNumber(value);
+  if (numeric === null) {
+    return "Sin dato";
+  }
+  return numeric.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+function buildAssetRangeText(detail, row) {
+  const low = parsePositiveNumber(detail?.day_low) ?? parsePositiveNumber(row?.item?.day_low);
+  const high = parsePositiveNumber(detail?.day_high) ?? parsePositiveNumber(row?.item?.day_high);
+  if (low === null && high === null) {
+    return "Sin dato";
+  }
+  return `${low === null ? "Sin minimo" : formatPrice(low)} - ${high === null ? "Sin maximo" : formatPrice(high)}`;
+}
+
+function buildAssetModeLabel(detail, row) {
+  const mode = String(detail?.mode || detail?.position_mode || row?.item?.mode || "").trim().toLowerCase();
+  const units = parsePositiveNumber(detail?.units) ?? row?.units;
+  if (mode === "paper") {
+    return "Compra simulada";
+  }
+  if (units !== null) {
+    return "Posicion";
+  }
+  return "Watchlist";
+}
+
+function renderAssetDetailLoading(ticker) {
+  showPortfolioAssetPanel();
+  setText("portfolio-asset-symbol", ticker || "Cargando");
+  setText("portfolio-asset-name", "Abriendo vista del activo...");
+  setText("portfolio-asset-price", "Sin precio");
+  setText("portfolio-asset-change", "Cargando");
+  setText("portfolio-asset-range", "Sin dato");
+  setText("portfolio-asset-volume", "Sin dato");
+  setText("portfolio-asset-updated", "Sin fecha");
+  setText("portfolio-asset-mode", "Watchlist");
+  setText("portfolio-asset-verdict", "Vigilar");
+  setText("portfolio-asset-entry", "Entrada condicional pendiente de confirmacion.");
+  setText("portfolio-asset-invalidation", "Invalidacion pendiente de datos suficientes.");
+  setText("portfolio-asset-plan", "Vigilar y validar antes de operar.");
+  setPortfolioAssetChange(null);
+}
+
+function renderAssetDetailError(ticker, message) {
+  showPortfolioAssetPanel();
+  setText("portfolio-asset-symbol", ticker || "Sin seleccionar");
+  setText("portfolio-asset-name", message);
+  setText("portfolio-asset-price", "Sin precio");
+  setText("portfolio-asset-change", "Sin cambio");
+  setText("portfolio-asset-verdict", "No concluyente");
+  setText("portfolio-asset-entry", "No hay datos suficientes para simular una entrada.");
+  setText("portfolio-asset-invalidation", "La lectura queda invalida hasta recuperar precio directo.");
+  setText("portfolio-asset-plan", "Reintentar con datos directos antes de operar o simular.");
+  setPortfolioAssetChange(null);
+}
+
+function renderAssetDetailView(detail) {
+  const symbol = String(detail?.ticker || detail?.symbol || "").trim().toUpperCase();
+  const row = getPortfolioRow(symbol);
+  if (!detail?.found && !row) {
+    renderAssetDetailError(symbol, "No encontre este activo dentro de Cartera.");
+    return;
+  }
+
+  const price = parsePositiveNumber(detail?.current_price) ?? row?.price ?? null;
+  const dailyPct = parseFiniteNumber(detail?.daily_change_pct) ?? row?.dailyChange ?? null;
+  const dailyUsd = parseFiniteNumber(detail?.daily_change) ?? parseFiniteNumber(row?.item?.daily_change);
+  const displayName = detail?.display_name || row?.name || symbol || "Activo";
+  const dayHigh = parsePositiveNumber(detail?.day_high) ?? parsePositiveNumber(row?.item?.day_high);
+  const dayLow = parsePositiveNumber(detail?.day_low) ?? parsePositiveNumber(row?.item?.day_low);
+  const volume = parseFiniteNumber(detail?.volume) ?? parseFiniteNumber(row?.item?.volume);
+  const updated = detail?.quote_timestamp || row?.item?.quote_timestamp || row?.item?.updated_at || "";
+  const priceText = price === null ? "Sin precio" : formatPrice(price);
+  const changeText = dailyPct === null
+    ? "Sin cambio"
+    : `${dailyUsd === null ? "" : `${formatSignedPortfolioMoney(dailyUsd)} `}${formatPortfolioPercent(dailyPct)}`.trim();
+  const verdict = price === null
+    ? "No concluyente"
+    : (dailyPct !== null && dailyPct < -2 ? "Vigilar" : "Vigilar");
+  const entry = price === null
+    ? "Entrada condicional: no simular entrada hasta recuperar precio directo."
+    : `Entrada condicional: considerar solo si sostiene precio directo y confirma continuidad cerca de ${dayHigh === null ? priceText : formatPrice(dayHigh)}.`;
+  const invalidation = dayLow === null
+    ? "Invalidacion: si pierde precio directo o aparecen datos incompletos, la lectura vuelve a no concluyente."
+    : `Invalidacion: si pierde la zona diaria cercana a ${formatPrice(dayLow)}, pasar a vigilancia defensiva.`;
+  const plan = price === null
+    ? "Plan de accion: esperar precio actualizado antes de simular."
+    : "Plan de accion: vigilar ahora; si quieres medir exposicion, usa compra simulada sin ejecutar orden real.";
+
+  showPortfolioAssetPanel();
+  setText("portfolio-asset-symbol", symbol || "Activo");
+  setText("portfolio-asset-name", displayName);
+  setText("portfolio-asset-price", priceText);
+  setText("portfolio-asset-change", changeText);
+  setText("portfolio-asset-range", buildAssetRangeText(detail, row));
+  setText("portfolio-asset-volume", formatVolume(volume));
+  setText("portfolio-asset-updated", updated ? formatIso(updated) : "Sin fecha confirmada");
+  setText("portfolio-asset-mode", buildAssetModeLabel(detail, row));
+  setText("portfolio-asset-verdict", verdict);
+  setText("portfolio-asset-entry", entry);
+  setText("portfolio-asset-invalidation", invalidation);
+  setText("portfolio-asset-plan", plan);
+  setPortfolioAssetChange(dailyPct);
+
+  const simButton = document.getElementById("portfolio-asset-sim-buy");
+  if (simButton) {
+    simButton.dataset.ticker = symbol;
+  }
+}
+
+function openPortfolioModal(mode, ticker = "") {
+  portfolioModalMode = mode === "paper" ? "paper" : "add";
+  const modal = document.getElementById("portfolio-action-modal");
+  const title = document.getElementById("portfolio-modal-title");
+  const tickerInput = document.getElementById("portfolio-modal-ticker");
+  const fields = document.getElementById("portfolio-sim-fields");
+  const units = document.getElementById("portfolio-modal-units");
+  const entry = document.getElementById("portfolio-modal-entry-price");
+  const note = document.getElementById("portfolio-modal-note");
+  const submit = document.getElementById("portfolio-modal-submit");
+  const normalized = String(ticker || radarSelectedTicker || "").trim().toUpperCase();
+  const row = getPortfolioRow(normalized);
+
+  if (!modal || !title || !tickerInput || !fields || !note || !submit) {
+    return;
+  }
+
+  title.textContent = portfolioModalMode === "paper" ? "Simular compra" : "Agregar accion";
+  tickerInput.value = normalized;
+  fields.hidden = portfolioModalMode !== "paper";
+  note.textContent = portfolioModalMode === "paper"
+    ? "Compra simulada. No conecta broker ni ejecuta orden real."
+    : "Agrega un ticker directo a tu watchlist.";
+  submit.textContent = portfolioModalMode === "paper" ? "Guardar compra simulada" : "Agregar";
+
+  if (units) {
+    units.required = portfolioModalMode === "paper";
+    if (portfolioModalMode !== "paper") units.value = "";
+  }
+  if (entry) {
+    entry.required = portfolioModalMode === "paper";
+    entry.value = portfolioModalMode === "paper" && row?.price ? String(row.price) : "";
+  }
+  modal.hidden = false;
+  tickerInput.focus();
+}
+
+function closePortfolioModal() {
+  const modal = document.getElementById("portfolio-action-modal");
+  if (modal) {
+    modal.hidden = true;
+  }
+}
+
+async function postPortfolioAction(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.message || "No pude guardar el cambio.");
+  }
+  return data;
+}
+
+async function refreshPortfolioAfterMutation(ticker = "") {
+  radarDrilldownCache.clear();
+  loadedViews.delete("radar");
+  await loadRadarSnapshot(true);
+  if (ticker) {
+    radarSelectedTicker = String(ticker).trim().toUpperCase();
+    updateRadarDrilldownSelection(radarSelectedTicker);
+  }
+}
+
+async function submitPortfolioModal(event) {
+  event.preventDefault();
+  const tickerInput = document.getElementById("portfolio-modal-ticker");
+  const unitsInput = document.getElementById("portfolio-modal-units");
+  const entryInput = document.getElementById("portfolio-modal-entry-price");
+  const note = document.getElementById("portfolio-modal-note");
+  const ticker = String(tickerInput?.value || "").trim().toUpperCase();
+  try {
+    const result = portfolioModalMode === "paper"
+      ? await postPortfolioAction("/api/dashboard/portfolio/paper", {
+          ticker,
+          units: unitsInput?.value,
+          entry_price: entryInput?.value,
+        })
+      : await postPortfolioAction("/api/dashboard/portfolio/watchlist", { ticker });
+    if (note) {
+      note.textContent = result.message || "Cambio guardado.";
+    }
+    closePortfolioModal();
+    await refreshPortfolioAfterMutation(ticker);
+  } catch (error) {
+    if (note) {
+      note.textContent = humanizeDashboardCopy(error.message || "No pude guardar el cambio.");
+    }
+  }
+}
+
+function bindPortfolioActions() {
+  const addButton = document.getElementById("portfolio-add-button");
+  const simButton = document.getElementById("portfolio-sim-buy-button");
+  const panelSimButton = document.getElementById("portfolio-asset-sim-buy");
+  const closePanel = document.getElementById("portfolio-asset-close");
+  const modalClose = document.getElementById("portfolio-modal-close");
+  const modal = document.getElementById("portfolio-action-modal");
+  const form = document.getElementById("portfolio-modal-form");
+
+  if (addButton && addButton.dataset.bound !== "true") {
+    addButton.dataset.bound = "true";
+    addButton.addEventListener("click", () => openPortfolioModal("add"));
+  }
+  if (simButton && simButton.dataset.bound !== "true") {
+    simButton.dataset.bound = "true";
+    simButton.addEventListener("click", () => openPortfolioModal("paper"));
+  }
+  if (panelSimButton && panelSimButton.dataset.bound !== "true") {
+    panelSimButton.dataset.bound = "true";
+    panelSimButton.addEventListener("click", () => openPortfolioModal("paper", panelSimButton.dataset.ticker || radarSelectedTicker));
+  }
+  if (closePanel && closePanel.dataset.bound !== "true") {
+    closePanel.dataset.bound = "true";
+    closePanel.addEventListener("click", closePortfolioAssetPanel);
+  }
+  if (modalClose && modalClose.dataset.bound !== "true") {
+    modalClose.dataset.bound = "true";
+    modalClose.addEventListener("click", closePortfolioModal);
+  }
+  if (modal && modal.dataset.bound !== "true") {
+    modal.dataset.bound = "true";
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) {
+        closePortfolioModal();
+      }
+    });
+  }
+  if (form && form.dataset.bound !== "true") {
+    form.dataset.bound = "true";
+    form.addEventListener("submit", submitPortfolioModal);
+  }
 }
 
 function formatAlertScore(value) {
@@ -1894,8 +2174,7 @@ function getPortfolioPositionValue(item) {
     parsePositiveNumber(item.current_value) ??
     parsePositiveNumber(item.market_value) ??
     parsePositiveNumber(item.value_usd) ??
-    parsePositiveNumber(item.position_value) ??
-    parsePositiveNumber(item.amount_usd)
+    parsePositiveNumber(item.position_value)
   );
 }
 
@@ -1919,8 +2198,7 @@ function getPortfolioTotalPnl(item) {
 function getPortfolioPrice(item) {
   return (
     parsePositiveNumber(item.current_price) ??
-    parsePositiveNumber(item.price) ??
-    parsePositiveNumber(item.reference_price)
+    parsePositiveNumber(item.price)
   );
 }
 
@@ -2113,6 +2391,12 @@ function renderRadarSnapshot(payload) {
   const availableTickers = new Set(items.map((item) => String(item?.ticker || "").trim().toUpperCase()).filter(Boolean));
   const model = buildPortfolioModel(items);
   const genesisPerspective = buildPortfolioPerspective(model, items);
+  portfolioRowsByTicker.clear();
+  model.rows.forEach((row) => {
+    if (row.ticker) {
+      portfolioRowsByTicker.set(row.ticker, row);
+    }
+  });
   const dayReturnText = model.weightedDailyChange === null
     ? "Sin rendimiento calculado"
     : formatPortfolioPercent(model.weightedDailyChange);
@@ -2132,8 +2416,8 @@ function renderRadarSnapshot(payload) {
   setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin fecha confirmada");
   setText("radar-table-note", model.hasDistribution
     ? (model.rows.some((row) => row.units === null)
-        ? "Posiciones calculadas y activos en vigilancia sin cantidades. Abre un activo para ver la ficha tactica completa."
-        : "Lista simple de posiciones. Abre un activo para ver la ficha tactica completa.")
+        ? "Posiciones calculadas y activos en vigilancia sin cantidades. Abre un activo para verlo como app."
+        : "Lista simple de posiciones. Abre un activo para verlo como app.")
     : (model.hasDirectPrices
         ? "Watchlist con precios directos. Valor y peso quedan sin calcular hasta tener cantidades reales."
         : "Watchlist simple. Valor, peso y rendimiento quedan sin calcular hasta tener cantidades reales."));
@@ -2249,7 +2533,7 @@ function renderRadarSnapshot(payload) {
               <td>
                 <strong>${escapeHtml(valueText)}</strong>
               </td>
-              <td>${escapeHtml(formatPortfolioWeight(weight))}</td>
+              <td>${escapeHtml(row.units === null ? "Watchlist" : formatPortfolioWeight(weight))}</td>
               <td>
                 <span class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</span>
               </td>
@@ -2267,11 +2551,11 @@ function renderRadarSnapshot(payload) {
 
   if (!items.length) {
     radarSelectedTicker = "";
-    renderRadarDrilldownEmpty("La cartera aun no tiene activos visibles para abrir detalle.");
+    closePortfolioAssetPanel();
   }
   if (radarSelectedTicker && !availableTickers.has(radarSelectedTicker)) {
     radarSelectedTicker = "";
-    renderRadarDrilldownEmpty("El ticker seleccionado ya no aparece en la lectura actual de cartera.");
+    closePortfolioAssetPanel();
   }
   updateRadarDrilldownSelection(radarSelectedTicker);
   bindRadarDrilldownTargets();
@@ -2705,7 +2989,7 @@ async function loadRadarSnapshot(forceRefresh = false) {
     renderRadarSnapshot(payload);
     loadedViews.add("radar");
     if (!radarSelectedTicker) {
-      renderRadarDrilldownEmpty("Selecciona un ticker desde la cartera para abrir la ficha tactica.");
+      closePortfolioAssetPanel();
     }
   } catch (error) {
     renderRadarSnapshotError(`No pude cargar Cartera (${error.message}).`);
@@ -2803,5 +3087,6 @@ navLinks.forEach((link) => {
 
 bindGenesisQueryForm();
 bindGenesisChatForm();
+bindPortfolioActions();
 activateView("command-center");
 loadOperationalHealth();

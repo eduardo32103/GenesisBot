@@ -153,6 +153,7 @@ def _shape_item(
     source: str = "",
     updated_at: str = "",
     origin: str = "",
+    mode: str = "",
     sector: str = "",
     industry: str = "",
 ) -> dict[str, Any]:
@@ -187,6 +188,7 @@ def _shape_item(
         "signal": _signal_text(bool(is_investment or normalized_units > 0), normalized_source),
         "updated_at": _safe_iso(updated_at),
         "origin": origin or "unknown",
+        "mode": str(mode or "").strip(),
         "sector": str(sector or "").strip(),
         "industry": str(industry or "").strip(),
     }
@@ -313,6 +315,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                     reference_price=_coerce_float(position.get("reference_price")),
                     updated_at=position.get("opened_at") or timestamp,
                     origin="portfolio_fallback",
+                    mode=position.get("mode", ""),
                 )
             )
         return sorted(items, key=lambda item: item["ticker"])
@@ -347,6 +350,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                         source=str(value.get("source", "")),
                         updated_at=position.get("opened_at") or timestamp,
                         origin="portfolio_fallback",
+                        mode=position.get("mode", ""),
                     )
                 )
         return sorted(items, key=lambda item: item["ticker"])

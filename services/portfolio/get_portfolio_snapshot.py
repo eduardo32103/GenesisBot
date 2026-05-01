@@ -69,6 +69,7 @@ def _normalize_position_payload(raw_ticker: object, payload: object) -> dict | N
         "entry_price": entry_price,
         "units": units,
         "reference_price": reference_price,
+        "mode": str(payload.get("mode") or "").strip(),
         "opened_at": payload.get("timestamp") or payload.get("opened_at") or "",
     }
 
