@@ -1264,6 +1264,8 @@ function renderAssetDetailLoading(ticker) {
   setText("portfolio-asset-name", "Abriendo vista del activo...");
   setText("portfolio-asset-price", "Sin precio");
   setText("portfolio-asset-change", "Cargando");
+  setText("portfolio-asset-previous-close", "Sin dato");
+  setText("portfolio-asset-extended", "Sin nocturno");
   setText("portfolio-asset-range", "Sin dato");
   setText("portfolio-asset-volume", "Sin dato");
   setText("portfolio-asset-updated", "Sin fecha");
@@ -1281,6 +1283,8 @@ function renderAssetDetailError(ticker, message) {
   setText("portfolio-asset-name", message);
   setText("portfolio-asset-price", "Sin precio");
   setText("portfolio-asset-change", "Sin cambio");
+  setText("portfolio-asset-previous-close", "Sin dato");
+  setText("portfolio-asset-extended", "Sin nocturno");
   setText("portfolio-asset-verdict", "No concluyente");
   setText("portfolio-asset-entry", "No hay datos suficientes para simular una entrada.");
   setText("portfolio-asset-invalidation", "La lectura queda invalida hasta recuperar precio directo.");
@@ -1303,6 +1307,13 @@ function renderAssetDetailView(detail) {
   const dayHigh = parsePositiveNumber(detail?.day_high) ?? parsePositiveNumber(row?.item?.day_high);
   const dayLow = parsePositiveNumber(detail?.day_low) ?? parsePositiveNumber(row?.item?.day_low);
   const volume = parseFiniteNumber(detail?.volume) ?? parseFiniteNumber(row?.item?.volume);
+  const previousClose = parsePositiveNumber(detail?.previous_close) ?? parsePositiveNumber(row?.item?.previous_close);
+  const extendedItem = {
+    extended_hours_price: detail?.extended_hours_price ?? row?.item?.extended_hours_price,
+    extended_hours_change: detail?.extended_hours_change ?? row?.item?.extended_hours_change,
+    extended_hours_change_pct: detail?.extended_hours_change_pct ?? row?.item?.extended_hours_change_pct,
+    market_session: detail?.market_session ?? row?.item?.market_session,
+  };
   const updated = detail?.quote_timestamp || row?.item?.quote_timestamp || row?.item?.updated_at || "";
   const priceText = price === null ? "Sin precio" : formatPrice(price);
   const changeText = formatPortfolioDailyMove(dailyUsd, dailyPct, "Sin cambio");
@@ -1324,6 +1335,8 @@ function renderAssetDetailView(detail) {
   setText("portfolio-asset-name", displayName);
   setText("portfolio-asset-price", priceText);
   setText("portfolio-asset-change", changeText);
+  setText("portfolio-asset-previous-close", formatPortfolioPreviousClose(previousClose));
+  setText("portfolio-asset-extended", `${formatExtendedHours(extendedItem)} | ${formatMarketSession(extendedItem)}`);
   setText("portfolio-asset-range", buildAssetRangeText(detail, row));
   setText("portfolio-asset-volume", formatVolume(volume));
   setText("portfolio-asset-updated", updated ? formatIso(updated) : "Sin fecha confirmada");
@@ -2491,10 +2504,10 @@ function portfolioStateLabel(item, change, hasValue) {
     return "Sin cambio";
   }
   if (status === "no_concluyente" || status === "unpriced") {
-    return "No concluyente";
+    return "Sin precio";
   }
   if (status === "watchlist") {
-    return getPortfolioPrice(item) === null ? "No concluyente" : "En vigilancia";
+    return getPortfolioPrice(item) === null ? "Sin precio" : "En vigilancia";
   }
   const numericChange = parseFiniteNumber(change);
   if (numericChange !== null && numericChange > 0) {
@@ -2509,7 +2522,7 @@ function portfolioStateLabel(item, change, hasValue) {
   if (getPortfolioPrice(item) !== null) {
     return "En vigilancia";
   }
-  return "Sin datos suficientes";
+  return "Sin precio";
 }
 
 function buildPortfolioModel(items) {
@@ -2641,7 +2654,8 @@ function watchlistRowMarkup(row) {
   const ticker = row.ticker || "n/a";
   const changeTone = portfolioChangeTone(row.dailyChange);
   const dailyMoveText = formatPortfolioDailyMove(row.dailyChangeUsd, row.dailyChange, "Sin cambio");
-  const sourceText = row.price === null ? "Sin precio directo" : "Datos directos";
+  const updated = row.item.quote_timestamp || row.item.updated_at || "";
+  const sourceText = row.price === null ? "Sin precio directo" : `Datos directos | ${formatIso(updated)}`;
   const state = portfolioStateLabel(row.item, row.dailyChange, row.value !== null);
   return `
     <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
@@ -2676,7 +2690,8 @@ function positionRowMarkup(row, totalValue) {
   const totalPnlText = row.value === null ? "P/L sin valor" : formatSignedPortfolioMoney(row.totalPnl, "P/L sin entrada");
   const dailyPnlText = row.dailyPnl === null ? "Diario sin calcular" : formatSignedPortfolioMoney(row.dailyPnl);
   const dailyMoveText = formatPortfolioDailyMove(row.dailyChangeUsd, row.dailyChange, "Sin cambio");
-  const sourceText = row.price === null ? "Sin precio directo" : "Datos directos";
+  const updated = row.item.quote_timestamp || row.item.updated_at || "";
+  const sourceText = row.price === null ? "Sin precio directo" : `Datos directos | ${formatIso(updated)}`;
   return `
     <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
       <td>
@@ -2723,15 +2738,24 @@ function renderRadarSnapshot(payload) {
   const dayReturnText = model.weightedDailyChange === null
     ? "Sin rendimiento calculado"
     : formatPortfolioPercent(model.weightedDailyChange);
+  const centerValueText = model.hasDistribution
+    ? formatPortfolioMoney(model.totalValue)
+    : (positionRows.length ? "Sin valor calculado" : "Sin compras");
+  const centerDayText = model.hasDistribution
+    ? dayReturnText
+    : (positionRows.length ? "Sin precio directo" : "Agrega simulacion");
+  const centerCaptionText = model.hasDistribution
+    ? "Compradas"
+    : (positionRows.length ? "Sin valor calculado" : "para calcular pesos");
 
   setText("portfolio-data-state", portfolioDataState(model, items));
-  setText("portfolio-total-value", formatPortfolioMoney(model.totalValue));
+  setText("portfolio-total-value", centerValueText);
   setText("portfolio-total-stat", formatPortfolioMoney(model.totalValue));
-  setText("portfolio-day-return", dayReturnText);
+  setText("portfolio-day-return", centerDayText);
   setText("portfolio-day-stat", dayReturnText);
   setPortfolioReturnState("portfolio-day-return", model.weightedDailyChange);
   setPortfolioReturnState("portfolio-day-stat", model.weightedDailyChange);
-  setText("portfolio-donut-caption", model.hasDistribution ? "Compradas" : (positionRows.length ? "Sin valor calculado" : "Sin compras simuladas"));
+  setText("portfolio-donut-caption", centerCaptionText);
   setText("radar-summary-note", genesisPerspective);
   setText("radar-tracked-count", String(summary.tracked_count ?? items.length ?? 0));
   setText("radar-investment-count", String(summary.investment_count ?? 0));
