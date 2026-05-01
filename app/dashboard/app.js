@@ -1351,6 +1351,11 @@ function renderAssetDetailView(detail) {
   if (simButton) {
     simButton.dataset.ticker = symbol;
   }
+  const removeButton = document.getElementById("portfolio-asset-remove");
+  if (removeButton) {
+    removeButton.dataset.ticker = symbol;
+    removeButton.dataset.mode = row && row.units !== null ? "paper" : "watchlist";
+  }
 }
 
 function openPortfolioModal(mode, ticker = "") {
@@ -1556,6 +1561,9 @@ async function submitPortfolioModal(event) {
       return;
     }
     closePortfolioModal();
+    if (portfolioModalMode === "paper") {
+      closePortfolioAssetPanel();
+    }
     await refreshPortfolioAfterMutation(ticker);
   } catch (error) {
     if (note) {
@@ -1565,40 +1573,37 @@ async function submitPortfolioModal(event) {
 }
 
 function bindPortfolioRowActions() {
-  document.querySelectorAll("[data-market-add]").forEach((node) => {
-    if (node.dataset.bound === "true") return;
-    node.dataset.bound = "true";
-    node.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      await addTickerToWatchlist(node.dataset.marketAdd || marketSearchResult?.ticker || "");
-    });
-  });
-
-  document.querySelectorAll("[data-watch-remove]").forEach((node) => {
-    if (node.dataset.bound === "true") return;
-    node.dataset.bound = "true";
-    node.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      await removeTickerFromWatchlist(node.dataset.watchRemove || "");
-    });
-  });
-
-  document.querySelectorAll("[data-paper-remove]").forEach((node) => {
-    if (node.dataset.bound === "true") return;
-    node.dataset.bound = "true";
-    node.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      await removePaperTicker(node.dataset.paperRemove || "");
-    });
-  });
-
-  document.querySelectorAll("[data-paper-buy]").forEach((node) => {
-    if (node.dataset.bound === "true") return;
-    node.dataset.bound = "true";
-    node.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openPortfolioModal("paper", node.dataset.paperBuy || "");
-    });
+  const root = document.getElementById("view-radar");
+  if (!root || root.dataset.portfolioDelegated === "true") {
+    return;
+  }
+  root.dataset.portfolioDelegated = "true";
+  root.addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-market-add], [data-watch-remove], [data-paper-remove], [data-paper-buy]");
+    if (!action || !root.contains(action)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      if (action.dataset.marketAdd !== undefined) {
+        await addTickerToWatchlist(action.dataset.marketAdd || marketSearchResult?.ticker || "");
+        return;
+      }
+      if (action.dataset.watchRemove !== undefined) {
+        await removeTickerFromWatchlist(action.dataset.watchRemove || "");
+        return;
+      }
+      if (action.dataset.paperRemove !== undefined) {
+        await removePaperTicker(action.dataset.paperRemove || "");
+        return;
+      }
+      if (action.dataset.paperBuy !== undefined) {
+        openPortfolioModal("paper", action.dataset.paperBuy || "");
+      }
+    } catch (error) {
+      setPortfolioSearchNote(error.message || "No pude ejecutar la accion.");
+    }
   });
 }
 
@@ -1606,6 +1611,7 @@ function bindPortfolioActions() {
   const addButton = document.getElementById("portfolio-add-button");
   const simButton = document.getElementById("portfolio-sim-buy-button");
   const panelSimButton = document.getElementById("portfolio-asset-sim-buy");
+  const panelRemoveButton = document.getElementById("portfolio-asset-remove");
   const closePanel = document.getElementById("portfolio-asset-close");
   const modalClose = document.getElementById("portfolio-modal-close");
   const modalCancel = document.getElementById("portfolio-modal-cancel");
@@ -1619,11 +1625,7 @@ function bindPortfolioActions() {
   if (addButton && addButton.dataset.bound !== "true") {
     addButton.dataset.bound = "true";
     addButton.addEventListener("click", () => {
-      if (searchInput) {
-        searchInput.focus();
-      } else {
-        openPortfolioModal("add");
-      }
+      openPortfolioModal("add");
     });
   }
   if (simButton && simButton.dataset.bound !== "true") {
@@ -1633,6 +1635,19 @@ function bindPortfolioActions() {
   if (panelSimButton && panelSimButton.dataset.bound !== "true") {
     panelSimButton.dataset.bound = "true";
     panelSimButton.addEventListener("click", () => openPortfolioModal("paper", panelSimButton.dataset.ticker || radarSelectedTicker));
+  }
+  if (panelRemoveButton && panelRemoveButton.dataset.bound !== "true") {
+    panelRemoveButton.dataset.bound = "true";
+    panelRemoveButton.addEventListener("click", async () => {
+      const ticker = panelRemoveButton.dataset.ticker || radarSelectedTicker;
+      if (!ticker) return;
+      if (panelRemoveButton.dataset.mode === "paper") {
+        await removePaperTicker(ticker);
+      } else {
+        await removeTickerFromWatchlist(ticker);
+      }
+      closePortfolioAssetPanel();
+    });
   }
   if (closePanel && closePanel.dataset.bound !== "true") {
     closePanel.dataset.bound = "true";
@@ -2550,9 +2565,45 @@ function buildPortfolioModel(items) {
   const weightedDailyChange = hasDistribution
     ? distribution.reduce((total, row) => total + ((row.dailyChange ?? 0) * row.weight) / 100, 0)
     : null;
+  const totalDailyPnl = valuedRows.reduce((total, row) => total + (parseFiniteNumber(row.dailyPnl) ?? 0), 0);
   const hasPositions = rows.some((row) => row.units !== null);
   const hasDirectPrices = rows.some((row) => parsePositiveNumber(row.item.current_price) !== null || parsePositiveNumber(row.item.price) !== null);
-  return { rows, distribution, totalValue, hasDistribution, weightedDailyChange, hasPositions, hasDirectPrices };
+  return { rows, distribution, totalValue, totalDailyPnl, hasDistribution, weightedDailyChange, hasPositions, hasDirectPrices };
+}
+
+function buildEqualWeightDistribution(rows) {
+  const visibleRows = Array.isArray(rows) ? rows.filter((row) => row?.ticker) : [];
+  if (!visibleRows.length) {
+    return [];
+  }
+  const weight = 100 / visibleRows.length;
+  return visibleRows.map((row) => ({ ...row, weight }));
+}
+
+function renderPortfolioLegendItems(rows, emptyText) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return `<span class="chip chip-muted">${escapeHtml(emptyText)}</span>`;
+  }
+  return rows
+    .map((row, index) => `
+      <button type="button" class="portfolio-legend-item chip-action" data-drilldown-ticker="${escapeHtml(row.ticker)}">
+        <span class="portfolio-dot" style="background:${portfolioColors[index % portfolioColors.length]}"></span>
+        <strong>${escapeHtml(row.ticker)}</strong>
+        <small>${escapeHtml(formatPortfolioWeight(row.weight))}</small>
+      </button>
+    `)
+    .join("");
+}
+
+function getWatchlistMovementCaption(rows) {
+  const movers = (Array.isArray(rows) ? rows : [])
+    .filter((row) => parseFiniteNumber(row.dailyChange) !== null)
+    .sort((a, b) => Math.abs(parseFiniteNumber(b.dailyChange) ?? 0) - Math.abs(parseFiniteNumber(a.dailyChange) ?? 0));
+  if (!movers.length) {
+    return "Sin movimiento visible";
+  }
+  const top = movers[0];
+  return `${top.ticker} ${formatPortfolioPercent(top.dailyChange)}`;
 }
 
 function buildPortfolioGradient(distribution) {
@@ -2658,24 +2709,37 @@ function watchlistRowMarkup(row) {
   const sourceText = row.price === null ? "Sin precio directo" : `Datos directos | ${formatIso(updated)}`;
   const state = portfolioStateLabel(row.item, row.dailyChange, row.value !== null);
   return `
-    <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
-      <td>
+    <div class="table-row-action portfolio-list-row portfolio-watch-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0" role="button">
+      <div class="portfolio-list-main">
         <strong>${escapeHtml(ticker)}</strong>
         <small>${escapeHtml(row.name)}</small>
-      </td>
-      <td>
-        <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
-        <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
-      </td>
-      <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span></td>
-      <td>${escapeHtml(formatPortfolioPreviousClose(row.item.previous_close))}</td>
-      <td>
-        <strong>${escapeHtml(formatExtendedHours(row.item))}</strong>
-        <small class="portfolio-subvalue">${escapeHtml(formatMarketSession(row.item))}</small>
-      </td>
-      <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
-      <td>${portfolioActionsMarkup(ticker, "watchlist")}</td>
-    </tr>
+      </div>
+      <div class="portfolio-list-values">
+        <div>
+          <span>Precio</span>
+          <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
+          <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
+        </div>
+        <div>
+          <span>Cambio</span>
+          <strong class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</strong>
+        </div>
+        <div>
+          <span>Sesion anterior</span>
+          <strong>${escapeHtml(formatPortfolioPreviousClose(row.item.previous_close))}</strong>
+        </div>
+        <div>
+          <span>Nocturno</span>
+          <strong>${escapeHtml(formatExtendedHours(row.item))}</strong>
+          <small class="portfolio-subvalue">${escapeHtml(formatMarketSession(row.item))}</small>
+        </div>
+        <div>
+          <span>Estado</span>
+          <strong class="portfolio-state">${escapeHtml(state)}</strong>
+        </div>
+      </div>
+      ${portfolioActionsMarkup(ticker, "watchlist")}
+    </div>
   `;
 }
 
@@ -2693,27 +2757,49 @@ function positionRowMarkup(row, totalValue) {
   const updated = row.item.quote_timestamp || row.item.updated_at || "";
   const sourceText = row.price === null ? "Sin precio directo" : `Datos directos | ${formatIso(updated)}`;
   return `
-    <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
-      <td>
+    <div class="table-row-action portfolio-list-row portfolio-position-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0" role="button">
+      <div class="portfolio-list-main">
         <strong>${escapeHtml(ticker)}</strong>
         <small>${escapeHtml(row.name)}</small>
-      </td>
-      <td>${escapeHtml(row.units === null ? "Sin unidades" : formatDetailUnits(row.units))}</td>
-      <td>${escapeHtml(formatDetailPrice(row.item.entry_price))}</td>
-      <td>
-        <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
-        <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
-      </td>
-      <td><strong>${escapeHtml(valueText)}</strong></td>
-      <td>${escapeHtml(formatPortfolioWeight(weight))}</td>
-      <td><span class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</span></td>
-      <td>
-        <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span>
-        <small class="portfolio-subvalue portfolio-subvalue-${dailyPnlTone}">${escapeHtml(dailyPnlText)}</small>
-      </td>
-      <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
-      <td>${portfolioActionsMarkup(ticker, "paper")}</td>
-    </tr>
+      </div>
+      <div class="portfolio-list-values portfolio-list-values-wide">
+        <div>
+          <span>Units</span>
+          <strong>${escapeHtml(row.units === null ? "Sin unidades" : formatDetailUnits(row.units))}</strong>
+        </div>
+        <div>
+          <span>Entrada</span>
+          <strong>${escapeHtml(formatDetailPrice(row.item.entry_price))}</strong>
+        </div>
+        <div>
+          <span>Precio</span>
+          <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
+          <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
+        </div>
+        <div>
+          <span>Valor</span>
+          <strong>${escapeHtml(valueText)}</strong>
+        </div>
+        <div>
+          <span>Peso</span>
+          <strong>${escapeHtml(formatPortfolioWeight(weight))}</strong>
+        </div>
+        <div>
+          <span>P/L</span>
+          <strong class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</strong>
+        </div>
+        <div>
+          <span>Diario</span>
+          <strong class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</strong>
+          <small class="portfolio-subvalue portfolio-subvalue-${dailyPnlTone}">${escapeHtml(dailyPnlText)}</small>
+        </div>
+        <div>
+          <span>Estado</span>
+          <strong class="portfolio-state">${escapeHtml(state)}</strong>
+        </div>
+      </div>
+      ${portfolioActionsMarkup(ticker, "paper")}
+    </div>
   `;
 }
 
@@ -2721,14 +2807,15 @@ function renderRadarSnapshot(payload) {
   const summary = payload.summary || {};
   const items = Array.isArray(payload.items) ? payload.items : [];
   const tickerList = document.getElementById("radar-ticker-list");
-  const tableHead = document.getElementById("radar-table-head");
-  const tableBody = document.getElementById("radar-table-body");
+  const watchlistLegend = document.getElementById("watchlist-donut-legend");
+  const tableBody = document.getElementById("portfolio-watchlist-body") || document.getElementById("radar-table-body");
   const positionsBody = document.getElementById("portfolio-positions-body");
   const availableTickers = new Set(items.map((item) => String(item?.ticker || "").trim().toUpperCase()).filter(Boolean));
   const model = buildPortfolioModel(items);
   const genesisPerspective = buildPortfolioPerspective(model, items);
   const watchlistRows = model.rows.filter((row) => row.units === null);
   const positionRows = model.rows.filter((row) => row.units !== null);
+  const watchlistDistribution = buildEqualWeightDistribution(watchlistRows);
   portfolioRowsByTicker.clear();
   model.rows.forEach((row) => {
     if (row.ticker) {
@@ -2738,22 +2825,28 @@ function renderRadarSnapshot(payload) {
   const dayReturnText = model.weightedDailyChange === null
     ? "Sin rendimiento calculado"
     : formatPortfolioPercent(model.weightedDailyChange);
+  const dailyPnlText = model.hasDistribution
+    ? formatSignedPortfolioMoney(model.totalDailyPnl)
+    : (positionRows.length ? "Sin P/L diario" : "Agrega simulacion");
   const centerValueText = model.hasDistribution
     ? formatPortfolioMoney(model.totalValue)
     : (positionRows.length ? "Sin valor calculado" : "Sin compras");
   const centerDayText = model.hasDistribution
-    ? dayReturnText
+    ? dailyPnlText
     : (positionRows.length ? "Sin precio directo" : "Agrega simulacion");
   const centerCaptionText = model.hasDistribution
-    ? "Compradas"
+    ? "Hoy"
     : (positionRows.length ? "Sin valor calculado" : "para calcular pesos");
 
   setText("portfolio-data-state", portfolioDataState(model, items));
+  setText("watchlist-count", String(watchlistRows.length));
+  setText("watchlist-donut-subtitle", watchlistRows.length === 1 ? "activo seguido" : "activos seguidos");
+  setText("watchlist-donut-caption", watchlistRows.length ? getWatchlistMovementCaption(watchlistRows) : "Agrega con +");
   setText("portfolio-total-value", centerValueText);
   setText("portfolio-total-stat", formatPortfolioMoney(model.totalValue));
   setText("portfolio-day-return", centerDayText);
   setText("portfolio-day-stat", dayReturnText);
-  setPortfolioReturnState("portfolio-day-return", model.weightedDailyChange);
+  setPortfolioReturnState("portfolio-day-return", model.totalDailyPnl);
   setPortfolioReturnState("portfolio-day-stat", model.weightedDailyChange);
   setText("portfolio-donut-caption", centerCaptionText);
   setText("radar-summary-note", genesisPerspective);
@@ -2773,42 +2866,25 @@ function renderRadarSnapshot(payload) {
     donut.style.background = buildPortfolioGradient(model.distribution);
     donut.classList.toggle("portfolio-donut-empty", !model.hasDistribution);
   }
-
-  if (tickerList) {
-    if (!model.hasDistribution) {
-      tickerList.innerHTML = positionRows.length
-        ? '<span class="chip chip-muted">Posiciones sin precio para ponderar</span>'
-        : '<span class="chip chip-muted">Sin posiciones compradas para ponderar</span>';
-    } else if (model.hasDistribution) {
-      tickerList.innerHTML = model.distribution
-        .map((row, index) => `
-          <button type="button" class="portfolio-legend-item chip-action" data-drilldown-ticker="${escapeHtml(row.ticker)}">
-            <span class="portfolio-dot" style="background:${portfolioColors[index % portfolioColors.length]}"></span>
-            <strong>${escapeHtml(row.ticker)}</strong>
-            <small>${escapeHtml(formatPortfolioWeight(row.weight))}</small>
-          </button>
-        `)
-        .join("");
-    }
+  const watchlistDonut = document.getElementById("watchlist-donut");
+  if (watchlistDonut) {
+    watchlistDonut.style.background = buildPortfolioGradient(watchlistDistribution);
+    watchlistDonut.classList.toggle("portfolio-donut-empty", !watchlistDistribution.length);
   }
 
-  if (tableHead) {
-    tableHead.innerHTML = `
-      <tr>
-        <th>Activo</th>
-        <th>Precio</th>
-        <th>Cambio diario</th>
-        <th>Sesion anterior</th>
-        <th>Nocturno</th>
-        <th>Estado</th>
-        <th>Acciones</th>
-      </tr>
-    `;
+  if (watchlistLegend) {
+    watchlistLegend.innerHTML = renderPortfolioLegendItems(watchlistDistribution, "Sin activos en seguimiento");
+  }
+
+  if (tickerList) {
+    tickerList.innerHTML = renderPortfolioLegendItems(model.distribution, positionRows.length
+      ? "Posiciones sin precio para ponderar"
+      : "Sin posiciones compradas para ponderar");
   }
 
   if (tableBody) {
     if (!watchlistRows.length) {
-      tableBody.innerHTML = '<tr><td colspan="7">Sin activos en seguimiento.</td></tr>';
+      tableBody.innerHTML = '<div class="portfolio-list-empty">Sin activos en seguimiento.</div>';
     } else {
       tableBody.innerHTML = watchlistRows.map(watchlistRowMarkup).join("");
     }
@@ -2816,7 +2892,7 @@ function renderRadarSnapshot(payload) {
 
   if (positionsBody) {
     if (!positionRows.length) {
-      positionsBody.innerHTML = '<tr><td colspan="10">Sin compras simuladas.</td></tr>';
+      positionsBody.innerHTML = '<div class="portfolio-list-empty">Sin compras simuladas.</div>';
     } else {
       positionsBody.innerHTML = positionRows.map((row) => positionRowMarkup(row, model.totalValue)).join("");
     }
@@ -2838,6 +2914,9 @@ function renderRadarSnapshot(payload) {
 function renderRadarSnapshotError(message) {
   setText("radar-summary-note", message);
   setText("portfolio-data-state", "Lectura limitada");
+  setText("watchlist-count", "0");
+  setText("watchlist-donut-subtitle", "Sin seguimiento");
+  setText("watchlist-donut-caption", "Sin datos");
   setText("portfolio-total-value", "Sin valor calculado");
   setText("portfolio-total-stat", "Sin valor calculado");
   setText("portfolio-day-return", "Sin rendimiento calculado");
@@ -2856,20 +2935,29 @@ function renderRadarSnapshotError(message) {
     donut.style.background = buildPortfolioGradient([]);
     donut.classList.add("portfolio-donut-empty");
   }
+  const watchlistDonut = document.getElementById("watchlist-donut");
+  if (watchlistDonut) {
+    watchlistDonut.style.background = buildPortfolioGradient([]);
+    watchlistDonut.classList.add("portfolio-donut-empty");
+  }
 
   const tickerList = document.getElementById("radar-ticker-list");
   if (tickerList) {
     tickerList.innerHTML = '<span class="chip chip-muted">Sin datos</span>';
   }
+  const watchlistLegend = document.getElementById("watchlist-donut-legend");
+  if (watchlistLegend) {
+    watchlistLegend.innerHTML = '<span class="chip chip-muted">Sin datos</span>';
+  }
 
-  const tableBody = document.getElementById("radar-table-body");
+  const tableBody = document.getElementById("portfolio-watchlist-body") || document.getElementById("radar-table-body");
   if (tableBody) {
-    tableBody.innerHTML = `<tr><td colspan="7">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
+    tableBody.innerHTML = `<div class="portfolio-list-empty">${escapeHtml(humanizeDashboardCopy(message))}</div>`;
   }
 
   const positionsBody = document.getElementById("portfolio-positions-body");
   if (positionsBody) {
-    positionsBody.innerHTML = '<tr><td colspan="10">Sin compras simuladas.</td></tr>';
+    positionsBody.innerHTML = '<div class="portfolio-list-empty">Sin compras simuladas.</div>';
   }
 
   radarSelectedTicker = "";

@@ -425,113 +425,76 @@
             <div class="portfolio-search-result" id="portfolio-search-result" hidden></div>
           </div>
 
-          <div class="portfolio-layout">
-            <div class="portfolio-donut-panel">
-              <div class="portfolio-donut" id="portfolio-donut" aria-label="Distribucion de cartera">
-                <div class="portfolio-donut-center">
-                  <strong id="portfolio-total-value">...</strong>
-                  <span id="portfolio-day-return">Hoy</span>
-                  <small id="portfolio-donut-caption">Cargando cartera</small>
+          <span class="visually-hidden" id="portfolio-total-stat">...</span>
+          <span class="visually-hidden" id="portfolio-day-stat">...</span>
+          <span class="visually-hidden" id="radar-tracked-count">...</span>
+          <span class="visually-hidden" id="radar-last-update">...</span>
+          <span class="visually-hidden" id="radar-summary-note">...</span>
+          <span class="visually-hidden" id="radar-investment-count">...</span>
+          <span class="visually-hidden" id="radar-reference-count">...</span>
+        </article>
+
+        <div class="portfolio-app-grid">
+          <article class="card panel-card portfolio-app-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Seguimiento</p>
+                <h4>Activos en vigilancia</h4>
+              </div>
+              <span class="badge badge-soft">Precio visible</span>
+            </div>
+            <div class="portfolio-section-layout">
+              <div class="portfolio-donut-panel">
+                <div class="portfolio-donut" id="watchlist-donut" aria-label="Distribucion de seguimiento">
+                  <div class="portfolio-donut-center">
+                    <strong id="watchlist-count">...</strong>
+                    <span id="watchlist-donut-subtitle">activos seguidos</span>
+                    <small id="watchlist-donut-caption">Cargando seguimiento</small>
+                  </div>
+                </div>
+                <div class="portfolio-legend" id="watchlist-donut-legend">
+                  <span class="chip chip-muted chip-loading">Cargando seguimiento...</span>
                 </div>
               </div>
-              <div class="portfolio-legend" id="radar-ticker-list">
-                <span class="chip chip-muted chip-loading">Cargando cartera...</span>
+              <div class="portfolio-list" id="portfolio-watchlist-body">
+                <div class="portfolio-list-empty">Cargando seguimiento...</div>
               </div>
             </div>
+            <p class="table-note" id="radar-table-note">
+              Seguimiento con precio directo cuando la fuente lo entrega.
+            </p>
+          </article>
 
-            <div class="portfolio-summary">
-              <div class="portfolio-stat">
-                <span>Valor total</span>
-                <strong id="portfolio-total-stat">...</strong>
+          <article class="card panel-card portfolio-app-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Compradas</p>
+                <h4>Posiciones simuladas</h4>
               </div>
-              <div class="portfolio-stat">
-                <span>Rendimiento del dia</span>
-                <strong id="portfolio-day-stat">...</strong>
-              </div>
-              <div class="portfolio-stat">
-                <span>Activos en cartera</span>
-                <strong id="radar-tracked-count">...</strong>
-              </div>
-              <div class="portfolio-stat">
-                <span>Actualizacion</span>
-                <strong id="radar-last-update">...</strong>
-              </div>
-              <div class="portfolio-perspective">
-                <span>Perspectiva Genesis</span>
-                <p class="placeholder-copy is-loading" id="radar-summary-note">
-                  Cargando lectura de cartera...
-                </p>
-              </div>
-              <span class="visually-hidden" id="radar-investment-count">...</span>
-              <span class="visually-hidden" id="radar-reference-count">...</span>
+              <span class="badge badge-soft">Paper trading</span>
             </div>
-          </div>
-        </article>
-
-        <article class="card panel-card portfolio-positions-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Seguimiento</p>
-              <h4>Activos en vigilancia</h4>
+            <div class="portfolio-section-layout">
+              <div class="portfolio-donut-panel">
+                <div class="portfolio-donut" id="portfolio-donut" aria-label="Distribucion de compradas">
+                  <div class="portfolio-donut-center">
+                    <strong id="portfolio-total-value">...</strong>
+                    <span id="portfolio-day-return">Hoy</span>
+                    <small id="portfolio-donut-caption">Cargando compradas</small>
+                  </div>
+                </div>
+                <div class="portfolio-legend" id="radar-ticker-list">
+                  <span class="chip chip-muted chip-loading">Cargando compradas...</span>
+                </div>
+              </div>
+              <div class="portfolio-list" id="portfolio-positions-body">
+                <div class="portfolio-list-empty">Sin compras simuladas.</div>
+              </div>
             </div>
-            <span class="badge badge-soft">Precio visible</span>
-          </div>
-          <div class="table-wrap">
-            <table class="table-shell table-shell-wide portfolio-table">
-              <thead id="radar-table-head">
-                <tr>
-                  <th>Activo</th>
-                  <th>Precio</th>
-                  <th>Cambio diario</th>
-                  <th>Sesion anterior</th>
-                  <th>Nocturno</th>
-                  <th>Estado</th>
-                  <th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody id="radar-table-body">
-                <tr><td colspan="7">Cargando seguimiento...</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="table-note" id="radar-table-note">
-            Seguimiento con precio directo cuando la fuente lo entrega.
-          </p>
-        </article>
-
-        <article class="card panel-card portfolio-positions-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Compradas / Simuladas</p>
-              <h4>Posiciones paper</h4>
-            </div>
-            <span class="badge badge-soft">Paper trading</span>
-          </div>
-          <div class="table-wrap">
-            <table class="table-shell table-shell-wide portfolio-table">
-              <thead>
-                <tr>
-                  <th>Activo</th>
-                  <th>Unidades</th>
-                  <th>Entrada</th>
-                  <th>Precio</th>
-                  <th>Valor</th>
-                  <th>Peso</th>
-                  <th>P/L</th>
-                  <th>Diario</th>
-                  <th>Estado</th>
-                  <th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody id="portfolio-positions-body">
-                <tr><td colspan="10">Sin compras simuladas.</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="table-note" id="portfolio-positions-note">
-            Sin compra real. Solo simulacion/paper trading.
-          </p>
-        </article>
+            <p class="table-note" id="portfolio-positions-note">
+              Sin compra real. Solo simulacion/paper trading.
+            </p>
+          </article>
+        </div>
 
         <aside class="portfolio-asset-panel" id="portfolio-asset-panel" hidden>
           <div class="portfolio-asset-shell">
@@ -562,7 +525,10 @@
               <p id="portfolio-asset-invalidation">Invalidacion pendiente de datos suficientes.</p>
               <p id="portfolio-asset-plan">Vigilar y validar antes de operar.</p>
             </div>
-            <button type="button" class="portfolio-action-button" id="portfolio-asset-sim-buy">Simular compra</button>
+            <div class="portfolio-asset-actions">
+              <button type="button" class="portfolio-action-button" id="portfolio-asset-sim-buy">Simular compra</button>
+              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-asset-remove">Quitar</button>
+            </div>
           </div>
         </aside>
 
@@ -1015,6 +981,6 @@
     </main>
   </div>
 
-    <script src="./app.js?v=phase67d-r3-visual-portfolio"></script>
+    <script src="./app.js?v=phase67d-r22-two-circles"></script>
   </body>
 </html>
