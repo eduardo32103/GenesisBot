@@ -653,13 +653,24 @@ function updateGenesisMessage(id, text, meta = "", blocks = null, options = {}) 
   node.classList.remove("genesis-message-loading");
   node.classList.toggle("genesis-message-fallback", Boolean(options.fallback));
   node.classList.toggle("genesis-message-compact", Boolean(options.compact));
-  const body = options.compact
-    ? renderGenesisCompactAnswer(options.payload || { answer: text })
-    : `<p>${escapeHtml(text)}</p>${renderGenesisBlocks(blocks)}`;
+
+  if (options.compact) {
+    node.innerHTML = `
+      <strong>Genesis</strong>
+      ${renderGenesisCompactAnswer(options.payload || { answer: text })}
+    `;
+    const thread = document.getElementById("genesis-thread");
+    if (thread) {
+      thread.scrollTop = thread.scrollHeight;
+    }
+    return;
+  }
+
   node.innerHTML = `
     <strong>Genesis</strong>
-    ${body}
-    ${!options.compact && meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    <p>${escapeHtml(text)}</p>
+    ${renderGenesisBlocks(blocks)}
+    ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
   `;
   const thread = document.getElementById("genesis-thread");
   if (thread) {
@@ -671,6 +682,20 @@ function renderGenesisAnswer(payload, messageId) {
   payload = normalizeGenesisPayload(payload, "payload_incomplete", genesisContext);
   updateGenesisContextFromPayload(payload);
   const compact = Boolean(payload.compact_mode || payload.assistant_narrative);
+  if (compact) {
+    updateGenesisMessage(
+      messageId,
+      payload.answer || "No hay respuesta disponible. Lectura no concluyente.",
+      "",
+      null,
+      {
+        fallback: Boolean(payload.fallback) || payload.blocks?.reliability === "no concluyente",
+        compact: true,
+        payload,
+      }
+    );
+    return;
+  }
   updateGenesisMessage(
     messageId,
     payload.answer || "No hay respuesta disponible. Lectura no concluyente.",
