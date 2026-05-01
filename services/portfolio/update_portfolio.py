@@ -96,11 +96,11 @@ def add_ticker_to_portfolio(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dic
     raw = _read_raw_portfolio(path)
     positions = _portfolio_positions_for_write(raw)
     if any(_normalize_ticker(position.get("ticker")) == normalized for position in positions):
-        return {"ok": True, "status": "exists", "ticker": normalized, "message": f"{normalized} ya existe en Cartera."}
+        return {"ok": True, "status": "exists", "ticker": normalized, "message": "Este activo ya esta en tu cartera/watchlist."}
 
     positions.append({"ticker": normalized, "display_name": normalized})
     _write_positions(positions, raw, path)
-    return {"ok": True, "status": "added", "ticker": normalized, "message": f"{normalized} agregado a watchlist."}
+    return {"ok": True, "status": "added", "ticker": normalized, "message": "Activo agregado."}
 
 
 def simulate_paper_position(

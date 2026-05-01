@@ -47,8 +47,8 @@ def create_app() -> dict[str, str]:
         "money_flow_jarvis_endpoint": "/api/dashboard/money-flow/jarvis?q={question}",
         "radar_endpoint": "/api/dashboard/radar",
         "radar_drilldown_endpoint": "/api/dashboard/radar/drilldown?ticker={symbol}",
-        "portfolio_add_endpoint": "/api/dashboard/portfolio/watchlist",
-        "portfolio_paper_endpoint": "/api/dashboard/portfolio/paper",
+        "portfolio_add_endpoint": "/api/dashboard/portfolio/watchlist/add",
+        "portfolio_paper_endpoint": "/api/dashboard/portfolio/paper-buy",
         "alerts_endpoint": "/api/dashboard/alerts",
         "alerts_drilldown_endpoint": "/api/dashboard/alerts/drilldown?alert_id={id}",
         "fmp_endpoint": "/api/dashboard/fmp",
@@ -86,13 +86,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         body = self._read_json_body()
 
-        if parsed.path == "/api/dashboard/portfolio/watchlist":
+        if parsed.path in {"/api/dashboard/portfolio/watchlist", "/api/dashboard/portfolio/watchlist/add"}:
             result = add_dashboard_portfolio_ticker(str(body.get("ticker") or ""))
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._write_json(result, status)
             return
 
-        if parsed.path == "/api/dashboard/portfolio/paper":
+        if parsed.path in {"/api/dashboard/portfolio/paper", "/api/dashboard/portfolio/paper-buy"}:
             result = simulate_dashboard_portfolio_purchase(
                 str(body.get("ticker") or ""),
                 units=body.get("units"),

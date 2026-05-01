@@ -1304,9 +1304,7 @@ function renderAssetDetailView(detail) {
   const volume = parseFiniteNumber(detail?.volume) ?? parseFiniteNumber(row?.item?.volume);
   const updated = detail?.quote_timestamp || row?.item?.quote_timestamp || row?.item?.updated_at || "";
   const priceText = price === null ? "Sin precio" : formatPrice(price);
-  const changeText = dailyPct === null
-    ? "Sin cambio"
-    : `${dailyUsd === null ? "" : `${formatSignedPortfolioMoney(dailyUsd)} `}${formatPortfolioPercent(dailyPct)}`.trim();
+  const changeText = formatPortfolioDailyMove(dailyUsd, dailyPct, "Sin cambio");
   const verdict = price === null
     ? "No concluyente"
     : (dailyPct !== null && dailyPct < -2 ? "Vigilar" : "Vigilar");
@@ -1350,6 +1348,7 @@ function openPortfolioModal(mode, ticker = "") {
   const units = document.getElementById("portfolio-modal-units");
   const entry = document.getElementById("portfolio-modal-entry-price");
   const note = document.getElementById("portfolio-modal-note");
+  const total = document.getElementById("portfolio-modal-total");
   const submit = document.getElementById("portfolio-modal-submit");
   const normalized = String(ticker || radarSelectedTicker || "").trim().toUpperCase();
   const row = getPortfolioRow(normalized);
@@ -1364,6 +1363,10 @@ function openPortfolioModal(mode, ticker = "") {
   note.textContent = portfolioModalMode === "paper"
     ? "Compra simulada. No conecta broker ni ejecuta orden real."
     : "Agrega un ticker directo a tu watchlist.";
+  if (total) {
+    total.hidden = portfolioModalMode !== "paper";
+    total.textContent = "Total estimado: Sin calcular";
+  }
   submit.textContent = portfolioModalMode === "paper" ? "Guardar compra simulada" : "Agregar";
 
   if (units) {
@@ -1374,6 +1377,7 @@ function openPortfolioModal(mode, ticker = "") {
     entry.required = portfolioModalMode === "paper";
     entry.value = portfolioModalMode === "paper" && row?.price ? String(row.price) : "";
   }
+  updatePortfolioModalEstimate();
   modal.hidden = false;
   tickerInput.focus();
 }
@@ -1399,6 +1403,22 @@ async function postPortfolioAction(url, payload) {
   return data;
 }
 
+function updatePortfolioModalEstimate() {
+  const total = document.getElementById("portfolio-modal-total");
+  const unitsInput = document.getElementById("portfolio-modal-units");
+  const entryInput = document.getElementById("portfolio-modal-entry-price");
+  if (!total || portfolioModalMode !== "paper") {
+    return;
+  }
+  const units = parsePositiveNumber(unitsInput?.value);
+  const entry = parsePositiveNumber(entryInput?.value);
+  if (units === null || entry === null) {
+    total.textContent = "Total estimado: ingresa unidades y precio.";
+    return;
+  }
+  total.textContent = `Total estimado: ${formatPortfolioMoney(units * entry)}`;
+}
+
 async function refreshPortfolioAfterMutation(ticker = "") {
   radarDrilldownCache.clear();
   loadedViews.delete("radar");
@@ -1406,6 +1426,7 @@ async function refreshPortfolioAfterMutation(ticker = "") {
   if (ticker) {
     radarSelectedTicker = String(ticker).trim().toUpperCase();
     updateRadarDrilldownSelection(radarSelectedTicker);
+    await loadRadarDrilldown(radarSelectedTicker, true);
   }
 }
 
@@ -1418,14 +1439,17 @@ async function submitPortfolioModal(event) {
   const ticker = String(tickerInput?.value || "").trim().toUpperCase();
   try {
     const result = portfolioModalMode === "paper"
-      ? await postPortfolioAction("/api/dashboard/portfolio/paper", {
+      ? await postPortfolioAction("/api/dashboard/portfolio/paper-buy", {
           ticker,
           units: unitsInput?.value,
           entry_price: entryInput?.value,
         })
-      : await postPortfolioAction("/api/dashboard/portfolio/watchlist", { ticker });
+      : await postPortfolioAction("/api/dashboard/portfolio/watchlist/add", { ticker });
     if (note) {
       note.textContent = result.message || "Cambio guardado.";
+    }
+    if (result.status === "exists") {
+      return;
     }
     closePortfolioModal();
     await refreshPortfolioAfterMutation(ticker);
@@ -1442,8 +1466,11 @@ function bindPortfolioActions() {
   const panelSimButton = document.getElementById("portfolio-asset-sim-buy");
   const closePanel = document.getElementById("portfolio-asset-close");
   const modalClose = document.getElementById("portfolio-modal-close");
+  const modalCancel = document.getElementById("portfolio-modal-cancel");
   const modal = document.getElementById("portfolio-action-modal");
   const form = document.getElementById("portfolio-modal-form");
+  const modalUnits = document.getElementById("portfolio-modal-units");
+  const modalEntry = document.getElementById("portfolio-modal-entry-price");
 
   if (addButton && addButton.dataset.bound !== "true") {
     addButton.dataset.bound = "true";
@@ -1465,6 +1492,17 @@ function bindPortfolioActions() {
     modalClose.dataset.bound = "true";
     modalClose.addEventListener("click", closePortfolioModal);
   }
+  if (modalCancel && modalCancel.dataset.bound !== "true") {
+    modalCancel.dataset.bound = "true";
+    modalCancel.addEventListener("click", closePortfolioModal);
+  }
+  [modalUnits, modalEntry].forEach((node) => {
+    if (!node || node.dataset.estimateBound === "true") {
+      return;
+    }
+    node.dataset.estimateBound = "true";
+    node.addEventListener("input", updatePortfolioModalEstimate);
+  });
   if (modal && modal.dataset.bound !== "true") {
     modal.dataset.bound = "true";
     modal.addEventListener("click", (event) => {
@@ -2187,6 +2225,14 @@ function getPortfolioDailyChange(item) {
   );
 }
 
+function getPortfolioDailyChangeUsd(item) {
+  return (
+    parseFiniteNumber(item.daily_change) ??
+    parseFiniteNumber(item.change) ??
+    parseFiniteNumber(item.change_usd)
+  );
+}
+
 function getPortfolioDailyPnl(item) {
   return parseFiniteNumber(item.daily_pnl);
 }
@@ -2225,6 +2271,21 @@ function formatPortfolioPercent(value, emptyText = "Sin dato") {
     return emptyText;
   }
   return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}%`;
+}
+
+function formatPortfolioDailyMove(changeUsd, changePct, emptyText = "Sin cambio") {
+  const pct = parseFiniteNumber(changePct);
+  const usd = parseFiniteNumber(changeUsd);
+  if (pct === null && usd === null) {
+    return emptyText;
+  }
+  if (usd === null) {
+    return formatPortfolioPercent(pct, emptyText);
+  }
+  if (pct === null) {
+    return formatSignedPortfolioMoney(usd, emptyText);
+  }
+  return `${formatSignedPortfolioMoney(usd)} (${formatPortfolioPercent(pct)})`;
 }
 
 function formatPortfolioWeight(value) {
@@ -2284,6 +2345,7 @@ function buildPortfolioModel(items) {
     value: getPortfolioPositionValue(item),
     price: getPortfolioPrice(item),
     dailyChange: getPortfolioDailyChange(item),
+    dailyChangeUsd: getPortfolioDailyChangeUsd(item),
     dailyPnl: getPortfolioDailyPnl(item),
     totalPnl: getPortfolioTotalPnl(item),
     units: parsePositiveNumber(item.units),
@@ -2500,6 +2562,7 @@ function renderRadarSnapshot(payload) {
           const dailyPnlText = row.dailyPnl === null
             ? "Diario sin calcular"
             : formatSignedPortfolioMoney(row.dailyPnl);
+          const dailyMoveText = formatPortfolioDailyMove(row.dailyChangeUsd, row.dailyChange, "Sin cambio");
           const sourceText = parsePositiveNumber(row.item.current_price) !== null || parsePositiveNumber(row.item.price) !== null
             ? "Datos directos"
             : "Sin precio directo";
@@ -2514,7 +2577,7 @@ function renderRadarSnapshot(payload) {
                   <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
                   <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
                 </td>
-                <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(formatPortfolioPercent(row.dailyChange, "Sin cambio"))}</span></td>
+                <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span></td>
                 <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
               </tr>
             `;
@@ -2538,7 +2601,7 @@ function renderRadarSnapshot(payload) {
                 <span class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</span>
               </td>
               <td>
-                <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(formatPortfolioPercent(row.dailyChange, "Sin cambio"))}</span>
+                <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span>
                 <small class="portfolio-subvalue portfolio-subvalue-${dailyPnlTone}">${escapeHtml(dailyPnlText)}</small>
               </td>
               <td><span class="portfolio-state">${escapeHtml(state)}</span></td>

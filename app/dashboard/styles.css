@@ -1214,6 +1214,23 @@ body:has(#view-command-center.is-visible) .status-strip {
   line-height: 1.45;
 }
 
+.portfolio-modal-total {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(127, 198, 164, 0.07);
+  border: 1px solid rgba(127, 198, 164, 0.14);
+  font-weight: 800;
+}
+
+.portfolio-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .portfolio-asset-panel {
   position: fixed;
   inset: 18px 18px 18px auto;
@@ -2233,6 +2250,11 @@ body:has(#view-command-center.is-visible) .status-strip {
   .portfolio-sim-fields,
   .portfolio-asset-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .portfolio-modal-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
   }
 
   .portfolio-asset-panel {
