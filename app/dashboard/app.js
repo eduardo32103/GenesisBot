@@ -59,6 +59,7 @@ const portfolioRowsByTicker = new Map();
 let radarSelectedTicker = "";
 let radarDrilldownRequestId = 0;
 let portfolioModalMode = "add";
+let marketSearchResult = null;
 const alertsDrilldownCache = new Map();
 let alertsSelectedId = "";
 let alertsDrilldownRequestId = 0;
@@ -1389,6 +1390,62 @@ function closePortfolioModal() {
   }
 }
 
+function setPortfolioSearchNote(message) {
+  const note = document.getElementById("portfolio-search-note");
+  if (note) {
+    note.textContent = humanizeDashboardCopy(message);
+  }
+}
+
+function renderMarketSearchResult(result) {
+  const node = document.getElementById("portfolio-search-result");
+  if (!node) return;
+  marketSearchResult = result || null;
+  if (!result) {
+    node.hidden = true;
+    node.innerHTML = "";
+    return;
+  }
+  const price = parsePositiveNumber(result.current_price);
+  const move = formatPortfolioDailyMove(result.daily_change, result.daily_change_pct, "Sin cambio");
+  node.hidden = false;
+  node.innerHTML = `
+    <div>
+      <strong>${escapeHtml(result.ticker || "Activo")}</strong>
+      <small>${escapeHtml(result.name || result.ticker || "Activo")} | ${escapeHtml(price === null ? "Sin precio" : formatPrice(price))} | ${escapeHtml(move)}</small>
+    </div>
+    <button type="button" class="portfolio-mini-action" data-market-add="${escapeHtml(result.ticker || "")}" aria-label="Agregar a seguimiento">+</button>
+  `;
+  bindPortfolioRowActions();
+}
+
+async function searchPortfolioTicker() {
+  const input = document.getElementById("portfolio-search-input");
+  const query = String(input?.value || "").trim().toUpperCase();
+  if (!query) {
+    setPortfolioSearchNote("Escribe un ticker para buscar.");
+    renderMarketSearchResult(null);
+    return null;
+  }
+  setPortfolioSearchNote("Buscando activo...");
+  renderMarketSearchResult(null);
+  try {
+    const response = await fetch(`/api/dashboard/market/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({}));
+    const result = Array.isArray(payload.results) ? payload.results[0] : null;
+    if (!response.ok || !payload.ok || !result) {
+      setPortfolioSearchNote(payload.message || "No encontre este ticker con la fuente activa.");
+      return null;
+    }
+    setPortfolioSearchNote(payload.message || "Activo encontrado.");
+    renderMarketSearchResult(result);
+    return result;
+  } catch (error) {
+    setPortfolioSearchNote(error.message || "No pude buscar este activo.");
+    return null;
+  }
+}
+
 async function postPortfolioAction(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -1401,6 +1458,33 @@ async function postPortfolioAction(url, payload) {
     throw new Error(data.message || "No pude guardar el cambio.");
   }
   return data;
+}
+
+async function addTickerToWatchlist(ticker) {
+  const normalized = String(ticker || "").trim().toUpperCase();
+  if (!normalized) {
+    setPortfolioSearchNote("Escribe un ticker valido.");
+    return;
+  }
+  const result = await postPortfolioAction("/api/dashboard/portfolio/watchlist/add", { ticker: normalized });
+  setPortfolioSearchNote(result.message || "Activo agregado.");
+  await refreshPortfolioAfterMutation(normalized);
+}
+
+async function removeTickerFromWatchlist(ticker) {
+  const normalized = String(ticker || "").trim().toUpperCase();
+  if (!normalized) return;
+  const result = await postPortfolioAction("/api/dashboard/portfolio/watchlist/remove", { ticker: normalized });
+  setPortfolioSearchNote(result.message || `${normalized} quitado de seguimiento.`);
+  await refreshPortfolioAfterMutation("");
+}
+
+async function removePaperTicker(ticker) {
+  const normalized = String(ticker || "").trim().toUpperCase();
+  if (!normalized) return;
+  const result = await postPortfolioAction("/api/dashboard/portfolio/paper-remove", { ticker: normalized });
+  setPortfolioSearchNote(result.message || `Compra simulada de ${normalized} cerrada.`);
+  await refreshPortfolioAfterMutation("");
 }
 
 function updatePortfolioModalEstimate() {
@@ -1426,7 +1510,6 @@ async function refreshPortfolioAfterMutation(ticker = "") {
   if (ticker) {
     radarSelectedTicker = String(ticker).trim().toUpperCase();
     updateRadarDrilldownSelection(radarSelectedTicker);
-    await loadRadarDrilldown(radarSelectedTicker, true);
   }
 }
 
@@ -1438,13 +1521,21 @@ async function submitPortfolioModal(event) {
   const note = document.getElementById("portfolio-modal-note");
   const ticker = String(tickerInput?.value || "").trim().toUpperCase();
   try {
-    const result = portfolioModalMode === "paper"
-      ? await postPortfolioAction("/api/dashboard/portfolio/paper-buy", {
+    let result = null;
+    if (portfolioModalMode === "paper") {
+      result = await postPortfolioAction("/api/dashboard/portfolio/paper-buy", {
           ticker,
           units: unitsInput?.value,
           entry_price: entryInput?.value,
-        })
-      : await postPortfolioAction("/api/dashboard/portfolio/watchlist/add", { ticker });
+        });
+    } else {
+      const searchResponse = await fetch(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`, { cache: "no-store" });
+      const searchPayload = await searchResponse.json().catch(() => ({}));
+      if (!searchResponse.ok || !searchPayload.ok) {
+        throw new Error(searchPayload.message || "No encontre este ticker con la fuente activa.");
+      }
+      result = await postPortfolioAction("/api/dashboard/portfolio/watchlist/add", { ticker });
+    }
     if (note) {
       note.textContent = result.message || "Cambio guardado.";
     }
@@ -1460,6 +1551,44 @@ async function submitPortfolioModal(event) {
   }
 }
 
+function bindPortfolioRowActions() {
+  document.querySelectorAll("[data-market-add]").forEach((node) => {
+    if (node.dataset.bound === "true") return;
+    node.dataset.bound = "true";
+    node.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await addTickerToWatchlist(node.dataset.marketAdd || marketSearchResult?.ticker || "");
+    });
+  });
+
+  document.querySelectorAll("[data-watch-remove]").forEach((node) => {
+    if (node.dataset.bound === "true") return;
+    node.dataset.bound = "true";
+    node.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await removeTickerFromWatchlist(node.dataset.watchRemove || "");
+    });
+  });
+
+  document.querySelectorAll("[data-paper-remove]").forEach((node) => {
+    if (node.dataset.bound === "true") return;
+    node.dataset.bound = "true";
+    node.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await removePaperTicker(node.dataset.paperRemove || "");
+    });
+  });
+
+  document.querySelectorAll("[data-paper-buy]").forEach((node) => {
+    if (node.dataset.bound === "true") return;
+    node.dataset.bound = "true";
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openPortfolioModal("paper", node.dataset.paperBuy || "");
+    });
+  });
+}
+
 function bindPortfolioActions() {
   const addButton = document.getElementById("portfolio-add-button");
   const simButton = document.getElementById("portfolio-sim-buy-button");
@@ -1471,10 +1600,18 @@ function bindPortfolioActions() {
   const form = document.getElementById("portfolio-modal-form");
   const modalUnits = document.getElementById("portfolio-modal-units");
   const modalEntry = document.getElementById("portfolio-modal-entry-price");
+  const searchButton = document.getElementById("portfolio-search-button");
+  const searchInput = document.getElementById("portfolio-search-input");
 
   if (addButton && addButton.dataset.bound !== "true") {
     addButton.dataset.bound = "true";
-    addButton.addEventListener("click", () => openPortfolioModal("add"));
+    addButton.addEventListener("click", () => {
+      if (searchInput) {
+        searchInput.focus();
+      } else {
+        openPortfolioModal("add");
+      }
+    });
   }
   if (simButton && simButton.dataset.bound !== "true") {
     simButton.dataset.bound = "true";
@@ -1514,6 +1651,18 @@ function bindPortfolioActions() {
   if (form && form.dataset.bound !== "true") {
     form.dataset.bound = "true";
     form.addEventListener("submit", submitPortfolioModal);
+  }
+  if (searchButton && searchButton.dataset.bound !== "true") {
+    searchButton.dataset.bound = "true";
+    searchButton.addEventListener("click", searchPortfolioTicker);
+  }
+  if (searchInput && searchInput.dataset.bound !== "true") {
+    searchInput.dataset.bound = "true";
+    searchInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      searchPortfolioTicker();
+    });
   }
 }
 
@@ -2288,6 +2437,32 @@ function formatPortfolioDailyMove(changeUsd, changePct, emptyText = "Sin cambio"
   return `${formatSignedPortfolioMoney(usd)} (${formatPortfolioPercent(pct)})`;
 }
 
+function formatPortfolioPreviousClose(value) {
+  const numeric = parsePositiveNumber(value);
+  return numeric === null ? "Sin dato" : formatPrice(numeric);
+}
+
+function formatExtendedHours(item) {
+  const price = parsePositiveNumber(item?.extended_hours_price);
+  const change = parseFiniteNumber(item?.extended_hours_change);
+  const pct = parseFiniteNumber(item?.extended_hours_change_pct);
+  if (price === null) {
+    return "Sin nocturno";
+  }
+  const move = formatPortfolioDailyMove(change, pct, "");
+  return move ? `${formatPrice(price)} ${move}` : formatPrice(price);
+}
+
+function formatMarketSession(item) {
+  const raw = String(item?.market_session || "").trim().toLowerCase();
+  if (raw.includes("after") || raw.includes("post")) return "After-hours";
+  if (raw.includes("pre")) return "Premarket";
+  if (raw.includes("open")) return "Mercado abierto";
+  if (raw.includes("close")) return "Mercado cerrado";
+  if (parsePositiveNumber(item?.extended_hours_price) !== null) return "Nocturno";
+  return "Sesion regular";
+}
+
 function formatPortfolioWeight(value) {
   const numeric = parseFiniteNumber(value);
   if (numeric === null) {
@@ -2444,15 +2619,101 @@ function setPortfolioReturnState(id, value) {
   node.classList.add(`portfolio-return-${tone}`);
 }
 
+function portfolioActionsMarkup(ticker, mode = "watchlist") {
+  const safeTicker = escapeHtml(ticker);
+  if (mode === "paper") {
+    return `
+      <div class="portfolio-mini-actions">
+        <button type="button" class="portfolio-mini-action" data-paper-buy="${safeTicker}" aria-label="Simular mas compra">Carrito</button>
+        <button type="button" class="portfolio-mini-action" data-paper-remove="${safeTicker}" aria-label="Quitar compra simulada">-</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="portfolio-mini-actions">
+      <button type="button" class="portfolio-mini-action" data-paper-buy="${safeTicker}" aria-label="Simular compra">Carrito</button>
+      <button type="button" class="portfolio-mini-action" data-watch-remove="${safeTicker}" aria-label="Quitar de seguimiento">-</button>
+    </div>
+  `;
+}
+
+function watchlistRowMarkup(row) {
+  const ticker = row.ticker || "n/a";
+  const changeTone = portfolioChangeTone(row.dailyChange);
+  const dailyMoveText = formatPortfolioDailyMove(row.dailyChangeUsd, row.dailyChange, "Sin cambio");
+  const sourceText = row.price === null ? "Sin precio directo" : "Datos directos";
+  const state = portfolioStateLabel(row.item, row.dailyChange, row.value !== null);
+  return `
+    <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
+      <td>
+        <strong>${escapeHtml(ticker)}</strong>
+        <small>${escapeHtml(row.name)}</small>
+      </td>
+      <td>
+        <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
+        <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
+      </td>
+      <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span></td>
+      <td>${escapeHtml(formatPortfolioPreviousClose(row.item.previous_close))}</td>
+      <td>
+        <strong>${escapeHtml(formatExtendedHours(row.item))}</strong>
+        <small class="portfolio-subvalue">${escapeHtml(formatMarketSession(row.item))}</small>
+      </td>
+      <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
+      <td>${portfolioActionsMarkup(ticker, "watchlist")}</td>
+    </tr>
+  `;
+}
+
+function positionRowMarkup(row, totalValue) {
+  const ticker = row.ticker || "n/a";
+  const weight = totalValue > 0 && row.value !== null ? (row.value / totalValue) * 100 : null;
+  const changeTone = portfolioChangeTone(row.dailyChange);
+  const dailyPnlTone = portfolioChangeTone(row.dailyPnl);
+  const totalPnlTone = portfolioChangeTone(row.totalPnl);
+  const state = buildAssetModeLabel({}, row);
+  const valueText = formatPortfolioMoney(row.value);
+  const totalPnlText = row.value === null ? "P/L sin valor" : formatSignedPortfolioMoney(row.totalPnl, "P/L sin entrada");
+  const dailyPnlText = row.dailyPnl === null ? "Diario sin calcular" : formatSignedPortfolioMoney(row.dailyPnl);
+  const dailyMoveText = formatPortfolioDailyMove(row.dailyChangeUsd, row.dailyChange, "Sin cambio");
+  const sourceText = row.price === null ? "Sin precio directo" : "Datos directos";
+  return `
+    <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
+      <td>
+        <strong>${escapeHtml(ticker)}</strong>
+        <small>${escapeHtml(row.name)}</small>
+      </td>
+      <td>${escapeHtml(row.units === null ? "Sin unidades" : formatDetailUnits(row.units))}</td>
+      <td>${escapeHtml(formatDetailPrice(row.item.entry_price))}</td>
+      <td>
+        <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
+        <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
+      </td>
+      <td><strong>${escapeHtml(valueText)}</strong></td>
+      <td>${escapeHtml(formatPortfolioWeight(weight))}</td>
+      <td><span class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</span></td>
+      <td>
+        <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span>
+        <small class="portfolio-subvalue portfolio-subvalue-${dailyPnlTone}">${escapeHtml(dailyPnlText)}</small>
+      </td>
+      <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
+      <td>${portfolioActionsMarkup(ticker, "paper")}</td>
+    </tr>
+  `;
+}
+
 function renderRadarSnapshot(payload) {
   const summary = payload.summary || {};
   const items = Array.isArray(payload.items) ? payload.items : [];
   const tickerList = document.getElementById("radar-ticker-list");
   const tableHead = document.getElementById("radar-table-head");
   const tableBody = document.getElementById("radar-table-body");
+  const positionsBody = document.getElementById("portfolio-positions-body");
   const availableTickers = new Set(items.map((item) => String(item?.ticker || "").trim().toUpperCase()).filter(Boolean));
   const model = buildPortfolioModel(items);
   const genesisPerspective = buildPortfolioPerspective(model, items);
+  const watchlistRows = model.rows.filter((row) => row.units === null);
+  const positionRows = model.rows.filter((row) => row.units !== null);
   portfolioRowsByTicker.clear();
   model.rows.forEach((row) => {
     if (row.ticker) {
@@ -2470,19 +2731,18 @@ function renderRadarSnapshot(payload) {
   setText("portfolio-day-stat", dayReturnText);
   setPortfolioReturnState("portfolio-day-return", model.weightedDailyChange);
   setPortfolioReturnState("portfolio-day-stat", model.weightedDailyChange);
-  setText("portfolio-donut-caption", model.hasDistribution ? "Hoy" : "Valor no calculado todavia");
+  setText("portfolio-donut-caption", model.hasDistribution ? "Compradas" : (positionRows.length ? "Sin valor calculado" : "Sin compras simuladas"));
   setText("radar-summary-note", genesisPerspective);
   setText("radar-tracked-count", String(summary.tracked_count ?? items.length ?? 0));
   setText("radar-investment-count", String(summary.investment_count ?? 0));
   setText("radar-reference-count", String(summary.reference_count ?? 0));
   setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin fecha confirmada");
-  setText("radar-table-note", model.hasDistribution
-    ? (model.rows.some((row) => row.units === null)
-        ? "Posiciones calculadas y activos en vigilancia sin cantidades. Abre un activo para verlo como app."
-        : "Lista simple de posiciones. Abre un activo para verlo como app.")
-    : (model.hasDirectPrices
-        ? "Watchlist con precios directos. Valor y peso quedan sin calcular hasta tener cantidades reales."
-        : "Watchlist simple. Valor, peso y rendimiento quedan sin calcular hasta tener cantidades reales."));
+  setText("radar-table-note", watchlistRows.length
+    ? "Seguimiento con precio directo cuando la fuente lo entrega. Usa Carrito para simular compra o - para quitar."
+    : "Sin activos en seguimiento.");
+  setText("portfolio-positions-note", positionRows.length
+    ? "Compras simuladas. Sin broker y sin orden real."
+    : "Sin compras simuladas todavia.");
 
   const donut = document.getElementById("portfolio-donut");
   if (donut) {
@@ -2491,8 +2751,10 @@ function renderRadarSnapshot(payload) {
   }
 
   if (tickerList) {
-    if (!items.length) {
-      tickerList.innerHTML = '<span class="chip chip-muted">Sin activos en cartera</span>';
+    if (!model.hasDistribution) {
+      tickerList.innerHTML = positionRows.length
+        ? '<span class="chip chip-muted">Posiciones sin precio para ponderar</span>'
+        : '<span class="chip chip-muted">Sin posiciones compradas para ponderar</span>';
     } else if (model.hasDistribution) {
       tickerList.innerHTML = model.distribution
         .map((row, index) => `
@@ -2503,112 +2765,36 @@ function renderRadarSnapshot(payload) {
           </button>
         `)
         .join("");
-    } else {
-      tickerList.innerHTML = items
-        .map((item, index) => {
-          const ticker = String(item.ticker || item.symbol || "").trim().toUpperCase();
-          return `
-          <button type="button" class="portfolio-legend-item portfolio-legend-muted chip-action" data-drilldown-ticker="${escapeHtml(ticker)}">
-            <span class="portfolio-dot" style="background:${portfolioColors[index % portfolioColors.length]}"></span>
-            <strong>${escapeHtml(ticker || "Activo")}</strong>
-            <small>${escapeHtml(getPortfolioPrice(item) === null ? "sin precio" : "watchlist")}</small>
-          </button>
-        `;
-        })
-        .join("");
     }
   }
 
   if (tableHead) {
-    tableHead.innerHTML = model.hasPositions
-      ? `
-        <tr>
-          <th>Activo</th>
-          <th>Cantidad</th>
-          <th>Precio</th>
-          <th>Valor</th>
-          <th>Peso</th>
-          <th>P/L</th>
-          <th>Cambio diario</th>
-          <th>Estado</th>
-        </tr>
-      `
-      : `
-        <tr>
-          <th>Activo</th>
-          <th>Precio</th>
-          <th>Cambio diario</th>
-          <th>Estado</th>
-        </tr>
-      `;
+    tableHead.innerHTML = `
+      <tr>
+        <th>Activo</th>
+        <th>Precio</th>
+        <th>Cambio diario</th>
+        <th>Sesion anterior</th>
+        <th>Nocturno</th>
+        <th>Estado</th>
+        <th>Acciones</th>
+      </tr>
+    `;
   }
 
   if (tableBody) {
-    if (!items.length) {
-      tableBody.innerHTML = `<tr><td colspan="${model.hasPositions ? 8 : 4}">Sin activos vigilados todavia.</td></tr>`;
+    if (!watchlistRows.length) {
+      tableBody.innerHTML = '<tr><td colspan="7">Sin activos en seguimiento.</td></tr>';
     } else {
-      tableBody.innerHTML = model.rows
-        .map((row) => {
-          const ticker = row.ticker || "n/a";
-          const weight = model.hasDistribution && row.value !== null ? (row.value / model.totalValue) * 100 : null;
-          const changeTone = portfolioChangeTone(row.dailyChange);
-          const dailyPnlTone = portfolioChangeTone(row.dailyPnl);
-          const totalPnlTone = portfolioChangeTone(row.totalPnl);
-          const state = portfolioStateLabel(row.item, row.dailyChange, row.value !== null);
-          const valueText = formatPortfolioMoney(row.value);
-          const totalPnlText = row.value === null
-            ? "P/L sin valor"
-            : formatSignedPortfolioMoney(row.totalPnl, "P/L sin entrada");
-          const dailyPnlText = row.dailyPnl === null
-            ? "Diario sin calcular"
-            : formatSignedPortfolioMoney(row.dailyPnl);
-          const dailyMoveText = formatPortfolioDailyMove(row.dailyChangeUsd, row.dailyChange, "Sin cambio");
-          const sourceText = parsePositiveNumber(row.item.current_price) !== null || parsePositiveNumber(row.item.price) !== null
-            ? "Datos directos"
-            : "Sin precio directo";
-          if (!model.hasPositions) {
-            return `
-              <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
-                <td>
-                  <strong>${escapeHtml(ticker)}</strong>
-                  <small>${escapeHtml(row.name)}</small>
-                </td>
-                <td>
-                  <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
-                  <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
-                </td>
-                <td><span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span></td>
-                <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
-              </tr>
-            `;
-          }
-          return `
-            <tr class="table-row-action portfolio-row" data-drilldown-ticker="${escapeHtml(ticker)}" tabindex="0">
-              <td>
-                <strong>${escapeHtml(ticker)}</strong>
-                <small>${escapeHtml(row.name)}</small>
-              </td>
-              <td>${escapeHtml(row.units === null ? "Watchlist" : formatDetailUnits(row.units))}</td>
-              <td>
-                <strong>${escapeHtml(row.price === null ? "Sin precio" : formatPrice(row.price))}</strong>
-                <small class="portfolio-subvalue">${escapeHtml(sourceText)}</small>
-              </td>
-              <td>
-                <strong>${escapeHtml(valueText)}</strong>
-              </td>
-              <td>${escapeHtml(row.units === null ? "Watchlist" : formatPortfolioWeight(weight))}</td>
-              <td>
-                <span class="portfolio-subvalue portfolio-subvalue-${totalPnlTone}">${escapeHtml(totalPnlText)}</span>
-              </td>
-              <td>
-                <span class="portfolio-change portfolio-change-${changeTone}">${escapeHtml(dailyMoveText)}</span>
-                <small class="portfolio-subvalue portfolio-subvalue-${dailyPnlTone}">${escapeHtml(dailyPnlText)}</small>
-              </td>
-              <td><span class="portfolio-state">${escapeHtml(state)}</span></td>
-            </tr>
-          `;
-        })
-        .join("");
+      tableBody.innerHTML = watchlistRows.map(watchlistRowMarkup).join("");
+    }
+  }
+
+  if (positionsBody) {
+    if (!positionRows.length) {
+      positionsBody.innerHTML = '<tr><td colspan="10">Sin compras simuladas.</td></tr>';
+    } else {
+      positionsBody.innerHTML = positionRows.map((row) => positionRowMarkup(row, model.totalValue)).join("");
     }
   }
 
@@ -2622,6 +2808,7 @@ function renderRadarSnapshot(payload) {
   }
   updateRadarDrilldownSelection(radarSelectedTicker);
   bindRadarDrilldownTargets();
+  bindPortfolioRowActions();
 }
 
 function renderRadarSnapshotError(message) {
@@ -2653,11 +2840,16 @@ function renderRadarSnapshotError(message) {
 
   const tableBody = document.getElementById("radar-table-body");
   if (tableBody) {
-    tableBody.innerHTML = `<tr><td colspan="4">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="7">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
+  }
+
+  const positionsBody = document.getElementById("portfolio-positions-body");
+  if (positionsBody) {
+    positionsBody.innerHTML = '<tr><td colspan="10">Sin compras simuladas.</td></tr>';
   }
 
   radarSelectedTicker = "";
-  renderRadarDrilldownEmpty("No pude abrir la ficha tactica porque la cartera no esta disponible.");
+  closePortfolioAssetPanel();
 }
 
 function renderAlertsSnapshot(payload) {

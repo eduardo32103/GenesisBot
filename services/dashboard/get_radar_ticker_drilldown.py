@@ -75,6 +75,10 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
                 "previousClose": item.get("previous_close"),
                 "dayHigh": item.get("day_high"),
                 "dayLow": item.get("day_low"),
+                "extendedHoursPrice": item.get("extended_hours_price"),
+                "extendedHoursChange": item.get("extended_hours_change"),
+                "extendedHoursChangePct": item.get("extended_hours_change_pct"),
+                "marketSession": item.get("market_session"),
                 "volume": item.get("volume"),
                 "timestamp": item.get("quote_timestamp") or item.get("updated_at") or "",
             }
@@ -100,6 +104,10 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
             "previousClose": quote.get("previousClose"),
             "dayHigh": quote.get("dayHigh"),
             "dayLow": quote.get("dayLow"),
+            "extendedHoursPrice": quote.get("extendedHoursPrice"),
+            "extendedHoursChange": quote.get("extendedHoursChange"),
+            "extendedHoursChangePct": quote.get("extendedHoursChangePct"),
+            "marketSession": quote.get("marketSession"),
             "volume": quote.get("volume") or quote.get("vol"),
             "timestamp": quote.get("timestamp") or quote.get("updated_at") or "",
         }

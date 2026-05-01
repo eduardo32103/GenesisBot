@@ -155,3 +155,53 @@ def simulate_paper_position(
         "mode": "paper",
         "message": f"Compra simulada de {normalized} guardada.",
     }
+
+
+def remove_watchlist_ticker(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dict[str, Any]:
+    normalized = _normalize_ticker(ticker)
+    if not normalized or not _TICKER_PATTERN.match(normalized):
+        return {"ok": False, "status": "invalid", "message": "Ticker no valido."}
+
+    raw = _read_raw_portfolio(path)
+    positions = _portfolio_positions_for_write(raw)
+    kept = []
+    removed = False
+    for position in positions:
+        if _normalize_ticker(position.get("ticker")) != normalized:
+            kept.append(position)
+            continue
+        if _coerce_positive_float(position.get("units")) > 0:
+            kept.append(position)
+            continue
+        removed = True
+
+    if not removed:
+        return {"ok": False, "status": "not_found", "ticker": normalized, "message": "No encontre este activo en seguimiento."}
+
+    _write_positions(kept, raw, path)
+    return {"ok": True, "status": "removed", "ticker": normalized, "message": f"{normalized} quitado de seguimiento."}
+
+
+def remove_paper_position(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dict[str, Any]:
+    normalized = _normalize_ticker(ticker)
+    if not normalized or not _TICKER_PATTERN.match(normalized):
+        return {"ok": False, "status": "invalid", "message": "Ticker no valido."}
+
+    raw = _read_raw_portfolio(path)
+    positions = _portfolio_positions_for_write(raw)
+    kept = []
+    removed = False
+    for position in positions:
+        if _normalize_ticker(position.get("ticker")) != normalized:
+            kept.append(position)
+            continue
+        if str(position.get("mode") or "").strip().lower() == "paper" or _coerce_positive_float(position.get("units")) > 0:
+            removed = True
+            continue
+        kept.append(position)
+
+    if not removed:
+        return {"ok": False, "status": "not_found", "ticker": normalized, "message": "No encontre compra simulada para cerrar."}
+
+    _write_positions(kept, raw, path)
+    return {"ok": True, "status": "paper_removed", "ticker": normalized, "message": f"Compra simulada de {normalized} cerrada."}

@@ -25,6 +25,9 @@ from api.routes.dashboard import (
     get_dashboard_reliability,
     get_dashboard_radar_drilldown,
     get_dashboard_radar,
+    remove_dashboard_portfolio_purchase,
+    remove_dashboard_portfolio_ticker,
+    search_dashboard_market_ticker,
     simulate_dashboard_portfolio_purchase,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
@@ -47,6 +50,7 @@ def create_app() -> dict[str, str]:
         "money_flow_jarvis_endpoint": "/api/dashboard/money-flow/jarvis?q={question}",
         "radar_endpoint": "/api/dashboard/radar",
         "radar_drilldown_endpoint": "/api/dashboard/radar/drilldown?ticker={symbol}",
+        "market_search_endpoint": "/api/dashboard/market/search?q={symbol}",
         "portfolio_add_endpoint": "/api/dashboard/portfolio/watchlist/add",
         "portfolio_paper_endpoint": "/api/dashboard/portfolio/paper-buy",
         "alerts_endpoint": "/api/dashboard/alerts",
@@ -98,6 +102,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 units=body.get("units"),
                 entry_price=body.get("entry_price"),
             )
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._write_json(result, status)
+            return
+
+        if parsed.path == "/api/dashboard/portfolio/watchlist/remove":
+            result = remove_dashboard_portfolio_ticker(str(body.get("ticker") or ""))
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._write_json(result, status)
+            return
+
+        if parsed.path == "/api/dashboard/portfolio/paper-remove":
+            result = remove_dashboard_portfolio_purchase(str(body.get("ticker") or ""))
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._write_json(result, status)
             return
@@ -207,6 +223,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/dashboard/radar/drilldown":
             ticker = (parse_qs(parsed.query).get("ticker") or [""])[0]
             payload = json.dumps(get_dashboard_radar_drilldown(ticker)).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/market/search":
+            query = (parse_qs(parsed.query).get("q") or [""])[0]
+            payload = json.dumps(search_dashboard_market_ticker(query)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

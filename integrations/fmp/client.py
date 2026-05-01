@@ -18,6 +18,14 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _first_float(quote: dict, keys: tuple[str, ...]) -> float:
+    for key in keys:
+        value = _safe_float(quote.get(key))
+        if value != 0:
+            return value
+    return 0.0
+
+
 @dataclass
 class FmpClient:
     api_key: str
@@ -130,6 +138,10 @@ class FmpClient:
                     "dayHigh": _safe_float(quote.get("dayHigh") or quote.get("high")),
                     "dayLow": _safe_float(quote.get("dayLow") or quote.get("low")),
                     "previousClose": _safe_float(quote.get("previousClose")),
+                    "extendedHoursPrice": _first_float(quote, ("extendedHoursPrice", "afterHoursPrice", "postMarketPrice", "preMarketPrice")),
+                    "extendedHoursChange": _first_float(quote, ("extendedHoursChange", "afterHoursChange", "postMarketChange", "preMarketChange")),
+                    "extendedHoursChangePct": _first_float(quote, ("extendedHoursChangePct", "afterHoursChangePercent", "postMarketChangePercent", "preMarketChangePercent")),
+                    "marketSession": quote.get("marketSession") or quote.get("session") or quote.get("marketState") or "",
                     "timestamp": quote.get("timestamp") or quote.get("lastUpdated") or quote.get("date") or "",
                 }
                 self.last_error_by_ticker.pop(tk, None)

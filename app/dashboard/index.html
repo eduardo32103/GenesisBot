@@ -410,9 +410,19 @@
             </div>
             <div class="portfolio-head-actions">
               <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
-              <button type="button" class="portfolio-action-button" id="portfolio-add-button">+ Agregar accion</button>
+              <button type="button" class="portfolio-action-button" id="portfolio-add-button">+</button>
               <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-sim-buy-button">Simular compra</button>
             </div>
+          </div>
+
+          <div class="portfolio-search-panel">
+            <label>
+              Buscar activo
+              <input id="portfolio-search-input" autocomplete="off" placeholder="META, TSLA, NVDA, SPY, BTC-USD">
+            </label>
+            <button type="button" class="portfolio-action-button" id="portfolio-search-button">+</button>
+            <p id="portfolio-search-note">Escribe un ticker y agregalo a Seguimiento.</p>
+            <div class="portfolio-search-result" id="portfolio-search-result" hidden></div>
           </div>
 
           <div class="portfolio-layout">
@@ -461,10 +471,10 @@
         <article class="card panel-card portfolio-positions-card">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">Posiciones</p>
-              <h4>Lista simple</h4>
+              <p class="eyebrow">Seguimiento</p>
+              <h4>Activos en vigilancia</h4>
             </div>
-            <span class="badge badge-soft">Abrir ficha</span>
+            <span class="badge badge-soft">Precio visible</span>
           </div>
           <div class="table-wrap">
             <table class="table-shell table-shell-wide portfolio-table">
@@ -473,16 +483,53 @@
                   <th>Activo</th>
                   <th>Precio</th>
                   <th>Cambio diario</th>
+                  <th>Sesion anterior</th>
+                  <th>Nocturno</th>
                   <th>Estado</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody id="radar-table-body">
-                <tr><td colspan="4">Cargando activos...</td></tr>
+                <tr><td colspan="7">Cargando seguimiento...</td></tr>
               </tbody>
             </table>
           </div>
           <p class="table-note" id="radar-table-note">
-            Lista simple. Abre un activo para verlo como app.
+            Seguimiento con precio directo cuando la fuente lo entrega.
+          </p>
+        </article>
+
+        <article class="card panel-card portfolio-positions-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Compradas / Simuladas</p>
+              <h4>Posiciones paper</h4>
+            </div>
+            <span class="badge badge-soft">Paper trading</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table-shell table-shell-wide portfolio-table">
+              <thead>
+                <tr>
+                  <th>Activo</th>
+                  <th>Unidades</th>
+                  <th>Entrada</th>
+                  <th>Precio</th>
+                  <th>Valor</th>
+                  <th>Peso</th>
+                  <th>P/L</th>
+                  <th>Diario</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="portfolio-positions-body">
+                <tr><td colspan="10">Sin compras simuladas.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note" id="portfolio-positions-note">
+            Sin compra real. Solo simulacion/paper trading.
           </p>
         </article>
 
@@ -966,6 +1013,6 @@
     </main>
   </div>
 
-    <script src="./app.js?v=phase67d-r21-functional-portfolio"></script>
+    <script src="./app.js?v=phase67d-r3-visual-portfolio"></script>
   </body>
 </html>

@@ -893,6 +893,71 @@ body:has(#view-command-center.is-visible) .status-strip {
   color: var(--muted);
 }
 
+.portfolio-search-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid rgba(220, 229, 240, 0.075);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.portfolio-search-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.portfolio-search-panel input {
+  min-height: 42px;
+  width: 100%;
+  border: 1px solid rgba(220, 229, 240, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--ink);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.portfolio-search-panel input:focus {
+  border-color: rgba(169, 189, 201, 0.35);
+  outline: none;
+}
+
+.portfolio-search-panel p,
+.portfolio-search-result {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.portfolio-search-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid rgba(127, 198, 164, 0.14);
+  border-radius: 8px;
+  background: rgba(127, 198, 164, 0.055);
+}
+
+.portfolio-search-result strong,
+.portfolio-search-result small {
+  display: block;
+}
+
+.portfolio-search-result small {
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .portfolio-subtitle {
   margin: 6px 0 0;
   color: var(--muted);
@@ -900,15 +965,17 @@ body:has(#view-command-center.is-visible) .status-strip {
 
 .portfolio-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 0.95fr) minmax(320px, 1fr);
+  grid-template-columns: 1fr;
   gap: 20px;
   align-items: center;
 }
 
 .portfolio-donut-panel {
   display: grid;
-  grid-template-columns: minmax(220px, 260px) minmax(180px, 1fr);
+  grid-template-columns: minmax(240px, 300px);
   gap: 18px;
+  justify-content: center;
+  justify-items: center;
   align-items: center;
   min-width: 0;
 }
@@ -971,7 +1038,8 @@ body:has(#view-command-center.is-visible) .status-strip {
 
 .portfolio-legend {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
   min-width: 0;
 }
@@ -1025,6 +1093,8 @@ body:has(#view-command-center.is-visible) .status-strip {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   min-width: 0;
+  width: min(760px, 100%);
+  justify-self: center;
 }
 
 .portfolio-stat {
@@ -1084,15 +1154,39 @@ body:has(#view-command-center.is-visible) .status-strip {
 }
 
 .portfolio-change,
-.portfolio-state {
+.portfolio-state,
+.portfolio-mini-action {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   width: fit-content;
   padding: 6px 9px;
   border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.portfolio-mini-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.portfolio-mini-action {
+  min-width: 34px;
+  border: 1px solid rgba(220, 229, 240, 0.11);
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.portfolio-mini-action:hover,
+.portfolio-mini-action:focus-visible {
+  border-color: rgba(220, 229, 240, 0.2);
+  background: rgba(255, 255, 255, 0.085);
+  outline: none;
 }
 
 .portfolio-change-positive {
@@ -2031,7 +2125,7 @@ body:has(#view-command-center.is-visible) .status-strip {
   }
 
   .portfolio-donut-panel {
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+    grid-template-columns: minmax(220px, 280px);
   }
 }
 
@@ -2205,6 +2299,10 @@ body:has(#view-command-center.is-visible) .status-strip {
   .portfolio-layout,
   .portfolio-donut-panel,
   .portfolio-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-search-panel {
     grid-template-columns: 1fr;
   }
 

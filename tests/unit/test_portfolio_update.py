@@ -4,9 +4,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from services.dashboard.search_market_ticker import search_market_ticker
 from services.portfolio.get_ticker_drilldown import get_ticker_drilldown
-from services.portfolio.update_portfolio import add_ticker_to_portfolio, simulate_paper_position
+from services.portfolio.update_portfolio import (
+    add_ticker_to_portfolio,
+    remove_paper_position,
+    remove_watchlist_ticker,
+    simulate_paper_position,
+)
 
 
 class PortfolioUpdateTests(unittest.TestCase):
@@ -79,6 +87,41 @@ class PortfolioUpdateTests(unittest.TestCase):
         self.assertEqual(detail["pnl_pct"], 33.33)
         self.assertEqual(detail["daily_change"], 3.25)
         self.assertEqual(detail["daily_change_pct"], 1.65)
+
+    def test_remove_watchlist_ticker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(json.dumps({"positions": [{"ticker": "META"}, {"ticker": "NVDA"}]}), encoding="utf-8")
+
+            result = remove_watchlist_ticker("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            tickers = [item["ticker"] for item in payload["positions"]]
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(tickers, ["NVDA"])
+
+    def test_remove_paper_position(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(
+                json.dumps({"positions": [{"ticker": "META", "units": 2, "entry_price": 10, "mode": "paper"}]}),
+                encoding="utf-8",
+            )
+
+            result = remove_paper_position("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(payload["positions"], [])
+
+    def test_market_search_local_fallback_does_not_need_secret(self) -> None:
+        fake_settings = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
+        with patch("services.dashboard.search_market_ticker.load_settings", return_value=fake_settings):
+            result = search_market_ticker("meta")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "local_fallback")
+        self.assertEqual(result["results"][0]["ticker"], "META")
 
 
 if __name__ == "__main__":
