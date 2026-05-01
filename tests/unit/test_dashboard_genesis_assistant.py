@@ -93,6 +93,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
             "confidence": "media",
             "decision_label": "Esperar confirmacion",
             "decision_reason": "la tendencia ayuda, pero faltan confirmaciones completas.",
+            "entry_condition": "Comprar con cautela solo si NVDA rompe resistencia cercana con volumen.",
             "action_plan": "Esperar confirmacion de volumen antes de operar. Genesis ahora no entraria todavia.",
             "invalidation": "Se invalida si pierde soporte.",
             "next_step": "Esperar confirmacion de volumen.",
@@ -109,6 +110,10 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertIn("Esperar confirmacion", payload["blocks"]["decision"])
         self.assertIn("Genesis ahora", payload["blocks"]["next_step"])
         self.assertIn("invalida", payload["blocks"]["next_step"].lower())
+        self.assertTrue(payload["compact_mode"])
+        self.assertIn("Entrada condicional", payload["assistant_narrative"])
+        self.assertIn("Invalidacion", payload["assistant_narrative"])
+        self.assertIn("Plan de accion", payload["assistant_narrative"])
         self.assertEqual(payload["source_status"]["market_data"], "available")
 
     @patch("services.dashboard.get_genesis_answer.get_asset_decision_packet")
@@ -186,6 +191,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
             "verdict": "Esperar confirmacion",
             "decision_label": "Esperar confirmacion",
             "decision_reason": "la tendencia ayuda, pero faltan confirmaciones completas.",
+            "entry_condition": "Comprar con cautela solo si NVDA recupera resistencia cercana a 525.00 con volumen.",
             "action_plan": "Esperar confirmacion de volumen antes de operar. Genesis ahora no entraria todavia.",
             "invalidation": "Se invalida si pierde soporte.",
             "scenarios": {
@@ -206,6 +212,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
                 payload["blocks"]["money_flow"],
                 payload["blocks"]["macro_news"],
                 payload["blocks"]["next_step"],
+                payload["assistant_narrative"],
                 " ".join(payload["blocks"]["main_signals"]),
                 " ".join(payload["blocks"]["risks"]),
                 " ".join(payload["blocks"]["scenarios"]),
@@ -215,6 +222,10 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         mock_packet.assert_called_once_with("NVDA")
         self.assertEqual(payload["context"]["ticker"], "NVDA")
         self.assertIn("VEREDICTO", payload["answer"])
+        self.assertTrue(payload["compact_mode"])
+        self.assertIn("Entrada condicional", payload["assistant_narrative"])
+        self.assertIn("Invalidacion", payload["assistant_narrative"])
+        self.assertIn("Plan de accion", payload["assistant_narrative"])
         self.assertIn("Esperar confirmacion", payload["blocks"]["decision"])
         self.assertTrue(payload["blocks"]["main_signals"])
         self.assertTrue(payload["blocks"]["risks"])

@@ -438,6 +438,25 @@ def _genesis_action(verdict: str) -> str:
     return "Genesis ahora no operaria: falta evidencia basica."
 
 
+def _entry_condition(
+    ticker: str,
+    verdict: str,
+    support_level: float | None,
+    resistance_level: float | None,
+    relative_volume: float | None,
+) -> str:
+    if verdict == "No concluyente":
+        return "No hay entrada operativa hasta confirmar precio, historico y volumen."
+    if verdict == "Evitar por ahora":
+        return f"No buscaria entrada en {ticker} hasta que recupere tendencia y deje de mostrar presion vendedora."
+    volume_text = "con volumen" if relative_volume is None or relative_volume < 1.2 else "sosteniendo volumen"
+    if resistance_level is not None:
+        return f"Comprar con cautela solo si {ticker} rompe o recupera resistencia cercana a {resistance_level:.2f} {volume_text}."
+    if support_level is not None:
+        return f"Considerar entrada solo si {ticker} sostiene soporte cercano a {support_level:.2f} y confirma volumen comprador."
+    return f"Esperar confirmacion de precio y volumen antes de entrar en {ticker}."
+
+
 def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
     normalized_ticker = _normalize_ticker(ticker)
     settings = load_settings()
@@ -457,6 +476,8 @@ def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
     history_metrics = _history_metrics(history)
     avg_volume = _safe_float(quote.get("avgVolume")) or history_metrics.get("avg_volume")
     relative_volume = (volume / avg_volume) if volume and avg_volume and avg_volume > 0 else None
+    support_level = _safe_float(history_metrics.get("support"))
+    resistance_level = _safe_float(history_metrics.get("resistance"))
     trend_label, trend_summary = _trend_from_history(history, percent_change)
     money_flow = _money_flow_context(normalized_ticker) if normalized_ticker else {"answer": "Sin ticker.", "flow_detected": False, "whale_identified": False, "item": {}}
     macro = _macro_context()
@@ -529,6 +550,13 @@ def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
     else:
         next_step = improve_condition
     action_plan = f"{next_step} {_genesis_action(decision_label)}"
+    entry_condition = _entry_condition(
+        normalized_ticker,
+        decision_label,
+        support_level,
+        resistance_level,
+        relative_volume,
+    )
 
     evidence_score, risk_score = _score_context(
         price=price,
@@ -588,8 +616,8 @@ def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
             volume,
             avg_volume,
             trend_label,
-            _safe_float(history_metrics.get("support")),
-            _safe_float(history_metrics.get("resistance")),
+            support_level,
+            resistance_level,
         ),
         "fundamental_read": _fundamental_read(profile, quote),
         "news_read": _news_read(news),
@@ -606,10 +634,10 @@ def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
             "dominant_risk": macro["dominant_risk"],
             "confidence": macro["confidence"],
         },
-        "support": history_metrics.get("support"),
-        "resistance": history_metrics.get("resistance"),
-        "support_level": history_metrics.get("support"),
-        "resistance_level": history_metrics.get("resistance"),
+        "support": support_level,
+        "resistance": resistance_level,
+        "support_level": support_level,
+        "resistance_level": resistance_level,
         "max_30d": history_metrics.get("max_30d"),
         "min_30d": history_metrics.get("min_30d"),
         "avg_volume": avg_volume,
@@ -623,6 +651,7 @@ def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
         "verdict": decision_label,
         "verdict_reason": decision_reason,
         "action_plan": action_plan,
+        "entry_condition": entry_condition,
         "invalidation": invalidation_condition,
         "risks": risks[:5] or ["Riesgo no concluyente: faltan confirmaciones independientes."],
         "supports": supports[:5] or ["Solo hay evidencia limitada; no alcanza para elevar la lectura."],
@@ -635,8 +664,8 @@ def get_asset_decision_packet(ticker: str) -> dict[str, Any]:
             decision_label,
             supports,
             risks,
-            _safe_float(history_metrics.get("support")),
-            _safe_float(history_metrics.get("resistance")),
+            support_level,
+            resistance_level,
         ),
         "source_status": {
             "fmp_live_ready": bool(fmp.get("live_ready")),

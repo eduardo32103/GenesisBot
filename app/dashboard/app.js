@@ -123,6 +123,9 @@ function humanizeDashboardCopy(value) {
     .replace(/\bunits\b/gi, "Unidades")
     .replace(/\bruntime\b/gi, "sistema local")
     .replace(/\bendpoint\b/gi, "consulta")
+    .replace(/\bprocessing update\b/gi, "actualizacion")
+    .replace(/\bheartbeat\b/gi, "ultima actualizacion")
+    .replace(/\bbot\b/gi, "Genesis")
     .replace(/\bcache hits\b/gi, "datos guardados")
     .replace(/\bcache hit\b/gi, "dato guardado")
     .replace(/\bcache\b/gi, "datos guardados")
@@ -443,6 +446,19 @@ function humanizeGenesisCopy(value, fallback = "") {
   return text || fallback;
 }
 
+function humanizeGenesisNarrative(value, fallback = "") {
+  let text = String(value ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return fallback;
+  if (genesisRawErrorPatterns.some((pattern) => pattern.test(text))) {
+    return fallback;
+  }
+  genesisTechnicalReplacements.forEach(([raw, replacement]) => {
+    text = text.replaceAll(raw, replacement);
+  });
+  text = humanizeDashboardCopy(text).replace(/_/g, " ").trim();
+  return text || fallback;
+}
+
 function getGenesisFallbackCopy(reason = "snapshots") {
   const normalized = String(reason || "").toLowerCase();
   if (normalized.includes("connection")) {
@@ -547,9 +563,12 @@ function normalizeGenesisPayload(payload, reason = "payload_incomplete", context
   const blocks = normalizeGenesisBlocks(payload.blocks, reason);
   const answer = humanizeGenesisCopy(payload.answer, fallback.answer);
   const honestyNote = humanizeGenesisCopy(payload.honesty_note, fallback.honesty_note);
+  const assistantNarrative = humanizeGenesisNarrative(payload.assistant_narrative, "");
   return {
     ...payload,
     answer: answer || fallback.answer,
+    assistant_narrative: assistantNarrative,
+    compact_mode: Boolean(payload.compact_mode || assistantNarrative),
     honesty_note: honestyNote || fallback.honesty_note,
     context: payload.context && typeof payload.context === "object" ? payload.context : fallback.context,
     blocks,
@@ -586,16 +605,61 @@ function renderGenesisBlocks(blocks) {
   return `<div class="genesis-blocks genesis-blocks-compact">${sections.join("")}</div>`;
 }
 
+function renderGenesisCompactBlock(block) {
+  const lines = String(block || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+
+  const headingMatch = lines[0].match(/^([^:]{1,42}):\s*(.*)$/);
+  if (!headingMatch) {
+    return `<p>${escapeHtml(lines.join(" "))}</p>`;
+  }
+
+  const title = headingMatch[1].trim();
+  const firstBody = headingMatch[2].trim();
+  const bodyLines = [...(firstBody ? [firstBody] : []), ...lines.slice(1)];
+  const bullets = bodyLines.filter((line) => line.startsWith("- "));
+  const paragraphs = bodyLines.filter((line) => !line.startsWith("- "));
+  const paragraphHtml = paragraphs.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+  const listHtml = bullets.length
+    ? `<ul>${bullets.map((line) => `<li>${escapeHtml(line.replace(/^-+\s*/, ""))}</li>`).join("")}</ul>`
+    : "";
+
+  return `
+    <section class="genesis-compact-section">
+      <strong>${escapeHtml(title)}</strong>
+      ${paragraphHtml || listHtml ? `${paragraphHtml}${listHtml}` : ""}
+    </section>
+  `;
+}
+
+function renderGenesisCompactAnswer(payload) {
+  const narrative = humanizeGenesisNarrative(
+    payload?.assistant_narrative || payload?.answer,
+    "No hay respuesta disponible. Lectura no concluyente."
+  );
+  const blocks = narrative
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  return `<div class="genesis-compact-answer">${blocks.map(renderGenesisCompactBlock).join("")}</div>`;
+}
+
 function updateGenesisMessage(id, text, meta = "", blocks = null, options = {}) {
   const node = document.getElementById(id);
   if (!node) return;
   node.classList.remove("genesis-message-loading");
   node.classList.toggle("genesis-message-fallback", Boolean(options.fallback));
+  node.classList.toggle("genesis-message-compact", Boolean(options.compact));
+  const body = options.compact
+    ? renderGenesisCompactAnswer(options.payload || { answer: text })
+    : `<p>${escapeHtml(text)}</p>${renderGenesisBlocks(blocks)}`;
   node.innerHTML = `
     <strong>Genesis</strong>
-    <p>${escapeHtml(text)}</p>
-    ${renderGenesisBlocks(blocks)}
-    ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    ${body}
+    ${!options.compact && meta ? `<small>${escapeHtml(meta)}</small>` : ""}
   `;
   const thread = document.getElementById("genesis-thread");
   if (thread) {
@@ -606,12 +670,17 @@ function updateGenesisMessage(id, text, meta = "", blocks = null, options = {}) 
 function renderGenesisAnswer(payload, messageId) {
   payload = normalizeGenesisPayload(payload, "payload_incomplete", genesisContext);
   updateGenesisContextFromPayload(payload);
+  const compact = Boolean(payload.compact_mode || payload.assistant_narrative);
   updateGenesisMessage(
     messageId,
     payload.answer || "No hay respuesta disponible. Lectura no concluyente.",
     payload.honesty_note || "Respuesta conservadora.",
     payload.blocks,
-    { fallback: Boolean(payload.fallback) || payload.blocks?.reliability === "no concluyente" }
+    {
+      fallback: Boolean(payload.fallback) || payload.blocks?.reliability === "no concluyente",
+      compact,
+      payload,
+    }
   );
 }
 
@@ -625,7 +694,7 @@ async function loadGenesisAnswer(question, context = genesisContext) {
   const panelContext = buildGenesisPanelContext(context);
   updateGenesisContext(context);
   appendGenesisMessage("user", query, `Contexto: ${context.label || "General"}${context.ticker ? ` | ${context.ticker}` : ""}`);
-  const loadingId = appendGenesisMessage("assistant", "Leyendo lecturas guardadas del dashboard...", "Sin LLM externo ni consultas nuevas.", { loading: true });
+  const loadingId = appendGenesisMessage("assistant", "Analizando contexto disponible...", "", { loading: true });
   try {
     const params = new URLSearchParams({
       q: query,
@@ -2266,10 +2335,6 @@ function activateView(viewKey) {
   genesisContext = resolveGenesisContext(targetViewKey);
   updateGenesisContext(genesisContext);
 
-  if (targetViewKey === "command-center") {
-    loadOperationalReliability();
-    loadExecutiveQueue();
-  }
   if (targetViewKey === "money-flow") {
     loadMoneyFlowSnapshot();
   }

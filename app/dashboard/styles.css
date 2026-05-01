@@ -300,6 +300,10 @@ body:has(#view-command-center.is-visible) .topbar-search {
   display: none;
 }
 
+body:has(#view-command-center.is-visible) .status-strip {
+  display: none;
+}
+
 .genesis-home-chat {
   min-height: calc(100vh - 134px);
   padding: 22px;
@@ -318,20 +322,11 @@ body:has(#view-command-center.is-visible) .topbar-search {
   background: rgba(3, 5, 9, 0.44);
 }
 
-.genesis-home .grid-kpis {
-  margin-top: 8px;
-}
-
-.genesis-home .metric-card,
-.genesis-home .panel-card:not(.genesis-home-chat) {
-  background: rgba(13, 17, 24, 0.88);
-}
-
 .genesis-home .grid-kpis,
 .genesis-home .grid-columns,
 .genesis-home #reliability-card,
 .genesis-home #executive-queue-card {
-  opacity: 0.72;
+  display: none;
 }
 
 .genesis-chat-header,
@@ -363,7 +358,8 @@ body:has(#view-command-center.is-visible) .topbar-search {
   flex: 1 1 auto;
   flex-direction: column;
   gap: 12px;
-  padding: 14px;
+  padding: 14px 14px 96px;
+  scroll-padding-bottom: 112px;
   border-radius: 8px;
   background: rgba(5, 7, 11, 0.52);
   border: 1px solid rgba(220, 229, 240, 0.075);
@@ -375,6 +371,14 @@ body:has(#view-command-center.is-visible) .topbar-search {
   border-radius: 8px;
   border: 1px solid rgba(220, 229, 240, 0.08);
   line-height: 1.45;
+}
+
+.genesis-message-compact {
+  width: min(92%, 920px);
+  max-width: 92%;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(220, 229, 240, 0.12);
 }
 
 .genesis-message strong,
@@ -431,6 +435,48 @@ body:has(#view-command-center.is-visible) .topbar-search {
   margin-top: 4px;
 }
 
+.genesis-compact-answer {
+  display: grid;
+  gap: 12px;
+  margin-top: 7px;
+  color: rgba(244, 247, 245, 0.88);
+}
+
+.genesis-compact-section {
+  display: grid;
+  gap: 5px;
+}
+
+.genesis-compact-section strong {
+  color: rgba(244, 247, 245, 0.96);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.genesis-compact-section:first-child strong {
+  color: #e5eaf0;
+  font-size: 0.86rem;
+}
+
+.genesis-compact-section p {
+  margin: 0;
+  font-size: 0.93rem;
+  line-height: 1.55;
+}
+
+.genesis-compact-section ul {
+  margin: 0;
+  padding-left: 18px;
+  color: rgba(244, 247, 245, 0.86);
+  font-size: 0.9rem;
+  line-height: 1.48;
+}
+
+.genesis-compact-section li + li {
+  margin-top: 3px;
+}
+
 .genesis-message-assistant {
   align-self: flex-start;
   background: rgba(255, 255, 255, 0.045);
@@ -455,7 +501,8 @@ body:has(#view-command-center.is-visible) .topbar-search {
   bottom: 0;
   display: flex;
   gap: 10px;
-  padding-top: 2px;
+  z-index: 2;
+  padding-top: 12px;
   background: linear-gradient(180deg, transparent, rgba(9, 12, 18, 0.94) 30%);
 }
 
@@ -1618,7 +1665,8 @@ body:has(#view-command-center.is-visible) .topbar-search {
   }
 
   .genesis-thread {
-    padding: 10px;
+    padding: 10px 10px 112px;
+    scroll-padding-bottom: 126px;
   }
 
   .genesis-message {

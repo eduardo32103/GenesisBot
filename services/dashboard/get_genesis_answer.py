@@ -187,6 +187,7 @@ def get_genesis_answer(
         if isinstance(asset_packet, dict)
         else _build_response_blocks(answer, evidence, source_status, clean_context, intent, clean_panel_context)
     )
+    compact_payload = _build_asset_compact_payload(asset_packet, blocks) if isinstance(asset_packet, dict) else {}
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -208,8 +209,18 @@ def get_genesis_answer(
                 "executive_queue": clean_panel_context.get("executive_queue") or {},
             },
         },
-        "answer": answer,
+        "answer": compact_payload.get("assistant_narrative") or answer,
         "blocks": blocks,
+        "compact_mode": bool(compact_payload),
+        "assistant_narrative": compact_payload.get("assistant_narrative", ""),
+        "verdict": compact_payload.get("verdict", ""),
+        "entry_condition": compact_payload.get("entry_condition", ""),
+        "invalidation": compact_payload.get("invalidation", ""),
+        "action_plan": compact_payload.get("action_plan", ""),
+        "support_bullets": compact_payload.get("support_bullets", []),
+        "risk_bullets": compact_payload.get("risk_bullets", []),
+        "money_flow_summary": compact_payload.get("money_flow_summary", ""),
+        "macro_news_summary": compact_payload.get("macro_news_summary", ""),
         "evidence": evidence[:4],
         "source_status": source_status,
         "honesty_note": _HONESTY_NOTE,
@@ -795,6 +806,74 @@ def _build_asset_packet_blocks(packet: dict[str, Any]) -> dict[str, Any]:
         "reliability": str(packet.get("confidence") or "no concluyente"),
         "next_step": action_plan,
         "missing_evidence": [str(item) for item in missing][:4],
+    }
+
+
+def _build_asset_compact_payload(packet: dict[str, Any], blocks: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(packet.get("ticker") or "").strip().upper()
+    name = str(packet.get("company_name") or ticker).strip()
+    price = packet.get("price")
+    decision = str(packet.get("verdict") or packet.get("decision_label") or "No concluyente").strip()
+    reason = _clean_sentence(packet.get("verdict_reason") or packet.get("decision_reason") or "la evidencia disponible es limitada")
+    entry_condition = _clean_sentence(
+        packet.get("entry_condition")
+        or packet.get("improve_condition")
+        or "Esperar confirmacion de precio y volumen antes de entrar"
+    )
+    invalidation = _clean_sentence(
+        packet.get("invalidation")
+        or packet.get("invalidation_condition")
+        or "la lectura se invalida si pierde soporte o aumenta presion vendedora"
+    )
+    action_plan = _clean_sentence(packet.get("action_plan") or packet.get("next_step") or "Vigilar ahora y no forzar entrada.")
+    trend = str(packet.get("trend_30d") or "no concluyente").strip()
+    price_text = f"Precio actual: {price}." if price is not None else "Precio actual no confirmado."
+    if packet.get("daily_change_pct") is not None:
+        try:
+            price_text = f"{price_text} Cambio diario: {float(packet.get('daily_change_pct')):.2f}%."
+        except (TypeError, ValueError):
+            pass
+    support_bullets = [str(item) for item in (packet.get("supports") or []) if str(item).strip()][:4]
+    risk_bullets = [str(item) for item in (packet.get("risks") or []) if str(item).strip()][:4]
+    if not support_bullets:
+        support_bullets = ["Evidencia de apoyo limitada."]
+    if not risk_bullets:
+        risk_bullets = ["Faltan confirmaciones para elevar la lectura."]
+    money_flow_summary = str(blocks.get("money_flow") or "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa.").strip()
+    macro_news_summary = str(blocks.get("macro_news") or "Sin catalizador macro/noticias confirmado en esta lectura.").strip()
+    opening = (
+        f"No entraria todavia con tamano fuerte. {ticker} tiene {price_text.lower()} "
+        f"Tendencia: {trend}. {reason}."
+    )
+    if decision == "Comprar con cautela":
+        opening = f"Entraria solo con tamano prudente y confirmacion. {ticker} tiene {price_text.lower()} Tendencia: {trend}. {reason}."
+    elif decision == "Evitar por ahora":
+        opening = f"No buscaria entrada ahora. {ticker} tiene {price_text.lower()} Tendencia: {trend}. {reason}."
+    elif decision == "Vigilar":
+        opening = f"La pondria en vigilancia. {ticker} tiene {price_text.lower()} Tendencia: {trend}. {reason}."
+    elif decision == "No concluyente":
+        opening = f"No operaria todavia. {ticker} tiene {price_text.lower()} Tendencia: {trend}. {reason}."
+
+    narrative_parts = [
+        f"VEREDICTO: {decision}. {opening}",
+        f"Entrada condicional:\n{entry_condition}.",
+        f"Invalidacion:\n{invalidation}.",
+        "Que apoya:\n" + "\n".join(f"- {_clean_sentence(item)}." for item in support_bullets),
+        "Que frena:\n" + "\n".join(f"- {_clean_sentence(item)}." for item in risk_bullets),
+        f"Dinero Grande / Ballenas:\n{_clean_sentence(money_flow_summary)}.",
+        f"Noticias / Macro:\n{_clean_sentence(macro_news_summary)}.",
+        f"Plan de accion:\n{action_plan}.",
+    ]
+    return {
+        "assistant_narrative": "\n\n".join(narrative_parts),
+        "verdict": decision,
+        "entry_condition": entry_condition,
+        "invalidation": invalidation,
+        "action_plan": action_plan,
+        "support_bullets": support_bullets,
+        "risk_bullets": risk_bullets,
+        "money_flow_summary": money_flow_summary,
+        "macro_news_summary": macro_news_summary,
     }
 
 
