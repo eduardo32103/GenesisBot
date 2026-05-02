@@ -69,6 +69,47 @@ class DashboardRadarDrilldownTests(unittest.TestCase):
         client_instance.get_profile.assert_called_once_with("NVDA")
 
     @patch("services.dashboard.get_radar_snapshot.load_settings")
+    @patch("services.dashboard.get_radar_snapshot._fetch_wallet_rows")
+    @patch("services.dashboard.get_radar_snapshot._parse_portfolio_fallback")
+    def test_paper_position_uses_entry_reference_when_live_price_is_missing(
+        self,
+        mock_fallback: Mock,
+        mock_wallet: Mock,
+        mock_settings: Mock,
+    ) -> None:
+        mock_wallet.return_value = []
+        mock_fallback.return_value = [
+            _shape_item(
+                "META",
+                display_name="META",
+                is_investment=True,
+                units=10,
+                entry_price=608.75,
+                reference_price=608.75,
+                origin="portfolio_fallback",
+                mode="paper",
+            )
+        ]
+        mock_settings.return_value = SimpleNamespace(
+            database_url="",
+            chat_id="",
+            fmp_api_key="",
+            fmp_live_enabled=False,
+        )
+
+        snapshot = get_radar_snapshot()
+
+        item = snapshot["items"][0]
+        self.assertEqual(item["ticker"], "META")
+        self.assertEqual(item["market_value"], 6087.5)
+        self.assertEqual(item["cost_basis"], 6087.5)
+        self.assertEqual(item["unrealized_pnl"], 0.0)
+        self.assertEqual(item["weight_pct"], 100.0)
+        self.assertEqual(item["status"], "valor_calculado")
+        self.assertEqual(snapshot["summary"]["total_value"], 6087.5)
+        self.assertEqual(snapshot["summary"]["number_of_positions"], 1)
+
+    @patch("services.dashboard.get_radar_snapshot.load_settings")
     @patch("services.dashboard.get_radar_snapshot.FmpClient")
     @patch("services.dashboard.get_radar_snapshot._fetch_wallet_rows")
     @patch("services.dashboard.get_radar_snapshot._parse_portfolio_fallback")

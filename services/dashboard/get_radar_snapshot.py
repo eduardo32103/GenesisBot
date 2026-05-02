@@ -98,11 +98,13 @@ def _apply_position_metrics(item: dict[str, Any]) -> None:
     units = _coerce_float(item.get("units"))
     entry_price = _coerce_float(item.get("entry_price"))
     current_price = _coerce_float(item.get("current_price"))
+    reference_price = _coerce_float(item.get("reference_price"))
+    valuation_price = current_price if current_price > 0 else reference_price
     cost_basis = _coerce_float(item.get("cost_basis") or item.get("amount_usd"))
     if cost_basis <= 0 and units > 0 and entry_price > 0:
         cost_basis = units * entry_price
 
-    market_value = units * current_price if units > 0 and current_price > 0 else 0.0
+    market_value = units * valuation_price if units > 0 and valuation_price > 0 else 0.0
     daily_change = _coerce_optional_float(item.get("daily_change"))
     daily_change_pct = _coerce_optional_float(item.get("daily_change_pct"))
 
@@ -124,7 +126,7 @@ def _apply_position_metrics(item: dict[str, Any]) -> None:
     item["unrealized_pnl_pct"] = _round_optional(unrealized_pnl_pct, 2)
     item["daily_pnl"] = _round_optional(daily_pnl, 2)
 
-    if current_price <= 0:
+    if current_price <= 0 and market_value <= 0:
         item["status"] = "no_concluyente"
     elif daily_change_pct is not None and daily_change_pct > 0:
         item["status"] = "en_alza"
