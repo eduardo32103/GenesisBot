@@ -114,6 +114,18 @@ class PortfolioUpdateTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(payload["positions"], [])
 
+    def test_close_paper_position_keeps_prior_watchlist_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(json.dumps({"positions": [{"ticker": "META", "watchlist": True}]}), encoding="utf-8")
+
+            simulate_paper_position("META", units=10, entry_price=20, path=path)
+            result = remove_paper_position("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(payload["positions"], [{"display_name": "META", "ticker": "META", "watchlist": True}])
+
     def test_market_search_local_fallback_does_not_need_secret(self) -> None:
         fake_settings = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
         with patch("services.dashboard.search_market_ticker.load_settings", return_value=fake_settings):

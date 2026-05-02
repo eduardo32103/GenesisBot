@@ -54,6 +54,8 @@ def _portfolio_positions_for_write(raw: dict[str, Any]) -> list[dict[str, Any]]:
             shaped["amount_usd"] = amount_usd
         if reference_price > 0 and entry_price <= 0:
             shaped["reference_price"] = reference_price
+        if bool(position.get("watchlist")) or units <= 0:
+            shaped["watchlist"] = True
         opened_at = str(position.get("opened_at") or "").strip()
         if opened_at:
             shaped["opened_at"] = opened_at
@@ -98,7 +100,7 @@ def add_ticker_to_portfolio(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dic
     if any(_normalize_ticker(position.get("ticker")) == normalized for position in positions):
         return {"ok": True, "status": "exists", "ticker": normalized, "message": "Este activo ya esta en tu cartera/watchlist."}
 
-    positions.append({"ticker": normalized, "display_name": normalized})
+    positions.append({"ticker": normalized, "display_name": normalized, "watchlist": True})
     _write_positions(positions, raw, path)
     return {"ok": True, "status": "added", "ticker": normalized, "message": "Activo agregado."}
 
@@ -126,10 +128,13 @@ def simulate_paper_position(
     for position in positions:
         if _normalize_ticker(position.get("ticker")) != normalized:
             continue
+        keep_in_watchlist = bool(position.get("watchlist")) or _coerce_positive_float(position.get("units")) <= 0
         position["units"] = normalized_units
         position["entry_price"] = normalized_entry
         position["mode"] = "paper"
         position["opened_at"] = timestamp
+        if keep_in_watchlist:
+            position["watchlist"] = True
         updated = True
         break
 
@@ -141,6 +146,7 @@ def simulate_paper_position(
                 "units": normalized_units,
                 "entry_price": normalized_entry,
                 "mode": "paper",
+                "watchlist": True,
                 "opened_at": timestamp,
             }
         )
@@ -197,6 +203,16 @@ def remove_paper_position(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dict[
             continue
         if str(position.get("mode") or "").strip().lower() == "paper" or _coerce_positive_float(position.get("units")) > 0:
             removed = True
+            if bool(position.get("watchlist")):
+                watchlist_position = {
+                    "ticker": normalized,
+                    "display_name": position.get("display_name") or normalized,
+                    "watchlist": True,
+                }
+                reference_price = _coerce_positive_float(position.get("reference_price"))
+                if reference_price > 0:
+                    watchlist_position["reference_price"] = reference_price
+                kept.append(watchlist_position)
             continue
         kept.append(position)
 

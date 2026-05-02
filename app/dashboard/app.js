@@ -1497,6 +1497,14 @@ async function searchPortfolioTicker() {
   }
 }
 
+async function searchAndAddPortfolioTicker() {
+  const result = await searchPortfolioTicker();
+  if (!result?.ticker) {
+    return;
+  }
+  await addTickerToWatchlist(result.ticker);
+}
+
 async function postPortfolioAction(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -1785,14 +1793,14 @@ function bindPortfolioActions() {
   }
   if (searchButton && searchButton.dataset.bound !== "true") {
     searchButton.dataset.bound = "true";
-    searchButton.addEventListener("click", searchPortfolioTicker);
+    searchButton.addEventListener("click", searchAndAddPortfolioTicker);
   }
   if (searchInput && searchInput.dataset.bound !== "true") {
     searchInput.dataset.bound = "true";
     searchInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      searchPortfolioTicker();
+      searchAndAddPortfolioTicker();
     });
   }
 }

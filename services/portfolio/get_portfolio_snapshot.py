@@ -31,6 +31,7 @@ def _normalize_position_payload(raw_ticker: object, payload: object) -> dict | N
             "entry_price": 0.0,
             "units": 0.0,
             "reference_price": _coerce_float(payload),
+            "watchlist": True,
             "opened_at": "",
         }
 
@@ -69,6 +70,7 @@ def _normalize_position_payload(raw_ticker: object, payload: object) -> dict | N
         "entry_price": entry_price,
         "units": units,
         "reference_price": reference_price,
+        "watchlist": _coerce_bool(payload.get("watchlist")) or not is_investment,
         "mode": str(payload.get("mode") or "").strip(),
         "opened_at": payload.get("timestamp") or payload.get("opened_at") or "",
     }
@@ -92,6 +94,7 @@ def normalize_portfolio_positions(raw_portfolio: dict | None) -> list[dict]:
                     or "units" in value
                     or "is_investment" in value
                     or "reference_price" in value
+                    or "watchlist" in value
                 )
             )
         }

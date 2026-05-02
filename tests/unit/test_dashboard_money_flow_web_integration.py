@@ -23,6 +23,22 @@ class DashboardMoneyFlowWebIntegrationTests(unittest.TestCase):
         self.assertIn("renderMoneyFlowSnapshot", script)
         self.assertIn("renderMoneyFlowJarvisAnswer", script)
 
+    def test_portfolio_app_buttons_are_wired_to_real_flow_handlers(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        html = (root / "app" / "dashboard" / "index.html").read_text(encoding="utf-8")
+        script = (root / "app" / "dashboard" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="portfolio-search-button"', html)
+        self.assertIn('id="portfolio-close-modal"', html)
+        self.assertIn('id="portfolio-sim-buy-button"', html)
+        self.assertIn("searchAndAddPortfolioTicker", script)
+        self.assertIn('searchButton.addEventListener("click", searchAndAddPortfolioTicker)', script)
+        self.assertIn('data-paper-close', script)
+        self.assertIn('"/api/dashboard/portfolio/watchlist/add"', script)
+        self.assertIn('"/api/dashboard/portfolio/watchlist/remove"', script)
+        self.assertIn('"/api/dashboard/portfolio/paper-buy"', script)
+        self.assertIn('"/api/dashboard/portfolio/paper-remove"', script)
+
     def test_web_app_uses_existing_money_flow_backend_endpoints(self) -> None:
         app_config = create_app()
 
