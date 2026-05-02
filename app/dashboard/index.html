@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=phase68a-hard-app-shell">
+  <link rel="stylesheet" href="./styles.css?v=phase68a-premium-functional-app">
 </head>
 <body>
   <div class="shell">
@@ -23,13 +23,13 @@
           <span>Cartera</span>
           <small>Compradas</small>
         </button>
+        <button class="nav-link" data-view="money-flow">
+          <span>Ballenas</span>
+          <small>Smart money</small>
+        </button>
         <button class="nav-link" data-view="alerts">
           <span>Alertas</span>
           <small>Eventos importantes</small>
-        </button>
-        <button class="nav-link" data-view="dependencies">
-          <span>Datos</span>
-          <small>Fuentes y salud</small>
         </button>
       </div>
     </nav>
@@ -42,7 +42,7 @@
         </div>
       </header>
 
-      <section class="view is-visible genesis-home" id="view-command-center">
+      <section class="view app-screen is-visible genesis-home" id="view-command-center">
         <article class="card panel-card genesis-chat-card genesis-home-chat">
           <div class="genesis-chat-header">
             <div>
@@ -274,19 +274,20 @@
         </article>
       </section>
 
-      <section class="view" id="view-money-flow">
-        <article class="card panel-card money-flow-card" id="money-flow-card">
-          <div class="section-heading">
+      <section class="view app-screen" id="view-money-flow">
+        <article class="card panel-card money-flow-card whales-card" id="money-flow-card">
+          <div class="section-heading whales-heading">
             <div>
-              <p class="eyebrow">Dinero Grande</p>
-              <h4>Ballenas y Flujo de Capital</h4>
+              <p class="eyebrow">Smart Money</p>
+              <h3>Ballenas</h3>
+              <p class="portfolio-subtitle">Flujo relevante y entidades confirmadas cuando existan</p>
             </div>
-            <span class="badge badge-soft">Fase 5.4</span>
+            <span class="badge badge-soft">Lectura conservadora</span>
           </div>
           <p class="placeholder-copy is-loading" id="money-flow-summary-note">
             Cargando lectura de flujo...
           </p>
-          <div class="alerts-stats-grid">
+          <div class="whales-stats-grid">
             <div class="mini-stat">
               <span>Activos evaluados</span>
               <strong id="money-flow-total-assets">...</strong>
@@ -304,7 +305,7 @@
               <strong id="money-flow-cause-count">...</strong>
             </div>
             <div class="mini-stat">
-              <span>Flujo</span>
+              <span>Smart money</span>
               <strong id="money-flow-detection-status" class="state-token state-loading">...</strong>
             </div>
             <div class="mini-stat">
@@ -312,10 +313,10 @@
               <strong id="money-flow-causal-status" class="state-token state-loading">...</strong>
             </div>
           </div>
-          <article class="money-flow-jarvis-card">
+          <article class="money-flow-jarvis-card whales-search-card">
             <div>
               <p class="eyebrow">Lectura Genesis</p>
-              <h4>Pregunta corta sobre flujo</h4>
+              <h4>Buscar actividad por ticker</h4>
               <p>Responde con una lectura breve, sin elevar señales débiles a conclusión.</p>
             </div>
             <form class="money-flow-jarvis-form" id="money-flow-jarvis-form">
@@ -323,25 +324,11 @@
               <button type="submit">Preguntar</button>
             </form>
             <div class="money-flow-jarvis-answer" id="money-flow-jarvis-answer">
-              Escribe un activo o pide un resumen general de flujo.
+              Escribe un ticker o pide un resumen general de Ballenas.
             </div>
           </article>
-          <div class="table-wrap money-flow-table-wrap">
-            <table class="table-shell money-flow-table">
-              <thead>
-                <tr>
-                  <th>Activo</th>
-                  <th>Flujo detectado</th>
-                  <th>Ballena identificada</th>
-                  <th>Movimiento</th>
-                  <th>Lectura probable</th>
-                  <th>Falta confirmar</th>
-                </tr>
-              </thead>
-              <tbody id="money-flow-table-body">
-                <tr><td colspan="6">Cargando lectura de flujo...</td></tr>
-              </tbody>
-            </table>
+          <div class="whales-list" id="whales-list">
+            <div class="portfolio-list-empty">Cargando Ballenas...</div>
           </div>
           <p class="table-note" id="money-flow-table-note">
             Flujo detectado no equivale a ballena identificada. Sin entidad real, la lectura queda no concluyente para ballena especifica.
@@ -361,6 +348,7 @@
               <span class="badge badge-soft" id="watchlist-data-state">Cargando datos...</span>
               <small id="watchlist-last-update">Actualizacion pendiente</small>
             </div>
+            <button type="button" class="portfolio-action-button portfolio-head-button" id="portfolio-add-button">+</button>
           </div>
 
           <div class="portfolio-search-panel">
@@ -393,6 +381,7 @@
               <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
               <small id="portfolio-last-update">Actualizacion pendiente</small>
             </div>
+            <button type="button" class="portfolio-action-button portfolio-head-button" id="portfolio-sim-buy-button">Agregar compra simulada</button>
           </div>
 
           <span class="visually-hidden" id="portfolio-total-stat">...</span>
@@ -635,7 +624,28 @@
         </div>
       </div>
 
-      <section class="view" id="view-alerts">
+      <div class="portfolio-modal" id="portfolio-close-modal" hidden>
+        <div class="portfolio-modal-dialog">
+          <div class="portfolio-modal-head">
+            <div>
+              <p class="eyebrow">Venta simulada</p>
+              <h4 id="portfolio-close-title">Cerrar posicion paper</h4>
+            </div>
+            <button type="button" class="portfolio-icon-button" id="portfolio-close-modal-close" aria-label="Cerrar">Cerrar</button>
+          </div>
+          <form class="portfolio-form" id="portfolio-close-form">
+            <input id="portfolio-close-ticker" name="ticker" type="hidden">
+            <p class="portfolio-modal-note" id="portfolio-close-note">Confirma el cierre de esta compra simulada. No ejecuta una orden real.</p>
+            <p class="portfolio-modal-total" id="portfolio-close-summary">Sin posicion seleccionada.</p>
+            <div class="portfolio-modal-actions">
+              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-close-cancel">Cancelar</button>
+              <button type="submit" class="portfolio-action-button portfolio-action-danger">Cerrar paper</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <section class="view app-screen" id="view-alerts">
         <div class="grid grid-columns">
           <article class="card panel-card">
             <div class="section-heading">
@@ -747,7 +757,7 @@
         </article>
       </section>
 
-      <section class="view" id="view-dependencies">
+      <section class="view app-screen" id="view-dependencies">
         <div class="grid grid-columns">
           <article class="card panel-card">
             <div class="section-heading">
@@ -822,7 +832,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-macro">
+      <section class="view app-screen" id="view-macro">
         <div class="grid grid-columns">
           <article class="card panel-card">
             <div class="section-heading">
@@ -882,7 +892,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-activity">
+      <section class="view app-screen" id="view-activity">
         <div class="grid grid-columns">
           <article class="card panel-card">
             <div class="section-heading">
@@ -938,6 +948,6 @@
     </main>
   </div>
 
-    <script src="./app.js?v=phase68a-hard-app-shell"></script>
+    <script src="./app.js?v=phase68a-premium-functional-app"></script>
   </body>
 </html>

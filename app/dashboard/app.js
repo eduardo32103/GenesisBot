@@ -6,7 +6,7 @@ const titles = {
   "command-center": "Genesis",
   "watchlist": "Seguimiento",
   "radar": "Cartera",
-  "money-flow": "Dinero Grande",
+  "money-flow": "Ballenas",
   "alerts": "Alertas",
   "dependencies": "Datos",
   "macro": "Mundo",
@@ -17,7 +17,7 @@ const genesisScopeLabels = {
   alerts: "Alertas",
   executive_queue: "Cola ejecutiva",
   general: "Panorama",
-  money_flow: "Dinero Grande",
+  money_flow: "Ballenas",
   radar: "Cartera",
   reliability: "Confiabilidad",
   ticker: "Ticker activo",
@@ -40,7 +40,7 @@ const genesisTechnicalReplacements = [
   ["degraded", "datos parciales"],
   ["insufficient_confirmation", "no concluyente"],
   ["portfolio_fallback", "datos locales"],
-  ["Money Flow ready causalidad probabilidad probability disabled", "Dinero Grande sin confirmacion suficiente"],
+  ["Money Flow ready causalidad probabilidad probability disabled", "Ballenas sin confirmacion suficiente"],
   ["probability disabled", "sin confirmacion suficiente"],
   ["probability ready", "probabilidad disponible"],
   ["causalidad probabilidad", "causalidad probable"],
@@ -98,7 +98,7 @@ function sanitizeShellCopy(value) {
 function humanizeDashboardCopy(value) {
   return String(value ?? "")
     .replace(/Dependencias\s*\/\s*FMP/gi, "Fuentes")
-    .replace(/Money Flow ready causalidad probabilidad probability disabled/gi, "Dinero Grande sin confirmacion suficiente")
+    .replace(/Money Flow ready causalidad probabilidad probability disabled/gi, "Ballenas sin confirmacion suficiente")
     .replace(/probability disabled/gi, "sin confirmacion suficiente")
     .replace(/probability ready/gi, "probabilidad disponible")
     .replace(/causalidad probabilidad/gi, "causalidad probable")
@@ -329,7 +329,7 @@ function resolveGenesisContext(viewKey = currentViewKey) {
     return createGenesisContext("alerts", "Alertas", "", viewKey);
   }
   if (viewKey === "money-flow") {
-    return createGenesisContext("money_flow", "Dinero Grande", radarSelectedTicker || "", viewKey);
+    return createGenesisContext("money_flow", "Ballenas", radarSelectedTicker || "", viewKey);
   }
   return createGenesisContext("general", "General", radarSelectedTicker || "", viewKey);
 }
@@ -366,7 +366,7 @@ function refineGenesisContextForQuestion(question, context) {
     return createGenesisContext("reliability", "Confiabilidad", explicitTicker || context.ticker || "", context.view || currentViewKey);
   }
   if (normalized.includes("flujo") || normalized.includes("capital") || normalized.includes("money flow") || normalized.includes("dinero grande") || normalized.includes("ballena")) {
-    return createGenesisContext("money_flow", "Dinero Grande", explicitTicker || context.ticker || "", context.view || currentViewKey);
+    return createGenesisContext("money_flow", "Ballenas", explicitTicker || context.ticker || "", context.view || currentViewKey);
   }
   if (normalized.includes("alerta") || normalized.includes("evento")) {
     return createGenesisContext("alerts", "Alertas", explicitTicker || context.ticker || "", context.view || currentViewKey);
@@ -682,7 +682,7 @@ function renderGenesisBlocks(blocks) {
     ),
     section("Que apoya", renderList(signals, "Sin senal suficiente en lecturas guardadas actuales.")),
     section("Que frena", renderList(risks, "Sin freno dominante visible.")),
-    section("Dinero Grande", `<p>${escapeHtml(blocks.money_flow || "Sin senal confiable de Dinero Grande.")}</p>`),
+    section("Ballenas", `<p>${escapeHtml(blocks.money_flow || "Sin senal confiable de Ballenas.")}</p>`),
   ];
   sections.push(section("Noticias / Macro", `<p>${escapeHtml(blocks.macro_news || "Sin catalizador macro/noticias confirmado en esta lectura.")}</p>`));
   sections.push(section("Escenarios", renderList(blocks.scenarios || [], "Sin escenarios suficientes.")));
@@ -1202,7 +1202,7 @@ function bindRadarDrilldownTargets() {
     }
     node.dataset.drilldownBound = "true";
     node.addEventListener("click", (event) => {
-      if (event.target.closest("[data-market-add], [data-watch-remove], [data-paper-remove], [data-paper-buy], .portfolio-mini-action")) {
+      if (event.target.closest("[data-market-add], [data-watch-remove], [data-paper-close], [data-paper-remove], [data-paper-buy], .portfolio-mini-action")) {
         return;
       }
       loadRadarDrilldown(node.dataset.drilldownTicker);
@@ -1538,6 +1538,48 @@ async function removePaperTicker(ticker) {
   await refreshPortfolioAfterMutation("");
 }
 
+function openPortfolioCloseModal(ticker = "") {
+  const normalized = String(ticker || radarSelectedTicker || "").trim().toUpperCase();
+  if (!normalized) {
+    setPortfolioSearchNote("Selecciona una posicion simulada para cerrar.");
+    return;
+  }
+  const modal = document.getElementById("portfolio-close-modal");
+  const tickerInput = document.getElementById("portfolio-close-ticker");
+  const title = document.getElementById("portfolio-close-title");
+  const summary = document.getElementById("portfolio-close-summary");
+  const row = portfolioRowsByTicker.get(normalized);
+  if (tickerInput) tickerInput.value = normalized;
+  if (title) title.textContent = `Cerrar ${normalized}`;
+  if (summary) {
+    const unitsText = row?.units === null || row?.units === undefined ? "Unidades no confirmadas" : `${formatDetailUnits(row.units)} unidades`;
+    const valueText = row?.value === null || row?.value === undefined ? "valor sin calcular" : formatPortfolioMoney(row.value);
+    summary.textContent = `${normalized}: ${unitsText}. Valor actual: ${valueText}.`;
+  }
+  if (modal) {
+    modal.hidden = false;
+  }
+}
+
+function closePortfolioCloseModal() {
+  const modal = document.getElementById("portfolio-close-modal");
+  if (modal) {
+    modal.hidden = true;
+  }
+}
+
+async function submitPortfolioCloseModal(event) {
+  event.preventDefault();
+  const ticker = String(document.getElementById("portfolio-close-ticker")?.value || "").trim().toUpperCase();
+  if (!ticker) {
+    setPortfolioSearchNote("Selecciona una posicion simulada para cerrar.");
+    return;
+  }
+  await removePaperTicker(ticker);
+  closePortfolioCloseModal();
+  closePortfolioAssetPanel();
+}
+
 function updatePortfolioModalEstimate() {
   const total = document.getElementById("portfolio-modal-total");
   const unitsInput = document.getElementById("portfolio-modal-units");
@@ -1612,7 +1654,7 @@ function bindPortfolioRowActions() {
   }
   root.dataset.portfolioDelegated = "true";
   root.addEventListener("click", async (event) => {
-    const action = event.target.closest("[data-market-add], [data-watch-remove], [data-paper-remove], [data-paper-buy]");
+    const action = event.target.closest("[data-market-add], [data-watch-remove], [data-paper-close], [data-paper-remove], [data-paper-buy]");
     if (!action || !root.contains(action)) {
       return;
     }
@@ -1629,6 +1671,10 @@ function bindPortfolioRowActions() {
       }
       if (action.dataset.paperRemove !== undefined) {
         await removePaperTicker(action.dataset.paperRemove || "");
+        return;
+      }
+      if (action.dataset.paperClose !== undefined) {
+        openPortfolioCloseModal(action.dataset.paperClose || "");
         return;
       }
       if (action.dataset.paperBuy !== undefined) {
@@ -1650,6 +1696,10 @@ function bindPortfolioActions() {
   const modalCancel = document.getElementById("portfolio-modal-cancel");
   const modal = document.getElementById("portfolio-action-modal");
   const form = document.getElementById("portfolio-modal-form");
+  const closeModal = document.getElementById("portfolio-close-modal");
+  const closeModalClose = document.getElementById("portfolio-close-modal-close");
+  const closeModalCancel = document.getElementById("portfolio-close-cancel");
+  const closeForm = document.getElementById("portfolio-close-form");
   const modalUnits = document.getElementById("portfolio-modal-units");
   const modalEntry = document.getElementById("portfolio-modal-entry-price");
   const searchButton = document.getElementById("portfolio-search-button");
@@ -1675,11 +1725,11 @@ function bindPortfolioActions() {
       const ticker = panelRemoveButton.dataset.ticker || radarSelectedTicker;
       if (!ticker) return;
       if (panelRemoveButton.dataset.mode === "paper") {
-        await removePaperTicker(ticker);
+        openPortfolioCloseModal(ticker);
       } else {
         await removeTickerFromWatchlist(ticker);
+        closePortfolioAssetPanel();
       }
-      closePortfolioAssetPanel();
     });
   }
   if (closePanel && closePanel.dataset.bound !== "true") {
@@ -1712,6 +1762,26 @@ function bindPortfolioActions() {
   if (form && form.dataset.bound !== "true") {
     form.dataset.bound = "true";
     form.addEventListener("submit", submitPortfolioModal);
+  }
+  if (closeModal && closeModal.dataset.bound !== "true") {
+    closeModal.dataset.bound = "true";
+    closeModal.addEventListener("click", (event) => {
+      if (event.target === closeModal) {
+        closePortfolioCloseModal();
+      }
+    });
+  }
+  if (closeModalClose && closeModalClose.dataset.bound !== "true") {
+    closeModalClose.dataset.bound = "true";
+    closeModalClose.addEventListener("click", closePortfolioCloseModal);
+  }
+  if (closeModalCancel && closeModalCancel.dataset.bound !== "true") {
+    closeModalCancel.dataset.bound = "true";
+    closeModalCancel.addEventListener("click", closePortfolioCloseModal);
+  }
+  if (closeForm && closeForm.dataset.bound !== "true") {
+    closeForm.dataset.bound = "true";
+    closeForm.addEventListener("submit", submitPortfolioCloseModal);
   }
   if (searchButton && searchButton.dataset.bound !== "true") {
     searchButton.dataset.bound = "true";
@@ -2221,6 +2291,7 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
   const sourceStatus = causalPayload.source_status || {};
   const items = mergeMoneyFlowItems(causalPayload, detectionPayload);
   const usefulItems = items.filter((item) => item.whale_identified || item.flow_detected);
+  const listNode = document.getElementById("whales-list");
   const tableBody = document.getElementById("money-flow-table-body");
   const totalAssets = rawSummary.total_assets ?? detectionSummary.total_assets ?? items.length;
   const nonConclusiveCount = rawSummary.non_conclusive_count ?? rawSummary.assets_inconclusive ?? detectionSummary.assets_insufficient_confirmation ?? items.filter((item) => item.status === "no_conclusive").length;
@@ -2246,43 +2317,58 @@ function renderMoneyFlowSnapshot(causalPayload, detectionPayload = {}) {
   );
   setText("money-flow-table-note", "Flujo detectado separado de ballenas identificadas. Si no hay entidad real, Genesis lo marca no concluyente.");
 
-  if (!tableBody) return;
+  if (!listNode && !tableBody) return;
   if (!items.length || !usefulItems.length) {
-    tableBody.innerHTML = `
-      <tr>
-        <td colspan="6">
-          Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa. No hay entidad, monto ni causalidad confirmada.
-        </td>
-      </tr>
+    const emptyMarkup = `
+      <div class="whale-list-row whale-list-empty">
+        <div>
+          <strong>Sin senal confiable de Ballenas</strong>
+          <small>Sin ballena identificada con la fuente activa. No hay entidad, monto ni causalidad confirmada.</small>
+        </div>
+      </div>
     `;
+    if (listNode) listNode.innerHTML = emptyMarkup;
+    if (tableBody) tableBody.innerHTML = `<tr><td colspan="6">Sin senal confiable de Ballenas.</td></tr>`;
     return;
   }
 
-  tableBody.innerHTML = usefulItems
+  const listMarkup = usefulItems
     .map((item) => {
       const nonConclusive = item.status === "no_conclusive";
-      const rowClass = nonConclusive ? "money-flow-row money-flow-row--muted" : "money-flow-row";
       const signalTone = item.signal_tone || "muted";
-      const statusNote = nonConclusive ? '<span class="money-flow-status-note">No concluyente</span>' : "";
+      const statusNote = nonConclusive ? '<span class="money-flow-status-note">No concluyente</span>' : '<span class="money-flow-status-note money-flow-status-note-ok">Flujo revisado</span>';
+      const whaleText = item.whale_identified ? item.whale_entity : "Sin ballena identificada";
+      const amountText = formatMoneyFlowAmount(item.movement_value);
+      const dateText = item.timestamp ? formatIso(item.timestamp) : "Fecha no confirmada";
       return `
-        <tr class="${rowClass}">
-          <td><strong>${escapeHtml(item.ticker)}</strong></td>
-          <td>
+        <div class="whale-list-row ${nonConclusive ? "whale-list-row-muted" : ""}">
+          <div class="whale-row-main">
+            <strong>${escapeHtml(item.ticker)}</strong>
             <span class="money-flow-signal money-flow-signal-${escapeHtml(signalTone)}">${escapeHtml(humanizeDashboardCopy(item.signal_code || item.signal_type))}</span>
             <small class="money-flow-signal-label">${escapeHtml(humanizeDashboardCopy(item.signal_label || "Sin lectura de senal"))}</small>
+          </div>
+          <div class="whale-row-meta">
+            <div><span>Entidad</span><strong>${escapeHtml(whaleText)}</strong></div>
+            <div><span>Magnitud</span><strong>${escapeHtml(amountText)}</strong></div>
+            <div><span>Fecha</span><strong>${escapeHtml(dateText)}</strong></div>
+          </div>
+          <p>${escapeHtml(humanizeDashboardCopy(item.executive_read || item.probable_cause_label || "Lectura no concluyente para ballena especifica."))}</p>
+          <div class="whale-row-footer">
             ${statusNote}
-          </td>
-          <td>${escapeHtml(item.whale_identified ? item.whale_entity : "Flujo detectado, sin ballena identificada")}</td>
-          <td>
-            <strong>${escapeHtml(formatMoneyFlowAmount(item.movement_value))}</strong>
-            <small class="money-flow-signal-label">${escapeHtml(item.timestamp ? formatIso(item.timestamp) : "Fecha no confirmada")}</small>
-          </td>
-          <td>${escapeHtml(humanizeDashboardCopy(item.executive_read || item.probable_cause_label || "Sin lectura ejecutiva disponible."))}</td>
-          <td>${escapeHtml(humanizeDashboardCopy(item.missing_confirmation || "Entidad, monto real y causalidad final"))}</td>
-        </tr>
+            <small>${escapeHtml(humanizeDashboardCopy(item.missing_confirmation || "Entidad, monto real y causalidad final"))}</small>
+          </div>
+        </div>
       `;
     })
     .join("");
+  if (listNode) {
+    listNode.innerHTML = listMarkup;
+  }
+  if (tableBody) {
+    tableBody.innerHTML = usefulItems
+      .map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${escapeHtml(humanizeDashboardCopy(item.signal_label || "Flujo revisado"))}</td><td>${escapeHtml(item.whale_identified ? item.whale_entity : "Sin ballena identificada")}</td><td>${escapeHtml(formatMoneyFlowAmount(item.movement_value))}</td><td>${escapeHtml(humanizeDashboardCopy(item.executive_read || "No concluyente"))}</td><td>${escapeHtml(humanizeDashboardCopy(item.missing_confirmation || "Entidad y monto real"))}</td></tr>`)
+      .join("");
+  }
 }
 
 function renderMoneyFlowError(message) {
@@ -2296,6 +2382,17 @@ function renderMoneyFlowError(message) {
   setText("money-flow-table-note", "No pude cargar la lectura de flujo desde el panel local.");
 
   const tableBody = document.getElementById("money-flow-table-body");
+  const listNode = document.getElementById("whales-list");
+  if (listNode) {
+    listNode.innerHTML = `
+      <div class="whale-list-row whale-list-empty">
+        <div>
+          <strong>Lectura limitada de Ballenas</strong>
+          <small>${escapeHtml(humanizeDashboardCopy(message))}</small>
+        </div>
+      </div>
+    `;
+  }
   if (tableBody) {
     tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(humanizeDashboardCopy(message))}</td></tr>`;
   }
@@ -2306,7 +2403,7 @@ function renderMoneyFlowJarvisAnswer(payload) {
   if (!node) return;
   node.innerHTML = `
     <strong>${escapeHtml(humanizeDashboardCopy(payload.answer || "No hay respuesta disponible."))}</strong>
-    <small>Fuente: lectura guardada de flujo y contexto probable.</small>
+    <small>Fuente: lectura guardada de Ballenas y contexto probable.</small>
     <small>${escapeHtml(humanizeDashboardCopy(payload.honesty_note || "Lectura conservadora."))}</small>
   `;
 }
@@ -2764,7 +2861,7 @@ function portfolioActionsMarkup(ticker, mode = "watchlist") {
   if (!safeTicker) {
     return "";
   }
-  const removeAttr = mode === "paper" ? "data-paper-remove" : "data-watch-remove";
+  const removeAttr = mode === "paper" ? "data-paper-close" : "data-watch-remove";
   return `
     <div class="portfolio-mini-actions" aria-label="Acciones de ${safeTicker}">
       <button type="button" class="portfolio-mini-action" data-paper-buy="${safeTicker}" aria-label="Simular compra de ${safeTicker}">Carrito</button>

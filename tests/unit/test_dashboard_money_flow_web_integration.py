@@ -7,14 +7,15 @@ from api.main import create_app
 
 
 class DashboardMoneyFlowWebIntegrationTests(unittest.TestCase):
-    def test_real_dashboard_static_files_keep_money_flow_view_outside_primary_app_nav(self) -> None:
+    def test_real_dashboard_static_files_expose_ballenas_app_screen(self) -> None:
         root = Path(__file__).resolve().parents[2]
         html = (root / "app" / "dashboard" / "index.html").read_text(encoding="utf-8")
         script = (root / "app" / "dashboard" / "app.js").read_text(encoding="utf-8")
 
-        self.assertNotIn('data-view="money-flow"', html)
+        self.assertIn('data-view="money-flow"', html)
         self.assertIn('id="view-money-flow"', html)
-        self.assertIn("Flujo de Capital", html)
+        self.assertIn("Ballenas", html)
+        self.assertIn('id="whales-list"', html)
         self.assertIn('id="money-flow-jarvis-form"', html)
         self.assertIn("Lectura Genesis", html)
         self.assertIn('fetch("/api/dashboard/money-flow/causal"', script)

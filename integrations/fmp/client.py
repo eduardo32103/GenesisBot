@@ -323,6 +323,62 @@ class FmpClient:
             self.logger.debug("FMP ticker news error para %s: %s", tk, exc)
             return []
 
+    def get_smart_money_activity(self, ticker: str, limit: int = 5, symbol_map: dict[str, str] | None = None) -> list[dict]:
+        tk = str(ticker or "").strip().upper()
+        if not self.api_key or not tk or self.is_crypto_ticker(tk):
+            return []
+
+        symbol = self.resolve_symbol(tk, symbol_map)
+        safe_symbol = urllib.parse.quote(symbol)
+        safe_limit = max(1, min(int(limit or 5), 10))
+        endpoints = [
+            ("Insider", f"https://financialmodelingprep.com/api/v4/insider-trading?symbol={safe_symbol}&limit={safe_limit}&apikey={self.api_key}"),
+            ("Insider", f"https://financialmodelingprep.com/stable/insider-trading?symbol={safe_symbol}&limit={safe_limit}&apikey={self.api_key}"),
+            ("Institucional", f"https://financialmodelingprep.com/api/v4/institutional-ownership/symbol-ownership?symbol={safe_symbol}&limit={safe_limit}&apikey={self.api_key}"),
+            ("Holders", f"https://financialmodelingprep.com/stable/institutional-ownership?symbol={safe_symbol}&limit={safe_limit}&apikey={self.api_key}"),
+        ]
+
+        activity: list[dict] = []
+        for source_label, url in endpoints:
+            try:
+                status, payload = self._request_json(url, timeout=10)
+                self.logger.debug("FMP smart money %s status %s para %s", source_label, status, tk)
+                if status != 200 or payload is None:
+                    continue
+                rows = payload if isinstance(payload, list) else payload.get("data") if isinstance(payload, dict) else []
+                if not isinstance(rows, list):
+                    continue
+                for row in rows[:safe_limit]:
+                    if not isinstance(row, dict):
+                        continue
+                    entity = (
+                        row.get("reportingName")
+                        or row.get("investorName")
+                        or row.get("holder")
+                        or row.get("name")
+                        or row.get("institution")
+                        or ""
+                    )
+                    transaction_type = row.get("transactionType") or row.get("type") or row.get("change") or source_label
+                    shares = row.get("securitiesTransacted") or row.get("shares") or row.get("share") or row.get("reportedHolding")
+                    value = row.get("transactionValue") or row.get("marketValue") or row.get("value")
+                    date = row.get("transactionDate") or row.get("date") or row.get("filingDate") or row.get("acceptedDate")
+                    activity.append(
+                        {
+                            "source": source_label,
+                            "entity": str(entity or "").strip(),
+                            "type": str(transaction_type or source_label).strip(),
+                            "shares": shares,
+                            "value": value,
+                            "date": str(date or "").strip(),
+                        }
+                    )
+                if activity:
+                    return activity[:safe_limit]
+            except Exception as exc:
+                self.logger.debug("FMP smart money %s error para %s: %s", source_label, tk, exc)
+        return activity[:safe_limit]
+
     def get_market_news(
         self,
         tracked_tickers: list[str] | None = None,
