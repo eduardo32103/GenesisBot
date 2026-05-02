@@ -45,6 +45,10 @@ class DashboardMoneyFlowWebIntegrationTests(unittest.TestCase):
         self.assertEqual(app_config["money_flow_detection_endpoint"], "/api/dashboard/money-flow/detection")
         self.assertEqual(app_config["money_flow_causal_endpoint"], "/api/dashboard/money-flow/causal")
         self.assertEqual(app_config["money_flow_jarvis_endpoint"], "/api/dashboard/money-flow/jarvis?q={question}")
+        self.assertEqual(app_config["portfolio_endpoint"], "/api/dashboard/portfolio")
+        self.assertEqual(app_config["portfolio_drilldown_endpoint"], "/api/dashboard/portfolio/drilldown?ticker={symbol}")
+        self.assertEqual(app_config["portfolio_remove_endpoint"], "/api/dashboard/portfolio/watchlist/remove")
+        self.assertEqual(app_config["portfolio_paper_remove_endpoint"], "/api/dashboard/portfolio/paper-remove")
         self.assertNotIn("money_flow_visual_endpoint", app_config)
 
 

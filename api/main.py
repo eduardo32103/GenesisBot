@@ -50,9 +50,13 @@ def create_app() -> dict[str, str]:
         "money_flow_jarvis_endpoint": "/api/dashboard/money-flow/jarvis?q={question}",
         "radar_endpoint": "/api/dashboard/radar",
         "radar_drilldown_endpoint": "/api/dashboard/radar/drilldown?ticker={symbol}",
+        "portfolio_endpoint": "/api/dashboard/portfolio",
+        "portfolio_drilldown_endpoint": "/api/dashboard/portfolio/drilldown?ticker={symbol}",
         "market_search_endpoint": "/api/dashboard/market/search?q={symbol}",
         "portfolio_add_endpoint": "/api/dashboard/portfolio/watchlist/add",
+        "portfolio_remove_endpoint": "/api/dashboard/portfolio/watchlist/remove",
         "portfolio_paper_endpoint": "/api/dashboard/portfolio/paper-buy",
+        "portfolio_paper_remove_endpoint": "/api/dashboard/portfolio/paper-remove",
         "alerts_endpoint": "/api/dashboard/alerts",
         "alerts_drilldown_endpoint": "/api/dashboard/alerts/drilldown?alert_id={id}",
         "fmp_endpoint": "/api/dashboard/fmp",
@@ -211,7 +215,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
-        if parsed.path == "/api/dashboard/radar":
+        if parsed.path in {"/api/dashboard/radar", "/api/dashboard/portfolio"}:
             payload = json.dumps(get_dashboard_radar()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -220,7 +224,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
-        if parsed.path == "/api/dashboard/radar/drilldown":
+        if parsed.path in {"/api/dashboard/radar/drilldown", "/api/dashboard/portfolio/drilldown"}:
             ticker = (parse_qs(parsed.query).get("ticker") or [""])[0]
             payload = json.dumps(get_dashboard_radar_drilldown(ticker)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
