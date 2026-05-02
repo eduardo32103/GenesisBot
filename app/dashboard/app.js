@@ -2701,21 +2701,7 @@ function setPortfolioReturnState(id, value) {
 }
 
 function portfolioActionsMarkup(ticker, mode = "watchlist") {
-  const safeTicker = escapeHtml(ticker);
-  if (mode === "paper") {
-    return `
-      <div class="portfolio-mini-actions">
-        <button type="button" class="portfolio-mini-action" data-paper-buy="${safeTicker}" aria-label="Simular mas compra">Carrito</button>
-        <button type="button" class="portfolio-mini-action" data-paper-remove="${safeTicker}" aria-label="Quitar compra simulada">-</button>
-      </div>
-    `;
-  }
-  return `
-    <div class="portfolio-mini-actions">
-      <button type="button" class="portfolio-mini-action" data-paper-buy="${safeTicker}" aria-label="Simular compra">Carrito</button>
-      <button type="button" class="portfolio-mini-action" data-watch-remove="${safeTicker}" aria-label="Quitar de seguimiento">-</button>
-    </div>
-  `;
+  return "";
 }
 
 function watchlistRowMarkup(row) {
@@ -2866,11 +2852,12 @@ function renderRadarSnapshot(payload) {
   setText("radar-investment-count", String(summary.investment_count ?? 0));
   setText("radar-reference-count", String(summary.reference_count ?? 0));
   setText("radar-last-update", summary.last_update ? formatIso(summary.last_update) : "Sin fecha confirmada");
+  setText("portfolio-last-update", summary.last_update ? `Actualizado ${formatIso(summary.last_update)}` : "Actualizacion pendiente");
   setText("radar-table-note", watchlistRows.length
-    ? "Seguimiento con precio directo cuando la fuente lo entrega. Usa Carrito para simular compra o - para quitar."
+    ? "Seguimiento con precio visible cuando la fuente lo entrega."
     : "Sin activos en seguimiento.");
   setText("portfolio-positions-note", positionRows.length
-    ? "Compras simuladas. Sin broker y sin orden real."
+    ? "Compras simuladas visibles en cartera."
     : "Sin compras simuladas todavia.");
 
   const donut = document.getElementById("portfolio-donut");
@@ -2927,6 +2914,7 @@ function renderRadarSnapshotError(message) {
   setText("radar-investment-count", "0");
   setText("radar-reference-count", "0");
   setText("radar-last-update", "Sin datos");
+  setText("portfolio-last-update", "Actualizacion pendiente");
   setText("radar-table-note", "No pude cargar la cartera desde el panel local.");
 
   const donut = document.getElementById("portfolio-donut");

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis Dashboard</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=phase67d-r1-watchlist-live">
+  <link rel="stylesheet" href="./styles.css?v=phase67e-app-mode">
 </head>
 <body>
   <div class="shell">
@@ -408,21 +408,10 @@
               <h3>Cartera</h3>
               <p class="portfolio-subtitle">Vision simple de tu portafolio</p>
             </div>
-            <div class="portfolio-head-actions">
+            <div class="portfolio-status-strip">
               <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
-              <button type="button" class="portfolio-action-button" id="portfolio-add-button">+</button>
-              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-sim-buy-button">Simular compra</button>
+              <small id="portfolio-last-update">Actualizacion pendiente</small>
             </div>
-          </div>
-
-          <div class="portfolio-search-panel">
-            <label>
-              Buscar activo
-              <input id="portfolio-search-input" autocomplete="off" placeholder="META, TSLA, NVDA, SPY, BTC-USD">
-            </label>
-            <button type="button" class="portfolio-action-button" id="portfolio-search-button">+</button>
-            <p id="portfolio-search-note">Escribe un ticker y agregalo a Seguimiento.</p>
-            <div class="portfolio-search-result" id="portfolio-search-result" hidden></div>
           </div>
 
           <span class="visually-hidden" id="portfolio-total-stat">...</span>
@@ -462,9 +451,7 @@
                 <div class="portfolio-list-empty">Cargando seguimiento...</div>
               </div>
             </div>
-            <p class="table-note" id="radar-table-note">
-              Seguimiento con precio directo cuando la fuente lo entrega.
-            </p>
+            <p class="visually-hidden" id="radar-table-note">Seguimiento</p>
           </article>
 
           <article class="card panel-card portfolio-app-section">
@@ -480,9 +467,7 @@
                 <div class="portfolio-list-empty">Sin compras simuladas.</div>
               </div>
             </div>
-            <p class="table-note" id="portfolio-positions-note">
-              Sin compra real. Solo simulacion/paper trading.
-            </p>
+            <p class="visually-hidden" id="portfolio-positions-note">Compradas</p>
           </article>
         </div>
 
@@ -514,10 +499,6 @@
               <p id="portfolio-asset-entry">Entrada condicional pendiente de confirmacion.</p>
               <p id="portfolio-asset-invalidation">Invalidacion pendiente de datos suficientes.</p>
               <p id="portfolio-asset-plan">Vigilar y validar antes de operar.</p>
-            </div>
-            <div class="portfolio-asset-actions">
-              <button type="button" class="portfolio-action-button" id="portfolio-asset-sim-buy">Simular compra</button>
-              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-asset-remove">Quitar</button>
             </div>
           </div>
         </aside>
@@ -972,6 +953,6 @@
     </main>
   </div>
 
-    <script src="./app.js?v=phase67d-r24-functional-iphone"></script>
+    <script src="./app.js?v=phase67e-app-mode"></script>
   </body>
 </html>
