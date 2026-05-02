@@ -3,33 +3,25 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Genesis Dashboard</title>
+  <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=phase67e-app-mode">
+  <link rel="stylesheet" href="./styles.css?v=phase68a-hard-app-shell">
 </head>
 <body>
   <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">G</div>
-        <div>
-          <p class="eyebrow">Genesis</p>
-          <h1>Control App</h1>
-        </div>
-      </div>
-
-      <nav class="nav" aria-label="Navegacion principal">
+    <nav class="app-tabbar" aria-label="Navegacion principal">
+      <div class="nav">
         <button class="nav-link is-active" data-view="command-center">
           <span>Genesis</span>
           <small>Centro de control</small>
         </button>
+        <button class="nav-link" data-view="watchlist">
+          <span>Seguimiento</span>
+          <small>Precios live</small>
+        </button>
         <button class="nav-link" data-view="radar">
           <span>Cartera</span>
-          <small>Posiciones</small>
-        </button>
-        <button class="nav-link" data-view="money-flow">
-          <span>Dinero Grande</span>
-          <small>Ballenas y Flujo de Capital</small>
+          <small>Compradas</small>
         </button>
         <button class="nav-link" data-view="alerts">
           <span>Alertas</span>
@@ -39,57 +31,14 @@
           <span>Datos</span>
           <small>Fuentes y salud</small>
         </button>
-        <button class="nav-link" data-view="macro">
-          <span>Mundo</span>
-          <small>Macro y contexto</small>
-        </button>
-        <button class="nav-link" data-view="activity">
-          <span>Historial</span>
-          <small>Actividad</small>
-        </button>
-      </nav>
-
-      <section class="sidebar-card">
-        <p class="eyebrow">Modo</p>
-        <h2>Genesis</h2>
-          <p>El asistente al centro. El panel como contexto.</p>
-      </section>
-    </aside>
+      </div>
+    </nav>
 
     <main class="main">
-      <header class="topbar">
-        <div class="topbar-title">
+      <header class="app-header">
+        <div class="app-header-title">
           <p class="eyebrow">Genesis App</p>
           <h2 id="view-title">Genesis Home</h2>
-        </div>
-        <div class="topbar-actions">
-          <form class="topbar-search" id="genesis-query-form">
-            <input id="genesis-query-input" type="text" aria-label="Preguntar a Genesis" placeholder="Pregunta a Genesis sobre el panel">
-            <button type="submit">Preguntar</button>
-          </form>
-          <div class="status-strip">
-            <article class="status-pill" id="status-pill-system">
-              <span class="dot dot-ok"></span>
-              <div>
-                <strong id="status-system-label">Sistema</strong>
-                <small id="status-system-value">Panel local</small>
-              </div>
-            </article>
-            <article class="status-pill">
-              <span class="dot dot-warn"></span>
-              <div>
-                <strong id="status-leader-label">Datos</strong>
-                <small id="status-leader-value">Panel operativo</small>
-              </div>
-            </article>
-            <article class="status-pill">
-              <span class="dot dot-muted"></span>
-              <div>
-                <strong id="status-radar-label">Cartera</strong>
-                <small id="status-radar-value">Pendiente</small>
-              </div>
-            </article>
-          </div>
         </div>
       </header>
 
@@ -400,7 +349,39 @@
         </article>
       </section>
 
-      <section class="view" id="view-radar">
+      <section class="view app-screen" id="view-watchlist">
+        <article class="card panel-card portfolio-card watchlist-app-card">
+          <div class="portfolio-head">
+            <div>
+              <p class="eyebrow">Seguimiento</p>
+              <h3>Seguimiento</h3>
+              <p class="portfolio-subtitle">Activos del mercado con precio visible</p>
+            </div>
+            <div class="portfolio-status-strip">
+              <span class="badge badge-soft" id="watchlist-data-state">Cargando datos...</span>
+              <small id="watchlist-last-update">Actualizacion pendiente</small>
+            </div>
+          </div>
+
+          <div class="portfolio-search-panel">
+            <label>
+              Buscar activo
+              <input id="portfolio-search-input" autocomplete="off" placeholder="META, Tesla, NVDA, SPY, BTC-USD">
+            </label>
+            <button type="button" class="portfolio-action-button" id="portfolio-search-button">+</button>
+            <p id="portfolio-search-note">Busca por ticker o nombre y agregalo a seguimiento.</p>
+            <div class="portfolio-search-result" id="portfolio-search-result" hidden></div>
+          </div>
+
+          <div class="portfolio-section-layout portfolio-section-list-only">
+            <div class="portfolio-list" id="watchlist-screen-body">
+              <div class="portfolio-list-empty">Cargando seguimiento...</div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="view app-screen" id="view-radar">
         <article class="card panel-card portfolio-card">
           <div class="portfolio-head">
             <div>
@@ -438,7 +419,7 @@
         </article>
 
         <div class="portfolio-app-grid">
-          <article class="card panel-card portfolio-app-section">
+          <article class="card panel-card portfolio-app-section portfolio-watchlist-section">
             <div class="section-heading">
               <div>
                 <p class="eyebrow">Seguimiento</p>
@@ -469,73 +450,6 @@
             </div>
             <p class="visually-hidden" id="portfolio-positions-note">Compradas</p>
           </article>
-        </div>
-
-        <aside class="portfolio-asset-panel" id="portfolio-asset-panel" hidden>
-          <div class="portfolio-asset-shell">
-            <div class="portfolio-asset-head">
-              <div>
-                <p class="eyebrow">Activo</p>
-                <strong id="portfolio-asset-symbol">Sin seleccionar</strong>
-                <span id="portfolio-asset-name">Selecciona un ticker de Cartera</span>
-              </div>
-              <button type="button" class="portfolio-icon-button" id="portfolio-asset-close" aria-label="Cerrar detalle">Cerrar</button>
-            </div>
-            <div class="portfolio-asset-price">
-              <strong id="portfolio-asset-price">Sin precio</strong>
-              <span id="portfolio-asset-change" class="portfolio-change portfolio-change-neutral">Sin cambio</span>
-            </div>
-            <div class="portfolio-asset-metrics">
-              <div><span>Sesion anterior</span><strong id="portfolio-asset-previous-close">Sin dato</strong></div>
-              <div><span>Nocturno</span><strong id="portfolio-asset-extended">Sin nocturno</strong></div>
-              <div><span>Rango del dia</span><strong id="portfolio-asset-range">Sin dato</strong></div>
-              <div><span>Volumen</span><strong id="portfolio-asset-volume">Sin dato</strong></div>
-              <div><span>Actualizacion</span><strong id="portfolio-asset-updated">Sin fecha</strong></div>
-              <div><span>Estado</span><strong id="portfolio-asset-mode">Watchlist</strong></div>
-            </div>
-            <div class="portfolio-asset-genesis">
-              <span>Genesis</span>
-              <h4 id="portfolio-asset-verdict">Vigilar</h4>
-              <p id="portfolio-asset-entry">Entrada condicional pendiente de confirmacion.</p>
-              <p id="portfolio-asset-invalidation">Invalidacion pendiente de datos suficientes.</p>
-              <p id="portfolio-asset-plan">Vigilar y validar antes de operar.</p>
-            </div>
-          </div>
-        </aside>
-
-        <div class="portfolio-modal" id="portfolio-action-modal" hidden>
-          <div class="portfolio-modal-dialog">
-            <div class="portfolio-modal-head">
-              <div>
-                <p class="eyebrow">Cartera</p>
-                <h4 id="portfolio-modal-title">Agregar accion</h4>
-              </div>
-              <button type="button" class="portfolio-icon-button" id="portfolio-modal-close" aria-label="Cerrar">Cerrar</button>
-            </div>
-            <form class="portfolio-form" id="portfolio-modal-form">
-              <label>
-                Ticker
-                <input id="portfolio-modal-ticker" name="ticker" autocomplete="off" placeholder="NVDA" required>
-              </label>
-              <div class="portfolio-sim-fields" id="portfolio-sim-fields" hidden>
-                <label>
-                  Unidades
-                  <input id="portfolio-modal-units" name="units" type="number" min="0" step="0.000001" placeholder="10">
-                </label>
-                <label>
-                  Precio de entrada
-                  <input id="portfolio-modal-entry-price" name="entry_price" type="number" min="0" step="0.0001" placeholder="199.57">
-                </label>
-              </div>
-              <p class="portfolio-modal-live-price" id="portfolio-modal-live-price" hidden>Precio actual: Sin precio</p>
-              <p class="portfolio-modal-note" id="portfolio-modal-note">Agrega un ticker directo a tu watchlist.</p>
-              <p class="portfolio-modal-total" id="portfolio-modal-total" hidden>Total estimado: Sin calcular</p>
-              <div class="portfolio-modal-actions">
-                <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-modal-cancel">Cancelar</button>
-                <button type="submit" class="portfolio-action-button" id="portfolio-modal-submit">Agregar</button>
-              </div>
-            </form>
-          </div>
         </div>
 
         <article class="card panel-card drilldown-card" id="radar-drilldown-card" hidden>
@@ -649,6 +563,77 @@
           </div>
         </article>
       </section>
+
+      <aside class="portfolio-asset-panel" id="portfolio-asset-panel" hidden>
+        <div class="portfolio-asset-shell">
+          <div class="portfolio-asset-head">
+            <div>
+              <p class="eyebrow">Activo</p>
+              <strong id="portfolio-asset-symbol">Sin seleccionar</strong>
+              <span id="portfolio-asset-name">Selecciona un ticker</span>
+            </div>
+            <button type="button" class="portfolio-icon-button" id="portfolio-asset-close" aria-label="Cerrar detalle">Cerrar</button>
+          </div>
+          <div class="portfolio-asset-price">
+            <strong id="portfolio-asset-price">Sin precio</strong>
+            <span id="portfolio-asset-change" class="portfolio-change portfolio-change-neutral">Sin cambio</span>
+          </div>
+          <div class="portfolio-asset-metrics">
+            <div><span>Sesion anterior</span><strong id="portfolio-asset-previous-close">Sin dato</strong></div>
+            <div><span>Nocturno</span><strong id="portfolio-asset-extended">Sin nocturno</strong></div>
+            <div><span>Rango del dia</span><strong id="portfolio-asset-range">Sin dato</strong></div>
+            <div><span>Volumen</span><strong id="portfolio-asset-volume">Sin dato</strong></div>
+            <div><span>Actualizacion</span><strong id="portfolio-asset-updated">Sin fecha</strong></div>
+            <div><span>Estado</span><strong id="portfolio-asset-mode">Seguimiento</strong></div>
+          </div>
+          <div class="portfolio-asset-genesis">
+            <span>Genesis</span>
+            <h4 id="portfolio-asset-verdict">Vigilar</h4>
+            <p id="portfolio-asset-entry">Entrada condicional pendiente de confirmacion.</p>
+            <p id="portfolio-asset-invalidation">Invalidacion pendiente de datos suficientes.</p>
+            <p id="portfolio-asset-plan">Vigilar y validar antes de operar.</p>
+          </div>
+          <div class="portfolio-asset-actions">
+            <button type="button" class="portfolio-action-button" id="portfolio-asset-sim-buy">Simular compra</button>
+            <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-asset-remove">Quitar</button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="portfolio-modal" id="portfolio-action-modal" hidden>
+        <div class="portfolio-modal-dialog">
+          <div class="portfolio-modal-head">
+            <div>
+              <p class="eyebrow">Cartera</p>
+              <h4 id="portfolio-modal-title">Agregar accion</h4>
+            </div>
+            <button type="button" class="portfolio-icon-button" id="portfolio-modal-close" aria-label="Cerrar">Cerrar</button>
+          </div>
+          <form class="portfolio-form" id="portfolio-modal-form">
+            <label>
+              Ticker
+              <input id="portfolio-modal-ticker" name="ticker" autocomplete="off" placeholder="NVDA" required>
+            </label>
+            <div class="portfolio-sim-fields" id="portfolio-sim-fields" hidden>
+              <label>
+                Unidades
+                <input id="portfolio-modal-units" name="units" type="number" min="0" step="0.000001" placeholder="10">
+              </label>
+              <label>
+                Precio de entrada
+                <input id="portfolio-modal-entry-price" name="entry_price" type="number" min="0" step="0.0001" placeholder="199.57">
+              </label>
+            </div>
+            <p class="portfolio-modal-live-price" id="portfolio-modal-live-price" hidden>Precio actual: Sin precio</p>
+            <p class="portfolio-modal-note" id="portfolio-modal-note">Agrega un ticker directo a seguimiento.</p>
+            <p class="portfolio-modal-total" id="portfolio-modal-total" hidden>Total estimado: Sin calcular</p>
+            <div class="portfolio-modal-actions">
+              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-modal-cancel">Cancelar</button>
+              <button type="submit" class="portfolio-action-button" id="portfolio-modal-submit">Agregar</button>
+            </div>
+          </form>
+        </div>
+      </div>
 
       <section class="view" id="view-alerts">
         <div class="grid grid-columns">
@@ -953,6 +938,6 @@
     </main>
   </div>
 
-    <script src="./app.js?v=phase67e-app-mode"></script>
+    <script src="./app.js?v=phase68a-hard-app-shell"></script>
   </body>
 </html>

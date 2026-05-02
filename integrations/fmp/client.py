@@ -152,6 +152,44 @@ class FmpClient:
         self.last_error_by_ticker[tk] = "Activo no encontrado en FMP"
         return None
 
+    def search_symbols(self, query: str, limit: int = 6) -> list[dict]:
+        text = str(query or "").strip()
+        if not self.api_key or not text:
+            return []
+
+        safe_query = urllib.parse.quote(text)
+        safe_limit = max(1, min(int(limit or 6), 10))
+        urls = [
+            f"https://financialmodelingprep.com/stable/search-symbol?query={safe_query}&limit={safe_limit}&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/api/v3/search?query={safe_query}&limit={safe_limit}&apikey={self.api_key}",
+        ]
+
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=10)
+                self.logger.debug("FMP symbol search status %s", status)
+                if status != 200 or not isinstance(payload, list):
+                    continue
+                results: list[dict] = []
+                for row in payload:
+                    if not isinstance(row, dict):
+                        continue
+                    symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+                    if not symbol:
+                        continue
+                    results.append(
+                        {
+                            "symbol": symbol,
+                            "name": row.get("name") or row.get("companyName") or symbol,
+                            "exchange": row.get("exchangeShortName") or row.get("exchange") or "",
+                        }
+                    )
+                if results:
+                    return results[:safe_limit]
+            except Exception as exc:
+                self.logger.debug("FMP symbol search error: %s", exc)
+        return []
+
     def get_historical_eod(self, ticker: str, limit: int | None = None, symbol_map: dict[str, str] | None = None) -> list[dict] | None:
         tk = str(ticker or "").strip().upper()
         if not self.api_key:

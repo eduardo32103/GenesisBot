@@ -123,6 +123,29 @@ class PortfolioUpdateTests(unittest.TestCase):
         self.assertEqual(result["status"], "local_fallback")
         self.assertEqual(result["results"][0]["ticker"], "META")
 
+    def test_market_search_by_company_name_uses_fmp_search(self) -> None:
+        fake_settings = SimpleNamespace(fmp_api_key="secret", fmp_live_enabled=True)
+        with (
+            patch("services.dashboard.search_market_ticker.load_settings", return_value=fake_settings),
+            patch("services.dashboard.search_market_ticker.FmpClient") as client_class,
+        ):
+            client = client_class.return_value
+            client.search_symbols.return_value = [{"symbol": "META", "name": "Meta Platforms", "exchange": "NASDAQ"}]
+            client.get_quote.return_value = {
+                "price": 430.25,
+                "change": 4.1,
+                "changesPercentage": 0.96,
+                "previousClose": 426.15,
+            }
+
+            result = search_market_ticker("Meta Platforms")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["results"][0]["ticker"], "META")
+        self.assertEqual(result["results"][0]["name"], "Meta Platforms")
+        self.assertEqual(result["results"][0]["current_price"], 430.25)
+
 
 if __name__ == "__main__":
     unittest.main()

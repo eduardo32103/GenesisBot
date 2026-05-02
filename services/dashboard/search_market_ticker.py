@@ -23,7 +23,7 @@ def _shape_quote(ticker: str, quote: dict | None, profile: dict | None = None) -
     profile = profile or {}
     return {
         "ticker": ticker,
-        "name": quote.get("name") or profile.get("companyName") or profile.get("companyName") or ticker,
+        "name": quote.get("name") or profile.get("companyName") or profile.get("companyName") or profile.get("name") or ticker,
         "current_price": quote.get("price"),
         "daily_change": quote.get("change"),
         "daily_change_pct": quote.get("changesPercentage"),
@@ -37,16 +37,39 @@ def _shape_quote(ticker: str, quote: dict | None, profile: dict | None = None) -
         "volume": quote.get("volume"),
         "quote_timestamp": quote.get("timestamp") or "",
         "source": "datos_directos" if quote.get("price") else "sin_precio",
-    }
+}
+
+
+def _unique_symbols(rows: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for row in rows:
+        symbol = _normalize_ticker(row.get("symbol") or row.get("ticker"))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        shaped = dict(row)
+        shaped["symbol"] = symbol
+        unique.append(shaped)
+    return unique
 
 
 def search_market_ticker(query: str = "") -> dict:
-    ticker = _normalize_ticker(query)
-    if not ticker or not _TICKER_PATTERN.match(ticker):
+    raw_query = str(query or "").strip()
+    ticker = _normalize_ticker(raw_query)
+    is_direct_ticker = bool(ticker and _TICKER_PATTERN.match(ticker))
+    if not raw_query:
         return {"ok": False, "status": "invalid", "message": "Ticker no valido.", "results": []}
 
     settings = load_settings()
     if not _live_ready(settings):
+        if not is_direct_ticker:
+            return {
+                "ok": False,
+                "status": "needs_live_search",
+                "message": "Necesito datos directos para buscar por nombre.",
+                "results": [],
+            }
         return {
             "ok": True,
             "status": "local_fallback",
@@ -55,19 +78,38 @@ def search_market_ticker(query: str = "") -> dict:
         }
 
     client = FmpClient(settings.fmp_api_key, logger=logging.getLogger("genesis.dashboard"))
-    quote = client.get_quote(ticker)
-    if not quote:
+    if is_direct_ticker:
+        quote = client.get_quote(ticker)
+        if quote:
+            profile = client.get_profile(ticker) or {}
+            return {
+                "ok": True,
+                "status": "found",
+                "message": "Activo encontrado.",
+                "results": [_shape_quote(ticker, quote, profile)],
+            }
+
+    search_rows = _unique_symbols(client.search_symbols(raw_query, limit=5))
+    shaped_results: list[dict] = []
+    for row in search_rows[:5]:
+        symbol = row["symbol"]
+        quote = client.get_quote(symbol)
+        profile = {"companyName": row.get("name") or symbol}
+        shaped = _shape_quote(symbol, quote, profile)
+        shaped["exchange"] = row.get("exchange") or ""
+        shaped_results.append(shaped)
+
+    if shaped_results:
         return {
-            "ok": False,
-            "status": "not_found",
-            "message": "No encontre este ticker con la fuente activa.",
-            "results": [],
+            "ok": True,
+            "status": "found",
+            "message": "Activo encontrado.",
+            "results": shaped_results,
         }
 
-    profile = client.get_profile(ticker) or {}
     return {
-        "ok": True,
-        "status": "found",
-        "message": "Activo encontrado.",
-        "results": [_shape_quote(ticker, quote, profile)],
+        "ok": False,
+        "status": "not_found",
+        "message": "No encontre ese ticker en mercado.",
+        "results": [],
     }
