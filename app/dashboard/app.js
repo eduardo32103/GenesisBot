@@ -56,6 +56,7 @@ const genesisRawErrorPatterns = [
 const loadedViews = new Set();
 const radarDrilldownCache = new Map();
 const portfolioRowsByTicker = new Map();
+const portfolioRefreshIntervalMs = 30000;
 let radarSelectedTicker = "";
 let radarDrilldownRequestId = 0;
 let portfolioModalMode = "add";
@@ -1369,6 +1370,7 @@ function openPortfolioModal(mode, ticker = "") {
   const units = document.getElementById("portfolio-modal-units");
   const entry = document.getElementById("portfolio-modal-entry-price");
   const note = document.getElementById("portfolio-modal-note");
+  const livePrice = document.getElementById("portfolio-modal-live-price");
   const total = document.getElementById("portfolio-modal-total");
   const submit = document.getElementById("portfolio-modal-submit");
   const normalized = String(ticker || radarSelectedTicker || "").trim().toUpperCase();
@@ -1387,6 +1389,12 @@ function openPortfolioModal(mode, ticker = "") {
   if (total) {
     total.hidden = portfolioModalMode !== "paper";
     total.textContent = "Total estimado: Sin calcular";
+  }
+  if (livePrice) {
+    livePrice.hidden = portfolioModalMode !== "paper";
+    livePrice.textContent = row?.price
+      ? `Precio actual: ${formatPrice(row.price)}`
+      : "Precio actual: Sin precio";
   }
   submit.textContent = portfolioModalMode === "paper" ? "Guardar compra simulada" : "Agregar";
 
@@ -2604,7 +2612,7 @@ function startPortfolioAutoRefresh() {
   if (portfolioRefreshTimer) {
     return;
   }
-  portfolioRefreshTimer = window.setInterval(refreshPortfolioPricesFromTimer, 60000);
+  portfolioRefreshTimer = window.setInterval(refreshPortfolioPricesFromTimer, portfolioRefreshIntervalMs);
 }
 
 function stopPortfolioAutoRefresh() {
