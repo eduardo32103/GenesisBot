@@ -50,6 +50,7 @@ def _normalize_position_payload(raw_ticker: object, payload: object) -> dict | N
     if units <= 0 and amount_usd > 0 and entry_price > 0:
         units = round(amount_usd / entry_price, 8)
 
+    removed_watchlist = _coerce_bool(payload.get("removed_watchlist")) or _coerce_bool(payload.get("watchlist_removed"))
     is_investment = bool(
         _coerce_bool(payload.get("is_investment"))
         or units > 0
@@ -70,7 +71,8 @@ def _normalize_position_payload(raw_ticker: object, payload: object) -> dict | N
         "entry_price": entry_price,
         "units": units,
         "reference_price": reference_price,
-        "watchlist": _coerce_bool(payload.get("watchlist")) or not is_investment,
+        "watchlist": False if removed_watchlist else (_coerce_bool(payload.get("watchlist")) or not is_investment),
+        "removed_watchlist": removed_watchlist,
         "mode": str(payload.get("mode") or "").strip(),
         "opened_at": payload.get("timestamp") or payload.get("opened_at") or "",
     }

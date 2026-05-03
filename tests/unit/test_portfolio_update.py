@@ -114,6 +114,34 @@ class PortfolioUpdateTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(tickers, ["NVDA"])
 
+    def test_remove_watchlist_ticker_writes_runtime_tombstone_when_missing_locally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(json.dumps({"positions": []}), encoding="utf-8")
+
+            result = remove_watchlist_ticker("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            position = payload["positions"][0]
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(position["ticker"], "META")
+            self.assertTrue(position["removed_watchlist"])
+            self.assertNotIn("watchlist", position)
+
+    def test_add_ticker_restores_watchlist_after_runtime_tombstone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(json.dumps({"positions": [{"ticker": "META", "removed_watchlist": True}]}), encoding="utf-8")
+
+            result = add_ticker_to_portfolio("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            position = payload["positions"][0]
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "added")
+            self.assertTrue(position["watchlist"])
+            self.assertNotIn("removed_watchlist", position)
+
     def test_remove_watchlist_from_paper_position_keeps_paper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "portfolio.json"

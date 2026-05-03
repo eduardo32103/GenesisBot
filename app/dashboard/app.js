@@ -107,6 +107,8 @@ function itemDailyUsd(item) {
 }
 
 function itemInWatchlist(item) {
+  if (item?.removed_watchlist === true) return false;
+  if (item?.watchlist === false && itemUnits(item) === null) return false;
   return item?.watchlist === true || itemUnits(item) === null;
 }
 

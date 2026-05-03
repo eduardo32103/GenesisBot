@@ -159,6 +159,7 @@ def _shape_item(
     sector: str = "",
     industry: str = "",
     watchlist: bool | None = None,
+    removed_watchlist: bool = False,
 ) -> dict[str, Any]:
     normalized_ticker = str(ticker or "").strip().upper()
     normalized_units = _coerce_float(units)
@@ -195,6 +196,7 @@ def _shape_item(
         "sector": str(sector or "").strip(),
         "industry": str(industry or "").strip(),
         "watchlist": (normalized_units <= 0 and cost_basis <= 0) if watchlist is None else bool(watchlist),
+        "removed_watchlist": bool(removed_watchlist),
     }
     _apply_position_metrics(shaped)
     return shaped
@@ -325,6 +327,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                     origin="portfolio_fallback",
                     mode=position.get("mode", ""),
                     watchlist=bool(position.get("watchlist")),
+                    removed_watchlist=bool(position.get("removed_watchlist")),
                 )
             )
         return sorted(items, key=lambda item: item["ticker"])
@@ -361,6 +364,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                         origin="portfolio_fallback",
                         mode=position.get("mode", ""),
                         watchlist=bool(position.get("watchlist")),
+                        removed_watchlist=bool(position.get("removed_watchlist")),
                     )
                 )
         return sorted(items, key=lambda item: item["ticker"])
@@ -369,6 +373,66 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
         for ticker in raw:
             items.append(_shape_item(str(ticker), updated_at=timestamp, origin="portfolio_fallback"))
     return sorted(items, key=lambda item: item["ticker"])
+
+
+def _merge_persistent_overlays(database_items: list[dict[str, Any]], fallback_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not database_items:
+        return fallback_items
+    if not fallback_items:
+        return database_items
+
+    merged = {str(item.get("ticker") or "").strip().upper(): dict(item) for item in database_items if str(item.get("ticker") or "").strip()}
+    for overlay in fallback_items:
+        ticker = str(overlay.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+
+        overlay_units = _coerce_float(overlay.get("units"))
+        overlay_cost = _coerce_float(overlay.get("cost_basis") or overlay.get("amount_usd"))
+        overlay_entry = _coerce_float(overlay.get("entry_price"))
+        overlay_is_position = bool(overlay.get("is_investment")) or overlay_units > 0 or overlay_cost > 0
+        overlay_removed = bool(overlay.get("removed_watchlist"))
+
+        if overlay_removed and not overlay_is_position:
+            merged.pop(ticker, None)
+            continue
+
+        if ticker not in merged:
+            merged[ticker] = dict(overlay)
+            continue
+
+        item = merged[ticker]
+        if overlay_is_position:
+            item["is_investment"] = True
+            item["units"] = overlay_units
+            item["entry_price"] = overlay_entry
+            if overlay_cost > 0:
+                item["cost_basis"] = overlay_cost
+                item["amount_usd"] = overlay_cost
+            elif overlay_units > 0 and overlay_entry > 0:
+                item["cost_basis"] = round(overlay_units * overlay_entry, 8)
+                item["amount_usd"] = item["cost_basis"]
+            if overlay.get("mode"):
+                item["mode"] = overlay.get("mode")
+            if overlay.get("opened_at"):
+                item["opened_at"] = overlay.get("opened_at")
+            if overlay_removed:
+                item["watchlist"] = False
+                item["removed_watchlist"] = True
+            elif bool(overlay.get("watchlist")):
+                item["watchlist"] = True
+                item.pop("removed_watchlist", None)
+
+        elif bool(overlay.get("watchlist")):
+            item["watchlist"] = True
+            item.pop("removed_watchlist", None)
+
+        reference_price = _coerce_float(overlay.get("reference_price"))
+        if reference_price > 0 and _coerce_float(item.get("current_price")) <= 0:
+            item["reference_price"] = reference_price
+        _apply_position_metrics(item)
+
+    return sorted(merged.values(), key=lambda item: str(item.get("ticker") or ""))
 
 
 def _enrich_items_with_fmp(items: list[dict[str, Any]], settings: Any) -> None:
@@ -508,11 +572,13 @@ def get_radar_snapshot() -> dict[str, Any]:
     settings = load_settings()
     items = _fetch_wallet_rows(settings.database_url, settings.chat_id)
     data_origin = "database" if items else "none"
+    fallback_items = _parse_portfolio_fallback()
 
-    if not items:
-        items = _parse_portfolio_fallback()
-        if items:
-            data_origin = "portfolio_fallback"
+    if items:
+        items = _merge_persistent_overlays(items, fallback_items)
+    elif fallback_items:
+        items = fallback_items
+        data_origin = "portfolio_fallback"
 
     _enrich_items_with_fmp(items, settings)
     portfolio = _apply_portfolio_totals(items)

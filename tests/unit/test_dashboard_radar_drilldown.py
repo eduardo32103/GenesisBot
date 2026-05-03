@@ -110,6 +110,78 @@ class DashboardRadarDrilldownTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["number_of_positions"], 1)
 
     @patch("services.dashboard.get_radar_snapshot.load_settings")
+    @patch("services.dashboard.get_radar_snapshot._fetch_wallet_rows")
+    @patch("services.dashboard.get_radar_snapshot._parse_portfolio_fallback")
+    def test_database_snapshot_merges_runtime_paper_overlay(
+        self,
+        mock_fallback: Mock,
+        mock_wallet: Mock,
+        mock_settings: Mock,
+    ) -> None:
+        mock_wallet.return_value = [
+            _shape_item("BNO", reference_price=57.27, origin="database"),
+        ]
+        mock_fallback.return_value = [
+            _shape_item(
+                "META",
+                display_name="META",
+                is_investment=True,
+                units=10,
+                entry_price=608.75,
+                reference_price=608.75,
+                origin="portfolio_fallback",
+                mode="paper",
+            )
+        ]
+        mock_settings.return_value = SimpleNamespace(
+            database_url="postgresql://local",
+            chat_id="123",
+            fmp_api_key="",
+            fmp_live_enabled=False,
+        )
+
+        snapshot = get_radar_snapshot()
+        items_by_ticker = {item["ticker"]: item for item in snapshot["items"]}
+
+        self.assertIn("BNO", items_by_ticker)
+        self.assertIn("META", items_by_ticker)
+        self.assertEqual(items_by_ticker["META"]["mode"], "paper")
+        self.assertEqual(items_by_ticker["META"]["units"], 10.0)
+        self.assertEqual(items_by_ticker["META"]["market_value"], 6087.5)
+        self.assertEqual(items_by_ticker["META"]["weight_pct"], 100.0)
+        self.assertEqual(snapshot["summary"]["number_of_positions"], 1)
+        self.assertEqual(snapshot["summary"]["total_value"], 6087.5)
+
+    @patch("services.dashboard.get_radar_snapshot.load_settings")
+    @patch("services.dashboard.get_radar_snapshot._fetch_wallet_rows")
+    @patch("services.dashboard.get_radar_snapshot._parse_portfolio_fallback")
+    def test_database_snapshot_honors_runtime_watchlist_removal(
+        self,
+        mock_fallback: Mock,
+        mock_wallet: Mock,
+        mock_settings: Mock,
+    ) -> None:
+        mock_wallet.return_value = [
+            _shape_item("META", reference_price=600, origin="database"),
+            _shape_item("BNO", reference_price=57.27, origin="database"),
+        ]
+        mock_fallback.return_value = [
+            _shape_item("META", origin="portfolio_fallback", watchlist=False, removed_watchlist=True),
+        ]
+        mock_settings.return_value = SimpleNamespace(
+            database_url="postgresql://local",
+            chat_id="123",
+            fmp_api_key="",
+            fmp_live_enabled=False,
+        )
+
+        snapshot = get_radar_snapshot()
+        tickers = [item["ticker"] for item in snapshot["items"]]
+
+        self.assertEqual(tickers, ["BNO"])
+        self.assertEqual(snapshot["summary"]["watchlist_count"], 1)
+
+    @patch("services.dashboard.get_radar_snapshot.load_settings")
     @patch("services.dashboard.get_radar_snapshot.FmpClient")
     @patch("services.dashboard.get_radar_snapshot._fetch_wallet_rows")
     @patch("services.dashboard.get_radar_snapshot._parse_portfolio_fallback")
