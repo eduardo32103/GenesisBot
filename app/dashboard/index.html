@@ -5,949 +5,126 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=phase68a-r1-functional-flows">
+  <link rel="stylesheet" href="./styles.css?v=phase68-app-v2">
 </head>
 <body>
-  <div class="shell">
-    <nav class="app-tabbar" aria-label="Navegacion principal">
-      <div class="nav">
-        <button class="nav-link is-active" data-view="command-center">
-          <span>Genesis</span>
-          <small>Centro de control</small>
-        </button>
-        <button class="nav-link" data-view="watchlist">
-          <span>Seguimiento</span>
-          <small>Precios live</small>
-        </button>
-        <button class="nav-link" data-view="radar">
-          <span>Cartera</span>
-          <small>Compradas</small>
-        </button>
-        <button class="nav-link" data-view="money-flow">
-          <span>Ballenas</span>
-          <small>Smart money</small>
-        </button>
-        <button class="nav-link" data-view="alerts">
-          <span>Alertas</span>
-          <small>Eventos importantes</small>
-        </button>
+  <main class="app-shell" id="genesis-app">
+    <header class="app-header">
+      <div>
+        <span class="app-kicker" id="screen-kicker">Genesis</span>
+        <h1 id="screen-title">Genesis</h1>
       </div>
+      <div class="app-status">
+        <span id="live-chip">Datos directos activos</span>
+        <small id="last-updated">Actualizando...</small>
+      </div>
+    </header>
+
+    <section class="app-screen is-active" id="view-genesis" data-screen="genesis"></section>
+    <section class="app-screen" id="view-watchlist" data-screen="tracking">
+      <form class="search-card">
+        <input id="portfolio-search-input" placeholder="META, Tesla, NVDA, SPY, BTC-USD">
+        <button class="round-button" id="portfolio-search-button" type="button">+</button>
+      </form>
+      <div id="watchlist-screen-body"></div>
+    </section>
+    <section class="app-screen" id="view-radar" data-screen="portfolio">
+      <button class="primary-button small" type="button" id="portfolio-sim-buy-button">Agregar compra simulada</button>
+      <div id="portfolio-positions-body"></div>
+    </section>
+    <section class="app-screen" id="view-money-flow" data-screen="whales">
+      <form class="search-card" id="money-flow-jarvis-form">
+        <input id="money-flow-jarvis-input" placeholder="Preguntar a Ballenas">
+        <button type="submit">Preguntar</button>
+      </form>
+      <div id="money-flow-jarvis-answer">Lectura Genesis</div>
+      <div id="whales-list">Ballenas</div>
+    </section>
+    <section class="app-screen" id="view-alerts" data-screen="alerts"></section>
+
+    <nav class="bottom-nav" aria-label="Navegacion principal">
+      <button class="nav-link is-active" type="button" data-view="genesis">Genesis</button>
+      <button class="nav-link" type="button" data-view="watchlist">Seguimiento</button>
+      <button class="nav-link" type="button" data-view="radar">Cartera</button>
+      <button class="nav-link" type="button" data-view="money-flow">Ballenas</button>
+      <button class="nav-link" type="button" data-view="alerts">Alertas</button>
     </nav>
+  </main>
 
-    <main class="main">
-      <header class="app-header">
-        <div class="app-header-title">
-          <p class="eyebrow">Genesis App</p>
-          <h2 id="view-title">Genesis Home</h2>
-        </div>
-      </header>
+  <aside class="asset-sheet" id="asset-sheet" hidden>
+    <div class="sheet-backdrop" data-sheet-close></div>
+    <section class="sheet-card">
+      <button class="sheet-close" type="button" data-sheet-close>Cerrar</button>
+      <div id="asset-sheet-body"></div>
+    </section>
+  </aside>
 
-      <section class="view app-screen is-visible genesis-home" id="view-command-center">
-        <article class="card panel-card genesis-chat-card genesis-home-chat">
-          <div class="genesis-chat-header">
-            <div>
-              <p class="eyebrow">Genesis</p>
-              <h4>Conversacion central</h4>
-            </div>
-            <span class="badge badge-soft">Panel local</span>
-          </div>
-          <div class="genesis-context-row">
-            <span class="chip chip-muted" id="genesis-context-chip">Contexto: General</span>
-            <span class="chip chip-muted" id="genesis-view-chip">Vista: Genesis Home</span>
-            <span class="chip chip-muted" id="genesis-ticker-chip">Ticker: ninguno</span>
-            <span class="chip chip-muted" id="genesis-data-chip">Datos: panel</span>
-          </div>
-          <div class="genesis-thread" id="genesis-thread" aria-live="polite">
-            <div class="genesis-message genesis-message-assistant">
-              <strong>Genesis</strong>
-              <p>Listo. Preguntame por un activo y te doy una lectura corta, conservadora y accionable.</p>
-            </div>
-          </div>
-          <form class="genesis-chat-form" id="genesis-chat-form">
-            <input id="genesis-chat-input" type="text" aria-label="Escribir a Genesis" placeholder="Escribe una pregunta sobre el panel...">
-            <button type="submit">Enviar</button>
-          </form>
-        </article>
+  <aside class="asset-sheet" id="paper-buy-sheet" hidden>
+    <div class="sheet-backdrop" data-paper-cancel></div>
+    <form class="sheet-card sheet-form" id="paper-buy-form">
+      <button class="sheet-close" type="button" data-paper-cancel>Cancelar</button>
+      <span class="app-kicker">Paper trading</span>
+      <h2>Compra simulada</h2>
+      <input id="paper-buy-ticker" name="ticker" type="hidden">
+      <label>
+        Activo
+        <input id="paper-buy-label" disabled>
+      </label>
+      <label>
+        Precio actual
+        <input id="paper-buy-live-price" disabled>
+      </label>
+      <label>
+        Unidades
+        <input id="paper-buy-units" name="units" type="number" min="0" step="0.000001" placeholder="10" required>
+      </label>
+      <label>
+        Precio de entrada
+        <input id="paper-buy-entry" name="entry_price" type="number" min="0" step="0.0001" required>
+      </label>
+      <p class="sheet-total" id="paper-buy-total">Total estimado: Sin calcular</p>
+      <button class="primary-button" type="submit">Guardar compra simulada</button>
+      <p class="muted-note">No compra real. No broker. Solo simulacion paper.</p>
+    </form>
+  </aside>
 
-        <div class="grid grid-kpis">
-          <article class="card metric-card">
-            <p class="eyebrow">Estado general</p>
-            <h4>Sistema</h4>
-            <strong id="metric-system-state" class="state-token state-loading is-loading">Cargando...</strong>
-            <small id="metric-system-summary">Esperando datos operativos</small>
-          </article>
-          <article class="card metric-card">
-            <p class="eyebrow">Arranque</p>
-            <h4>Estado local</h4>
-            <strong id="metric-boot-stage" class="is-loading">Cargando...</strong>
-            <small id="metric-runtime-note">Sin nota del sistema local todavia</small>
-          </article>
-          <article class="card metric-card">
-            <p class="eyebrow">Ultima actualizacion</p>
-            <h4>Heartbeat</h4>
-            <strong id="metric-last-update" class="is-loading">Cargando...</strong>
-            <small id="metric-heartbeat-age">Pendiente</small>
-          </article>
-          <article class="card metric-card">
-            <p class="eyebrow">Radar</p>
-            <h4>Tamano actual</h4>
-            <strong id="metric-radar-size" class="is-loading">Cargando...</strong>
-            <small>Activos vigilados</small>
-          </article>
-        </div>
-
-        <div class="grid grid-columns">
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Salud</p>
-                <h4>Sistema local</h4>
-              </div>
-              <span class="badge">Fase 3.2</span>
-            </div>
-            <ul class="module-list">
-              <li><strong>Panel local</strong><span id="detail-bot-status">Cargando estado local...</span></li>
-              <li><strong>Datos</strong><span id="detail-leader">Cargando lectura actual...</span></li>
-              <li><strong>Arranque</strong><span id="detail-boot-stage">Cargando estado de arranque...</span></li>
-              <li><strong>Ultima actualizacion</strong><span id="detail-last-update">Cargando fecha...</span></li>
-              <li><strong>Radar</strong><span id="detail-radar">Cargando tamano del radar...</span></li>
-            </ul>
-          </article>
-
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Proveedor</p>
-                <h4>Lectura operativa</h4>
-              </div>
-              <span class="badge badge-soft">Sin logica pesada</span>
-            </div>
-            <div class="accent-note" id="provider-note">
-              Cargando nota de proveedor...
-            </div>
-            <div class="timeline">
-              <div class="timeline-item">
-                <span class="timeline-marker"></span>
-                <div>
-                  <strong>Salud real</strong>
-                  <p>Senales operativas sin consultas pesadas.</p>
-                </div>
-              </div>
-              <div class="timeline-item">
-                <span class="timeline-marker"></span>
-                <div>
-                  <strong>Lectura liviana</strong>
-                  <p>Estado general, leader, boot y radar.</p>
-                </div>
-              </div>
-            </div>
-          </article>
-        </div>
-
-        <article class="card panel-card" id="reliability-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Confiabilidad operativa</p>
-              <h4>Decision de hoy</h4>
-            </div>
-            <span class="badge badge-soft">Fase 4.4</span>
-          </div>
-          <p class="placeholder-copy is-loading" id="reliability-summary-note">
-            Cargando confiabilidad...
-          </p>
-          <div class="alerts-stats-grid">
-            <div class="mini-stat">
-              <span>Confiabilidad</span>
-              <strong id="reliability-level" class="state-token state-loading is-loading">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Lectura</span>
-              <strong id="reliability-decision">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Datos directos</span>
-              <strong id="reliability-live-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Datos locales</span>
-              <strong id="reliability-fallback-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Datos parciales</span>
-              <strong id="reliability-degraded-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Mercado</span>
-              <strong id="reliability-fmp-status">...</strong>
-            </div>
-          </div>
-          <div class="reliability-grid">
-            <article class="detail-block">
-              <p class="eyebrow">Datos directos</p>
-              <div class="chip-list" id="reliability-live-list">
-                <span class="chip chip-muted chip-loading">Cargando datos directos...</span>
-              </div>
-            </article>
-            <article class="detail-block">
-              <p class="eyebrow">Datos locales</p>
-              <div class="chip-list" id="reliability-fallback-list">
-                <span class="chip chip-muted chip-loading">Cargando datos locales...</span>
-              </div>
-            </article>
-            <article class="detail-block">
-              <p class="eyebrow">Fuente de mercado</p>
-              <div class="chip-list" id="reliability-fmp-list">
-                <span class="chip chip-muted chip-loading">Cargando fuente de mercado...</span>
-              </div>
-            </article>
-            <article class="detail-block">
-              <p class="eyebrow">Datos parciales</p>
-              <div class="chip-list" id="reliability-degraded-list">
-                <span class="chip chip-muted chip-loading">Cargando lectura limitada...</span>
-              </div>
-            </article>
-          </div>
-        </article>
-
-        <article class="card panel-card" id="executive-queue-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Cola ejecutiva</p>
-              <h4>Prioridad global</h4>
-            </div>
-            <span class="badge badge-soft">Fase 4.6</span>
-          </div>
-          <p class="placeholder-copy is-loading" id="executive-queue-note">
-            Cargando prioridad global...
-          </p>
-          <div class="alerts-stats-grid">
-            <div class="mini-stat">
-              <span>Activos</span>
-              <strong id="executive-queue-total">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Revisar ahora</span>
-              <strong id="executive-queue-review-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Vigilar</span>
-              <strong id="executive-queue-watch-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Esperar / NC</span>
-              <strong id="executive-queue-wait-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Confiabilidad</span>
-              <strong id="executive-queue-reliability" class="state-token state-loading">...</strong>
-            </div>
-          </div>
-          <div class="executive-queue-grid">
-            <article class="detail-block">
-              <p class="eyebrow">Revisar ahora</p>
-              <div class="executive-queue-list" id="executive-queue-review-list">
-                <div class="detail-activity-item">
-                  <strong>Cargando cola...</strong>
-                  <small>Esperando activos con senal prioritaria.</small>
-                </div>
-              </div>
-            </article>
-            <article class="detail-block">
-              <p class="eyebrow">Vigilar</p>
-              <div class="executive-queue-list" id="executive-queue-watch-list">
-                <div class="detail-activity-item">
-                  <strong>Cargando vigilancia...</strong>
-                  <small>Esperando activos para seguimiento.</small>
-                </div>
-              </div>
-            </article>
-            <article class="detail-block">
-              <p class="eyebrow">Esperar / no concluyente</p>
-              <div class="executive-queue-list" id="executive-queue-wait-list">
-                <div class="detail-activity-item">
-                  <strong>Cargando espera...</strong>
-                  <small>Esperando activos con evidencia insuficiente.</small>
-                </div>
-              </div>
-            </article>
-          </div>
-        </article>
-      </section>
-
-      <section class="view app-screen" id="view-money-flow">
-        <article class="card panel-card money-flow-card whales-card" id="money-flow-card">
-          <div class="section-heading whales-heading">
-            <div>
-              <p class="eyebrow">Smart Money</p>
-              <h3>Ballenas</h3>
-              <p class="portfolio-subtitle">Flujo relevante y entidades confirmadas cuando existan</p>
-            </div>
-            <span class="badge badge-soft">Lectura conservadora</span>
-          </div>
-          <p class="placeholder-copy is-loading" id="money-flow-summary-note">
-            Cargando lectura de flujo...
-          </p>
-          <div class="whales-stats-grid">
-            <div class="mini-stat">
-              <span>Activos evaluados</span>
-              <strong id="money-flow-total-assets">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Con senal</span>
-              <strong id="money-flow-detected-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>No concluyentes</span>
-              <strong id="money-flow-non-conclusive-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Ballenas identificadas</span>
-              <strong id="money-flow-cause-count">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Smart money</span>
-              <strong id="money-flow-detection-status" class="state-token state-loading">...</strong>
-            </div>
-            <div class="mini-stat">
-              <span>Causa</span>
-              <strong id="money-flow-causal-status" class="state-token state-loading">...</strong>
-            </div>
-          </div>
-          <article class="money-flow-jarvis-card whales-search-card">
-            <div>
-              <p class="eyebrow">Lectura Genesis</p>
-              <h4>Buscar actividad por ticker</h4>
-              <p>Responde con una lectura breve, sin elevar señales débiles a conclusión.</p>
-            </div>
-            <form class="money-flow-jarvis-form" id="money-flow-jarvis-form">
-              <input id="money-flow-jarvis-input" type="text" placeholder="Ej: que pasa con BNO segun el flujo">
-              <button type="submit">Preguntar</button>
-            </form>
-            <div class="money-flow-jarvis-answer" id="money-flow-jarvis-answer">
-              Escribe un ticker o pide un resumen general de Ballenas.
-            </div>
-          </article>
-          <div class="whales-list" id="whales-list">
-            <div class="portfolio-list-empty">Cargando Ballenas...</div>
-          </div>
-          <p class="table-note" id="money-flow-table-note">
-            Flujo detectado no equivale a ballena identificada. Sin entidad real, la lectura queda no concluyente para ballena especifica.
-          </p>
-        </article>
-      </section>
-
-      <section class="view app-screen" id="view-watchlist">
-        <article class="card panel-card portfolio-card watchlist-app-card">
-          <div class="portfolio-head">
-            <div>
-              <p class="eyebrow">Seguimiento</p>
-              <h3>Seguimiento</h3>
-              <p class="portfolio-subtitle">Activos del mercado con precio visible</p>
-            </div>
-            <div class="portfolio-status-strip">
-              <span class="badge badge-soft" id="watchlist-data-state">Cargando datos...</span>
-              <small id="watchlist-last-update">Actualizacion pendiente</small>
-            </div>
-            <button type="button" class="portfolio-action-button portfolio-head-button" id="portfolio-add-button">+</button>
-          </div>
-
-          <div class="portfolio-search-panel">
-            <label>
-              Buscar activo
-              <input id="portfolio-search-input" autocomplete="off" placeholder="META, Tesla, NVDA, SPY, BTC-USD">
-            </label>
-            <button type="button" class="portfolio-action-button" id="portfolio-search-button" aria-label="Buscar y agregar a seguimiento">+</button>
-            <p id="portfolio-search-note">Escribe ticker o nombre y pulsa + para agregarlo a seguimiento.</p>
-            <div class="portfolio-search-result" id="portfolio-search-result" hidden></div>
-          </div>
-
-          <div class="portfolio-section-layout portfolio-section-list-only">
-            <div class="portfolio-list" id="watchlist-screen-body">
-              <div class="portfolio-list-empty">Cargando seguimiento...</div>
-            </div>
-          </div>
-        </article>
-      </section>
-
-      <section class="view app-screen" id="view-radar">
-        <article class="card panel-card portfolio-card">
-          <div class="portfolio-head">
-            <div>
-              <p class="eyebrow">Cartera</p>
-              <h3>Cartera</h3>
-              <p class="portfolio-subtitle">Vision simple de tu portafolio</p>
-            </div>
-            <div class="portfolio-status-strip">
-              <span class="badge badge-soft" id="portfolio-data-state">Cargando datos...</span>
-              <small id="portfolio-last-update">Actualizacion pendiente</small>
-            </div>
-            <button type="button" class="portfolio-action-button portfolio-head-button" id="portfolio-sim-buy-button">Agregar compra simulada</button>
-          </div>
-
-          <span class="visually-hidden" id="portfolio-total-stat">...</span>
-          <span class="visually-hidden" id="portfolio-day-stat">...</span>
-          <span class="visually-hidden" id="radar-tracked-count">...</span>
-          <span class="visually-hidden" id="radar-last-update">...</span>
-          <span class="visually-hidden" id="radar-summary-note">...</span>
-          <span class="visually-hidden" id="radar-investment-count">...</span>
-          <span class="visually-hidden" id="radar-reference-count">...</span>
-          <div class="portfolio-main-donut">
-            <div class="portfolio-donut-panel">
-              <div class="portfolio-donut" id="portfolio-donut" aria-label="Distribucion de compradas">
-                <div class="portfolio-donut-center">
-                  <strong id="portfolio-total-value">...</strong>
-                  <span id="portfolio-day-return">Hoy</span>
-                  <small id="portfolio-donut-caption">Cargando compradas</small>
-                </div>
-              </div>
-              <div class="portfolio-legend" id="radar-ticker-list">
-                <span class="chip chip-muted chip-loading">Cargando compradas...</span>
-              </div>
-            </div>
-          </div>
-        </article>
-
-        <div class="portfolio-app-grid">
-          <article class="card panel-card portfolio-app-section portfolio-watchlist-section">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Seguimiento</p>
-                <h4>Activos en vigilancia</h4>
-              </div>
-              <span class="badge badge-soft">Precio visible</span>
-            </div>
-            <div class="portfolio-section-layout portfolio-section-list-only">
-              <div class="portfolio-list" id="portfolio-watchlist-body">
-                <div class="portfolio-list-empty">Cargando seguimiento...</div>
-              </div>
-            </div>
-            <p class="visually-hidden" id="radar-table-note">Seguimiento</p>
-          </article>
-
-          <article class="card panel-card portfolio-app-section">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Compradas</p>
-                <h4>Posiciones simuladas</h4>
-              </div>
-              <span class="badge badge-soft">Paper trading</span>
-            </div>
-            <div class="portfolio-section-layout portfolio-section-list-only">
-              <div class="portfolio-list" id="portfolio-positions-body">
-                <div class="portfolio-list-empty">Sin compras simuladas.</div>
-              </div>
-            </div>
-            <p class="visually-hidden" id="portfolio-positions-note">Compradas</p>
-          </article>
-        </div>
-
-        <article class="card panel-card drilldown-card" id="radar-drilldown-card" hidden>
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Ficha tactica por activo</p>
-              <h4>Vista unificada del ticker</h4>
-            </div>
-            <span class="badge badge-soft">Fase 4.7</span>
-          </div>
-          <div class="drilldown-header">
-            <div>
-              <p class="eyebrow">Ticker seleccionado</p>
-              <strong id="drilldown-symbol" class="drilldown-symbol is-loading">Sin seleccionar</strong>
-            </div>
-            <span class="state-token state-loading" id="drilldown-status">Pendiente</span>
-          </div>
-          <p class="placeholder-copy" id="radar-drilldown-note">
-            Elige un ticker para abrir su ficha tactica.
-          </p>
-          <div class="drilldown-grid">
-            <article class="detail-block">
-              <p class="eyebrow">Capital desplegado</p>
-              <dl class="detail-list">
-                <div><dt>Capital</dt><dd id="drilldown-amount-usd">Sin dato</dd></div>
-                <div><dt>Precio de entrada</dt><dd id="drilldown-entry-price">Sin dato</dd></div>
-                <div><dt>Unidades</dt><dd id="drilldown-units">Sin dato</dd></div>
-                <div><dt>Fuente</dt><dd id="drilldown-source">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Lectura actual</p>
-              <dl class="detail-list">
-                <div><dt>Precio actual</dt><dd id="drilldown-current-price">Sin dato</dd></div>
-                <div><dt>Valor actual</dt><dd id="drilldown-current-value">Sin dato</dd></div>
-                <div><dt>Ganancia / perdida</dt><dd id="drilldown-pnl-usd">Sin dato</dd></div>
-                <div><dt>Rendimiento</dt><dd id="drilldown-pnl-pct">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Trazabilidad</p>
-              <dl class="detail-list">
-                <div><dt>Ticker</dt><dd id="drilldown-symbol-detail">Sin dato</dd></div>
-                <div><dt>Estado</dt><dd id="drilldown-status-detail">Sin dato</dd></div>
-                <div><dt>Abierto desde</dt><dd id="drilldown-opened-at" class="detail-value-time">Sin dato</dd></div>
-                <div><dt>Ultima cotizacion</dt><dd id="drilldown-quote-timestamp" class="detail-value-time">Sin dato</dd></div>
-                <div><dt>Alerta creada</dt><dd id="drilldown-last-alert-created-at" class="detail-value-time">Sin dato</dd></div>
-                <div><dt>Ultima revision</dt><dd id="drilldown-last-alert-evaluated-at" class="detail-value-time">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Alertas relacionadas</p>
-              <dl class="detail-list">
-                <div><dt>alertas recientes</dt><dd id="drilldown-related-alert-count">Sin dato</dd></div>
-                <div><dt>estado resumido</dt><dd id="drilldown-alert-state-summary">Sin dato</dd></div>
-              </dl>
-              <div class="detail-activity-list" id="drilldown-related-alert-list">
-                <div class="detail-activity-item">
-                  <strong>Sin alertas asociadas</strong>
-                  <small>Selecciona un ticker con actividad para ver evidencia relacionada.</small>
-                </div>
-              </div>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Lectura ejecutiva</p>
-              <dl class="detail-list">
-                <div><dt>prioridad</dt><dd id="drilldown-exec-priority" class="state-token state-loading">Sin dato</dd></div>
-                <div><dt>decision</dt><dd id="drilldown-exec-decision">Sin dato</dd></div>
-                <div><dt>motivo principal</dt><dd id="drilldown-exec-reason">Sin dato</dd></div>
-                <div><dt>senal dominante</dt><dd id="drilldown-exec-signal">Sin dato</dd></div>
-                <div><dt>riesgo principal</dt><dd id="drilldown-exec-risk">Sin dato</dd></div>
-                <div><dt>confiabilidad actual</dt><dd id="drilldown-exec-reliability">Sin dato</dd></div>
-                <div><dt>Fecha util</dt><dd id="drilldown-exec-timestamp" class="detail-value-time">Sin dato</dd></div>
-                <div><dt>contexto corto</dt><dd id="drilldown-context-note">Sin dato</dd></div>
-                <div><dt>confiabilidad</dt><dd id="drilldown-reliability-note">Sin dato</dd></div>
-                <div><dt>nota ejecutiva</dt><dd id="drilldown-exec-note">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Explicabilidad ejecutiva</p>
-              <dl class="detail-list">
-                <div><dt>factor dominante</dt><dd id="drilldown-explain-factor">Sin dato</dd></div>
-                <div><dt>por que quedo asi</dt><dd id="drilldown-explain-decision">Sin dato</dd></div>
-              </dl>
-              <div class="explainability-grid">
-                <div>
-                  <p class="eyebrow">Apoya</p>
-                  <div class="chip-list" id="drilldown-explain-supporting">
-                    <span class="chip chip-muted">Sin dato</span>
-                  </div>
-                </div>
-                <div>
-                  <p class="eyebrow">Frena</p>
-                  <div class="chip-list" id="drilldown-explain-blocking">
-                    <span class="chip chip-muted">Sin dato</span>
-                  </div>
-                </div>
-                <div>
-                  <p class="eyebrow">Para subir</p>
-                  <div class="chip-list" id="drilldown-explain-upgrade">
-                    <span class="chip chip-muted">Sin dato</span>
-                  </div>
-                </div>
-              </div>
-            </article>
-          </div>
-        </article>
-      </section>
-
-      <aside class="portfolio-asset-panel" id="portfolio-asset-panel" hidden>
-        <div class="portfolio-asset-shell">
-          <div class="portfolio-asset-head">
-            <div>
-              <p class="eyebrow">Activo</p>
-              <strong id="portfolio-asset-symbol">Sin seleccionar</strong>
-              <span id="portfolio-asset-name">Selecciona un ticker</span>
-            </div>
-            <button type="button" class="portfolio-icon-button" id="portfolio-asset-close" aria-label="Cerrar detalle">Cerrar</button>
-          </div>
-          <div class="portfolio-asset-price">
-            <strong id="portfolio-asset-price">Sin precio</strong>
-            <span id="portfolio-asset-change" class="portfolio-change portfolio-change-neutral">Sin cambio</span>
-          </div>
-          <div class="portfolio-asset-metrics">
-            <div><span>Sesion anterior</span><strong id="portfolio-asset-previous-close">Sin dato</strong></div>
-            <div><span>Nocturno</span><strong id="portfolio-asset-extended">Sin nocturno</strong></div>
-            <div><span>Rango del dia</span><strong id="portfolio-asset-range">Sin dato</strong></div>
-            <div><span>Volumen</span><strong id="portfolio-asset-volume">Sin dato</strong></div>
-            <div><span>Actualizacion</span><strong id="portfolio-asset-updated">Sin fecha</strong></div>
-            <div><span>Estado</span><strong id="portfolio-asset-mode">Seguimiento</strong></div>
-          </div>
-          <div class="portfolio-asset-genesis">
-            <span>Genesis</span>
-            <h4 id="portfolio-asset-verdict">Vigilar</h4>
-            <p id="portfolio-asset-entry">Entrada condicional pendiente de confirmacion.</p>
-            <p id="portfolio-asset-invalidation">Invalidacion pendiente de datos suficientes.</p>
-            <p id="portfolio-asset-plan">Vigilar y validar antes de operar.</p>
-          </div>
-          <div class="portfolio-asset-actions">
-            <button type="button" class="portfolio-action-button" id="portfolio-asset-sim-buy">Simular compra</button>
-            <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-asset-remove">Quitar</button>
-          </div>
-        </div>
-      </aside>
-
-      <div class="portfolio-modal" id="portfolio-action-modal" hidden>
-        <div class="portfolio-modal-dialog">
-          <div class="portfolio-modal-head">
-            <div>
-              <p class="eyebrow">Cartera</p>
-              <h4 id="portfolio-modal-title">Agregar accion</h4>
-            </div>
-            <button type="button" class="portfolio-icon-button" id="portfolio-modal-close" aria-label="Cerrar">Cerrar</button>
-          </div>
-          <form class="portfolio-form" id="portfolio-modal-form">
-            <label>
-              Ticker
-              <input id="portfolio-modal-ticker" name="ticker" autocomplete="off" placeholder="NVDA" required>
-            </label>
-            <div class="portfolio-sim-fields" id="portfolio-sim-fields" hidden>
-              <label>
-                Unidades
-                <input id="portfolio-modal-units" name="units" type="number" min="0" step="0.000001" placeholder="10">
-              </label>
-              <label>
-                Precio de entrada
-                <input id="portfolio-modal-entry-price" name="entry_price" type="number" min="0" step="0.0001" placeholder="199.57">
-              </label>
-            </div>
-            <p class="portfolio-modal-live-price" id="portfolio-modal-live-price" hidden>Precio actual: Sin precio</p>
-            <p class="portfolio-modal-note" id="portfolio-modal-note">Agrega un ticker directo a seguimiento.</p>
-            <p class="portfolio-modal-total" id="portfolio-modal-total" hidden>Total estimado: Sin calcular</p>
-            <div class="portfolio-modal-actions">
-              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-modal-cancel">Cancelar</button>
-              <button type="submit" class="portfolio-action-button" id="portfolio-modal-submit">Agregar</button>
-            </div>
-          </form>
-        </div>
+  <aside class="asset-sheet" id="portfolio-close-modal" hidden>
+    <div class="sheet-backdrop" data-close-paper-cancel></div>
+    <form class="sheet-card sheet-form" id="portfolio-close-form">
+      <button class="sheet-close" type="button" id="portfolio-close-modal-close" data-close-paper-cancel>Cerrar</button>
+      <span class="app-kicker">Paper</span>
+      <h2 id="portfolio-close-title">Cerrar posicion paper</h2>
+      <input id="portfolio-close-ticker" name="ticker" type="hidden">
+      <p class="sheet-total" id="portfolio-close-summary">Sin posicion seleccionada.</p>
+      <div class="sheet-actions">
+        <button class="secondary-button" type="button" id="portfolio-close-cancel" data-close-paper-cancel>Cancelar</button>
+        <button class="danger-button" type="submit">Cerrar paper</button>
       </div>
+    </form>
+  </aside>
 
-      <div class="portfolio-modal" id="portfolio-close-modal" hidden>
-        <div class="portfolio-modal-dialog">
-          <div class="portfolio-modal-head">
-            <div>
-              <p class="eyebrow">Venta simulada</p>
-              <h4 id="portfolio-close-title">Cerrar posicion paper</h4>
-            </div>
-            <button type="button" class="portfolio-icon-button" id="portfolio-close-modal-close" aria-label="Cerrar">Cerrar</button>
-          </div>
-          <form class="portfolio-form" id="portfolio-close-form">
-            <input id="portfolio-close-ticker" name="ticker" type="hidden">
-            <p class="portfolio-modal-note" id="portfolio-close-note">Confirma el cierre de esta compra simulada. No ejecuta una orden real.</p>
-            <p class="portfolio-modal-total" id="portfolio-close-summary">Sin posicion seleccionada.</p>
-            <div class="portfolio-modal-actions">
-              <button type="button" class="portfolio-action-button portfolio-action-secondary" id="portfolio-close-cancel">Cancelar</button>
-              <button type="submit" class="portfolio-action-button portfolio-action-danger">Cerrar paper</button>
-            </div>
-          </form>
-        </div>
+  <aside class="asset-sheet" id="portfolio-action-modal" hidden>
+    <div class="sheet-backdrop" data-legacy-modal-cancel></div>
+    <form class="sheet-card sheet-form" id="portfolio-modal-form">
+      <button class="sheet-close" type="button" id="portfolio-modal-close" data-legacy-modal-cancel>Cerrar</button>
+      <span class="app-kicker">Accion</span>
+      <h2 id="portfolio-modal-title">Agregar accion</h2>
+      <input id="portfolio-modal-ticker" name="ticker" autocomplete="off" placeholder="NVDA" required>
+      <div id="portfolio-sim-fields">
+        <input id="portfolio-modal-units" name="units" type="number" min="0" step="0.000001" placeholder="10">
+        <input id="portfolio-modal-entry-price" name="entry_price" type="number" min="0" step="0.0001" placeholder="199.57">
       </div>
+      <p id="portfolio-modal-live-price" hidden>Precio actual: Sin precio</p>
+      <p id="portfolio-modal-note">Agrega un ticker directo a seguimiento.</p>
+      <p id="portfolio-modal-total" hidden>Total estimado: Sin calcular</p>
+      <div class="sheet-actions">
+        <button class="secondary-button" type="button" id="portfolio-modal-cancel" data-legacy-modal-cancel>Cancelar</button>
+        <button class="primary-button" type="submit" id="portfolio-modal-submit">Agregar</button>
+      </div>
+    </form>
+  </aside>
 
-      <section class="view app-screen" id="view-alerts">
-        <div class="grid grid-columns">
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Alertas</p>
-              <h4>Resumen del motor</h4>
-              </div>
-              <span class="badge">Fase 3.4</span>
-            </div>
-            <p class="placeholder-copy is-loading" id="alerts-summary-note">
-              Cargando Alertas...
-            </p>
-            <div class="alerts-stats-grid">
-              <div class="mini-stat">
-                <span>Total reciente</span>
-                <strong id="alerts-total-recent">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Activas</span>
-                <strong id="alerts-active-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Validadas</span>
-                <strong id="alerts-validated-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Score del motor</span>
-                <strong id="alerts-avg-score">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Acierto</span>
-                <strong id="alerts-win-rate">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Paso del filtro</span>
-                <strong id="alerts-pass-rate">...</strong>
-              </div>
-            </div>
-          </article>
-
-          <article class="card panel-card">
-            <p class="eyebrow">Timeline reciente</p>
-            <h4>Timeline</h4>
-            <div class="activity-list" id="alerts-recent-list">
-              <div class="activity-item"><span class="dot dot-muted"></span><div><strong>Cargando alertas...</strong><small>Esperando lectura guardada del panel</small></div></div>
-            </div>
-            <p class="table-note" id="alerts-list-note">
-              Resumen real del motor, sin recalculo pesado.
-            </p>
-          </article>
-        </div>
-
-        <article class="card panel-card drilldown-card" id="alerts-drilldown-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Drilldown por alerta</p>
-              <h4>Ficha ejecutiva de alerta</h4>
-            </div>
-            <span class="badge badge-soft">Fase 4.2</span>
-          </div>
-          <div class="drilldown-header">
-            <div>
-              <p class="eyebrow">Alerta seleccionada</p>
-              <strong id="alert-drilldown-key" class="drilldown-symbol is-loading">Sin seleccionar</strong>
-            </div>
-            <span class="state-token state-loading" id="alert-drilldown-status">Pendiente</span>
-          </div>
-          <p class="placeholder-copy" id="alert-drilldown-note">
-            Selecciona una alerta reciente.
-          </p>
-          <div class="drilldown-grid">
-            <article class="detail-block">
-              <p class="eyebrow">Señal</p>
-              <dl class="detail-list">
-                <div><dt>ticker</dt><dd id="alert-detail-ticker">Sin dato</dd></div>
-                <div><dt>tipo de alerta</dt><dd id="alert-detail-type">Sin dato</dd></div>
-                <div><dt>titulo</dt><dd id="alert-detail-title">Sin dato</dd></div>
-                <div><dt>resumen</dt><dd id="alert-detail-summary">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Validacion</p>
-              <dl class="detail-list">
-                <div><dt>horizonte</dt><dd id="alert-detail-horizon">Sin dato</dd></div>
-                <div><dt>Estado</dt><dd id="alert-detail-status">Sin dato</dd></div>
-                <div><dt>Puntaje</dt><dd id="alert-detail-score">Sin dato</dd></div>
-                <div><dt>validacion</dt><dd id="alert-detail-validation">Sin dato</dd></div>
-                <div><dt>resultado</dt><dd id="alert-detail-result">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Trazabilidad</p>
-              <dl class="detail-list">
-                <div><dt>Creado</dt><dd id="alert-detail-created-at" class="detail-value-time">Sin dato</dd></div>
-                <div><dt>Ultima revision</dt><dd id="alert-detail-evaluated-at" class="detail-value-time">Sin dato</dd></div>
-              </dl>
-            </article>
-
-            <article class="detail-block">
-              <p class="eyebrow">Lectura ejecutiva</p>
-              <dl class="detail-list">
-                <div><dt>contexto corto</dt><dd id="alert-detail-context">Sin dato</dd></div>
-                <div><dt>confiabilidad</dt><dd id="alert-detail-reliability">Sin dato</dd></div>
-              </dl>
-            </article>
-          </div>
-        </article>
-      </section>
-
-      <section class="view app-screen" id="view-dependencies">
-        <div class="grid grid-columns">
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Datos</p>
-                <h4>Fuentes y salud</h4>
-              </div>
-              <span class="badge">Fase 3.5</span>
-            </div>
-            <p class="placeholder-copy is-loading" id="dependencies-summary-note">
-              Cargando estado de fuentes del panel...
-            </p>
-            <div class="alerts-stats-grid">
-              <div class="mini-stat">
-                <span>Estado general</span>
-                <strong id="dependencies-status" class="state-token state-loading is-loading">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Pausas activas</span>
-                <strong id="dependencies-cooldown-active">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Datos guardados</span>
-                <strong id="dependencies-cache-hit-total">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Límites</span>
-                <strong id="dependencies-quota-total">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Accesos</span>
-                <strong id="dependencies-access-total">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Ultima lectura</span>
-                <strong id="dependencies-last-snapshot">...</strong>
-              </div>
-            </div>
-            <div class="chip-list" id="dependencies-signal-list">
-              <span class="chip chip-muted chip-loading">Cargando senales de proveedor...</span>
-            </div>
-          </article>
-
-          <article class="card panel-card accent-card">
-            <p class="eyebrow">Uso por consulta</p>
-            <h4>Consumo resumido del sistema local</h4>
-            <div class="table-wrap">
-              <table class="table-shell table-shell-wide">
-                <thead>
-                  <tr>
-                    <th>Consulta</th>
-                    <th>Consultas</th>
-                    <th>OK</th>
-                    <th>Guardado</th>
-                    <th>Pausa</th>
-                    <th>Limite</th>
-                    <th>Acceso</th>
-                  </tr>
-                </thead>
-                <tbody id="dependencies-endpoint-body">
-                  <tr><td colspan="7">Cargando uso por consulta...</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <p class="table-note" id="dependencies-endpoint-note">
-              El dashboard reutiliza solo datos guardados del panel. No dispara consultas nuevas.
-            </p>
-            <div class="accent-note dependency-note" id="dependencies-incident-note">
-              Sin incidencia de mercado persistida todavia.
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section class="view app-screen" id="view-macro">
-        <div class="grid grid-columns">
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Macro</p>
-                <h4>Lectura macro guardada</h4>
-              </div>
-              <span class="badge">Fase 3.6</span>
-            </div>
-            <p class="placeholder-copy is-loading" id="macro-summary-note">
-              Cargando lectura macro y geopolitica del sistema local...
-            </p>
-            <div class="alerts-stats-grid">
-              <div class="mini-stat">
-                <span>Sesgo actual</span>
-                <strong id="macro-bias-label">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Sentimiento global</span>
-                <strong id="macro-sentiment-label">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Confianza</span>
-                <strong id="macro-confidence">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Última actualización</span>
-                <strong id="macro-last-update">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Tickers sensibles</span>
-                <strong id="macro-sensitive-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Alto riesgo</span>
-                <strong id="macro-high-risk-count">...</strong>
-              </div>
-            </div>
-            <div class="chip-list" id="macro-high-risk-list">
-              <span class="chip chip-muted chip-loading">Cargando tickers sensibles...</span>
-            </div>
-            <div class="accent-note dependency-note" id="macro-dominant-risk-note">
-              Sin contexto macro persistido todavía.
-            </div>
-          </article>
-
-          <article class="card panel-card">
-            <p class="eyebrow">Contexto reciente</p>
-            <h4>Catalizadores visibles</h4>
-            <div class="activity-list" id="macro-headline-list">
-              <div class="activity-item"><span class="dot dot-muted"></span><div><strong>Cargando contexto macro...</strong><small>Esperando lectura guardada del panel</small></div></div>
-            </div>
-            <p class="table-note" id="macro-headline-note">
-              Esta vista reutiliza solo lectura guardada del sistema local; no dispara consultas nuevas.
-            </p>
-          </article>
-        </div>
-      </section>
-
-      <section class="view app-screen" id="view-activity">
-        <div class="grid grid-columns">
-          <article class="card panel-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Actividad</p>
-                <h4>Eventos operativos útiles</h4>
-              </div>
-              <span class="badge">Timeline</span>
-            </div>
-            <p class="placeholder-copy is-loading" id="activity-summary-note">
-              Cargando actividad resumida del sistema local...
-            </p>
-            <div class="alerts-stats-grid">
-              <div class="mini-stat">
-                <span>Eventos visibles</span>
-                <strong id="activity-total-events">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Errores</span>
-                <strong id="activity-error-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Avisos</span>
-                <strong id="activity-warning-count">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Último evento</span>
-                <strong id="activity-last-update">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Fuente</span>
-                <strong id="activity-source-label">...</strong>
-              </div>
-              <div class="mini-stat">
-                <span>Vista</span>
-                <strong>resumida</strong>
-              </div>
-            </div>
-          </article>
-
-          <article class="card panel-card">
-            <p class="eyebrow">Historial resumido</p>
-            <h4>Actividad reciente del sistema</h4>
-            <div class="activity-list" id="activity-event-list">
-              <div class="activity-item"><span class="dot dot-muted"></span><div><strong>Cargando actividad...</strong><small>Esperando eventos utiles</small></div></div>
-            </div>
-            <p class="table-note" id="activity-event-note">
-              Esta vista resume solo eventos utiles y no intenta replicar el registro completo del sistema.
-            </p>
-          </article>
-        </div>
-      </section>
-    </main>
-  </div>
-
-    <script src="./app.js?v=phase68a-r1-functional-flows"></script>
-  </body>
+  <div class="toast" id="app-toast" hidden></div>
+  <script src="./app.js?v=phase68-app-v2"></script>
+</body>
 </html>

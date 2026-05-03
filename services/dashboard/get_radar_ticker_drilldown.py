@@ -65,6 +65,7 @@ def _build_dashboard_portfolio_payload(*, quote_tickers: list[str] | None = None
             "entry_price": float(item.get("entry_price") or item.get("reference_price") or 0.0) if is_investment else 0.0,
             "reference_price": float(item.get("reference_price") or 0.0),
             "mode": str(item.get("mode") or "").strip(),
+            "watchlist": bool(item.get("watchlist")),
             "timestamp": item.get("updated_at") or "",
         }
         if ticker in requested_quotes and float(item.get("current_price") or 0.0) > 0:

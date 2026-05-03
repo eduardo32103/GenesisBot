@@ -100,6 +100,49 @@ class PortfolioUpdateTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(tickers, ["NVDA"])
 
+    def test_remove_watchlist_from_paper_position_keeps_paper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "positions": [
+                            {
+                                "ticker": "META",
+                                "units": 10,
+                                "entry_price": 608.75,
+                                "mode": "paper",
+                                "watchlist": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = remove_watchlist_ticker("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            position = payload["positions"][0]
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(position["ticker"], "META")
+            self.assertEqual(position["units"], 10.0)
+            self.assertNotIn("watchlist", position)
+
+    def test_add_ticker_restores_watchlist_on_existing_paper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(
+                json.dumps({"positions": [{"ticker": "META", "units": 2, "entry_price": 10, "mode": "paper"}]}),
+                encoding="utf-8",
+            )
+
+            result = add_ticker_to_portfolio("META", path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(payload["positions"][0]["watchlist"])
+
     def test_remove_paper_position(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "portfolio.json"

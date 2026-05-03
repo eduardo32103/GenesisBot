@@ -97,8 +97,14 @@ def add_ticker_to_portfolio(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dic
 
     raw = _read_raw_portfolio(path)
     positions = _portfolio_positions_for_write(raw)
-    if any(_normalize_ticker(position.get("ticker")) == normalized for position in positions):
-        return {"ok": True, "status": "exists", "ticker": normalized, "message": "Este activo ya esta en tu cartera/watchlist."}
+    for position in positions:
+        if _normalize_ticker(position.get("ticker")) != normalized:
+            continue
+        if bool(position.get("watchlist")) or _coerce_positive_float(position.get("units")) <= 0:
+            return {"ok": True, "status": "exists", "ticker": normalized, "message": "Este activo ya esta en tu cartera/watchlist."}
+        position["watchlist"] = True
+        _write_positions(positions, raw, path)
+        return {"ok": True, "status": "added", "ticker": normalized, "message": "Activo agregado a seguimiento."}
 
     positions.append({"ticker": normalized, "display_name": normalized, "watchlist": True})
     _write_positions(positions, raw, path)
@@ -177,6 +183,9 @@ def remove_watchlist_ticker(ticker: str, *, path: Path = _PORTFOLIO_PATH) -> dic
             kept.append(position)
             continue
         if _coerce_positive_float(position.get("units")) > 0:
+            if bool(position.get("watchlist")):
+                position.pop("watchlist", None)
+                removed = True
             kept.append(position)
             continue
         removed = True

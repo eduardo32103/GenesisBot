@@ -158,6 +158,7 @@ def _shape_item(
     mode: str = "",
     sector: str = "",
     industry: str = "",
+    watchlist: bool | None = None,
 ) -> dict[str, Any]:
     normalized_ticker = str(ticker or "").strip().upper()
     normalized_units = _coerce_float(units)
@@ -193,6 +194,7 @@ def _shape_item(
         "mode": str(mode or "").strip(),
         "sector": str(sector or "").strip(),
         "industry": str(industry or "").strip(),
+        "watchlist": (normalized_units <= 0 and cost_basis <= 0) if watchlist is None else bool(watchlist),
     }
     _apply_position_metrics(shaped)
     return shaped
@@ -322,6 +324,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                     updated_at=position.get("opened_at") or timestamp,
                     origin="portfolio_fallback",
                     mode=position.get("mode", ""),
+                    watchlist=bool(position.get("watchlist")),
                 )
             )
         return sorted(items, key=lambda item: item["ticker"])
@@ -357,6 +360,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                         updated_at=position.get("opened_at") or timestamp,
                         origin="portfolio_fallback",
                         mode=position.get("mode", ""),
+                        watchlist=bool(position.get("watchlist")),
                     )
                 )
         return sorted(items, key=lambda item: item["ticker"])
@@ -425,9 +429,14 @@ def _apply_portfolio_totals(items: list[dict[str, Any]]) -> dict[str, Any]:
     ]
 
     position_count = sum(1 for item in items if _coerce_float(item.get("units")) > 0)
-    watchlist_count = sum(1 for item in items if _coerce_float(item.get("units")) <= 0)
+    watchlist_count = sum(1 for item in items if bool(item.get("watchlist")) or _coerce_float(item.get("units")) <= 0)
 
-    live_watchlist = [item for item in items if _coerce_float(item.get("units")) <= 0 and _coerce_float(item.get("current_price")) > 0]
+    live_watchlist = [
+        item
+        for item in items
+        if (bool(item.get("watchlist")) or _coerce_float(item.get("units")) <= 0)
+        and _coerce_float(item.get("current_price")) > 0
+    ]
     if not valued and position_count:
         perspective = "Genesis: hay posiciones con cantidades, pero falta precio actual para calcular valor y peso."
     elif not valued and live_watchlist:
