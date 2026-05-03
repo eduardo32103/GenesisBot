@@ -83,6 +83,10 @@ function itemUnits(item) {
   return positiveOrNull(item?.units);
 }
 
+function itemMode(item) {
+  return String(item?.mode || item?.position_mode || "").trim().toLowerCase();
+}
+
 function itemPrice(item) {
   return positiveOrNull(item?.current_price)
     ?? positiveOrNull(item?.price)
@@ -107,13 +111,15 @@ function itemDailyUsd(item) {
 }
 
 function itemInWatchlist(item) {
+  if (!itemTicker(item)) return false;
   if (item?.removed_watchlist === true) return false;
-  if (item?.watchlist === false && itemUnits(item) === null) return false;
-  return item?.watchlist === true || itemUnits(item) === null;
+  if (item?.watchlist === true) return true;
+  if (item?.watchlist === false) return false;
+  return !itemIsPaper(item);
 }
 
 function itemIsPaper(item) {
-  return itemUnits(item) !== null;
+  return Boolean(itemTicker(item)) && (itemMode(item) === "paper" || itemUnits(item) !== null);
 }
 
 function positionPnl(item) {
@@ -293,8 +299,42 @@ function updateNav() {
   });
 }
 
+function extractPortfolioItems(snapshot) {
+  if (Array.isArray(snapshot?.items)) return snapshot.items;
+  if (Array.isArray(snapshot?.positions)) return snapshot.positions;
+  if (Array.isArray(snapshot?.portfolio?.items)) return snapshot.portfolio.items;
+  if (Array.isArray(snapshot?.portfolio?.positions)) return snapshot.portfolio.positions;
+
+  const positions = snapshot?.positions || snapshot?.portfolio?.positions;
+  if (positions && typeof positions === "object") {
+    return Object.entries(positions).map(([ticker, value]) => (
+      value && typeof value === "object"
+        ? { ticker, ...value }
+        : { ticker, reference_price: value, watchlist: true }
+    ));
+  }
+  return [];
+}
+
+function extractPortfolioSummary(snapshot) {
+  const summary = snapshot?.summary || {};
+  return summary.portfolio && typeof summary.portfolio === "object"
+    ? { ...summary.portfolio, ...summary }
+    : summary;
+}
+
+function findPaperPosition(ticker) {
+  const normalized = normalizeTicker(ticker);
+  return appState.paperPositions.find((item) => itemTicker(item) === normalized && itemIsPaper(item)) || null;
+}
+
+function findTrackingItem(ticker) {
+  const normalized = normalizeTicker(ticker);
+  return appState.trackingItems.find((item) => itemTicker(item) === normalized && itemInWatchlist(item)) || null;
+}
+
 function splitPortfolioSnapshot(snapshot) {
-  const rows = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  const rows = extractPortfolioItems(snapshot).filter((item) => itemTicker(item));
   appState.allItems = rows;
   appState.paperPositions = rows.filter((item) => itemIsPaper(item));
   appState.trackingItems = rows.filter((item) => itemInWatchlist(item));
@@ -303,7 +343,7 @@ function splitPortfolioSnapshot(snapshot) {
   const computedValue = appState.paperPositions.reduce((sum, item) => sum + (itemValue(item) || 0), 0);
   const computedDaily = appState.paperPositions.reduce((sum, item) => sum + (numberOrNull(item.daily_pnl) || 0), 0);
   const computedPnl = appState.paperPositions.reduce((sum, item) => sum + (numberOrNull(positionPnl(item)) || 0), 0);
-  const summary = snapshot?.summary || {};
+  const summary = extractPortfolioSummary(snapshot);
   appState.portfolioTotals = {
     totalValue: computedValue || numberOrNull(summary.total_value) || 0,
     dailyPnl: computedDaily || numberOrNull(summary.daily_pnl),
@@ -426,7 +466,7 @@ async function addTickerToWatchlist(ticker) {
   if (!normalized) throw new Error("Ticker no valido.");
   const result = await postJson("/api/dashboard/portfolio/watchlist/add", { ticker: normalized });
   await refreshPortfolio({ render: false, force: true });
-  const exists = appState.trackingItems.some((item) => itemTicker(item) === normalized && itemInWatchlist(item));
+  const exists = Boolean(findTrackingItem(normalized));
   if (!exists) {
     renderActiveScreen();
     throw new Error("No se agrego a seguimiento. El snapshot no cambio.");
@@ -441,7 +481,7 @@ async function removeTickerFromWatchlist(ticker) {
   if (!normalized) return;
   const result = await postJson("/api/dashboard/portfolio/watchlist/remove", { ticker: normalized });
   await refreshPortfolio({ render: false, force: true });
-  const stillThere = appState.trackingItems.some((item) => itemTicker(item) === normalized && itemInWatchlist(item));
+  const stillThere = Boolean(findTrackingItem(normalized));
   if (stillThere) {
     renderActiveScreen();
     throw new Error("No se quito de seguimiento. El snapshot no cambio.");
@@ -464,10 +504,10 @@ async function savePaperBuy(ticker, units, entryPrice) {
     mode: "paper",
   });
   await refreshPortfolio({ render: false, force: true });
-  const position = appState.paperPositions.find((item) => itemTicker(item) === normalized && itemUnits(item) !== null);
+  const position = findPaperPosition(normalized);
   if (!position) {
     renderActiveScreen();
-    throw new Error("No se guardo la compra simulada. El snapshot no cambio.");
+    throw new Error("No se guardo la compra simulada. La lectura actual no trae la posicion paper.");
   }
   renderActiveScreen();
   toast(result.message || `Compra simulada de ${normalized} guardada.`);
@@ -737,11 +777,16 @@ function assetRowMarkup(item, mode, totalValue = 0) {
 }
 
 function buildDistribution() {
-  const total = appState.paperPositions.reduce((sum, item) => sum + (itemValue(item) || 0), 0);
+  const total = appState.portfolioTotals.totalValue
+    || appState.paperPositions.reduce((sum, item) => sum + (itemValue(item) || 0), 0);
   return appState.paperPositions
-    .map((item) => ({ item, value: itemValue(item) || 0 }))
-    .filter((row) => row.value > 0)
-    .map((row) => ({ ...row, weight: total > 0 ? (row.value / total) * 100 : 0 }));
+    .map((item) => {
+      const explicitWeight = numberOrNull(item.weight_pct);
+      const value = itemValue(item) ?? (explicitWeight !== null && total > 0 ? (total * explicitWeight) / 100 : 0);
+      const weight = explicitWeight ?? (total > 0 ? (value / total) * 100 : 0);
+      return { item, value, weight };
+    })
+    .filter((row) => row.value > 0 || row.weight > 0);
 }
 
 function legendMarkup(row, index) {
