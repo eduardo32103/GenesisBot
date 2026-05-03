@@ -30,6 +30,7 @@ class Settings:
     fmp_api_key: str
     fmp_live_enabled: bool
     openai_api_key: str
+    genesis_llm_enabled: bool
     gemini_api_key: str
     database_url: str
     supabase_url: str
@@ -53,6 +54,7 @@ class Settings:
             "fmp_key": bool(self.fmp_api_key),
             "fmp_live_enabled": self.fmp_live_enabled,
             "openai_key": bool(self.openai_api_key),
+            "genesis_llm_enabled": self.genesis_llm_enabled,
             "gemini_key": bool(self.gemini_api_key),
             "redis": bool(self.redis_url),
             "timezone": self.timezone,
@@ -70,6 +72,7 @@ def load_settings() -> Settings:
         fmp_api_key=_clean_ascii_secret(os.getenv("FMP_API_KEY", "")),
         fmp_live_enabled=_env_flag(os.getenv("FMP_LIVE_ENABLED", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        genesis_llm_enabled=_env_flag(os.getenv("GENESIS_LLM_ENABLED", "")),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         database_url=os.getenv("DATABASE_URL", "").strip(),
         supabase_url=os.getenv("SUPABASE_URL", "").strip(),

@@ -17,6 +17,7 @@ from services.dashboard.get_operational_health import get_operational_health
 from services.dashboard.get_operational_reliability_snapshot import get_operational_reliability_snapshot
 from services.dashboard.get_radar_snapshot import get_radar_snapshot
 from services.dashboard.get_radar_ticker_drilldown import get_dashboard_radar_ticker_drilldown
+from services.genesis.ticker_parser import extract_tickers_from_prompt
 
 _LOGGER = logging.getLogger("genesis.dashboard.genesis")
 _HONESTY_NOTE = "Respuesta local y conservadora. No confirma causalidad, institucionalidad ni compra/venta."
@@ -305,17 +306,7 @@ def _detect_ticker_from_question(question: str) -> str:
 
 
 def _detect_tickers_from_question(question: str) -> list[str]:
-    normalized_question = _normalize(question).upper()
-    tickers: list[str] = []
-    for raw in re.findall(r"\b[A-Z][A-Z0-9.]{1,9}\b", normalized_question):
-        token = raw.strip().upper().rstrip(".")
-        if token in _TICKER_STOPWORDS:
-            continue
-        if any(char.isdigit() for char in token) and not any(char.isalpha() for char in token):
-            continue
-        if 2 <= len(token) <= 10 and token not in tickers:
-            tickers.append(token)
-    return tickers
+    return extract_tickers_from_prompt(question)
 
 
 def _is_comparison_question(question: str) -> bool:

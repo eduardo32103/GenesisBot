@@ -44,7 +44,7 @@ const appState = {
 };
 
 const REFRESH_MS = 15000;
-const CHART_RANGES = ["1D", "1W", "1Y", "5Y", "MAX"];
+const CHART_RANGES = ["1D", "1W", "1M", "1Y", "5Y", "MAX"];
 const MONEY_COLORS = ["#7be0ad", "#91a7ff", "#efbd6f", "#ec7f77", "#7fd9df", "#d7c27f", "#b7c5d9"];
 
 function escapeHtml(value) {
@@ -155,12 +155,34 @@ function positiveClass(value) {
   return numeric > 0 ? "up" : "down";
 }
 
-function formatChange(value, empty = "Sin cambio") {
+function marketTone(value) {
+  const numeric = numberOrNull(value);
+  if (numeric === null || numeric === 0) return "neutral";
+  return numeric > 0 ? "positive" : "negative";
+}
+
+function marketClass(value) {
+  return positiveClass(value);
+}
+
+function formatSignedMoney(value, empty = "Sin dato") {
   return signedMoney(value, empty);
 }
 
-function formatPercent(value, empty = "Sin dato") {
+function formatSignedPercent(value, empty = "Sin dato") {
   return percent(value, empty);
+}
+
+function formatMarketNumber(value, empty = "Sin precio") {
+  return money(value, empty);
+}
+
+function formatChange(value, empty = "Sin cambio") {
+  return formatSignedMoney(value, empty);
+}
+
+function formatPercent(value, empty = "Sin dato") {
+  return formatSignedPercent(value, empty);
 }
 
 function compactPercent(value, empty = "Sin peso") {
@@ -318,9 +340,11 @@ function chartIntentFromText(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   if (!/(GRAFICA|GRAFICO|CHART)/.test(normalized)) return null;
-  const stop = new Set(["HAZME", "UNA", "UN", "GRAFICA", "GRAFICO", "CHART", "MUESTRAME", "MOSTRAME", "DE", "DEL", "LA", "EL", "POR", "FAVOR"]);
-  const tokens = normalized.match(/\b[A-Z0-9]{1,8}(?:[.\-=][A-Z0-9]{1,5})?\b/g) || [];
-  const ticker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
+  const stop = new Set(["ANALIZA", "ANALIZAR", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA"]);
+  const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F" };
+  const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
+  const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
+  const ticker = aliases[rawTicker] || rawTicker;
   return ticker ? { ticker: normalizeTicker(ticker), range: "1Y" } : null;
 }
 
@@ -340,6 +364,8 @@ async function loadChartSeries(ticker, range = "1Y") {
       ticker: normalizedTicker,
       timeframe: normalizedRange,
       points: [],
+      ohlc: [],
+      returns: {},
       summary: {},
       message: error.message || "No pude cargar la grafica.",
     };
@@ -350,53 +376,79 @@ async function loadChartSeries(ticker, range = "1Y") {
 
 function chartReading(payload) {
   const ticker = normalizeTicker(payload?.ticker);
-  const changePct = numberOrNull(payload?.summary?.change_pct);
-  if (!payload?.ok || !Array.isArray(payload.points) || payload.points.length < 2) {
-    return `${ticker || "El activo"} no tiene datos suficientes para una lectura grafica limpia en esta ventana.`;
+  const range = String(payload?.range || payload?.timeframe || "1Y").toUpperCase();
+  const changePct = numberOrNull(payload?.returns?.[range] ?? payload?.summary?.change_pct);
+  const candles = Array.isArray(payload?.ohlc) ? payload.ohlc : [];
+  if (!payload?.ok || candles.length < 2) {
+    return `${ticker || "El activo"} no tiene datos OHLC suficientes para esta temporalidad.`;
   }
   if (changePct === null || changePct === 0) {
-    return `${ticker} se mantiene neutral en esta ventana; conviene esperar confirmacion antes de subir conviccion.`;
+    return `${ticker} se mantiene neutral en ${range}; conviene esperar confirmacion antes de subir conviccion.`;
   }
   return changePct > 0
-    ? `${ticker} mantiene estructura positiva en esta ventana, pero todavia necesita confirmacion en volumen.`
-    : `${ticker} muestra presion negativa en esta ventana; Genesis prioriza cautela hasta ver recuperacion.`;
+    ? `${ticker} mantiene rendimiento positivo en ${range}; puede tener correcciones internas, pero no lo trato como perdida en esa ventana.`
+    : `${ticker} esta negativo en ${range}; Genesis prioriza cautela hasta ver recuperacion.`;
 }
 
-function chartPath(points, width, height, padding) {
-  const closes = points.map((point) => numberOrNull(point.close)).filter((value) => value !== null);
-  if (closes.length < 2) return "";
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
+function chartScale(candles, height, padding) {
+  const values = candles.flatMap((point) => [numberOrNull(point.high), numberOrNull(point.low)]).filter((value) => value !== null);
+  if (!values.length) return () => height / 2;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const range = max - min || Math.max(max, 1);
-  return points.map((point, index) => {
-    const close = numberOrNull(point.close) ?? min;
-    const x = padding + (index / Math.max(points.length - 1, 1)) * (width - padding * 2);
-    const y = padding + ((max - close) / range) * (height - padding * 2);
-    return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
-  }).join(" ");
+  return (value) => padding + ((max - value) / range) * (height - padding * 2);
+}
+
+function candleMarkup(point, index, candles, width, height, padding) {
+  const open = numberOrNull(point.open);
+  const high = numberOrNull(point.high);
+  const low = numberOrNull(point.low);
+  const close = numberOrNull(point.close);
+  if ([open, high, low, close].some((value) => value === null)) return "";
+  const y = chartScale(candles, height, padding);
+  const slot = (width - padding * 2) / Math.max(candles.length, 1);
+  const bodyWidth = Math.max(2, Math.min(9, slot * 0.58));
+  const x = padding + slot * index + slot / 2;
+  const openY = y(open);
+  const closeY = y(close);
+  const highY = y(high);
+  const lowY = y(low);
+  const top = Math.min(openY, closeY);
+  const bodyHeight = Math.max(1.5, Math.abs(closeY - openY));
+  const tone = close > open ? "up" : close < open ? "down" : "flat";
+  return `
+    <g class="candle ${tone}">
+      <line class="candle-wick" x1="${x.toFixed(2)}" x2="${x.toFixed(2)}" y1="${highY.toFixed(2)}" y2="${lowY.toFixed(2)}"></line>
+      <rect class="candle-body" x="${(x - bodyWidth / 2).toFixed(2)}" y="${top.toFixed(2)}" width="${bodyWidth.toFixed(2)}" height="${bodyHeight.toFixed(2)}" rx="1.2"></rect>
+    </g>
+  `;
 }
 
 function chartSvgMarkup(payload) {
-  const points = Array.isArray(payload?.points) ? payload.points : [];
-  if (points.length < 2) return `<div class="chart-empty">${escapeHtml(payload?.message || "No hay datos suficientes para esta temporalidad.")}</div>`;
+  const candles = Array.isArray(payload?.ohlc) ? payload.ohlc : Array.isArray(payload?.points) ? payload.points : [];
+  if (candles.length < 2) return `<div class="chart-empty">${escapeHtml(payload?.message || "No hay datos OHLC suficientes para esta temporalidad.")}</div>`;
   const width = 320;
   const height = 150;
   const padding = 12;
   const tone = positiveClass(payload?.summary?.change_pct ?? payload?.summary?.change);
-  const path = chartPath(points, width, height, padding);
-  const endTokens = path.trim().split(" ").slice(-2);
-  const endX = Number(String(endTokens[0] || "").replace(/[ML]/g, "")) || (width - padding);
-  const endY = Number(endTokens[1]) || padding;
-  const first = points[0];
-  const last = points[points.length - 1];
+  const first = candles[0];
+  const last = candles[candles.length - 1];
   return `
-    <svg class="asset-chart-svg ${tone}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Grafica de ${escapeHtml(payload.ticker || "activo")}">
+    <svg class="asset-chart-svg candle-chart ${tone}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Velas japonesas de ${escapeHtml(payload.ticker || "activo")}">
       <path class="chart-grid" d="M${padding} 38 H${width - padding} M${padding} 75 H${width - padding} M${padding} 112 H${width - padding}"></path>
-      <path class="chart-line" d="${path}"></path>
-      <circle class="chart-endpoint" cx="${endX.toFixed(2)}" cy="${endY.toFixed(2)}" r="2.6"></circle>
-      <text x="${padding}" y="${height - 5}">${escapeHtml(String(first?.date || "").slice(0, 10))}</text>
-      <text x="${width - padding}" y="${height - 5}" text-anchor="end">${escapeHtml(String(last?.date || "").slice(0, 10))}</text>
+      ${candles.map((point, index) => candleMarkup(point, index, candles, width, height, padding)).join("")}
+      <text x="${padding}" y="${height - 5}">${escapeHtml(String(first?.time || first?.date || "").slice(0, 10))}</text>
+      <text x="${width - padding}" y="${height - 5}" text-anchor="end">${escapeHtml(String(last?.time || last?.date || "").slice(0, 10))}</text>
     </svg>
+  `;
+}
+
+function chartReturnsMarkup(payload) {
+  const returns = payload?.returns || {};
+  return `
+    <div class="chart-returns">
+      ${CHART_RANGES.map((range) => `<span class="${marketClass(returns[range])}"><small>${range}</small>${escapeHtml(formatSignedPercent(returns[range], "Sin dato"))}</span>`).join("")}
+    </div>
   `;
 }
 
@@ -428,6 +480,7 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
       <div class="chart-canvas">
         ${state.loading ? `<div class="chart-empty">Cargando grafica...</div>` : chartSvgMarkup(payload)}
       </div>
+      ${payload ? chartReturnsMarkup(payload) : ""}
       <p class="chart-read">${escapeHtml(chartReading(payload))}</p>
     </section>
   `;
@@ -784,10 +837,17 @@ async function submitGenesisQuestion(event) {
   renderGenesisScreen();
   const chartIntent = chartIntentFromText(question);
   if (chartIntent) {
+    let routed = null;
+    try {
+      routed = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen });
+      if (routed?.chart?.ticker) chartIntent.ticker = routed.chart.ticker;
+    } catch (error) {
+      routed = null;
+    }
     const message = {
       id: nextMessageId(),
       role: "assistant",
-      text: `Cargo la grafica de ${chartIntent.ticker}.`,
+      text: routed?.answer || `Cargo velas japonesas de ${chartIntent.ticker}.`,
       chart: { ticker: chartIntent.ticker, range: chartIntent.range },
     };
     appState.chatMessages.push(message);
@@ -798,11 +858,17 @@ async function submitGenesisQuestion(event) {
     return;
   }
   try {
-    const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
+    const payload = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen });
     const answer = payload.assistant_narrative || payload.answer || "No tengo lectura suficiente.";
     appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(answer) });
   } catch (error) {
-    appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude responder ahora: ${cleanCopy(error.message)}` });
+    try {
+      const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
+      const answer = payload.assistant_narrative || payload.answer || "No tengo lectura suficiente.";
+      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(answer) });
+    } catch (fallbackError) {
+      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude responder ahora: ${cleanCopy(fallbackError.message)}` });
+    }
   }
   renderGenesisScreen();
 }

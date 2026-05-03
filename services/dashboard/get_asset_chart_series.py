@@ -10,7 +10,7 @@ from integrations.fmp.client import FmpClient
 
 _LOGGER = logging.getLogger("genesis.dashboard.chart")
 _TICKER_PATTERN = re.compile(r"^[A-Z0-9.\-=]{1,15}$")
-_TIMEFRAMES = {"1D", "1W", "1Y", "5Y", "MAX"}
+_TIMEFRAMES = {"1D", "1W", "1M", "1Y", "5Y", "MAX"}
 _MAX_RENDER_POINTS = 520
 _CRYPTO_SYMBOLS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
 
@@ -46,56 +46,67 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
-def _row_price(row: dict[str, Any]) -> float | None:
-    for key in ("close", "price", "adjClose", "adj_close", "vwap"):
-        numeric = _safe_float(row.get(key))
-        if numeric is not None and numeric > 0:
-            return round(numeric, 6)
-    return None
-
-
 def _row_date(row: dict[str, Any]) -> str:
     return str(row.get("date") or row.get("label") or row.get("datetime") or row.get("timestamp") or "").strip()
 
 
-def _shape_points(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    points: list[dict[str, Any]] = []
+def _shape_ohlc(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candles: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        date = _row_date(row)
-        close = _row_price(row)
-        if not date or close is None:
+        time = _row_date(row)
+        open_price = _safe_float(row.get("open"))
+        high = _safe_float(row.get("high") or row.get("dayHigh"))
+        low = _safe_float(row.get("low") or row.get("dayLow"))
+        close = _safe_float(row.get("close") or row.get("price") or row.get("adjClose") or row.get("adj_close"))
+        if not time or open_price is None or high is None or low is None or close is None:
             continue
-        points.append(
+        if min(open_price, high, low, close) <= 0:
+            continue
+        candles.append(
             {
-                "date": date,
-                "close": close,
+                "time": time,
+                "date": time,
+                "open": round(open_price, 6),
+                "high": round(high, 6),
+                "low": round(low, 6),
+                "close": round(close, 6),
                 "volume": _safe_float(row.get("volume")),
             }
         )
-    points.sort(key=lambda point: point["date"])
-    return points
+    candles.sort(key=lambda point: point["time"])
+    return candles
 
 
-def _downsample(points: list[dict[str, Any]], max_points: int = _MAX_RENDER_POINTS) -> list[dict[str, Any]]:
-    if len(points) <= max_points:
-        return points
-    step = (len(points) - 1) / max(max_points - 1, 1)
+def _downsample_ohlc(candles: list[dict[str, Any]], max_points: int = _MAX_RENDER_POINTS) -> list[dict[str, Any]]:
+    if len(candles) <= max_points:
+        return candles
+    bucket_size = max(1, math.ceil(len(candles) / max_points))
     sampled: list[dict[str, Any]] = []
-    seen_indexes: set[int] = set()
-    for idx in range(max_points):
-        source_index = round(idx * step)
-        if source_index in seen_indexes:
+    for start in range(0, len(candles), bucket_size):
+        bucket = candles[start : start + bucket_size]
+        if not bucket:
             continue
-        seen_indexes.add(source_index)
-        sampled.append(points[source_index])
+        sampled.append(
+            {
+                "time": bucket[0]["time"],
+                "date": bucket[0]["date"],
+                "open": bucket[0]["open"],
+                "high": round(max(float(row["high"]) for row in bucket), 6),
+                "low": round(min(float(row["low"]) for row in bucket), 6),
+                "close": bucket[-1]["close"],
+                "volume": round(sum(float(row.get("volume") or 0) for row in bucket), 6),
+            }
+        )
     return sampled
 
 
 def _slice_for_timeframe(points: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
     if timeframe == "1W":
         return points[-7:]
+    if timeframe == "1M":
+        return points[-23:]
     if timeframe == "1Y":
         return points[-260:]
     if timeframe == "5Y":
@@ -119,6 +130,17 @@ def _summary(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _returns(eod_points: list[dict[str, Any]], intraday_points: list[dict[str, Any]]) -> dict[str, float | None]:
+    return {
+        "1D": _summary(intraday_points if len(intraday_points) >= 2 else eod_points[-2:]).get("change_pct"),
+        "1W": _summary(_slice_for_timeframe(eod_points, "1W")).get("change_pct"),
+        "1M": _summary(_slice_for_timeframe(eod_points, "1M")).get("change_pct"),
+        "1Y": _summary(_slice_for_timeframe(eod_points, "1Y")).get("change_pct"),
+        "5Y": _summary(_slice_for_timeframe(eod_points, "5Y")).get("change_pct"),
+        "MAX": _summary(eod_points).get("change_pct"),
+    }
+
+
 def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -126,7 +148,10 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "message": message,
         "ticker": ticker,
         "timeframe": timeframe,
+        "range": timeframe,
         "points": [],
+        "ohlc": [],
+        "returns": {"1D": None, "1W": None, "1M": None, "1Y": None, "5Y": None, "MAX": None},
         "summary": _summary([]),
         "source": {
             "provider": "FMP",
@@ -156,24 +181,27 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     quote = client.get_quote(normalized_ticker) or {}
     profile = client.get_profile(normalized_ticker) or {}
 
+    eod_rows = client.get_historical_eod(normalized_ticker, limit=None, symbol_map=symbol_map) or []
+    eod_points = _shape_ohlc(eod_rows)
+    intraday_points: list[dict[str, Any]] = []
     endpoint_label = "historical-price-eod/full"
     if normalized_timeframe == "1D":
         rows = client.get_intraday_history(normalized_ticker, interval="5min", limit=160, symbol_map=symbol_map) or []
         endpoint_label = "historical-chart/5min"
-        points = _shape_points(rows)
+        intraday_points = _shape_ohlc(rows)
+        points = intraday_points
     else:
-        limit = None if normalized_timeframe == "MAX" else 1260
-        rows = client.get_historical_eod(normalized_ticker, limit=limit, symbol_map=symbol_map) or []
-        points = _shape_points(rows)
-        points = _slice_for_timeframe(points, normalized_timeframe)
+        points = _slice_for_timeframe(eod_points, normalized_timeframe)
 
     raw_count = len(points)
-    points = _downsample(points)
+    points = _downsample_ohlc(points)
+    return_map = _returns(eod_points, intraday_points)
     if not points:
         return {
-            **_empty_payload(normalized_ticker, normalized_timeframe, "no_data", "No hay datos suficientes para esta temporalidad."),
+            **_empty_payload(normalized_ticker, normalized_timeframe, "no_data", "No hay datos OHLC suficientes para esta temporalidad."),
             "quote": quote,
             "name": quote.get("name") or profile.get("companyName") or profile.get("name") or normalized_ticker,
+            "returns": return_map,
             "source": {
                 "provider": "FMP",
                 "endpoint": endpoint_label,
@@ -189,7 +217,10 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "ticker": normalized_ticker,
         "name": quote.get("name") or profile.get("companyName") or profile.get("name") or normalized_ticker,
         "timeframe": normalized_timeframe,
+        "range": normalized_timeframe,
         "points": points,
+        "ohlc": points,
+        "returns": return_map,
         "summary": _summary(points),
         "quote": {
             "price": quote.get("price"),
@@ -198,6 +229,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "previousClose": quote.get("previousClose"),
             "timestamp": quote.get("timestamp"),
         },
+        "stale": False,
         "source": {
             "provider": "FMP",
             "endpoint": endpoint_label,

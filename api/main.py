@@ -32,6 +32,8 @@ from api.routes.dashboard import (
     simulate_dashboard_portfolio_purchase,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
+from services.genesis.intelligence_core import ask_genesis
+from services.genesis.memory_store import MemoryStore
 
 _ROOT_DIR = Path(__file__).resolve().parents[1]
 _DASHBOARD_DIR = _ROOT_DIR / "app" / "dashboard"
@@ -45,6 +47,12 @@ def create_app() -> dict[str, str]:
         "reliability_endpoint": "/api/dashboard/reliability",
         "executive_queue_endpoint": "/api/dashboard/executive-queue",
         "genesis_endpoint": "/api/dashboard/genesis?q={question}&context={context}&ticker={ticker}&panel_context={json}",
+        "genesis_ask_endpoint": "/api/genesis/ask",
+        "genesis_memory_recent_endpoint": "/api/genesis/memory/recent",
+        "genesis_memory_ticker_endpoint": "/api/genesis/memory/ticker/{ticker}",
+        "genesis_memory_event_endpoint": "/api/genesis/memory/event",
+        "genesis_briefing_endpoint": "/api/genesis/briefing",
+        "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
         "money_flow_causal_endpoint": "/api/dashboard/money-flow/causal",
@@ -95,6 +103,26 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         body = self._read_json_body()
+
+        if parsed.path == "/api/genesis/ask":
+            result = ask_genesis(
+                str(body.get("message") or body.get("question") or ""),
+                context=str(body.get("context") or "general"),
+                ticker=str(body.get("ticker") or ""),
+                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+            )
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/memory/event":
+            result = MemoryStore().save_event(
+                str(body.get("event_type") or "event"),
+                body.get("payload") if isinstance(body.get("payload"), dict) else {},
+                source=str(body.get("source") or "api"),
+                confidence=body.get("confidence") or "media",
+            )
+            self._write_json({"ok": True, "event": result})
+            return
 
         if parsed.path in {"/api/dashboard/portfolio/watchlist", "/api/dashboard/portfolio/watchlist/add"}:
             result = add_dashboard_portfolio_ticker(str(body.get("ticker") or ""))
@@ -236,11 +264,52 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
-        if parsed.path == "/api/dashboard/asset/chart":
+        if parsed.path in {"/api/dashboard/asset/chart", "/api/dashboard/chart"}:
             query = parse_qs(parsed.query)
             ticker = (query.get("ticker") or [""])[0]
             timeframe = (query.get("range") or query.get("timeframe") or ["1Y"])[0]
             payload = json.dumps(get_dashboard_asset_chart(ticker, timeframe=timeframe)).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/genesis/briefing":
+            payload = json.dumps(ask_genesis("como va mi cartera", context="portfolio")).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/genesis/memory/recent":
+            query = parse_qs(parsed.query)
+            event_type = (query.get("event_type") or [""])[0] or None
+            limit = int((query.get("limit") or ["20"])[0] or 20)
+            store = MemoryStore()
+            payload = json.dumps({"ok": True, "backend": store.backend, "items": store.get_recent_events(limit, event_type)}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path.startswith("/api/genesis/memory/ticker/"):
+            ticker = parsed.path.rsplit("/", 1)[-1]
+            store = MemoryStore()
+            payload = json.dumps(
+                {
+                    "ok": True,
+                    "backend": store.backend,
+                    "ticker": ticker.upper(),
+                    "market": store.get_market_memory(ticker),
+                    "whales": store.get_whale_memory(ticker),
+                }
+            ).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

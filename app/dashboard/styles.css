@@ -797,7 +797,7 @@ input:focus-visible {
 
 .chart-ranges {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 5px;
 }
 
@@ -844,34 +844,64 @@ input:focus-visible {
   stroke-width: 1;
 }
 
-.chart-line {
-  fill: none;
+.candle-wick {
   stroke: var(--muted);
-  stroke-width: 2.35;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  stroke-width: 1;
 }
 
-.chart-endpoint {
-  fill: currentColor;
+.candle-body {
+  fill: var(--muted);
+  stroke: var(--muted);
+  stroke-width: 0.8;
 }
 
-.asset-chart-svg.up .chart-line,
-.asset-chart-svg.up .chart-endpoint {
+.candle.up .candle-wick,
+.candle.up .candle-body {
   stroke: var(--green);
-  color: var(--green);
 }
 
-.asset-chart-svg.down .chart-line,
-.asset-chart-svg.down .chart-endpoint {
+.candle.up .candle-body {
+  fill: rgba(98, 217, 152, 0.78);
+}
+
+.candle.down .candle-wick,
+.candle.down .candle-body {
   stroke: var(--red);
-  color: var(--red);
 }
 
-.asset-chart-svg.flat .chart-line,
-.asset-chart-svg.flat .chart-endpoint {
+.candle.down .candle-body {
+  fill: rgba(255, 111, 103, 0.78);
+}
+
+.candle.flat .candle-wick,
+.candle.flat .candle-body {
   stroke: var(--muted);
-  color: var(--muted);
+  fill: var(--muted);
+}
+
+.chart-returns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.chart-returns span {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 8px;
+  background: rgba(255, 255, 255, 0.028);
+  font-size: 0.72rem;
+  font-weight: 820;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-returns small {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--faint);
+  font-size: 0.58rem;
+  font-weight: 900;
 }
 
 .chart-empty {
