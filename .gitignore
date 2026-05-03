@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 .genesis_memory.sqlite3
 .genesis_memory.sqlite3-*
+.genesis_uploads/

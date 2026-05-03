@@ -7,6 +7,7 @@ from typing import Any
 
 from app.settings import load_settings
 from integrations.fmp.client import FmpClient
+from services.genesis.technical_analysis import compute_technical_indicators
 
 _LOGGER = logging.getLogger("genesis.dashboard.chart")
 _TICKER_PATTERN = re.compile(r"^[A-Z0-9.\-=]{1,15}$")
@@ -130,6 +131,19 @@ def _summary(points: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _history_years(points: list[dict[str, Any]]) -> float:
+    if len(points) < 2:
+        return 0.0
+    try:
+        from datetime import datetime
+
+        first = datetime.fromisoformat(str(points[0].get("date") or points[0].get("time") or "")[:10])
+        last = datetime.fromisoformat(str(points[-1].get("date") or points[-1].get("time") or "")[:10])
+        return round(max((last - first).days, 0) / 365.25, 2)
+    except Exception:
+        return 0.0
+
+
 def _returns(eod_points: list[dict[str, Any]], intraday_points: list[dict[str, Any]]) -> dict[str, float | None]:
     return {
         "1D": _summary(intraday_points if len(intraday_points) >= 2 else eod_points[-2:]).get("change_pct"),
@@ -152,7 +166,10 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "points": [],
         "ohlc": [],
         "returns": {"1D": None, "1W": None, "1M": None, "1Y": None, "5Y": None, "MAX": None},
+        "indicators": compute_technical_indicators([]),
         "summary": _summary([]),
+        "max_history_years": 0.0,
+        "history_points": 0,
         "source": {
             "provider": "FMP",
             "endpoint": "",
@@ -183,6 +200,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
 
     eod_rows = client.get_historical_eod(normalized_ticker, limit=None, symbol_map=symbol_map) or []
     eod_points = _shape_ohlc(eod_rows)
+    max_history_years = _history_years(eod_points)
     intraday_points: list[dict[str, Any]] = []
     endpoint_label = "historical-price-eod/full"
     if normalized_timeframe == "1D":
@@ -202,6 +220,9 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "quote": quote,
             "name": quote.get("name") or profile.get("companyName") or profile.get("name") or normalized_ticker,
             "returns": return_map,
+            "indicators": compute_technical_indicators([]),
+            "max_history_years": max_history_years,
+            "history_points": len(eod_points),
             "source": {
                 "provider": "FMP",
                 "endpoint": endpoint_label,
@@ -221,7 +242,10 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "points": points,
         "ohlc": points,
         "returns": return_map,
+        "indicators": compute_technical_indicators(points),
         "summary": _summary(points),
+        "max_history_years": max_history_years,
+        "history_points": len(eod_points),
         "quote": {
             "price": quote.get("price"),
             "change": quote.get("change"),
@@ -236,5 +260,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "live_enabled": True,
             "downsampled": raw_count > len(points),
             "raw_points": raw_count,
+            "raw_eod_points": len(eod_points),
+            "max_history_years": max_history_years,
         },
     }

@@ -325,6 +325,8 @@ function iconSvg(name) {
     add: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
     cart: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h15l-2 8H8L6 3H3"/><path d="M9 20h.01M18 20h.01"/></svg>`,
     remove: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`,
+    send: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13"/><path d="M13 6l6 6-6 6"/></svg>`,
+    upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V5"/><path d="M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>`,
   };
   return icons[name] || "";
 }
@@ -340,7 +342,7 @@ function chartIntentFromText(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   if (!/(GRAFICA|GRAFICO|CHART)/.test(normalized)) return null;
-  const stop = new Set(["ANALIZA", "ANALIZAR", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA"]);
+  const stop = new Set(["ANALIZA", "ANALIZAR", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "QUE"]);
   const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F" };
   const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
   const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
@@ -791,27 +793,35 @@ function renderGenesisScreen() {
   if (!root) return;
   root.innerHTML = `
     <section class="genesis-stage">
-      <section class="genesis-command">
-        <div>
-          <span class="app-kicker">Genesis</span>
-          <h1>Genesis activo.</h1>
-          <p>Que quieres revisar hoy?</p>
-        </div>
-        <span class="genesis-status">Mercado + cartera + alertas</span>
-      </section>
       <div class="genesis-conversation">
+        <div class="genesis-chat-head">
+          <strong>Genesis activo.</strong>
+          <span>Mercado, cartera, ballenas, clima o una grafica.</span>
+        </div>
         <div class="chat-thread" id="genesis-thread">
           ${appState.chatMessages.map(chatBubbleMarkup).join("")}
         </div>
         <form class="chat-form" id="genesis-chat-form">
+          <label class="chat-attach" title="Adjuntar grafica" aria-label="Adjuntar imagen de grafica">
+            ${iconSvg("upload")}
+            <input id="genesis-image-input" type="file" accept="image/*">
+          </label>
           <input id="genesis-chat-input" placeholder="Pregunta a Genesis..." autocomplete="off">
-          <button type="submit">Enviar</button>
+          <button type="submit" aria-label="Enviar">${iconSvg("send")}</button>
         </form>
+        <div class="chat-attachment-name" id="genesis-attachment-name" hidden></div>
       </div>
     </section>
   `;
   const form = document.getElementById("genesis-chat-form");
   form.addEventListener("submit", submitGenesisQuestion);
+  document.getElementById("genesis-image-input").addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    const label = document.getElementById("genesis-attachment-name");
+    if (!label) return;
+    label.hidden = !file;
+    label.textContent = file ? `Imagen lista: ${file.name}` : "";
+  });
   const thread = document.getElementById("genesis-thread");
   if (thread) thread.scrollTop = thread.scrollHeight;
 }
@@ -822,19 +832,56 @@ function chatBubbleMarkup(message) {
     <article class="chat-bubble ${role}">
       <strong>${role === "user" ? "Tu" : "Genesis"}</strong>
       <p>${escapeHtml(cleanCopy(message.text))}</p>
+      ${message.imageName ? `<small class="chat-image-chip">Imagen: ${escapeHtml(message.imageName)}</small>` : ""}
       ${message.chart ? chartBlockMarkup(message.chart.ticker, message.chart.range, `chat:${message.id}`) : ""}
     </article>
   `;
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("No pude leer la imagen."));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function submitGenesisQuestion(event) {
   event.preventDefault();
   const input = document.getElementById("genesis-chat-input");
+  const imageInput = document.getElementById("genesis-image-input");
   const question = String(input?.value || "").trim();
-  if (!question) return;
+  const imageFile = imageInput?.files?.[0] || null;
+  if (!question && !imageFile) return;
   input.value = "";
-  appState.chatMessages.push({ id: nextMessageId(), role: "user", text: question });
+  if (imageInput) imageInput.value = "";
+  const attachmentLabel = document.getElementById("genesis-attachment-name");
+  if (attachmentLabel) {
+    attachmentLabel.hidden = true;
+    attachmentLabel.textContent = "";
+  }
+  appState.chatMessages.push({ id: nextMessageId(), role: "user", text: question || "Analiza esta grafica.", imageName: imageFile?.name || "" });
   renderGenesisScreen();
+  if (imageFile) {
+    try {
+      const dataUrl = await fileToDataUrl(imageFile);
+      const payload = await postJson("/api/genesis/analyze-image", {
+        message: question,
+        image: {
+          name: imageFile.name,
+          type: imageFile.type,
+          size: imageFile.size,
+          data_url: dataUrl,
+        },
+      });
+      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(payload.answer || "Recibi la imagen.") });
+    } catch (error) {
+      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude analizar la imagen: ${cleanCopy(error.message)}` });
+    }
+    renderGenesisScreen();
+    return;
+  }
   const chartIntent = chartIntentFromText(question);
   if (chartIntent) {
     let routed = null;

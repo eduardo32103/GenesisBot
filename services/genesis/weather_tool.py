@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
 import re
+
+from app.settings import load_settings
 
 
 def detect_weather_request(message: str) -> bool:
@@ -17,7 +18,8 @@ def extract_city(message: str) -> str:
 
 def get_weather_answer(message: str) -> dict:
     city = extract_city(message)
-    if not os.getenv("GENESIS_WEATHER_PROVIDER") and not os.getenv("OPENWEATHER_API_KEY"):
+    settings = load_settings()
+    if not settings.weather_api_key:
         return {
             "ok": False,
             "intent": "weather",
@@ -32,4 +34,3 @@ def get_weather_answer(message: str) -> dict:
         "answer": "Proveedor de clima pendiente de conexion segura.",
         "source": "weather_pending",
     }
-

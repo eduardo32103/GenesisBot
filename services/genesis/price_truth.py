@@ -50,13 +50,13 @@ def get_verified_market_quote(
         try:
             client = client or FmpClient(settings.fmp_api_key, logger=_LOGGER)
             raw_quote = client.get_quote(normalized) or {}
-            source = "datos_directos"
+            source = "fmp"
         except Exception:
             _LOGGER.warning("FMP quote unavailable for %s", normalized, exc_info=True)
             raw_quote = {}
 
     if raw_quote:
-        shaped = _shape_fmp_quote(normalized, raw_quote, "datos_directos" if source == "sin_precio_confirmado" else source)
+        shaped = _shape_fmp_quote(normalized, raw_quote, "fmp" if source == "sin_precio_confirmado" else source)
         sanity = validate_price_sanity(normalized, shaped["current_price"], shaped["previous_close"])
         shaped["sanity"] = sanity
         if sanity["ok"]:
@@ -91,7 +91,7 @@ def _shape_fmp_quote(ticker: str, quote: dict[str, Any], source: str) -> dict[st
         "quote_timestamp": quote.get("timestamp") or quote.get("lastUpdated") or quote.get("date") or datetime.now(timezone.utc).isoformat(),
         "source": source,
         "source_label": "Precio confirmado" if current is not None else "Sin precio confirmado",
-        "is_live": source == "datos_directos" and current is not None,
+        "is_live": source == "fmp" and current is not None,
         "is_stale": False,
         "market_session": quote.get("marketSession") or quote.get("market_session") or "",
         "extended_hours_price": number_or_none(quote.get("extendedHoursPrice") or quote.get("extended_hours_price")),

@@ -226,9 +226,8 @@ input:focus-visible {
 .genesis-stage {
   min-height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 6px 0 8px;
+  grid-template-rows: minmax(0, 1fr);
+  padding: 2px 0 8px;
 }
 
 .genesis-command {
@@ -312,11 +311,28 @@ input:focus-visible {
 .genesis-conversation {
   min-height: 0;
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto 1fr auto auto;
   overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 42%),
-    #080808;
+  border-color: rgba(255, 255, 255, 0.065);
+  background: #050505;
+  box-shadow: none;
+}
+
+.genesis-chat-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 13px 15px 6px;
+}
+
+.genesis-chat-head strong {
+  font-size: 0.98rem;
+  letter-spacing: 0;
+}
+
+.genesis-chat-head span {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .chat-thread {
@@ -331,9 +347,9 @@ input:focus-visible {
 .chat-bubble {
   max-width: 100%;
   border-radius: 8px;
-  padding: 12px 13px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.045);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .chat-bubble.user {
@@ -364,8 +380,10 @@ input:focus-visible {
 }
 
 .chat-form {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
   border-top: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.38);
+  background: rgba(0, 0, 0, 0.72);
 }
 
 .chat-form input,
@@ -379,6 +397,56 @@ input:focus-visible {
   border-radius: 8px;
   padding: 13px 14px;
   outline: none;
+}
+
+.chat-form #genesis-chat-input {
+  border-radius: 999px;
+  padding: 10px 13px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.chat-attach {
+  width: 39px;
+  height: 39px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--soft);
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+}
+
+.chat-attach input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-attach svg,
+.chat-form button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chat-attachment-name {
+  padding: 0 13px 10px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.chat-image-chip {
+  display: inline-flex;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
 }
 
 .chat-form input::placeholder,
@@ -408,6 +476,15 @@ input:focus-visible {
   background: rgba(255, 255, 255, 0.085);
   font-weight: 850;
   transition: transform 120ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.chat-form button {
+  width: 39px;
+  height: 39px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
 }
 
 .chat-form button:hover,

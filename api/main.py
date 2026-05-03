@@ -32,6 +32,7 @@ from api.routes.dashboard import (
     simulate_dashboard_portfolio_purchase,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
+from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.intelligence_core import ask_genesis
 from services.genesis.memory_store import MemoryStore
 
@@ -48,6 +49,7 @@ def create_app() -> dict[str, str]:
         "executive_queue_endpoint": "/api/dashboard/executive-queue",
         "genesis_endpoint": "/api/dashboard/genesis?q={question}&context={context}&ticker={ticker}&panel_context={json}",
         "genesis_ask_endpoint": "/api/genesis/ask",
+        "genesis_image_analysis_endpoint": "/api/genesis/analyze-image",
         "genesis_memory_recent_endpoint": "/api/genesis/memory/recent",
         "genesis_memory_ticker_endpoint": "/api/genesis/memory/ticker/{ticker}",
         "genesis_memory_event_endpoint": "/api/genesis/memory/event",
@@ -111,6 +113,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 ticker=str(body.get("ticker") or ""),
                 panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
             )
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/analyze-image":
+            result = analyze_chart_image(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -54,6 +55,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["change"], 20)
         self.assertEqual(payload["summary"]["change_pct"], 20.0)
         self.assertEqual(payload["quote"]["price"], 120)
+        self.assertIn("indicators", payload)
         self.assertEqual(payload["source"]["endpoint"], "historical-price-eod/full")
         client.get_historical_eod.assert_called_once_with("NVDA", limit=None, symbol_map=None)
 
@@ -100,6 +102,29 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["ticker"], "BTC")
         client.get_historical_eod.assert_called_once_with("BTC", limit=None, symbol_map={"BTC": "BTCUSD"})
+
+    @patch("services.dashboard.get_asset_chart_series.FmpClient")
+    @patch("services.dashboard.get_asset_chart_series.load_settings")
+    def test_max_uses_full_available_history_not_five_year_slice(self, mock_settings: Mock, mock_fmp_client: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="test-key", fmp_live_enabled=True)
+        client = mock_fmp_client.return_value
+        client.get_quote.return_value = {"price": 320, "name": "Long History"}
+        client.get_profile.return_value = {}
+        start = date(2016, 1, 1)
+        rows = []
+        for index in range(0, 2300):
+            current = start + timedelta(days=index)
+            price = 50 + index * 0.1
+            rows.append({"date": current.isoformat(), "open": price, "high": price + 2, "low": price - 2, "close": price + 1})
+        client.get_historical_eod.return_value = rows
+
+        payload = get_asset_chart_series("NVDA", "MAX")
+
+        self.assertTrue(payload["ok"])
+        self.assertGreater(payload["max_history_years"], 5)
+        self.assertGreater(payload["history_points"], 1260)
+        self.assertNotEqual(payload["returns"]["MAX"], payload["returns"]["5Y"])
+        self.assertEqual(payload["source"]["raw_eod_points"], 2300)
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")

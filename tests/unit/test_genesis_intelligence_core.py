@@ -8,9 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from api.main import create_app
+from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.market_format import format_market_number, market_class
 from services.genesis.memory_store import MemoryStore
 from services.genesis.price_truth import get_verified_market_quote, validate_price_sanity
+from services.genesis.technical_analysis import compute_technical_indicators
 from services.genesis.ticker_parser import extract_tickers_from_prompt
 from services.genesis.tool_router import route_message
 
@@ -23,6 +25,7 @@ class GenesisTickerParserTests(unittest.TestCase):
             "hazme una grafica de btc": ["BTC-USD"],
             "quiero ver meta": ["META"],
             "que opinas de bz=f": ["BZ=F"],
+            "que hora es": [],
             "compara nflx contra nvda": ["NFLX", "NVDA"],
         }
         for prompt, expected in cases.items():
@@ -79,6 +82,7 @@ class GenesisToolRouterTests(unittest.TestCase):
         app_config = create_app()
 
         self.assertEqual(app_config["genesis_ask_endpoint"], "/api/genesis/ask")
+        self.assertEqual(app_config["genesis_image_analysis_endpoint"], "/api/genesis/analyze-image")
         self.assertEqual(app_config["genesis_memory_recent_endpoint"], "/api/genesis/memory/recent")
         self.assertEqual(app_config["dashboard_chart_endpoint"], "/api/dashboard/chart?ticker={symbol}&range={range}")
 
@@ -89,6 +93,15 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         self.assertEqual(payload["intent"], "greeting")
         self.assertIn("Genesis activo", payload["answer"])
+
+    def test_time_request_is_not_ticker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("que hora es", memory=store)
+
+        self.assertEqual(payload["intent"], "time")
+        self.assertEqual(payload["tickers"], [])
+        self.assertIn("Son las", payload["answer"])
 
     @patch("services.genesis.tool_router.get_verified_market_quote")
     def test_chart_request_uses_correct_ticker_and_verified_quote(self, mock_quote: Mock) -> None:
@@ -120,6 +133,83 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         self.assertEqual(payload["intent"], "weather")
         self.assertIn("No tengo proveedor de clima", payload["answer"])
+
+
+class GenesisTechnicalAnalysisTests(unittest.TestCase):
+    def test_indicators_include_rsi_macd_moving_averages_and_fibonacci(self) -> None:
+        candles = [
+            {
+                "open": 100 + index,
+                "high": 103 + index,
+                "low": 98 + index,
+                "close": 101 + index,
+                "volume": 1000 + index * 10,
+            }
+            for index in range(240)
+        ]
+
+        indicators = compute_technical_indicators(candles)
+
+        self.assertTrue(indicators["ok"])
+        self.assertIsNotNone(indicators["rsi"])
+        self.assertIsNotNone(indicators["macd"]["line"])
+        self.assertIsNotNone(indicators["sma"]["200"])
+        self.assertIsNotNone(indicators["ema"]["200"])
+        self.assertIn("0.618", indicators["fibonacci"])
+        self.assertEqual(indicators["golden_pocket"]["from"], indicators["fibonacci"]["0.65"])
+
+    @patch("services.genesis.tool_router.get_verified_market_quote")
+    @patch("services.dashboard.get_asset_chart_series.get_asset_chart_series")
+    def test_technical_request_returns_backend_indicators(self, mock_chart: Mock, mock_quote: Mock) -> None:
+        mock_quote.return_value = {
+            "ticker": "NVDA",
+            "current_price": 905.25,
+            "formatted_price": "$905.25",
+            "daily_change": 12.4,
+            "daily_change_pct": 1.39,
+            "source_label": "Precio confirmado",
+            "is_live": True,
+            "source": "datos_directos",
+            "previous_close": 892.85,
+            "sanity": {"ok": True},
+        }
+        mock_chart.return_value = {
+            "ok": True,
+            "ticker": "NVDA",
+            "range": "1Y",
+            "indicators": {
+                "rsi": 62.4,
+                "macd": {"line": 4.2},
+                "support": 880,
+                "resistance": 930,
+                "golden_pocket": {"from": 890, "to": 900},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("dame RSI, MACD y Fibonacci de NVDA", memory=store)
+
+        self.assertEqual(payload["intent"], "ticker_analysis")
+        self.assertEqual(payload["technical"]["indicators"]["rsi"], 62.4)
+        self.assertIn("Indicadores pedidos", payload["answer"])
+
+
+class GenesisImageAnalysisTests(unittest.TestCase):
+    @patch("services.genesis.chart_image_analysis.load_settings")
+    def test_image_analysis_fallback_without_vision_provider(self, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(
+            genesis_vision_enabled=False,
+            genesis_llm_enabled=False,
+            openai_api_key="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = analyze_chart_image({"message": "analiza esta grafica de NVDA", "image": {}}, memory=store)
+
+        self.assertEqual(payload["intent"], "image_chart_analysis")
+        self.assertEqual(payload["status"], "vision_not_configured")
+        self.assertEqual(payload["tickers"], ["NVDA"])
+        self.assertIn("falta proveedor de vision", payload["answer"])
 
 
 if __name__ == "__main__":

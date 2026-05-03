@@ -31,6 +31,8 @@ class Settings:
     fmp_live_enabled: bool
     openai_api_key: str
     genesis_llm_enabled: bool
+    genesis_vision_enabled: bool
+    weather_api_key: str
     gemini_api_key: str
     database_url: str
     supabase_url: str
@@ -55,6 +57,8 @@ class Settings:
             "fmp_live_enabled": self.fmp_live_enabled,
             "openai_key": bool(self.openai_api_key),
             "genesis_llm_enabled": self.genesis_llm_enabled,
+            "genesis_vision_enabled": self.genesis_vision_enabled,
+            "weather_key": bool(self.weather_api_key),
             "gemini_key": bool(self.gemini_api_key),
             "redis": bool(self.redis_url),
             "timezone": self.timezone,
@@ -73,6 +77,8 @@ def load_settings() -> Settings:
         fmp_live_enabled=_env_flag(os.getenv("FMP_LIVE_ENABLED", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         genesis_llm_enabled=_env_flag(os.getenv("GENESIS_LLM_ENABLED", "")),
+        genesis_vision_enabled=_env_flag(os.getenv("GENESIS_VISION_ENABLED", "")),
+        weather_api_key=os.getenv("WEATHER_API_KEY", os.getenv("OPENWEATHER_API_KEY", "")).strip(),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         database_url=os.getenv("DATABASE_URL", "").strip(),
         supabase_url=os.getenv("SUPABASE_URL", "").strip(),
