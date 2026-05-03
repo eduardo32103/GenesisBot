@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=genesis-app-v3-premium-ux">
+  <link rel="stylesheet" href="./styles.css?v=genesis-app-v3-investing-charts">
 </head>
 <body>
   <main class="phone-shell" id="genesis-app">
@@ -36,29 +36,29 @@
     <section class="app-screen" id="view-alerts" data-screen="alerts"></section>
 
     <nav class="bottom-nav" aria-label="Navegacion principal">
-      <button class="nav-link is-active" type="button" data-view="genesis">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M12 3l1.6 5.2L19 10l-5.4 1.8L12 17l-1.6-5.2L5 10l5.4-1.8L12 3z"/><path d="M19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7L19 15z"/></svg>
-        </span>
-        <span class="nav-label">Genesis</span>
-      </button>
       <button class="nav-link" type="button" data-view="watchlist">
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M4 12s3-6 8-6 8 6 8 6-3 6-8 6-8-6-8-6z"/><path d="M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg>
         </span>
         <span class="nav-label">Seguimiento</span>
       </button>
-      <button class="nav-link" type="button" data-view="radar">
-        <span class="nav-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M7 7V5h10v2"/><path d="M16 13h4"/></svg>
-        </span>
-        <span class="nav-label">Cartera</span>
-      </button>
       <button class="nav-link" type="button" data-view="money-flow">
         <span class="nav-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M4 13c1.6 3.4 4.5 5 8.4 5 3.7 0 6.6-1.8 7.6-5.1"/><path d="M4 13c1.2-3.3 4.4-5.2 8.2-5.2H17l3-2v5.1"/><path d="M8 12h.01"/></svg>
         </span>
         <span class="nav-label">Ballenas</span>
+      </button>
+      <button class="nav-link is-active nav-genesis" type="button" data-view="genesis">
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 3l1.6 5.2L19 10l-5.4 1.8L12 17l-1.6-5.2L5 10l5.4-1.8L12 3z"/><path d="M19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7L19 15z"/></svg>
+        </span>
+        <span class="nav-label">Genesis</span>
+      </button>
+      <button class="nav-link" type="button" data-view="radar">
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M7 7V5h10v2"/><path d="M16 13h4"/></svg>
+        </span>
+        <span class="nav-label">Cartera</span>
       </button>
       <button class="nav-link" type="button" data-view="alerts">
         <span class="nav-icon" aria-hidden="true">
@@ -122,6 +122,6 @@
   </aside>
 
   <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
-  <script src="./app.js?v=genesis-app-v3-premium-ux"></script>
+  <script src="./app.js?v=genesis-app-v3-investing-charts"></script>
 </body>
 </html>

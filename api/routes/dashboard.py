@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from services.dashboard.get_alert_drilldown import get_alert_drilldown
 from services.dashboard.get_alerts_snapshot import get_alerts_snapshot
+from services.dashboard.get_asset_chart_series import get_asset_chart_series
 from services.dashboard.get_executive_queue_snapshot import get_executive_queue_snapshot
 from services.dashboard.get_fmp_dependencies_snapshot import get_fmp_dependencies_snapshot
 from services.dashboard.get_genesis_answer import get_genesis_answer
@@ -70,6 +71,10 @@ def get_dashboard_portfolio_snapshot() -> dict:
 
 def get_dashboard_radar_drilldown(ticker: str) -> dict:
     return get_dashboard_radar_ticker_drilldown(ticker)
+
+
+def get_dashboard_asset_chart(ticker: str = "", timeframe: str = "1Y") -> dict:
+    return get_asset_chart_series(ticker, timeframe=timeframe)
 
 
 def search_dashboard_market_ticker(query: str = "") -> dict:

@@ -138,31 +138,38 @@ input:focus-visible {
   background: rgba(255, 255, 255, 0.075);
 }
 
+.nav-genesis {
+  transform: translateY(-6px);
+}
+
+.nav-genesis .nav-icon {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(98, 217, 152, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.nav-genesis .nav-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.nav-genesis.is-active {
+  border-color: rgba(98, 217, 152, 0.28);
+  background: rgba(98, 217, 152, 0.08);
+}
+
 .screen-stack {
   display: grid;
   gap: 14px;
   padding-bottom: 10px;
 }
 
-.screen-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 4px 1px 2px;
-}
-
-.screen-header h1,
-.genesis-identity h1,
 .sheet-card h2 {
   margin: 0;
   line-height: 1.02;
   letter-spacing: 0;
-}
-
-.screen-header h1 {
-  font-size: 1.82rem;
-  font-weight: 880;
 }
 
 .app-kicker {
@@ -180,6 +187,15 @@ input:focus-visible {
   justify-items: end;
   gap: 4px;
   min-width: 118px;
+}
+
+.inline-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  justify-items: stretch;
+  min-width: 0;
+  padding: 0 2px;
 }
 
 .screen-status span,
@@ -210,69 +226,32 @@ input:focus-visible {
 .genesis-stage {
   min-height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(330px, 1fr);
-  gap: 16px;
-  align-content: center;
-  padding: 12px 0 8px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 6px 0 8px;
 }
 
-.genesis-hero-card {
-  min-height: 292px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 18px;
-  padding: 30px 22px 20px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  text-align: center;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.018)),
-    #070707;
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.48);
-}
-
-.genesis-mark {
-  width: 58px;
-  height: 58px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 50%;
-  color: var(--text);
-  background: #0f0f10;
-  font-size: 1.05rem;
-  font-weight: 900;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-.genesis-identity {
-  display: grid;
-  justify-items: center;
-  gap: 0;
-}
-
-.genesis-identity h1 {
-  font-size: 4.35rem;
-  font-weight: 900;
-}
-
-.genesis-identity p {
-  max-width: 28ch;
-  margin: 12px 0 0;
-  color: var(--soft);
-  font-size: 1rem;
-  line-height: 1.42;
-}
-
-.genesis-hero-footer {
+.genesis-command {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 7px;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 4px 2px 8px;
 }
 
-.genesis-hero-footer span {
+.genesis-command h1 {
+  margin: 0;
+  font-size: 1.68rem;
+  line-height: 1.05;
+}
+
+.genesis-command p {
+  margin: 7px 0 0;
+  color: var(--soft);
+  line-height: 1.35;
+}
+
+.genesis-status {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 6px 9px;
@@ -280,6 +259,7 @@ input:focus-visible {
   background: rgba(255, 255, 255, 0.035);
   font-size: 0.68rem;
   font-weight: 780;
+  white-space: nowrap;
 }
 
 .genesis-conversation,
@@ -289,11 +269,44 @@ input:focus-visible {
 .whale-row,
 .search-result,
 .whales-hero,
+.feed-intro,
 .empty-state {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(12, 12, 12, 0.94);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.22);
+}
+
+.feed-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+}
+
+.feed-intro strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.feed-intro p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.feed-intro > span {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 9px;
+  color: var(--soft);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.7rem;
+  font-weight: 820;
+  white-space: nowrap;
 }
 
 .genesis-conversation {
@@ -316,7 +329,7 @@ input:focus-visible {
 }
 
 .chat-bubble {
-  max-width: 92%;
+  max-width: 100%;
   border-radius: 8px;
   padding: 12px 13px;
   border: 1px solid var(--line);
@@ -325,6 +338,7 @@ input:focus-visible {
 
 .chat-bubble.user {
   align-self: flex-end;
+  max-width: 88%;
   background: rgba(255, 255, 255, 0.09);
 }
 
@@ -459,8 +473,9 @@ input:focus-visible {
   width: 100%;
   background: transparent;
   color: var(--text);
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: flex-start;
   gap: 12px;
   text-align: left;
 }
@@ -474,6 +489,7 @@ input:focus-visible {
 .search-main strong {
   display: block;
   font-size: 1.06rem;
+  overflow-wrap: anywhere;
 }
 
 .asset-main small,
@@ -486,7 +502,7 @@ input:focus-visible {
 }
 
 .price-stack {
-  min-width: 118px;
+  min-width: 104px;
   text-align: right;
   white-space: nowrap;
   display: grid;
@@ -728,6 +744,151 @@ input:focus-visible {
 .empty-state p {
   margin: 8px 0 0;
   line-height: 1.43;
+}
+
+.chart-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
+    rgba(8, 8, 8, 0.94);
+}
+
+.chart-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: 10px;
+}
+
+.chart-card-header strong,
+.chart-price strong {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-card-header small {
+  display: block;
+  margin-top: 4px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.73rem;
+}
+
+.chart-price {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  text-align: right;
+}
+
+.chart-price span {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chart-ranges {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.chart-ranges button {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 0;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.chart-ranges button.is-active {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.105);
+}
+
+.chart-canvas {
+  min-height: 150px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.asset-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.asset-chart-svg text {
+  fill: var(--faint);
+  font-size: 8px;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+}
+
+.chart-grid {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.075);
+  stroke-width: 1;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-endpoint {
+  fill: currentColor;
+}
+
+.asset-chart-svg.up .chart-line,
+.asset-chart-svg.up .chart-endpoint {
+  stroke: var(--green);
+  color: var(--green);
+}
+
+.asset-chart-svg.down .chart-line,
+.asset-chart-svg.down .chart-endpoint {
+  stroke: var(--red);
+  color: var(--red);
+}
+
+.asset-chart-svg.flat .chart-line,
+.asset-chart-svg.flat .chart-endpoint {
+  stroke: var(--muted);
+  color: var(--muted);
+}
+
+.chart-empty {
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+.chart-read {
+  margin: 0;
+  color: var(--soft);
+  line-height: 1.38;
+  font-size: 0.84rem;
 }
 
 .asset-sheet {
@@ -983,13 +1144,23 @@ input:focus-visible {
     padding-top: 8px;
   }
 
-  .genesis-hero-card {
-    min-height: 258px;
-    padding: 26px 18px 18px;
+  .genesis-command {
+    align-items: flex-start;
+    gap: 10px;
   }
 
-  .genesis-identity h1 {
-    font-size: 3.7rem;
+  .genesis-command h1 {
+    font-size: 1.45rem;
+  }
+
+  .genesis-status {
+    max-width: 118px;
+    white-space: normal;
+    text-align: right;
+  }
+
+  .position-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .portfolio-donut {

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from api.routes.dashboard import (
     add_dashboard_portfolio_ticker,
+    get_dashboard_asset_chart,
     get_dashboard_alert_drilldown,
     get_dashboard_alerts,
     get_dashboard_executive_queue,
@@ -52,6 +53,7 @@ def create_app() -> dict[str, str]:
         "radar_drilldown_endpoint": "/api/dashboard/radar/drilldown?ticker={symbol}",
         "portfolio_endpoint": "/api/dashboard/portfolio",
         "portfolio_drilldown_endpoint": "/api/dashboard/portfolio/drilldown?ticker={symbol}",
+        "asset_chart_endpoint": "/api/dashboard/asset/chart?ticker={symbol}&range={range}",
         "market_search_endpoint": "/api/dashboard/market/search?q={symbol}",
         "portfolio_add_endpoint": "/api/dashboard/portfolio/watchlist/add",
         "portfolio_remove_endpoint": "/api/dashboard/portfolio/watchlist/remove",
@@ -227,6 +229,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path in {"/api/dashboard/radar/drilldown", "/api/dashboard/portfolio/drilldown"}:
             ticker = (parse_qs(parsed.query).get("ticker") or [""])[0]
             payload = json.dumps(get_dashboard_radar_drilldown(ticker)).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/asset/chart":
+            query = parse_qs(parsed.query)
+            ticker = (query.get("ticker") or [""])[0]
+            timeframe = (query.get("range") or query.get("timeframe") or ["1Y"])[0]
+            payload = json.dumps(get_dashboard_asset_chart(ticker, timeframe=timeframe)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
