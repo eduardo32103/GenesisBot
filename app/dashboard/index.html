@@ -5,41 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=phase68-app-v2">
+  <link rel="stylesheet" href="./styles.css?v=genesis-app-v3">
 </head>
 <body>
-  <main class="app-shell" id="genesis-app">
-    <header class="app-header">
-      <div>
-        <span class="app-kicker" id="screen-kicker">Genesis</span>
-        <h1 id="screen-title">Genesis</h1>
-      </div>
-      <div class="app-status">
-        <span id="live-chip">Datos directos activos</span>
-        <small id="last-updated">Actualizando...</small>
-      </div>
-    </header>
-
+  <main class="phone-shell" id="genesis-app">
     <section class="app-screen is-active" id="view-genesis" data-screen="genesis"></section>
+
     <section class="app-screen" id="view-watchlist" data-screen="tracking">
-      <form class="search-card">
-        <input id="portfolio-search-input" placeholder="META, Tesla, NVDA, SPY, BTC-USD">
-        <button class="round-button" id="portfolio-search-button" type="button">+</button>
+      <form class="search-card" id="tracking-search-form">
+        <input id="portfolio-search-input" placeholder="Buscar ticker o empresa para seguimiento" autocomplete="off">
+        <button class="round-button" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">+</button>
       </form>
       <div id="watchlist-screen-body"></div>
     </section>
+
     <section class="app-screen" id="view-radar" data-screen="portfolio">
-      <button class="primary-button small" type="button" id="portfolio-sim-buy-button">Agregar compra simulada</button>
+      <button class="primary-button small" type="button" id="portfolio-sim-buy-button">Buscar para comprar</button>
       <div id="portfolio-positions-body"></div>
     </section>
+
     <section class="app-screen" id="view-money-flow" data-screen="whales">
       <form class="search-card" id="money-flow-jarvis-form">
-        <input id="money-flow-jarvis-input" placeholder="Preguntar a Ballenas">
+        <input id="money-flow-jarvis-input" placeholder="Preguntar a Ballenas" autocomplete="off">
         <button type="submit">Preguntar</button>
       </form>
       <div id="money-flow-jarvis-answer">Lectura Genesis</div>
       <div id="whales-list">Ballenas</div>
     </section>
+
     <section class="app-screen" id="view-alerts" data-screen="alerts"></section>
 
     <nav class="bottom-nav" aria-label="Navegacion principal">
@@ -103,28 +96,7 @@
     </form>
   </aside>
 
-  <aside class="asset-sheet" id="portfolio-action-modal" hidden>
-    <div class="sheet-backdrop" data-legacy-modal-cancel></div>
-    <form class="sheet-card sheet-form" id="portfolio-modal-form">
-      <button class="sheet-close" type="button" id="portfolio-modal-close" data-legacy-modal-cancel>Cerrar</button>
-      <span class="app-kicker">Accion</span>
-      <h2 id="portfolio-modal-title">Agregar accion</h2>
-      <input id="portfolio-modal-ticker" name="ticker" autocomplete="off" placeholder="NVDA" required>
-      <div id="portfolio-sim-fields">
-        <input id="portfolio-modal-units" name="units" type="number" min="0" step="0.000001" placeholder="10">
-        <input id="portfolio-modal-entry-price" name="entry_price" type="number" min="0" step="0.0001" placeholder="199.57">
-      </div>
-      <p id="portfolio-modal-live-price" hidden>Precio actual: Sin precio</p>
-      <p id="portfolio-modal-note">Agrega un ticker directo a seguimiento.</p>
-      <p id="portfolio-modal-total" hidden>Total estimado: Sin calcular</p>
-      <div class="sheet-actions">
-        <button class="secondary-button" type="button" id="portfolio-modal-cancel" data-legacy-modal-cancel>Cancelar</button>
-        <button class="primary-button" type="submit" id="portfolio-modal-submit">Agregar</button>
-      </div>
-    </form>
-  </aside>
-
   <div class="toast" id="app-toast" hidden></div>
-  <script src="./app.js?v=phase68-app-v2"></script>
+  <script src="./app.js?v=genesis-app-v3"></script>
 </body>
 </html>

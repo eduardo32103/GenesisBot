@@ -60,6 +60,20 @@ class PortfolioUpdateTests(unittest.TestCase):
             self.assertEqual(position["entry_price"], 199.57)
             self.assertEqual(position["mode"], "paper")
 
+    def test_simulate_new_paper_position_does_not_force_watchlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portfolio.json"
+            path.write_text(json.dumps({"positions": []}), encoding="utf-8")
+
+            result = simulate_paper_position("META", units=10, entry_price=608.75, path=path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            position = payload["positions"][0]
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(position["ticker"], "META")
+            self.assertEqual(position["mode"], "paper")
+            self.assertNotIn("watchlist", position)
+
     def test_paper_position_drilldown_calculates_value_and_pnl_with_quote(self) -> None:
         raw_portfolio = {
             "positions": [

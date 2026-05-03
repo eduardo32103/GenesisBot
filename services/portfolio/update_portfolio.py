@@ -152,7 +152,6 @@ def simulate_paper_position(
                 "units": normalized_units,
                 "entry_price": normalized_entry,
                 "mode": "paper",
-                "watchlist": True,
                 "opened_at": timestamp,
             }
         )
