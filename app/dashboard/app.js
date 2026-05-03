@@ -149,6 +149,20 @@ function percent(value, empty = "Sin dato") {
   return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(2)}%`;
 }
 
+function positiveClass(value) {
+  const numeric = numberOrNull(value);
+  if (numeric === null || numeric === 0) return "flat";
+  return numeric > 0 ? "up" : "down";
+}
+
+function formatChange(value, empty = "Sin cambio") {
+  return signedMoney(value, empty);
+}
+
+function formatPercent(value, empty = "Sin dato") {
+  return percent(value, empty);
+}
+
 function compactPercent(value, empty = "Sin peso") {
   const numeric = numberOrNull(value);
   if (numeric === null) return empty;
@@ -185,16 +199,37 @@ function cleanCopy(value) {
     .replace(/\blegacy\b/gi, "local");
 }
 
-function toast(message, tone = "ok") {
+function normalizeToastTone(tone) {
+  if (tone === "bad" || tone === "error") return "error";
+  if (tone === "ok" || tone === "success") return "success";
+  return "info";
+}
+
+function hideToast() {
   const node = document.getElementById("app-toast");
   if (!node) return;
-  node.textContent = cleanCopy(message);
-  node.dataset.tone = tone;
+  node.hidden = true;
+  clearTimeout(toast._timer);
+}
+
+function toast(message, tone = "info") {
+  const node = document.getElementById("app-toast");
+  if (!node) return;
+  const normalizedTone = normalizeToastTone(tone);
+  const title = normalizedTone === "success" ? "Listo" : normalizedTone === "error" ? "Atencion" : "Genesis";
+  node.dataset.tone = normalizedTone;
+  node.innerHTML = `
+    <div class="toast-copy">
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(cleanCopy(message))}</span>
+    </div>
+    <button class="toast-close" type="button" data-toast-close aria-label="Cerrar aviso">x</button>
+  `;
   node.hidden = false;
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => {
     node.hidden = true;
-  }, 3000);
+  }, 3600);
 }
 
 async function getJson(url) {
@@ -236,15 +271,40 @@ function dailyMoveLabel(item) {
   const usd = itemDailyUsd(item);
   const pct = itemDailyPct(item);
   if (usd === null && pct === null) return "Sin cambio";
-  if (usd === null) return percent(pct);
-  if (pct === null) return signedMoney(usd);
-  return `${signedMoney(usd)} ${percent(pct)}`;
+  if (usd === null) return formatPercent(pct);
+  if (pct === null) return formatChange(usd);
+  return `${formatChange(usd)} ${formatPercent(pct)}`;
 }
 
 function movementTone(itemOrValue) {
-  const value = typeof itemOrValue === "object" ? itemDailyPct(itemOrValue) : numberOrNull(itemOrValue);
-  if (value === null || value === 0) return "flat";
-  return value > 0 ? "up" : "down";
+  const value = typeof itemOrValue === "object"
+    ? itemDailyPct(itemOrValue) ?? itemDailyUsd(itemOrValue) ?? positionPnl(itemOrValue)
+    : numberOrNull(itemOrValue);
+  return positiveClass(value);
+}
+
+function marketToneClass(itemOrValue) {
+  return `market-number ${movementTone(itemOrValue)}`;
+}
+
+function dailyMoveMarkup(item) {
+  const usd = itemDailyUsd(item);
+  const pct = itemDailyPct(item);
+  const usdTone = positiveClass(usd);
+  const pctTone = positiveClass(pct);
+  return `
+    <span class="change-line ${usdTone}">${escapeHtml(formatChange(usd, "Sin cambio"))}</span>
+    <span class="change-line ${pctTone}">${escapeHtml(formatPercent(pct, "Sin dato"))}</span>
+  `;
+}
+
+function iconSvg(name) {
+  const icons = {
+    add: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
+    cart: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h15l-2 8H8L6 3H3"/><path d="M9 20h.01M18 20h.01"/></svg>`,
+    remove: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`,
+  };
+  return icons[name] || "";
 }
 
 function previousCloseLabel(item) {
@@ -404,16 +464,16 @@ function setActiveScreen(screen) {
 
   if (screen === "tracking" || screen === "portfolio") {
     startPortfolioAutoRefresh();
-    refreshPortfolio({ render: true }).catch((error) => toast(error.message, "bad"));
+    refreshPortfolio({ render: true }).catch((error) => toast(error.message, "error"));
   } else {
     stopPortfolioAutoRefresh();
   }
 
   if (screen === "whales") {
-    loadWhales().catch((error) => toast(error.message, "bad"));
+    loadWhales().catch((error) => toast(error.message, "error"));
   }
   if (screen === "alerts") {
-    loadAlerts().catch((error) => toast(error.message, "bad"));
+    loadAlerts().catch((error) => toast(error.message, "error"));
   }
 }
 
@@ -439,7 +499,7 @@ async function searchAndAddPortfolioTicker() {
     const results = await searchMarket(query, "tracking");
     await addTickerToWatchlist(results[0].ticker);
   } catch (error) {
-    toast(error.message || "No pude agregar el activo.", "bad");
+    toast(error.message || "No pude agregar el activo.", "error");
   }
 }
 
@@ -448,7 +508,7 @@ async function searchTrackingOnly() {
   try {
     await searchMarket(input?.value || appState.trackingSearchQuery || "", "tracking");
   } catch (error) {
-    toast(error.message, "bad");
+    toast(error.message, "error");
   }
 }
 
@@ -457,7 +517,7 @@ async function searchPortfolioBuyTicker() {
   try {
     await searchMarket(input?.value || appState.portfolioSearchQuery || "", "portfolio");
   } catch (error) {
-    toast(error.message, "bad");
+    toast(error.message, "error");
   }
 }
 
@@ -472,7 +532,7 @@ async function addTickerToWatchlist(ticker) {
     throw new Error("No se agrego a seguimiento. El snapshot no cambio.");
   }
   renderActiveScreen();
-  toast(result.status === "exists" ? "Ya esta en seguimiento." : `${normalized} agregado a seguimiento.`);
+  toast(result.status === "exists" ? "Ya esta en seguimiento." : `${normalized} agregado a seguimiento.`, "success");
   return result;
 }
 
@@ -487,7 +547,7 @@ async function removeTickerFromWatchlist(ticker) {
     throw new Error("No se quito de seguimiento. El snapshot no cambio.");
   }
   renderActiveScreen();
-  toast(result.message || `${normalized} quitado de seguimiento.`);
+  toast(result.message || `${normalized} quitado de seguimiento.`, "success");
   return result;
 }
 
@@ -510,7 +570,7 @@ async function savePaperBuy(ticker, units, entryPrice) {
     throw new Error("No se guardo la compra simulada. La lectura actual no trae la posicion paper.");
   }
   renderActiveScreen();
-  toast(result.message || `Compra simulada de ${normalized} guardada.`);
+  toast(result.message || `Compra simulada de ${normalized} guardada.`, "success");
   return result;
 }
 
@@ -525,7 +585,7 @@ async function removePaperTicker(ticker) {
     throw new Error("No se cerro la posicion. El snapshot no cambio.");
   }
   renderActiveScreen();
-  toast(result.message || `Paper de ${normalized} cerrado.`);
+  toast(result.message || `Paper de ${normalized} cerrado.`, "success");
   return result;
 }
 
@@ -565,11 +625,19 @@ function renderGenesisScreen() {
   if (!root) return;
   root.innerHTML = `
     <section class="genesis-stage">
-      <div class="genesis-identity">
-        <span class="app-kicker">Tu analista privado</span>
-        <h1>Genesis</h1>
-        <p>Lecturas compactas para decidir sin ruido.</p>
-      </div>
+      <section class="genesis-hero-card" aria-label="Genesis">
+        <div class="genesis-mark" aria-hidden="true">G</div>
+        <div class="genesis-identity">
+          <span class="app-kicker">Tu analista financiero privado</span>
+          <h1>Genesis</h1>
+          <p>Pregunta. Analiza. Decide con contexto.</p>
+        </div>
+        <div class="genesis-hero-footer">
+          <span>Live</span>
+          <span>Paper</span>
+          <span>Alertas</span>
+        </div>
+      </section>
       <div class="genesis-conversation">
         <div class="chat-thread" id="genesis-thread">
           ${appState.chatMessages.map(chatBubbleMarkup).join("")}
@@ -628,8 +696,8 @@ function renderTrackingScreen() {
     <section class="screen-stack">
       ${screenHeaderMarkup("tracking", status)}
       <form class="search-card premium-search" id="tracking-search-form">
-        <input id="portfolio-search-input" placeholder="Buscar ticker o empresa para seguimiento" autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
-        <button class="round-button" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">+</button>
+        <input id="portfolio-search-input" placeholder="Buscar ticker o empresa" autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
+        <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">${iconSvg("add")}</button>
       </form>
       <div class="search-results" id="portfolio-search-result" ${appState.marketSearchResults.tracking.length ? "" : "hidden"}>
         ${appState.marketSearchResults.tracking.map((item) => searchResultMarkup(item, "tracking")).join("")}
@@ -655,6 +723,11 @@ function renderPortfolioScreen() {
   if (!root) return;
   const totals = appState.portfolioTotals;
   const distribution = buildDistribution();
+  const topRow = distribution.reduce((best, row) => (!best || row.weight > best.weight ? row : best), null);
+  const portfolioPnl = totals.totalPnl ?? totals.dailyPnl;
+  const portfolioPnlPct = totals.totalPnlPct ?? totals.dailyPnlPct;
+  const portfolioTone = movementTone(portfolioPnlPct ?? portfolioPnl);
+  const concentrationLabel = topRow ? `${itemTicker(topRow.item)} ${compactPercent(topRow.weight)}` : "para calcular pesos";
   const status = `
     <div class="screen-status">
       <span>Paper trading</span>
@@ -674,9 +747,9 @@ function renderPortfolioScreen() {
       <section class="donut-panel">
         <div class="portfolio-donut ${distribution.length ? "" : "empty"}" id="portfolio-donut" style="background:${donutGradient(distribution)}">
           <div class="donut-center">
-            <strong id="portfolio-total-value">${distribution.length ? money(totals.totalValue) : "Sin compras"}</strong>
-            <span id="portfolio-day-return">${distribution.length ? signedMoney(totals.totalPnl ?? totals.dailyPnl, "P/L sin calcular") : "Simula una compra"}</span>
-            <small id="portfolio-donut-caption">${distribution.length ? compactPercent(totals.totalPnlPct ?? totals.dailyPnlPct, "Peso activo") : "para calcular pesos"}</small>
+            <strong class="market-number flat" id="portfolio-total-value">${distribution.length ? money(totals.totalValue) : "Sin compras"}</strong>
+            <span class="market-number ${portfolioTone}" id="portfolio-day-return">${distribution.length ? signedMoney(portfolioPnl, "P/L sin calcular") : "Simula una compra"}</span>
+            <small class="market-number flat" id="portfolio-donut-caption">${distribution.length ? concentrationLabel : "para calcular pesos"}</small>
           </div>
         </div>
         <div class="legend" id="radar-ticker-list">${distribution.length ? distribution.map(legendMarkup).join("") : `<span class="pill">Sin posiciones compradas</span>`}</div>
@@ -717,9 +790,10 @@ function emptyStateMarkup(title, text) {
 
 function searchResultMarkup(item, mode) {
   const ticker = itemTicker(item);
+  const tone = movementTone(item);
   const action = mode === "tracking"
-    ? `<button type="button" data-market-add="${escapeHtml(ticker)}">+ Seguimiento</button>`
-    : `<button type="button" data-paper-buy="${escapeHtml(ticker)}">Comprar</button>`;
+    ? `<button class="compact-action" type="button" data-market-add="${escapeHtml(ticker)}">${iconSvg("add")}<span>Seguimiento</span></button>`
+    : `<button class="compact-action" type="button" data-paper-buy="${escapeHtml(ticker)}">${iconSvg("cart")}<span>Comprar</span></button>`;
   return `
     <article class="search-result" data-search-result="${escapeHtml(ticker)}">
       <button class="search-main" type="button" data-open-asset="${escapeHtml(ticker)}">
@@ -728,8 +802,8 @@ function searchResultMarkup(item, mode) {
           <small>${escapeHtml(item.name || item.display_name || ticker)}</small>
         </span>
         <span class="price-stack">
-          <strong>${escapeHtml(priceLabel(item))}</strong>
-          <small class="${movementTone(item)}">${escapeHtml(dailyMoveLabel(item))}</small>
+          <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
+          <span class="change-stack ${tone}">${dailyMoveMarkup(item)}</span>
         </span>
       </button>
       <div class="row-actions">${action}</div>
@@ -746,30 +820,43 @@ function assetRowMarkup(item, mode, totalValue = 0) {
   const pnl = positionPnl(item);
   const updated = item.quote_timestamp || item.updated_at;
   const action = mode === "paper"
-    ? `<button class="danger" type="button" data-paper-close="${escapeHtml(ticker)}">-</button>`
-    : `<button class="danger" type="button" data-watch-remove="${escapeHtml(ticker)}">-</button>`;
+    ? `<button class="icon-action danger" type="button" data-paper-close="${escapeHtml(ticker)}" aria-label="Cerrar paper ${escapeHtml(ticker)}" title="Cerrar paper">${iconSvg("remove")}</button>`
+    : `<button class="icon-action danger" type="button" data-watch-remove="${escapeHtml(ticker)}" aria-label="Quitar ${escapeHtml(ticker)} de seguimiento" title="Quitar">${iconSvg("remove")}</button>`;
+  const contextChips = `
+    <span>${escapeHtml(previousCloseLabel(item))}</span>
+    <span>${escapeHtml(extendedLabel(item))}</span>
+    <span>${escapeHtml(marketSessionLabel(item))}</span>
+  `;
+  const paperMetrics = mode === "paper"
+    ? `
+      <div class="position-metrics">
+        <span><small>Units</small><strong class="flat">${escapeHtml(units)}</strong></span>
+        <span><small>Valor</small><strong class="market-number flat">${escapeHtml(money(value))}</strong></span>
+        <span><small>Peso</small><strong class="market-number flat">${escapeHtml(compactPercent(weight))}</strong></span>
+        <span><small>P/L</small><strong class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "Sin dato"))}</strong></span>
+      </div>
+    `
+    : "";
   return `
     <article class="asset-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
       <button class="asset-main" type="button" data-open-asset="${escapeHtml(ticker)}">
         <span class="asset-title">
           <strong>${escapeHtml(ticker)}</strong>
           <small>${escapeHtml(item.name || item.display_name || ticker)}</small>
+          <span class="row-chipline">${contextChips}</span>
         </span>
         <span class="price-stack">
-          <strong>${escapeHtml(priceLabel(item))}</strong>
-          <small class="${tone}">${escapeHtml(dailyMoveLabel(item))}</small>
+          <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
+          <span class="change-stack ${tone}">${dailyMoveMarkup(item)}</span>
         </span>
       </button>
       <div class="asset-meta">
         <span>${escapeHtml(priceSourceLabel(item))}</span>
-        <span>${escapeHtml(previousCloseLabel(item))}</span>
-        <span>${escapeHtml(extendedLabel(item))}</span>
-        <span>${escapeHtml(marketSessionLabel(item))}</span>
         <span>${escapeHtml(formatDate(updated))}</span>
-        ${mode === "paper" ? `<span>${escapeHtml(units)} unidades</span><span>${escapeHtml(money(value))}</span><span>${escapeHtml(compactPercent(weight))}</span><span class="${movementTone(pnl)}">${escapeHtml(signedMoney(pnl, "P/L sin calcular"))}</span>` : ""}
       </div>
+      ${paperMetrics}
       <div class="row-actions">
-        <button type="button" data-paper-buy="${escapeHtml(ticker)}">Carrito</button>
+        <button class="icon-action" type="button" data-paper-buy="${escapeHtml(ticker)}" aria-label="Compra simulada ${escapeHtml(ticker)}" title="Compra simulada">${iconSvg("cart")}</button>
         ${action}
       </div>
     </article>
@@ -837,7 +924,7 @@ function renderWhalesScreen() {
       </form>
       <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
       <div class="asset-list whales-list" id="whales-list">
-        ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("No hay ballena identificada con la fuente activa.", "Cuando FMP o las lecturas persistidas confirmen entidad, monto y fecha, aparecera aqui.")}
+        ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("No hay ballena institucional confirmada con la fuente activa.", "Cuando la fuente confirme entidad, monto y fecha, Genesis lo mostrara como feed limpio.")}
       </div>
     </section>
   `;
@@ -884,21 +971,22 @@ function classifyWhaleType(value) {
 }
 
 function whaleRowMarkup(row) {
+  const eventClass = `event-${String(row.event || "no-confirmado").toLowerCase().replace(/\s+/g, "-")}`;
   return `
-    <article class="whale-row">
+    <article class="whale-row feed-row">
       <div class="whale-topline">
         <div>
           <strong>${escapeHtml(row.ticker)}</strong>
-          <small>${escapeHtml(row.event)}</small>
+          <small>${escapeHtml(row.entity || "Entidad no identificada")}</small>
         </div>
-        <span class="pill">${escapeHtml(row.confidence)}</span>
+        <span class="event-chip ${eventClass}">${escapeHtml(row.event)}</span>
       </div>
       <p>${escapeHtml(row.read)}</p>
       <div class="asset-meta">
-        <span>Entidad: ${escapeHtml(row.entity || "No identificada")}</span>
         <span>Monto: ${escapeHtml(row.amount || "No confirmado")}</span>
         <span>Fecha: ${escapeHtml(formatDate(row.date))}</span>
         <span>Fuente: ${escapeHtml(row.source || "Fuente activa")}</span>
+        <span>Confianza: ${escapeHtml(row.confidence)}</span>
       </div>
       <small>${escapeHtml(row.missing)}</small>
     </article>
@@ -951,16 +1039,23 @@ function renderAlertsScreen() {
 
 function alertMarkup(item) {
   const ticker = itemTicker(item) || "Mercado";
+  const priority = cleanCopy(item.priority || item.severity || item.status_label || item.status || "Seguimiento");
+  const date = item.created_at || item.updated_at || item.timestamp || appState.lastUpdated;
   return `
-    <article class="whale-row">
+    <article class="whale-row feed-row">
       <div class="whale-topline">
         <div>
           <strong>${escapeHtml(ticker)}</strong>
           <small>${escapeHtml(cleanCopy(item.title || item.event || item.status || "Alerta"))}</small>
         </div>
-        <span class="pill">${escapeHtml(cleanCopy(item.status_label || item.status || "Seguimiento"))}</span>
+        <span class="event-chip">${escapeHtml(priority)}</span>
       </div>
       <p>${escapeHtml(cleanCopy(item.summary || item.message || item.note || "Revisar antes de operar."))}</p>
+      <div class="asset-meta">
+        <span>Contexto: ${escapeHtml(cleanCopy(item.context || item.category || "Mercado"))}</span>
+        <span>Fecha: ${escapeHtml(formatDate(date))}</span>
+        <span>Estado: ${escapeHtml(cleanCopy(item.status || "En vigilancia"))}</span>
+      </div>
     </article>
   `;
 }
@@ -969,7 +1064,7 @@ function openAssetSheet(ticker) {
   const normalized = normalizeTicker(ticker);
   const item = findAsset(normalized);
   if (!item) {
-    toast("No encontre ese activo en la lectura actual.", "bad");
+    toast("No encontre ese activo en la lectura actual.", "error");
     return;
   }
   appState.selectedAsset = normalized;
@@ -982,7 +1077,7 @@ function openAssetSheet(ticker) {
     <h2>${escapeHtml(normalized)}</h2>
     <p class="asset-name">${escapeHtml(item.name || item.display_name || normalized)}</p>
     <div class="sheet-price ${movementTone(item)}">
-      <strong>${escapeHtml(priceLabel(item))}</strong>
+      <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
       <span>${escapeHtml(dailyMoveLabel(item))}</span>
     </div>
     <div class="sheet-grid">
@@ -1020,7 +1115,7 @@ function closeAssetSheet() {
 function openPaperBuySheet(ticker) {
   const normalized = normalizeTicker(ticker || appState.selectedAsset || "");
   if (!normalized) {
-    toast("Selecciona un activo primero.", "bad");
+    toast("Selecciona un activo primero.", "info");
     return;
   }
   const item = findAsset(normalized) || { ticker: normalized };
@@ -1042,7 +1137,7 @@ function openClosePaperSheet(ticker) {
   const normalized = normalizeTicker(ticker);
   const item = appState.paperPositions.find((row) => itemTicker(row) === normalized);
   if (!item) {
-    toast("No encontre posicion paper para cerrar.", "bad");
+    toast("No encontre posicion paper para cerrar.", "error");
     return;
   }
   document.getElementById("portfolio-close-ticker").value = normalized;
@@ -1068,6 +1163,11 @@ function bindGlobalEvents() {
   });
 
   document.body.addEventListener("click", async (event) => {
+    if (event.target.closest("[data-toast-close]")) {
+      hideToast();
+      return;
+    }
+
     const openAsset = event.target.closest("[data-open-asset]");
     if (openAsset) {
       event.preventDefault();
@@ -1081,7 +1181,7 @@ function bindGlobalEvents() {
       try {
         await addTickerToWatchlist(marketAdd.dataset.marketAdd);
       } catch (error) {
-        toast(error.message, "bad");
+        toast(error.message, "error");
       }
       return;
     }
@@ -1093,7 +1193,7 @@ function bindGlobalEvents() {
         await removeTickerFromWatchlist(watchRemove.dataset.watchRemove);
         closeAssetSheet();
       } catch (error) {
-        toast(error.message, "bad");
+        toast(error.message, "error");
       }
       return;
     }
@@ -1130,7 +1230,7 @@ function bindGlobalEvents() {
       closeAssetSheet();
       setActiveScreen("portfolio");
     } catch (error) {
-      toast(error.message, "bad");
+      toast(error.message, "error");
     }
   });
 
@@ -1143,7 +1243,7 @@ function bindGlobalEvents() {
       closeAssetSheet();
       setActiveScreen("portfolio");
     } catch (error) {
-      toast(error.message, "bad");
+      toast(error.message, "error");
     }
   });
 }
@@ -1151,7 +1251,7 @@ function bindGlobalEvents() {
 function initGenesisAppV3() {
   bindGlobalEvents();
   render();
-  refreshPortfolio({ render: false }).then(() => renderActiveScreen()).catch((error) => toast(error.message, "bad"));
+  refreshPortfolio({ render: false }).then(() => renderActiveScreen()).catch((error) => toast(error.message, "error"));
   loadWhales().catch(() => {});
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && (appState.activeScreen === "tracking" || appState.activeScreen === "portfolio")) {
