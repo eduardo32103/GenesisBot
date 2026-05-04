@@ -56,6 +56,8 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["change_pct"], 20.0)
         self.assertEqual(payload["quote"]["price"], 120)
         self.assertIn("indicators", payload)
+        self.assertEqual(payload["first_date"], "2026-01-01")
+        self.assertEqual(payload["last_date"], "2026-01-03")
         self.assertEqual(payload["source"]["endpoint"], "historical-price-eod/full")
         client.get_historical_eod.assert_called_once_with("NVDA", limit=None, symbol_map=None)
 
@@ -125,6 +127,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertGreater(payload["history_points"], 1260)
         self.assertNotEqual(payload["returns"]["MAX"], payload["returns"]["5Y"])
         self.assertEqual(payload["source"]["raw_eod_points"], 2300)
+        self.assertEqual(payload["first_date"], "2016-01-01")
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")

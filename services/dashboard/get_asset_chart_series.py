@@ -144,6 +144,14 @@ def _history_years(points: list[dict[str, Any]]) -> float:
         return 0.0
 
 
+def _first_date(points: list[dict[str, Any]]) -> str:
+    return str((points[0] if points else {}).get("date") or (points[0] if points else {}).get("time") or "")
+
+
+def _last_date(points: list[dict[str, Any]]) -> str:
+    return str((points[-1] if points else {}).get("date") or (points[-1] if points else {}).get("time") or "")
+
+
 def _returns(eod_points: list[dict[str, Any]], intraday_points: list[dict[str, Any]]) -> dict[str, float | None]:
     return {
         "1D": _summary(intraday_points if len(intraday_points) >= 2 else eod_points[-2:]).get("change_pct"),
@@ -170,6 +178,8 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "summary": _summary([]),
         "max_history_years": 0.0,
         "history_points": 0,
+        "first_date": "",
+        "last_date": "",
         "source": {
             "provider": "FMP",
             "endpoint": "",
@@ -223,6 +233,8 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "indicators": compute_technical_indicators([]),
             "max_history_years": max_history_years,
             "history_points": len(eod_points),
+            "first_date": _first_date(eod_points),
+            "last_date": _last_date(eod_points),
             "source": {
                 "provider": "FMP",
                 "endpoint": endpoint_label,
@@ -246,6 +258,8 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "summary": _summary(points),
         "max_history_years": max_history_years,
         "history_points": len(eod_points),
+        "first_date": _first_date(eod_points),
+        "last_date": _last_date(eod_points),
         "quote": {
             "price": quote.get("price"),
             "change": quote.get("change"),

@@ -8,11 +8,18 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from api.main import create_app
+from services.genesis.agent_router import AgentRouter
 from services.genesis.chart_image_analysis import analyze_chart_image
+from services.genesis.chart_agent import ChartAgent
+from services.genesis.image_chart_agent import ImageChartAgent
 from services.genesis.market_format import format_market_number, market_class
 from services.genesis.memory_store import MemoryStore
+from services.genesis.memory_agent import MemoryAgent
+from services.genesis.price_agent import PriceAgent
 from services.genesis.price_truth import get_verified_market_quote, validate_price_sanity
+from services.genesis.response_composer import ResponseComposer
 from services.genesis.technical_analysis import compute_technical_indicators
+from services.genesis.technical_agent import TechnicalAgent
 from services.genesis.ticker_parser import extract_tickers_from_prompt
 from services.genesis.tool_router import route_message
 
@@ -26,6 +33,8 @@ class GenesisTickerParserTests(unittest.TestCase):
             "quiero ver meta": ["META"],
             "que opinas de bz=f": ["BZ=F"],
             "que hora es": [],
+            "dame un resumen del dia": [],
+            "oye genesis como se ve el mercado": [],
             "compara nflx contra nvda": ["NFLX", "NVDA"],
         }
         for prompt, expected in cases.items():
@@ -78,6 +87,14 @@ class GenesisMemoryStoreTests(unittest.TestCase):
 
 
 class GenesisToolRouterTests(unittest.TestCase):
+    def test_agent_router_classifies_general_intents_without_fake_tickers(self) -> None:
+        router = AgentRouter()
+
+        self.assertEqual(router.route("que hora es").intent, "time")
+        self.assertEqual(router.route("dame un resumen del dia").intent, "daily_briefing")
+        self.assertEqual(router.route("oye genesis como se ve el mercado").intent, "market_overview")
+        self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
+
     def test_app_config_exposes_genesis_intelligence_endpoints(self) -> None:
         app_config = create_app()
 
@@ -103,7 +120,7 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["tickers"], [])
         self.assertIn("Son las", payload["answer"])
 
-    @patch("services.genesis.tool_router.get_verified_market_quote")
+    @patch("services.genesis.price_agent.get_verified_market_quote")
     def test_chart_request_uses_correct_ticker_and_verified_quote(self, mock_quote: Mock) -> None:
         mock_quote.return_value = {
             "ticker": "NVDA",
@@ -121,7 +138,7 @@ class GenesisToolRouterTests(unittest.TestCase):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             payload = route_message("analiza nvda con graficas", memory=store)
 
-        self.assertEqual(payload["intent"], "chart")
+        self.assertEqual(payload["intent"], "chart_request")
         self.assertEqual(payload["chart"]["ticker"], "NVDA")
         mock_quote.assert_called_once_with("NVDA")
         self.assertIn("$905.25", payload["answer"])
@@ -133,6 +150,27 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         self.assertEqual(payload["intent"], "weather")
         self.assertIn("No tengo proveedor de clima", payload["answer"])
+
+    def test_briefing_and_market_overview_do_not_use_fake_tickers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            with patch("services.genesis.news_macro_agent.get_portfolio_briefing", return_value={"answer": "Cartera paper: 0 posiciones.", "snapshot": {}}):
+                briefing = route_message("dame un resumen del dia", memory=store)
+                overview = route_message("oye genesis como se ve el mercado", memory=store)
+
+        self.assertEqual(briefing["intent"], "daily_briefing")
+        self.assertEqual(briefing["tickers"], [])
+        self.assertEqual(overview["intent"], "market_overview")
+        self.assertEqual(overview["tickers"], [])
+
+    def test_agent_modules_exist_as_internal_brain_components(self) -> None:
+        self.assertIsInstance(PriceAgent(), PriceAgent)
+        self.assertIsInstance(ChartAgent(), ChartAgent)
+        self.assertIsInstance(TechnicalAgent(), TechnicalAgent)
+        self.assertIsInstance(ImageChartAgent(), ImageChartAgent)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsInstance(MemoryAgent(MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")), MemoryAgent)
+        self.assertIsInstance(ResponseComposer(), ResponseComposer)
 
 
 class GenesisTechnicalAnalysisTests(unittest.TestCase):
@@ -158,8 +196,8 @@ class GenesisTechnicalAnalysisTests(unittest.TestCase):
         self.assertIn("0.618", indicators["fibonacci"])
         self.assertEqual(indicators["golden_pocket"]["from"], indicators["fibonacci"]["0.65"])
 
-    @patch("services.genesis.tool_router.get_verified_market_quote")
-    @patch("services.dashboard.get_asset_chart_series.get_asset_chart_series")
+    @patch("services.genesis.price_agent.get_verified_market_quote")
+    @patch("services.genesis.technical_agent.get_asset_chart_series")
     def test_technical_request_returns_backend_indicators(self, mock_chart: Mock, mock_quote: Mock) -> None:
         mock_quote.return_value = {
             "ticker": "NVDA",
@@ -189,7 +227,7 @@ class GenesisTechnicalAnalysisTests(unittest.TestCase):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             payload = route_message("dame RSI, MACD y Fibonacci de NVDA", memory=store)
 
-        self.assertEqual(payload["intent"], "ticker_analysis")
+        self.assertEqual(payload["intent"], "technical_indicators")
         self.assertEqual(payload["technical"]["indicators"]["rsi"], 62.4)
         self.assertIn("Indicadores pedidos", payload["answer"])
 

@@ -2,71 +2,94 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.genesis.chart_intent import detect_chart_intent
-from services.genesis.market_briefing import get_portfolio_briefing
+from services.genesis.agent_router import AgentRouter
 from services.genesis.market_format import format_signed_money, format_signed_percent
 from services.genesis.memory_store import MemoryStore
-from services.genesis.price_truth import get_verified_market_quote
+from services.genesis.news_macro_agent import get_news_macro_agent
+from services.genesis.portfolio_agent import get_portfolio_agent
+from services.genesis.price_agent import get_price_agent
+from services.genesis.response_composer import get_response_composer
+from services.genesis.technical_agent import get_technical_agent
 from services.genesis.time_tool import detect_time_request, get_time_answer
-from services.genesis.ticker_parser import extract_tickers_from_prompt, normalize_ticker
-from services.genesis.weather_tool import detect_weather_request, get_weather_answer
-from services.genesis.whale_learning import learn_whale_events
+from services.genesis.ticker_parser import normalize_ticker
+from services.genesis.tracking_agent import get_tracking_agent
+from services.genesis.weather_agent import get_weather_agent
+from services.genesis.weather_tool import detect_weather_request
+from services.genesis.whale_agent import get_whale_agent
 
 
 def route_message(message: str, context: str = "general", ticker: str = "", panel_context: Any | None = None, memory: MemoryStore | None = None) -> dict[str, Any]:
     store = memory or MemoryStore()
     clean = str(message or "").strip()
-    tickers = extract_tickers_from_prompt(clean, context=panel_context if isinstance(panel_context, dict) else None)
-    explicit_ticker = normalize_ticker(tickers[0] if tickers else ticker)
+    route = AgentRouter().route(clean, context=panel_context if isinstance(panel_context, dict) else None, ticker=ticker)
+    tickers = route.tickers
+    explicit_ticker = normalize_ticker(route.primary_ticker)
+    price_agent = get_price_agent()
+    composer = get_response_composer()
 
-    if _is_greeting(clean):
-        answer = "Hola. Genesis activo. Puedo revisar mercado, cartera, seguimiento, ballenas, alertas, clima o graficas con precio confirmado."
+    if route.intent == "greeting":
+        answer = composer.greeting()
         store.save_event("greeting", {"message": clean}, "genesis", "alta")
         return _payload("greeting", answer, tickers, memory=store)
 
-    if detect_time_request(clean):
+    if route.intent == "time" or detect_time_request(clean):
         time_payload = get_time_answer()
         store.save_event("time_request", {"message": clean, "timezone": time_payload["timezone"]}, "time", "alta")
         return _payload("time", time_payload["answer"], [], extra={"time": time_payload}, memory=store)
 
-    if detect_weather_request(clean):
-        weather = get_weather_answer(clean)
+    if route.intent == "weather" or detect_weather_request(clean):
+        weather = get_weather_agent().answer(clean)
         store.save_event("weather_request", {"message": clean, "city": weather.get("city"), "source": weather.get("source")}, "weather", "media")
         return _payload("weather", weather["answer"], tickers, extra={"weather": weather}, memory=store)
 
-    if _mentions_portfolio(clean):
-        briefing = get_portfolio_briefing()
+    if route.intent == "daily_briefing":
+        briefing = get_news_macro_agent().daily_briefing()
+        store.save_event("daily_briefing", {"summary": briefing["answer"]}, "macro", "media")
+        return _payload("daily_briefing", briefing["answer"], [], extra={"briefing": briefing}, memory=store)
+
+    if route.intent == "market_overview":
+        overview = get_news_macro_agent().market_overview()
+        store.save_event("market_overview", {"summary": overview["answer"]}, "macro", "media")
+        return _payload("market_overview", overview["answer"], [], extra={"overview": overview}, memory=store)
+
+    if route.intent == "portfolio_summary":
+        briefing = get_portfolio_agent().summary()
         store.save_event("portfolio_briefing", {"summary": briefing["answer"]}, "portfolio", "media")
-        return _payload("portfolio", briefing["answer"], tickers, extra={"portfolio": briefing}, memory=store)
+        return _payload("portfolio_summary", briefing["answer"], tickers, extra={"portfolio": briefing}, memory=store)
 
-    if _mentions_whales(clean):
-        learned = learn_whale_events(explicit_ticker or None, memory=store)
-        return _payload("whales", learned["answer"], tickers, extra={"whales": learned}, memory=store)
+    if route.intent == "tracking_summary":
+        tracking = get_tracking_agent().summary()
+        store.save_event("tracking_summary", {"count": len(tracking.get("items", []))}, "tracking", "media")
+        return _payload("tracking_summary", tracking["answer"], tickers, extra={"tracking": tracking}, memory=store)
 
-    if len(tickers) >= 2 and _mentions_comparison(clean):
-        quotes = [get_verified_market_quote(item) for item in tickers[:2]]
+    if route.intent == "whale_activity":
+        learned = get_whale_agent().activity(explicit_ticker or None, memory=store)
+        return _payload("whale_activity", learned["answer"], tickers, extra={"whales": learned}, memory=store)
+
+    if route.intent == "comparison":
+        quotes = [price_agent.quote(item) for item in tickers[:2]]
         store.save_event("comparison", {"tickers": tickers[:2], "quotes": [_safe_quote_memory(item) for item in quotes]}, "price_truth", "media")
         return _payload("comparison", _comparison_answer(quotes), tickers[:2], extra={"quotes": quotes}, memory=store)
 
-    chart = detect_chart_intent(clean, context=panel_context if isinstance(panel_context, dict) else None)
-    if chart["is_chart"]:
+    if route.intent == "chart_request":
+        chart = route.chart or {"is_chart": True, "ticker": "", "range": "1Y"}
         if not chart["ticker"]:
-            return _payload("chart", "Que activo quieres revisar?", tickers, extra={"chart": chart}, memory=store)
-        quote = get_verified_market_quote(chart["ticker"])
+            return _payload("chart_request", "Que activo quieres revisar?", tickers, extra={"chart": chart}, memory=store)
+        quote = price_agent.quote(chart["ticker"])
         store.save_event("chart_request", {"ticker": chart["ticker"], "range": chart["range"], "quote": _safe_quote_memory(quote)}, "chart", "alta" if quote.get("current_price") else "baja")
         answer = _chart_answer(chart["ticker"], quote)
-        return _payload("chart", answer, [chart["ticker"], *[item for item in tickers if item != chart["ticker"]]], extra={"chart": chart, "quote": quote}, memory=store)
+        return _payload("chart_request", answer, [chart["ticker"], *[item for item in tickers if item != chart["ticker"]]], extra={"chart": chart, "quote": quote}, memory=store)
 
-    if explicit_ticker:
-        quote = get_verified_market_quote(explicit_ticker)
-        technical = _technical_payload(explicit_ticker) if _mentions_technical(clean) else None
+    if route.intent in {"ticker_analysis", "technical_indicators"} and explicit_ticker:
+        quote = price_agent.quote(explicit_ticker)
+        technical = get_technical_agent().for_ticker(explicit_ticker, "1Y") if route.intent == "technical_indicators" else None
         store.save_event("ticker_analysis", {"ticker": explicit_ticker, "quote": _safe_quote_memory(quote), "technical_requested": bool(technical)}, "price_truth", "alta" if quote.get("current_price") else "baja")
         extra = {"quote": quote}
         if technical:
             extra["technical"] = technical
-        return _payload("ticker_analysis", _ticker_answer(explicit_ticker, quote, technical), tickers or [explicit_ticker], extra=extra, memory=store)
+        return _payload(route.intent, _ticker_answer(explicit_ticker, quote, technical), tickers or [explicit_ticker], extra=extra, memory=store)
 
-    answer = "Puedo ayudarte con mercado, cartera, seguimiento, ballenas, alertas, clima o una grafica. Dime el activo o el tema que quieres revisar."
+    answer = composer.general()
     store.save_event("general_question", {"message": clean}, "genesis", "media")
     return _payload("general", answer, tickers, memory=store)
 
@@ -131,21 +154,6 @@ def _comparison_answer(quotes: list[dict[str, Any]]) -> str:
     return "Comparacion con precio confirmado: " + " | ".join(parts) + ". No uso precios inventados."
 
 
-def _technical_payload(ticker: str) -> dict[str, Any]:
-    try:
-        from services.dashboard.get_asset_chart_series import get_asset_chart_series
-
-        chart = get_asset_chart_series(ticker, "1Y")
-        return {
-            "ok": bool(chart.get("ok")),
-            "ticker": chart.get("ticker") or ticker,
-            "range": chart.get("range") or "1Y",
-            "indicators": chart.get("indicators") or {},
-        }
-    except Exception as exc:
-        return {"ok": False, "ticker": ticker, "range": "1Y", "message": str(exc)}
-
-
 def _safe_quote_memory(quote: dict[str, Any]) -> dict[str, Any]:
     return {
         "ticker": quote.get("ticker"),
@@ -156,45 +164,3 @@ def _safe_quote_memory(quote: dict[str, Any]) -> dict[str, Any]:
         "is_live": quote.get("is_live"),
         "sanity": quote.get("sanity"),
     }
-
-
-def _is_greeting(message: str) -> bool:
-    text = str(message or "").casefold().strip(" .!?")
-    return text in {"hola", "buen dia", "buenos dias", "buenas", "hey", "hello"}
-
-
-def _mentions_portfolio(message: str) -> bool:
-    text = str(message or "").casefold()
-    return any(token in text for token in ("cartera", "portfolio", "posiciones", "paper"))
-
-
-def _mentions_whales(message: str) -> bool:
-    text = str(message or "").casefold()
-    return any(token in text for token in ("ballena", "ballenas", "dinero grande", "smart money"))
-
-
-def _mentions_comparison(message: str) -> bool:
-    text = str(message or "").casefold()
-    return any(token in text for token in ("contra", "versus", " vs ", "compara", "comparar"))
-
-
-def _mentions_technical(message: str) -> bool:
-    text = str(message or "").casefold()
-    return any(
-        token in text
-        for token in (
-            "rsi",
-            "macd",
-            "fibonacci",
-            "fib",
-            "indicador",
-            "indicadores",
-            "media movil",
-            "medias moviles",
-            "ema",
-            "sma",
-            "vwap",
-            "bollinger",
-            "atr",
-        )
-    )
