@@ -15,6 +15,7 @@ const appState = {
     watchlistCount: 0,
   },
   selectedAsset: "",
+  selectedAssetPreviousScreen: "genesis",
   marketSearchResults: {
     tracking: [],
     portfolio: [],
@@ -454,6 +455,20 @@ function chartReturnsMarkup(payload) {
   `;
 }
 
+function chartDebugMarkup(payload) {
+  if (!payload) return "";
+  const source = payload.source || {};
+  return `
+    <div class="chart-debug">
+      <span>Fuente ${escapeHtml(source.provider || "FMP")}</span>
+      <span>${escapeHtml(payload.history_points || source.raw_eod_points || 0)} puntos</span>
+      <span>MAX ${escapeHtml(payload.max_history_years || source.max_history_years || 0)} anos</span>
+      <span>${escapeHtml(payload.first_date || "sin inicio")} -> ${escapeHtml(payload.last_date || "sin cierre")}</span>
+      <span>${escapeHtml(money(payload.first_close, "sin base"))} -> ${escapeHtml(money(payload.last_close, "sin cierre"))}</span>
+    </div>
+  `;
+}
+
 function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
   const normalizedTicker = normalizeTicker(ticker);
   const normalizedRange = CHART_RANGES.includes(String(range).toUpperCase()) ? String(range).toUpperCase() : "1Y";
@@ -483,6 +498,7 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
         ${state.loading ? `<div class="chart-empty">Cargando grafica...</div>` : chartSvgMarkup(payload)}
       </div>
       ${payload ? chartReturnsMarkup(payload) : ""}
+      ${target.startsWith("detail:") ? chartDebugMarkup(payload) : ""}
       <p class="chart-read">${escapeHtml(chartReading(payload))}</p>
     </section>
   `;
@@ -535,8 +551,9 @@ function screenId(screen) {
 }
 
 function updateNav() {
+  const visibleScreen = appState.activeScreen === "asset-detail" ? appState.selectedAssetPreviousScreen : appState.activeScreen;
   document.querySelectorAll(".nav-link").forEach((button) => {
-    button.classList.toggle("is-active", normalizeScreen(button.dataset.view) === appState.activeScreen);
+    button.classList.toggle("is-active", normalizeScreen(button.dataset.view) === visibleScreen);
   });
 }
 
@@ -624,7 +641,7 @@ function startPortfolioAutoRefresh() {
   if (appState.refreshTimer) return;
   appState.refreshTimer = setInterval(() => {
     if (document.hidden) return;
-    if (appState.activeScreen !== "tracking" && appState.activeScreen !== "portfolio") return;
+    if (appState.activeScreen !== "tracking" && appState.activeScreen !== "portfolio" && appState.activeScreen !== "asset-detail") return;
     refreshPortfolio({ render: true }).catch(() => {});
   }, REFRESH_MS);
 }
@@ -643,7 +660,7 @@ function setActiveScreen(screen) {
   updateNav();
   renderActiveScreen();
 
-  if (screen === "tracking" || screen === "portfolio") {
+  if (screen === "tracking" || screen === "portfolio" || screen === "asset-detail") {
     startPortfolioAutoRefresh();
     refreshPortfolio({ render: true }).catch((error) => toast(error.message, "error"));
   } else {
@@ -772,6 +789,7 @@ async function removePaperTicker(ticker) {
 
 function render() {
   renderGenesisScreen();
+  renderAssetDetailScreen();
   renderTrackingScreen();
   renderPortfolioScreen();
   renderWhalesScreen();
@@ -785,6 +803,7 @@ function renderActiveScreen() {
   if (appState.activeScreen === "portfolio") renderPortfolioScreen();
   if (appState.activeScreen === "whales") renderWhalesScreen();
   if (appState.activeScreen === "alerts") renderAlertsScreen();
+  if (appState.activeScreen === "asset-detail") renderAssetDetailScreen();
   updateNav();
 }
 
@@ -826,7 +845,6 @@ function chatBubbleMarkup(message) {
   const role = message.role === "user" ? "user" : "assistant";
   return `
     <article class="chat-bubble ${role}">
-      <strong>${role === "user" ? "Tu" : "Genesis"}</strong>
       <p>${escapeHtml(cleanCopy(message.text))}</p>
       ${message.imageName ? `<small class="chat-image-chip">Imagen: ${escapeHtml(message.imageName)}</small>` : ""}
       ${message.chart ? chartBlockMarkup(message.chart.ticker, message.chart.range, `chat:${message.id}`) : ""}
@@ -914,6 +932,27 @@ async function submitGenesisQuestion(event) {
     }
   }
   renderGenesisScreen();
+}
+
+async function loadGenesisMemoryHistory() {
+  try {
+    const payload = await getJson("/api/genesis/memory/recent?limit=12");
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    const cleanMessages = messages
+      .filter((item) => ["user", "assistant"].includes(String(item.role || "")) && String(item.content || "").trim())
+      .slice(-12)
+      .map((item, index) => ({
+        id: `memory-${index}-${Date.now()}`,
+        role: item.role === "user" ? "user" : "assistant",
+        text: item.content,
+      }));
+    if (cleanMessages.length) {
+      appState.chatMessages = cleanMessages;
+      if (appState.activeScreen === "genesis") renderGenesisScreen();
+    }
+  } catch (error) {
+    // Memory is additive; the chat stays usable if local dev has no store yet.
+  }
 }
 
 function renderTrackingScreen() {
@@ -1021,6 +1060,22 @@ function emptyStateMarkup(title, text) {
   `;
 }
 
+function shortAssetName(item) {
+  const ticker = itemTicker(item);
+  const raw = String(item?.name || item?.display_name || ticker || "").trim();
+  return raw.length > 34 ? `${raw.slice(0, 31)}...` : raw;
+}
+
+function compactAssetSubline(item, mode, totalValue = 0) {
+  if (mode === "paper") {
+    const units = itemUnits(item);
+    const value = itemValue(item);
+    const weight = totalValue > 0 && value !== null ? (value / totalValue) * 100 : numberOrNull(item.weight_pct);
+    return `${units ?? "Sin"} units · ${money(value, "Sin valor")} · ${compactPercent(weight)}`;
+  }
+  return shortAssetName(item);
+}
+
 function searchResultMarkup(item, mode) {
   const ticker = itemTicker(item);
   const tone = movementTone(item);
@@ -1028,11 +1083,11 @@ function searchResultMarkup(item, mode) {
     ? `<button class="compact-action" type="button" data-market-add="${escapeHtml(ticker)}">${iconSvg("add")}<span>Seguimiento</span></button>`
     : `<button class="compact-action" type="button" data-paper-buy="${escapeHtml(ticker)}">${iconSvg("cart")}<span>Comprar</span></button>`;
   return `
-    <article class="search-result" data-search-result="${escapeHtml(ticker)}">
+    <article class="search-result compact-market-row" data-search-result="${escapeHtml(ticker)}">
       <button class="search-main" type="button" data-open-asset="${escapeHtml(ticker)}">
         <span>
           <strong>${escapeHtml(ticker)}</strong>
-          <small>${escapeHtml(item.name || item.display_name || ticker)}</small>
+          <small>${escapeHtml(shortAssetName(item))}</small>
         </span>
         <span class="price-stack">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
@@ -1047,49 +1102,29 @@ function searchResultMarkup(item, mode) {
 function assetRowMarkup(item, mode, totalValue = 0) {
   const ticker = itemTicker(item);
   const tone = movementTone(item);
-  const value = itemValue(item);
-  const units = itemUnits(item);
-  const weight = mode === "paper" && totalValue > 0 && value !== null ? (value / totalValue) * 100 : numberOrNull(item.weight_pct);
   const pnl = positionPnl(item);
-  const updated = item.quote_timestamp || item.updated_at;
   const action = mode === "paper"
     ? `<button class="icon-action danger" type="button" data-paper-close="${escapeHtml(ticker)}" aria-label="Cerrar paper ${escapeHtml(ticker)}" title="Cerrar paper">${iconSvg("remove")}</button>`
     : `<button class="icon-action danger" type="button" data-watch-remove="${escapeHtml(ticker)}" aria-label="Quitar ${escapeHtml(ticker)} de seguimiento" title="Quitar">${iconSvg("remove")}</button>`;
-  const contextChips = `
-    <span>${escapeHtml(previousCloseLabel(item))}</span>
-    <span>${escapeHtml(extendedLabel(item))}</span>
-    <span>${escapeHtml(marketSessionLabel(item))}</span>
-  `;
-  const paperMetrics = mode === "paper"
-    ? `
-      <div class="position-metrics">
-        <span><small>Units</small><strong class="flat">${escapeHtml(units)}</strong></span>
-        <span><small>Valor</small><strong class="market-number flat">${escapeHtml(money(value))}</strong></span>
-        <span><small>Peso</small><strong class="market-number flat">${escapeHtml(compactPercent(weight))}</strong></span>
-        <span><small>P/L</small><strong class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "Sin dato"))}</strong></span>
-      </div>
-    `
-    : "";
+  const buyAction = mode === "paper"
+    ? ""
+    : `<button class="icon-action" type="button" data-paper-buy="${escapeHtml(ticker)}" aria-label="Compra simulada ${escapeHtml(ticker)}" title="Compra simulada">${iconSvg("cart")}</button>`;
+  const subline = compactAssetSubline(item, mode, totalValue);
   return `
-    <article class="asset-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
+    <article class="asset-row compact-market-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
       <button class="asset-main" type="button" data-open-asset="${escapeHtml(ticker)}">
         <span class="asset-title">
           <strong>${escapeHtml(ticker)}</strong>
-          <small>${escapeHtml(item.name || item.display_name || ticker)}</small>
-          <span class="row-chipline">${contextChips}</span>
+          <small>${escapeHtml(subline)}</small>
         </span>
         <span class="price-stack">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
           <span class="change-stack ${tone}">${dailyMoveMarkup(item)}</span>
+          ${mode === "paper" ? `<span class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "P/L sin dato"))}</span>` : ""}
         </span>
       </button>
-      <div class="asset-meta">
-        <span>${escapeHtml(priceSourceLabel(item))}</span>
-        <span>${escapeHtml(formatDate(updated))}</span>
-      </div>
-      ${paperMetrics}
       <div class="row-actions">
-        <button class="icon-action" type="button" data-paper-buy="${escapeHtml(ticker)}" aria-label="Compra simulada ${escapeHtml(ticker)}" title="Compra simulada">${iconSvg("cart")}</button>
+        ${buyAction}
         ${action}
       </div>
     </article>
@@ -1301,6 +1336,85 @@ function alertMarkup(item) {
   `;
 }
 
+function openAssetDetail(ticker) {
+  const normalized = normalizeTicker(ticker);
+  if (!normalized) {
+    toast("No encontre ese activo.", "error");
+    return;
+  }
+  if (appState.activeScreen !== "asset-detail") {
+    appState.selectedAssetPreviousScreen = appState.activeScreen || "genesis";
+  }
+  appState.selectedAsset = normalized;
+  setActiveScreen("asset-detail");
+  const range = appState.assetChartRanges[normalized] || "1Y";
+  loadChartSeries(normalized, range).then(() => {
+    if (appState.activeScreen === "asset-detail" && appState.selectedAsset === normalized) renderAssetDetailScreen();
+  });
+}
+
+function renderAssetDetailScreen() {
+  const root = document.getElementById("view-asset-detail");
+  if (!root) return;
+  const normalized = normalizeTicker(appState.selectedAsset);
+  if (!normalized) {
+    root.innerHTML = emptyStateMarkup("Sin activo seleccionado.", "Toca una fila de Seguimiento o Cartera para abrir su detalle.");
+    return;
+  }
+  const item = findAsset(normalized) || { ticker: normalized };
+  const isPaper = appState.paperPositions.some((row) => itemTicker(row) === normalized);
+  const isTracked = appState.trackingItems.some((row) => itemTicker(row) === normalized && itemInWatchlist(row));
+  const chartRange = appState.assetChartRanges[normalized] || "1Y";
+  const relatedAlerts = assetRelatedAlerts(normalized);
+  const units = itemUnits(item);
+  const value = itemValue(item);
+  const pnl = positionPnl(item);
+  root.innerHTML = `
+    <section class="asset-detail">
+      <button class="detail-back" type="button" data-asset-back>Volver</button>
+      <section class="detail-hero">
+        <div>
+          <strong>${escapeHtml(normalized)}</strong>
+          <p>${escapeHtml(shortAssetName(item))}</p>
+        </div>
+        <div class="detail-price">
+          <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
+          <span>${dailyMoveMarkup(item)}</span>
+        </div>
+      </section>
+      <section class="detail-metrics">
+        <span><small>Sesion anterior</small><strong>${escapeHtml(previousCloseLabel(item).replace("Anterior ", ""))}</strong></span>
+        <span><small>Rango</small><strong>${escapeHtml(item.day_low && item.day_high ? `${money(item.day_low)} - ${money(item.day_high)}` : "Sin dato")}</strong></span>
+        <span><small>Volumen</small><strong>${escapeHtml(item.volume ? Number(item.volume).toLocaleString("en-US") : "Sin dato")}</strong></span>
+        <span><small>Actualizado</small><strong>${escapeHtml(formatDate(item.quote_timestamp || item.updated_at || appState.lastUpdated))}</strong></span>
+        ${isPaper ? `<span><small>Paper</small><strong>${escapeHtml(units ?? "Sin")} units · ${escapeHtml(money(value, "Sin valor"))}</strong></span>` : ""}
+        ${isPaper ? `<span><small>P/L</small><strong class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "Sin dato"))}</strong></span>` : ""}
+      </section>
+      ${chartBlockMarkup(normalized, chartRange, `detail:${normalized}`)}
+      <section class="detail-analysis">
+        <strong>Lectura Genesis</strong>
+        <p>Precio y retornos vienen de FMP o snapshot validado. La lectura operativa queda condicionada a confirmacion de precio, volumen y riesgo; no hay compra real ni broker.</p>
+      </section>
+      <section class="detail-alerts">
+        <strong>Alertas relacionadas</strong>
+        ${relatedAlerts.length ? relatedAlerts.map(alertMarkup).join("") : `<p>Sin alertas relacionadas confirmadas.</p>`}
+      </section>
+      <div class="sheet-actions detail-actions">
+        ${!isTracked ? `<button class="secondary-button" type="button" data-market-add="${escapeHtml(normalized)}">+ Seguimiento</button>` : ""}
+        <button class="primary-button" type="button" data-paper-buy="${escapeHtml(normalized)}">Compra paper</button>
+        ${isPaper ? `<button class="danger-button" type="button" data-paper-close="${escapeHtml(normalized)}">Cerrar paper</button>` : ""}
+        ${isTracked ? `<button class="danger-button" type="button" data-watch-remove="${escapeHtml(normalized)}">Quitar seguimiento</button>` : ""}
+      </div>
+    </section>
+  `;
+}
+
+function assetRelatedAlerts(ticker) {
+  const normalized = normalizeTicker(ticker);
+  const items = Array.isArray(appState.alertsSnapshot?.items) ? appState.alertsSnapshot.items : [];
+  return items.filter((item) => itemTicker(item) === normalized).slice(0, 3);
+}
+
 function openAssetSheet(ticker) {
   const normalized = normalizeTicker(ticker);
   const item = findAsset(normalized);
@@ -1429,6 +1543,12 @@ function bindGlobalEvents() {
         if (message?.chart) message.chart.range = range;
         renderGenesisScreen();
         loadChartSeries(ticker, range).then(() => renderGenesisScreen());
+      } else if (target.startsWith("detail:")) {
+        appState.assetChartRanges[ticker] = range;
+        renderAssetDetailScreen();
+        loadChartSeries(ticker, range).then(() => {
+          if (appState.selectedAsset === ticker && appState.activeScreen === "asset-detail") renderAssetDetailScreen();
+        });
       } else {
         appState.assetChartRanges[ticker] = range;
         openAssetSheet(ticker);
@@ -1442,7 +1562,13 @@ function bindGlobalEvents() {
     const openAsset = event.target.closest("[data-open-asset]");
     if (openAsset) {
       event.preventDefault();
-      openAssetSheet(openAsset.dataset.openAsset);
+      openAssetDetail(openAsset.dataset.openAsset);
+      return;
+    }
+
+    if (event.target.closest("[data-asset-back]")) {
+      event.preventDefault();
+      setActiveScreen(appState.selectedAssetPreviousScreen || "genesis");
       return;
     }
 
@@ -1522,10 +1648,11 @@ function bindGlobalEvents() {
 function initGenesisAppV3() {
   bindGlobalEvents();
   render();
+  loadGenesisMemoryHistory();
   refreshPortfolio({ render: false }).then(() => renderActiveScreen()).catch((error) => toast(error.message, "error"));
   loadWhales().catch(() => {});
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && (appState.activeScreen === "tracking" || appState.activeScreen === "portfolio")) {
+    if (!document.hidden && (appState.activeScreen === "tracking" || appState.activeScreen === "portfolio" || appState.activeScreen === "asset-detail")) {
       refreshPortfolio({ render: true }).catch(() => {});
     }
   });

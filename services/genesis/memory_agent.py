@@ -18,6 +18,15 @@ class MemoryAgent:
     def relevant(self, query: str) -> list[dict[str, Any]]:
         return self.store.get_relevant_memory(query)
 
+    def remember_message(self, conversation_id: str, role: str, content: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.store.save_message(conversation_id, role, content, metadata)
+
+    def recent_messages(self, conversation_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
+        return self.store.get_recent_messages(conversation_id, limit)
+
+    def summary(self, query: str = "") -> dict[str, Any]:
+        return self.store.get_memory_summary(query)
+
 
 def get_memory_agent(store: MemoryStore | None = None) -> MemoryAgent:
     return MemoryAgent(store)

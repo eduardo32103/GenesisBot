@@ -53,6 +53,8 @@ class AgentRouter:
             return "portfolio_summary"
         if _mentions_tracking(text):
             return "tracking_summary"
+        if _mentions_memory(text):
+            return "memory_query"
         if _mentions_whales(text):
             return "whale_activity"
         if _mentions_alerts(text):
@@ -61,10 +63,10 @@ class AgentRouter:
             return "macro_news"
         if len(tickers) >= 2 and _mentions_comparison(text):
             return "comparison"
-        if _mentions_technical(text) and tickers:
-            return "technical_indicators"
         if chart.get("is_chart"):
             return "chart_request"
+        if _mentions_technical(text) and tickers:
+            return "technical_indicators"
         if tickers:
             return "ticker_analysis"
         return "general_question"
@@ -81,6 +83,7 @@ _AGENT_BY_INTENT = {
     "image_chart_analysis": "image_chart_agent",
     "portfolio_summary": "portfolio_agent",
     "tracking_summary": "tracking_agent",
+    "memory_query": "memory_agent",
     "whale_activity": "whale_agent",
     "alerts": "news_macro_agent",
     "macro_news": "news_macro_agent",
@@ -104,6 +107,10 @@ def _mentions_portfolio(text: str) -> bool:
 
 def _mentions_tracking(text: str) -> bool:
     return any(token in text for token in ("seguimiento", "watchlist", "vigilancia"))
+
+
+def _mentions_memory(text: str) -> bool:
+    return any(token in text for token in ("recuerdame", "que vimos", "que sabes", "aprendiste", "consultas recientes", "activos reviso"))
 
 
 def _mentions_whales(text: str) -> bool:

@@ -297,7 +297,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             event_type = (query.get("event_type") or [""])[0] or None
             limit = int((query.get("limit") or ["20"])[0] or 20)
             store = MemoryStore()
-            payload = json.dumps({"ok": True, "backend": store.backend, "items": store.get_recent_events(limit, event_type)}).encode("utf-8")
+            payload = json.dumps(
+                {
+                    "ok": True,
+                    "backend": store.backend,
+                    "items": store.get_recent_events(limit, event_type),
+                    "messages": store.get_recent_messages(limit=limit),
+                    "learned_context": store.get_learned_context(limit),
+                    "tracked_entities": store.get_tracked_entities(limit),
+                    "recent_topics": store.get_recent_topics(min(limit, 20)),
+                    "durable_on_railway": store.backend == "postgres",
+                }
+            ).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

@@ -54,6 +54,207 @@ class MemoryStore:
                 conn.commit()
         return event
 
+    def save_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        message = {
+            "conversation_id": str(conversation_id or "default").strip()[:120] or "default",
+            "role": str(role or "assistant").strip()[:40],
+            "content": str(content or "").strip()[:4000],
+            "metadata": _sanitize(metadata or {}),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not message["content"]:
+            return message
+        self.save_conversation(message["conversation_id"])
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                "INSERT INTO genesis_messages (conversation_id, role, content, metadata_json, created_at) VALUES (%s, %s, %s, %s, %s)",
+                (
+                    message["conversation_id"],
+                    message["role"],
+                    message["content"],
+                    json.dumps(message["metadata"]),
+                    message["created_at"],
+                ),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT INTO genesis_messages (conversation_id, role, content, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        message["conversation_id"],
+                        message["role"],
+                        message["content"],
+                        json.dumps(message["metadata"]),
+                        message["created_at"],
+                    ),
+                )
+                conn.commit()
+        return message
+
+    def get_recent_messages(self, conversation_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 20), 100))
+        clean_id = str(conversation_id or "default").strip()[:120] or "default"
+        if self.backend == "postgres" and self._pg is not None:
+            rows = self._pg_fetch(
+                "SELECT conversation_id, role, content, metadata_json, created_at FROM genesis_messages WHERE conversation_id = %s ORDER BY id DESC LIMIT %s",
+                (clean_id, safe_limit),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                rows = conn.execute(
+                    "SELECT conversation_id, role, content, metadata_json, created_at FROM genesis_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+                    (clean_id, safe_limit),
+                ).fetchall()
+        return [_message_row(row) for row in reversed(rows)]
+
+    def save_conversation(self, conversation_id: str = "default", summary: str = "") -> None:
+        clean_id = str(conversation_id or "default").strip()[:120] or "default"
+        payload = str(summary or "").strip()[:2000]
+        now = datetime.now(timezone.utc).isoformat()
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                """
+                INSERT INTO genesis_conversations (conversation_id, summary, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (conversation_id) DO UPDATE SET
+                    summary = CASE WHEN EXCLUDED.summary = '' THEN genesis_conversations.summary ELSE EXCLUDED.summary END,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (clean_id, payload, now),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                existing = conn.execute("SELECT summary FROM genesis_conversations WHERE conversation_id = ?", (clean_id,)).fetchone()
+                summary_to_store = payload or (existing[0] if existing else "")
+                conn.execute(
+                    "INSERT OR REPLACE INTO genesis_conversations (conversation_id, summary, updated_at) VALUES (?, ?, ?)",
+                    (clean_id, summary_to_store, now),
+                )
+                conn.commit()
+
+    def save_learned_context(self, key: str, value: Any, source: str = "genesis", confidence: str | float = "media") -> None:
+        clean_key = str(key or "").strip()[:160]
+        if not clean_key:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(_sanitize(value))
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                """
+                INSERT INTO genesis_learned_context (context_key, value_json, source, confidence, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (context_key) DO UPDATE SET
+                    value_json = EXCLUDED.value_json,
+                    source = EXCLUDED.source,
+                    confidence = EXCLUDED.confidence,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (clean_key, payload, str(source or "genesis")[:80], str(confidence or "media")[:40], now),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO genesis_learned_context (context_key, value_json, source, confidence, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (clean_key, payload, str(source or "genesis")[:80], str(confidence or "media")[:40], now),
+                )
+                conn.commit()
+
+    def get_learned_context(self, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 20), 100))
+        if self.backend == "postgres" and self._pg is not None:
+            rows = self._pg_fetch(
+                "SELECT context_key, value_json, source, confidence, updated_at FROM genesis_learned_context ORDER BY updated_at DESC LIMIT %s",
+                (safe_limit,),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                rows = conn.execute(
+                    "SELECT context_key, value_json, source, confidence, updated_at FROM genesis_learned_context ORDER BY updated_at DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        return [_learned_row(row) for row in rows]
+
+    def track_entity(self, ticker: str, entity_type: str = "asset", context: dict[str, Any] | None = None) -> None:
+        normalized = str(ticker or "").strip().upper()[:40]
+        if not normalized:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(_sanitize(context or {}))
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                """
+                INSERT INTO genesis_tracked_entities (ticker, entity_type, context_json, last_seen_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (ticker) DO UPDATE SET
+                    entity_type = EXCLUDED.entity_type,
+                    context_json = EXCLUDED.context_json,
+                    last_seen_at = EXCLUDED.last_seen_at
+                """,
+                (normalized, str(entity_type or "asset")[:60], payload, now),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO genesis_tracked_entities (ticker, entity_type, context_json, last_seen_at) VALUES (?, ?, ?, ?)",
+                    (normalized, str(entity_type or "asset")[:60], payload, now),
+                )
+                conn.commit()
+
+    def get_tracked_entities(self, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 20), 100))
+        if self.backend == "postgres" and self._pg is not None:
+            rows = self._pg_fetch(
+                "SELECT ticker, entity_type, context_json, last_seen_at FROM genesis_tracked_entities ORDER BY last_seen_at DESC LIMIT %s",
+                (safe_limit,),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                rows = conn.execute(
+                    "SELECT ticker, entity_type, context_json, last_seen_at FROM genesis_tracked_entities ORDER BY last_seen_at DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        return [_tracked_row(row) for row in rows]
+
+    def save_recent_topic(self, topic: str, context: dict[str, Any] | None = None) -> None:
+        clean_topic = str(topic or "").strip()[:160]
+        if not clean_topic:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(_sanitize(context or {}))
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                "INSERT INTO genesis_recent_topics (topic, context_json, created_at) VALUES (%s, %s, %s)",
+                (clean_topic, payload, now),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT INTO genesis_recent_topics (topic, context_json, created_at) VALUES (?, ?, ?)",
+                    (clean_topic, payload, now),
+                )
+                conn.commit()
+
+    def get_recent_topics(self, limit: int = 10) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 10), 50))
+        if self.backend == "postgres" and self._pg is not None:
+            rows = self._pg_fetch(
+                "SELECT topic, context_json, created_at FROM genesis_recent_topics ORDER BY id DESC LIMIT %s",
+                (safe_limit,),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                rows = conn.execute(
+                    "SELECT topic, context_json, created_at FROM genesis_recent_topics ORDER BY id DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        return [_topic_row(row) for row in rows]
+
     def get_recent_events(self, limit: int = 20, event_type: str | None = None) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit or 20), 200))
         if self.backend == "postgres" and self._pg is not None:
@@ -148,6 +349,18 @@ class MemoryStore:
             or text in str(event.get("event_type", "")).casefold()
         ][:10]
 
+    def get_memory_summary(self, query: str = "") -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "durable": self.backend == "postgres",
+            "recent_events": self.get_recent_events(8),
+            "recent_messages": self.get_recent_messages(limit=8),
+            "learned_context": self.get_learned_context(8),
+            "tracked_entities": self.get_tracked_entities(8),
+            "recent_topics": self.get_recent_topics(8),
+            "relevant": self.get_relevant_memory(query) if query else [],
+        }
+
     def _ensure_schema(self) -> None:
         if self.backend == "postgres" and self._pg is not None:
             self._pg_execute(
@@ -173,6 +386,63 @@ class MemoryStore:
                 """,
                 (),
             )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_messages (
+                    id SERIAL PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_learned_context (
+                    context_key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_tracked_entities (
+                    ticker TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_recent_topics (
+                    id SERIAL PRIMARY KEY,
+                    topic TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
             return
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._sqlite()) as conn:
@@ -194,6 +464,58 @@ class MemoryStore:
                     pref_key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_learned_context (
+                    context_key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_tracked_entities (
+                    ticker TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_recent_topics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
                 """
             )
@@ -238,6 +560,43 @@ def _event_row(row: Any) -> dict[str, Any]:
         "source": row[2],
         "confidence": row[3],
         "created_at": row[4],
+    }
+
+
+def _message_row(row: Any) -> dict[str, Any]:
+    return {
+        "conversation_id": row[0],
+        "role": row[1],
+        "content": row[2],
+        "metadata": _loads(row[3]),
+        "created_at": row[4],
+    }
+
+
+def _learned_row(row: Any) -> dict[str, Any]:
+    return {
+        "key": row[0],
+        "value": _loads(row[1]),
+        "source": row[2],
+        "confidence": row[3],
+        "updated_at": row[4],
+    }
+
+
+def _tracked_row(row: Any) -> dict[str, Any]:
+    return {
+        "ticker": row[0],
+        "entity_type": row[1],
+        "context": _loads(row[2]),
+        "last_seen_at": row[3],
+    }
+
+
+def _topic_row(row: Any) -> dict[str, Any]:
+    return {
+        "topic": row[0],
+        "context": _loads(row[1]),
+        "created_at": row[2],
     }
 
 

@@ -23,6 +23,9 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
     store = memory or MemoryStore()
     clean = str(message or "").strip()
     route = AgentRouter().route(clean, context=panel_context if isinstance(panel_context, dict) else None, ticker=ticker)
+    if clean:
+        store.save_message("default", "user", clean, {"context": context, "intent": route.intent})
+        store.save_recent_topic(route.intent, {"message": clean, "tickers": route.tickers})
     tickers = route.tickers
     explicit_ticker = normalize_ticker(route.primary_ticker)
     price_agent = get_price_agent()
@@ -63,6 +66,12 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
         store.save_event("tracking_summary", {"count": len(tracking.get("items", []))}, "tracking", "media")
         return _payload("tracking_summary", tracking["answer"], tickers, extra={"tracking": tracking}, memory=store)
 
+    if route.intent == "memory_query":
+        memory_summary = store.get_memory_summary(clean)
+        answer = _memory_answer(memory_summary)
+        store.save_event("memory_query", {"message": clean}, "memory", "media")
+        return _payload("memory_query", answer, [], extra={"memory_summary": memory_summary}, memory=store)
+
     if route.intent == "whale_activity":
         learned = get_whale_agent().activity(explicit_ticker or None, memory=store)
         return _payload("whale_activity", learned["answer"], tickers, extra={"whales": learned}, memory=store)
@@ -70,6 +79,8 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
     if route.intent == "comparison":
         quotes = [price_agent.quote(item) for item in tickers[:2]]
         store.save_event("comparison", {"tickers": tickers[:2], "quotes": [_safe_quote_memory(item) for item in quotes]}, "price_truth", "media")
+        for item in tickers[:2]:
+            store.track_entity(item, "asset", {"reason": "comparison"})
         return _payload("comparison", _comparison_answer(quotes), tickers[:2], extra={"quotes": quotes}, memory=store)
 
     if route.intent == "chart_request":
@@ -78,13 +89,21 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
             return _payload("chart_request", "Que activo quieres revisar?", tickers, extra={"chart": chart}, memory=store)
         quote = price_agent.quote(chart["ticker"])
         store.save_event("chart_request", {"ticker": chart["ticker"], "range": chart["range"], "quote": _safe_quote_memory(quote)}, "chart", "alta" if quote.get("current_price") else "baja")
-        answer = _chart_answer(chart["ticker"], quote)
-        return _payload("chart_request", answer, [chart["ticker"], *[item for item in tickers if item != chart["ticker"]]], extra={"chart": chart, "quote": quote}, memory=store)
+        store.track_entity(chart["ticker"], "asset", {"reason": "chart_request", "range": chart["range"]})
+        store.save_learned_context(f"asset_interest:{chart['ticker']}", {"ticker": chart["ticker"], "last_intent": "chart_request"}, "genesis", "media")
+        technical = get_technical_agent().for_ticker(chart["ticker"], chart["range"]) if chart.get("overlays") else None
+        answer = _chart_answer(chart["ticker"], quote, chart.get("overlays") or [])
+        extra = {"chart": chart, "quote": quote}
+        if technical:
+            extra["technical"] = technical
+        return _payload("chart_request", answer, [chart["ticker"], *[item for item in tickers if item != chart["ticker"]]], extra=extra, memory=store)
 
     if route.intent in {"ticker_analysis", "technical_indicators"} and explicit_ticker:
         quote = price_agent.quote(explicit_ticker)
         technical = get_technical_agent().for_ticker(explicit_ticker, "1Y") if route.intent == "technical_indicators" else None
         store.save_event("ticker_analysis", {"ticker": explicit_ticker, "quote": _safe_quote_memory(quote), "technical_requested": bool(technical)}, "price_truth", "alta" if quote.get("current_price") else "baja")
+        store.track_entity(explicit_ticker, "asset", {"reason": route.intent})
+        store.save_learned_context(f"asset_interest:{explicit_ticker}", {"ticker": explicit_ticker, "last_intent": route.intent}, "genesis", "media")
         extra = {"quote": quote}
         if technical:
             extra["technical"] = technical
@@ -96,12 +115,20 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
 
 
 def _payload(intent: str, answer: str, tickers: list[str], *, extra: dict[str, Any] | None = None, memory: MemoryStore) -> dict[str, Any]:
+    memory_context = memory.get_memory_summary(answer)
     llm_result = get_llm_orchestrator().compose(
         answer,
-        {"intent": intent, "tickers": tickers, "data": extra or {}, "source_policy": "verified_backend_only"},
+        {
+            "intent": intent,
+            "tickers": tickers,
+            "data": extra or {},
+            "memory": memory_context,
+            "source_policy": "verified_backend_only",
+        },
         answer,
     )
     answer = llm_result["answer"]
+    memory.save_message("default", "assistant", answer, {"intent": intent, "tickers": tickers})
     payload = {
         "ok": True,
         "status": "genesis_intelligence_ready",
@@ -110,7 +137,9 @@ def _payload(intent: str, answer: str, tickers: list[str], *, extra: dict[str, A
         "tickers": tickers,
         "memory": {
             "backend": memory.backend,
-            "recent_events": memory.get_recent_events(5),
+            "recent_events": memory_context["recent_events"][:5],
+            "recent_messages": memory_context["recent_messages"][-5:],
+            "tracked_entities": memory_context["tracked_entities"][:5],
             "durable_on_railway": memory.backend == "postgres",
         },
         "llm": {"used": llm_result["used_llm"], "reason": llm_result["reason"]},
@@ -121,14 +150,16 @@ def _payload(intent: str, answer: str, tickers: list[str], *, extra: dict[str, A
     return payload
 
 
-def _chart_answer(ticker: str, quote: dict[str, Any]) -> str:
+def _chart_answer(ticker: str, quote: dict[str, Any], overlays: list[str] | None = None) -> str:
     if not quote.get("current_price"):
         return f"{ticker}: no tengo precio confirmado para ese activo. Puedo mostrar la grafica solo si FMP devuelve OHLC suficiente."
     change = format_signed_money(quote.get("daily_change"))
     pct = format_signed_percent(quote.get("daily_change_pct"))
+    overlay_text = f" Incluyo indicadores solicitados: {', '.join(overlays)}." if overlays else ""
     return (
         f"{ticker}: precio confirmado {quote.get('formatted_price')} ({change}, {pct}). "
         "Cargo velas japonesas con retornos por temporalidad. La lectura usa datos confirmados, no precios inventados."
+        f"{overlay_text}"
     )
 
 
@@ -160,6 +191,16 @@ def _comparison_answer(quotes: list[dict[str, Any]]) -> str:
         else:
             parts.append(f"{ticker}: {quote.get('formatted_price')} ({format_signed_percent(quote.get('daily_change_pct'))})")
     return "Comparacion con precio confirmado: " + " | ".join(parts) + ". No uso precios inventados."
+
+
+def _memory_answer(memory_summary: dict[str, Any]) -> str:
+    entities = [item.get("ticker") for item in memory_summary.get("tracked_entities", []) if item.get("ticker")]
+    topics = [item.get("topic") for item in memory_summary.get("recent_topics", []) if item.get("topic")]
+    if not entities and not topics:
+        return "Todavia tengo poca memoria util. A partir de tus analisis, graficas y cartera voy guardando activos, temas y preferencias sin guardar secretos."
+    entity_text = ", ".join(entities[:5]) if entities else "sin activos recurrentes todavia"
+    topic_text = ", ".join(topics[:4]) if topics else "sin temas recientes claros"
+    return f"Recuerdo como contexto reciente: activos {entity_text}. Temas: {topic_text}. Uso esta memoria como apoyo, no como fuente de precios."
 
 
 def _safe_quote_memory(quote: dict[str, Any]) -> dict[str, Any]:

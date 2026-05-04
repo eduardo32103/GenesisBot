@@ -202,6 +202,7 @@ class FmpClient:
             ("legacy", f"https://financialmodelingprep.com/api/v3/historical-price-full/{urllib.parse.quote(symbol)}?apikey={self.api_key}"),
         ]
         last_status = None
+        best_rows: list[dict] = []
 
         for endpoint_name, url in endpoints:
             try:
@@ -212,10 +213,17 @@ class FmpClient:
                     continue
                 rows = self._parse_historical_payload(payload)
                 if rows:
-                    self.last_error_by_ticker.pop(tk, None)
-                    return rows[: int(limit)] if limit else rows
+                    if limit:
+                        self.last_error_by_ticker.pop(tk, None)
+                        return rows[: int(limit)]
+                    if len(rows) > len(best_rows):
+                        best_rows = rows
             except Exception as exc:
                 self.logger.debug("FMP historical %s error para %s: %s", endpoint_name, tk, exc)
+
+        if best_rows:
+            self.last_error_by_ticker.pop(tk, None)
+            return best_rows
 
         if last_status in (401, 403):
             self.last_error_by_ticker[tk] = f"Historico FMP no disponible para {tk}: HTTP {last_status}"
