@@ -310,29 +310,12 @@ input:focus-visible {
 .genesis-conversation {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
+  grid-template-rows: 1fr auto auto;
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-}
-
-.genesis-chat-head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 13px 15px 6px;
-}
-
-.genesis-chat-head strong {
-  font-size: 0.98rem;
-  letter-spacing: 0;
-}
-
-.genesis-chat-head span {
-  color: var(--muted);
-  font-size: 0.78rem;
 }
 
 .chat-thread {

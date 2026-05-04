@@ -38,7 +38,7 @@ const appState = {
     {
       id: "welcome",
       role: "assistant",
-      text: "Genesis activo. Que quieres revisar hoy?",
+      text: "Hola. Que quieres revisar hoy?",
     },
   ],
 };
@@ -794,10 +794,6 @@ function renderGenesisScreen() {
   root.innerHTML = `
     <section class="genesis-stage">
       <div class="genesis-conversation">
-        <div class="genesis-chat-head">
-          <strong>Genesis activo.</strong>
-          <span>Mercado, cartera, ballenas, clima o una grafica.</span>
-        </div>
         <div class="chat-thread" id="genesis-thread">
           ${appState.chatMessages.map(chatBubbleMarkup).join("")}
         </div>

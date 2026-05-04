@@ -7,6 +7,7 @@ from typing import Any
 
 from app.settings import load_settings
 from integrations.fmp.client import FmpClient
+from services.genesis.returns_engine import calculate_return_detail, calculate_returns, flatten_return_details, slice_points_for_range
 from services.genesis.technical_analysis import compute_technical_indicators
 
 _LOGGER = logging.getLogger("genesis.dashboard.chart")
@@ -104,15 +105,7 @@ def _downsample_ohlc(candles: list[dict[str, Any]], max_points: int = _MAX_RENDE
 
 
 def _slice_for_timeframe(points: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
-    if timeframe == "1W":
-        return points[-7:]
-    if timeframe == "1M":
-        return points[-23:]
-    if timeframe == "1Y":
-        return points[-260:]
-    if timeframe == "5Y":
-        return points[-1260:]
-    return points
+    return slice_points_for_range(points, timeframe)
 
 
 def _summary(points: list[dict[str, Any]]) -> dict[str, Any]:
@@ -152,17 +145,6 @@ def _last_date(points: list[dict[str, Any]]) -> str:
     return str((points[-1] if points else {}).get("date") or (points[-1] if points else {}).get("time") or "")
 
 
-def _returns(eod_points: list[dict[str, Any]], intraday_points: list[dict[str, Any]]) -> dict[str, float | None]:
-    return {
-        "1D": _summary(intraday_points if len(intraday_points) >= 2 else eod_points[-2:]).get("change_pct"),
-        "1W": _summary(_slice_for_timeframe(eod_points, "1W")).get("change_pct"),
-        "1M": _summary(_slice_for_timeframe(eod_points, "1M")).get("change_pct"),
-        "1Y": _summary(_slice_for_timeframe(eod_points, "1Y")).get("change_pct"),
-        "5Y": _summary(_slice_for_timeframe(eod_points, "5Y")).get("change_pct"),
-        "MAX": _summary(eod_points).get("change_pct"),
-    }
-
-
 def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -174,12 +156,15 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "points": [],
         "ohlc": [],
         "returns": {"1D": None, "1W": None, "1M": None, "1Y": None, "5Y": None, "MAX": None},
+        "return_details": {},
         "indicators": compute_technical_indicators([]),
         "summary": _summary([]),
         "max_history_years": 0.0,
         "history_points": 0,
         "first_date": "",
         "last_date": "",
+        "first_close": None,
+        "last_close": None,
         "source": {
             "provider": "FMP",
             "endpoint": "",
@@ -221,20 +206,26 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     else:
         points = _slice_for_timeframe(eod_points, normalized_timeframe)
 
-    raw_count = len(points)
-    points = _downsample_ohlc(points)
-    return_map = _returns(eod_points, intraday_points)
+    selected_points = points
+    raw_count = len(selected_points)
+    points = _downsample_ohlc(selected_points)
+    return_details = calculate_returns(eod_points, intraday_points, source="FMP")
+    return_map = flatten_return_details(return_details)
+    selected_return = calculate_return_detail(selected_points, normalized_timeframe, source="FMP")
     if not points:
         return {
             **_empty_payload(normalized_ticker, normalized_timeframe, "no_data", "No hay datos OHLC suficientes para esta temporalidad."),
             "quote": quote,
             "name": quote.get("name") or profile.get("companyName") or profile.get("name") or normalized_ticker,
             "returns": return_map,
+            "return_details": return_details,
             "indicators": compute_technical_indicators([]),
             "max_history_years": max_history_years,
             "history_points": len(eod_points),
-            "first_date": _first_date(eod_points),
-            "last_date": _last_date(eod_points),
+            "first_date": selected_return.get("first_date") or _first_date(eod_points),
+            "last_date": selected_return.get("last_date") or _last_date(eod_points),
+            "first_close": selected_return.get("first_close"),
+            "last_close": selected_return.get("last_close"),
             "source": {
                 "provider": "FMP",
                 "endpoint": endpoint_label,
@@ -254,12 +245,15 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "points": points,
         "ohlc": points,
         "returns": return_map,
+        "return_details": return_details,
         "indicators": compute_technical_indicators(points),
         "summary": _summary(points),
         "max_history_years": max_history_years,
         "history_points": len(eod_points),
-        "first_date": _first_date(eod_points),
-        "last_date": _last_date(eod_points),
+        "first_date": selected_return.get("first_date"),
+        "last_date": selected_return.get("last_date"),
+        "first_close": selected_return.get("first_close"),
+        "last_close": selected_return.get("last_close"),
         "quote": {
             "price": quote.get("price"),
             "change": quote.get("change"),

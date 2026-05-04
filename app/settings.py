@@ -31,6 +31,7 @@ class Settings:
     fmp_live_enabled: bool
     openai_api_key: str
     genesis_llm_enabled: bool
+    genesis_llm_model: str
     genesis_vision_enabled: bool
     weather_api_key: str
     gemini_api_key: str
@@ -57,6 +58,7 @@ class Settings:
             "fmp_live_enabled": self.fmp_live_enabled,
             "openai_key": bool(self.openai_api_key),
             "genesis_llm_enabled": self.genesis_llm_enabled,
+            "genesis_llm_model": self.genesis_llm_model,
             "genesis_vision_enabled": self.genesis_vision_enabled,
             "weather_key": bool(self.weather_api_key),
             "gemini_key": bool(self.gemini_api_key),
@@ -77,6 +79,7 @@ def load_settings() -> Settings:
         fmp_live_enabled=_env_flag(os.getenv("FMP_LIVE_ENABLED", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         genesis_llm_enabled=_env_flag(os.getenv("GENESIS_LLM_ENABLED", "")),
+        genesis_llm_model=os.getenv("GENESIS_LLM_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini",
         genesis_vision_enabled=_env_flag(os.getenv("GENESIS_VISION_ENABLED", "")),
         weather_api_key=os.getenv("WEATHER_API_KEY", os.getenv("OPENWEATHER_API_KEY", "")).strip(),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),

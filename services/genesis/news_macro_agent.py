@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-from services.genesis.market_briefing import get_portfolio_briefing
+from services.genesis.market_overview_agent import get_market_overview_agent
 
 
 class NewsMacroAgent:
     def market_overview(self) -> dict:
-        briefing = get_portfolio_briefing()
-        return {
-            "intent": "market_overview",
-            "answer": f"Lectura rapida: {briefing.get('answer')} Ballenas y alertas se tratan como evidencia, no como causalidad garantizada.",
-            "portfolio": briefing,
-        }
+        return get_market_overview_agent().overview()
 
     def daily_briefing(self) -> dict:
         overview = self.market_overview()

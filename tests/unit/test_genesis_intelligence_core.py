@@ -12,12 +12,15 @@ from services.genesis.agent_router import AgentRouter
 from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.chart_agent import ChartAgent
 from services.genesis.image_chart_agent import ImageChartAgent
+from services.genesis.llm_orchestrator import LlmOrchestrator
 from services.genesis.market_format import format_market_number, market_class
 from services.genesis.memory_store import MemoryStore
 from services.genesis.memory_agent import MemoryAgent
 from services.genesis.price_agent import PriceAgent
+from services.genesis.price_truth_service import PriceTruthService
 from services.genesis.price_truth import get_verified_market_quote, validate_price_sanity
 from services.genesis.response_composer import ResponseComposer
+from services.genesis.returns_engine import calculate_returns, flatten_return_details
 from services.genesis.technical_analysis import compute_technical_indicators
 from services.genesis.technical_agent import TechnicalAgent
 from services.genesis.ticker_parser import extract_tickers_from_prompt
@@ -35,6 +38,9 @@ class GenesisTickerParserTests(unittest.TestCase):
             "que hora es": [],
             "dame un resumen del dia": [],
             "oye genesis como se ve el mercado": [],
+            "como estuvo el mercado el viernes pasado": [],
+            "dame una grafica de bno": ["BNO"],
+            "compara meta vs nvda": ["META", "NVDA"],
             "compara nflx contra nvda": ["NFLX", "NVDA"],
         }
         for prompt, expected in cases.items():
@@ -93,6 +99,7 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("que hora es").intent, "time")
         self.assertEqual(router.route("dame un resumen del dia").intent, "daily_briefing")
         self.assertEqual(router.route("oye genesis como se ve el mercado").intent, "market_overview")
+        self.assertEqual(router.route("como estuvo el mercado el viernes pasado").intent, "market_overview")
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
 
     def test_app_config_exposes_genesis_intelligence_endpoints(self) -> None:
@@ -109,7 +116,7 @@ class GenesisToolRouterTests(unittest.TestCase):
             payload = route_message("hola", memory=store)
 
         self.assertEqual(payload["intent"], "greeting")
-        self.assertIn("Genesis activo", payload["answer"])
+        self.assertIn("Hola", payload["answer"])
 
     def test_time_request_is_not_ticker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,23 +161,55 @@ class GenesisToolRouterTests(unittest.TestCase):
     def test_briefing_and_market_overview_do_not_use_fake_tickers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
-            with patch("services.genesis.news_macro_agent.get_portfolio_briefing", return_value={"answer": "Cartera paper: 0 posiciones.", "snapshot": {}}):
+            price_agent = Mock()
+            price_agent.quote.return_value = {"ticker": "SPY", "current_price": None}
+            with patch("services.genesis.market_overview_agent.get_price_agent", return_value=price_agent):
                 briefing = route_message("dame un resumen del dia", memory=store)
                 overview = route_message("oye genesis como se ve el mercado", memory=store)
+                friday = route_message("como estuvo el mercado el viernes pasado", memory=store)
 
         self.assertEqual(briefing["intent"], "daily_briefing")
         self.assertEqual(briefing["tickers"], [])
         self.assertEqual(overview["intent"], "market_overview")
         self.assertEqual(overview["tickers"], [])
+        self.assertEqual(friday["intent"], "market_overview")
+        self.assertEqual(friday["tickers"], [])
 
     def test_agent_modules_exist_as_internal_brain_components(self) -> None:
         self.assertIsInstance(PriceAgent(), PriceAgent)
+        self.assertIsInstance(PriceTruthService(), PriceTruthService)
         self.assertIsInstance(ChartAgent(), ChartAgent)
         self.assertIsInstance(TechnicalAgent(), TechnicalAgent)
         self.assertIsInstance(ImageChartAgent(), ImageChartAgent)
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsInstance(MemoryAgent(MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")), MemoryAgent)
         self.assertIsInstance(ResponseComposer(), ResponseComposer)
+        with patch("services.genesis.llm_orchestrator.load_settings", return_value=SimpleNamespace(genesis_llm_enabled=False, openai_api_key="", genesis_llm_model="test")):
+            self.assertFalse(LlmOrchestrator().enabled())
+
+
+class GenesisReturnsEngineTests(unittest.TestCase):
+    def test_returns_are_calculated_from_first_and_last_close_by_range(self) -> None:
+        points = [
+            {"date": "2016-01-01", "close": 50},
+            {"date": "2021-01-02", "close": 100},
+            {"date": "2025-01-01", "close": 200},
+            {"date": "2025-12-01", "close": 240},
+            {"date": "2025-12-25", "close": 250},
+            {"date": "2026-01-01", "close": 300},
+        ]
+
+        details = calculate_returns(points, [{"date": "2026-01-01 09:30:00", "close": 290}, {"date": "2026-01-01 16:00:00", "close": 300}])
+        returns = flatten_return_details(details)
+
+        self.assertEqual(returns["1D"], 3.4483)
+        self.assertEqual(returns["1W"], 20.0)
+        self.assertEqual(returns["1M"], 25.0)
+        self.assertEqual(returns["1Y"], 50.0)
+        self.assertEqual(returns["5Y"], 200.0)
+        self.assertEqual(returns["MAX"], 500.0)
+        self.assertEqual(details["MAX"]["first_close"], 50)
+        self.assertEqual(details["MAX"]["last_close"], 300)
 
 
 class GenesisTechnicalAnalysisTests(unittest.TestCase):

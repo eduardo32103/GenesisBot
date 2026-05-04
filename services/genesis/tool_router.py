@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.genesis.agent_router import AgentRouter
+from services.genesis.llm_orchestrator import get_llm_orchestrator
 from services.genesis.market_format import format_signed_money, format_signed_percent
 from services.genesis.memory_store import MemoryStore
 from services.genesis.news_macro_agent import get_news_macro_agent
@@ -95,6 +96,12 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
 
 
 def _payload(intent: str, answer: str, tickers: list[str], *, extra: dict[str, Any] | None = None, memory: MemoryStore) -> dict[str, Any]:
+    llm_result = get_llm_orchestrator().compose(
+        answer,
+        {"intent": intent, "tickers": tickers, "data": extra or {}, "source_policy": "verified_backend_only"},
+        answer,
+    )
+    answer = llm_result["answer"]
     payload = {
         "ok": True,
         "status": "genesis_intelligence_ready",
@@ -106,6 +113,7 @@ def _payload(intent: str, answer: str, tickers: list[str], *, extra: dict[str, A
             "recent_events": memory.get_recent_events(5),
             "durable_on_railway": memory.backend == "postgres",
         },
+        "llm": {"used": llm_result["used_llm"], "reason": llm_result["reason"]},
         "source_policy": "Los precios salen de FMP, snapshot validado o referencia paper. Genesis no inventa precios.",
     }
     if extra:
