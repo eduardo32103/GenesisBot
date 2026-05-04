@@ -4,15 +4,15 @@ from services.genesis.market_overview_agent import get_market_overview_agent
 
 
 class NewsMacroAgent:
-    def market_overview(self) -> dict:
-        return get_market_overview_agent().overview()
+    def market_overview(self, question: str = "") -> dict:
+        return get_market_overview_agent().overview(question)
 
-    def daily_briefing(self) -> dict:
-        overview = self.market_overview()
+    def daily_briefing(self, question: str = "") -> dict:
+        overview = self.market_overview(question)
         return {
             **overview,
             "intent": "daily_briefing",
-            "answer": "Resumen del dia: " + overview["answer"],
+            "answer": overview["answer"],
         }
 
 

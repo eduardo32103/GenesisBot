@@ -137,6 +137,17 @@ def _history_years(points: list[dict[str, Any]]) -> float:
         return 0.0
 
 
+def _max_truncation(max_history_years: float, eod_points: list[dict[str, Any]]) -> dict[str, Any]:
+    if not eod_points:
+        return {"is_max_truncated": True, "truncation_reason": "sin_historico_fmp"}
+    if max_history_years <= 5.05:
+        return {
+            "is_max_truncated": True,
+            "truncation_reason": "fmp_devolvio_hasta_5y_o_activo_sin_mas_historia",
+        }
+    return {"is_max_truncated": False, "truncation_reason": ""}
+
+
 def _first_date(points: list[dict[str, Any]]) -> str:
     return str((points[0] if points else {}).get("date") or (points[0] if points else {}).get("time") or "")
 
@@ -151,6 +162,7 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "status": status,
         "message": message,
         "ticker": ticker,
+        "selected_range": timeframe,
         "timeframe": timeframe,
         "range": timeframe,
         "points": [],
@@ -161,6 +173,10 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "summary": _summary([]),
         "max_history_years": 0.0,
         "history_points": 0,
+        "raw_eod_points": 0,
+        "selected_range_points": 0,
+        "is_max_truncated": True,
+        "truncation_reason": "sin_historico_fmp",
         "first_date": "",
         "last_date": "",
         "first_close": None,
@@ -196,6 +212,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     eod_rows = client.get_historical_eod(normalized_ticker, limit=None, symbol_map=symbol_map) or []
     eod_points = _shape_ohlc(eod_rows)
     max_history_years = _history_years(eod_points)
+    max_truncation = _max_truncation(max_history_years, eod_points)
     intraday_points: list[dict[str, Any]] = []
     endpoint_label = "historical-price-eod/full"
     if normalized_timeframe == "1D":
@@ -221,7 +238,9 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "return_details": return_details,
             "indicators": compute_technical_indicators([]),
             "max_history_years": max_history_years,
+            **max_truncation,
             "history_points": len(eod_points),
+            "raw_eod_points": len(eod_points),
             "selected_range_points": raw_count,
             "first_date": selected_return.get("first_date") or _first_date(eod_points),
             "last_date": selected_return.get("last_date") or _last_date(eod_points),
@@ -236,6 +255,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
                 "selected_range_points": raw_count,
                 "raw_eod_points": len(eod_points),
                 "max_uses_full_history": True,
+                **max_truncation,
             },
         }
 
@@ -243,6 +263,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "ok": True,
         "status": "ready",
         "ticker": normalized_ticker,
+        "selected_range": normalized_timeframe,
         "name": quote.get("name") or profile.get("companyName") or profile.get("name") or normalized_ticker,
         "timeframe": normalized_timeframe,
         "range": normalized_timeframe,
@@ -253,7 +274,9 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "indicators": compute_technical_indicators(selected_points),
         "summary": _summary(selected_points),
         "max_history_years": max_history_years,
+        **max_truncation,
         "history_points": len(eod_points),
+        "raw_eod_points": len(eod_points),
         "selected_range_points": raw_count,
         "first_date": selected_return.get("first_date"),
         "last_date": selected_return.get("last_date"),
@@ -277,5 +300,6 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "raw_eod_points": len(eod_points),
             "max_history_years": max_history_years,
             "max_uses_full_history": True,
+            **max_truncation,
         },
     }

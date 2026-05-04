@@ -37,7 +37,9 @@ class GenesisTickerParserTests(unittest.TestCase):
             "quiero ver meta": ["META"],
             "que opinas de bz=f": ["BZ=F"],
             "que hora es": [],
+            "que fecha es": [],
             "dame un resumen del dia": [],
+            "que esta pasando hoy": [],
             "oye genesis como se ve el mercado": [],
             "como estuvo el mercado el viernes pasado": [],
             "dame una grafica de bno": ["BNO"],
@@ -108,7 +110,9 @@ class GenesisToolRouterTests(unittest.TestCase):
         router = AgentRouter()
 
         self.assertEqual(router.route("que hora es").intent, "time")
+        self.assertEqual(router.route("que fecha es").intent, "date")
         self.assertEqual(router.route("dame un resumen del dia").intent, "daily_briefing")
+        self.assertEqual(router.route("que esta pasando hoy").intent, "market_overview")
         self.assertEqual(router.route("oye genesis como se ve el mercado").intent, "market_overview")
         self.assertEqual(router.route("como estuvo el mercado el viernes pasado").intent, "market_overview")
         self.assertEqual(router.route("que aprendiste de mis consultas recientes").intent, "memory_query")
@@ -139,6 +143,15 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "time")
         self.assertEqual(payload["tickers"], [])
         self.assertIn("Son las", payload["answer"])
+
+    def test_date_request_is_not_ticker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("que fecha es", memory=store)
+
+        self.assertEqual(payload["intent"], "date")
+        self.assertEqual(payload["tickers"], [])
+        self.assertIn("Hoy es", payload["answer"])
 
     @patch("services.genesis.price_agent.get_verified_market_quote")
     def test_chart_request_uses_correct_ticker_and_verified_quote(self, mock_quote: Mock) -> None:
@@ -183,6 +196,8 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         self.assertEqual(briefing["intent"], "daily_briefing")
         self.assertEqual(briefing["tickers"], [])
+        self.assertIn("1. Lectura rapida", briefing["answer"])
+        self.assertIn("6. Siguiente paso", briefing["answer"])
         self.assertEqual(overview["intent"], "market_overview")
         self.assertEqual(overview["tickers"], [])
         self.assertEqual(friday["intent"], "market_overview")

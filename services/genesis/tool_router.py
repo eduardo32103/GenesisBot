@@ -11,7 +11,7 @@ from services.genesis.portfolio_agent import get_portfolio_agent
 from services.genesis.price_agent import get_price_agent
 from services.genesis.response_composer import get_response_composer
 from services.genesis.technical_agent import get_technical_agent
-from services.genesis.time_tool import detect_time_request, get_time_answer
+from services.genesis.time_tool import detect_date_request, detect_time_request, get_date_answer, get_time_answer
 from services.genesis.ticker_parser import normalize_ticker
 from services.genesis.tracking_agent import get_tracking_agent
 from services.genesis.weather_agent import get_weather_agent
@@ -41,18 +41,23 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
         store.save_event("time_request", {"message": clean, "timezone": time_payload["timezone"]}, "time", "alta")
         return _payload("time", time_payload["answer"], [], extra={"time": time_payload}, memory=store)
 
+    if route.intent == "date" or detect_date_request(clean):
+        date_payload = get_date_answer()
+        store.save_event("date_request", {"message": clean, "timezone": date_payload["timezone"], "date": date_payload["date"]}, "time", "alta")
+        return _payload("date", date_payload["answer"], [], extra={"date": date_payload}, memory=store)
+
     if route.intent == "weather" or detect_weather_request(clean):
         weather = get_weather_agent().answer(clean)
         store.save_event("weather_request", {"message": clean, "city": weather.get("city"), "source": weather.get("source")}, "weather", "media")
         return _payload("weather", weather["answer"], tickers, extra={"weather": weather}, memory=store)
 
     if route.intent == "daily_briefing":
-        briefing = get_news_macro_agent().daily_briefing()
+        briefing = get_news_macro_agent().daily_briefing(clean)
         store.save_event("daily_briefing", {"summary": briefing["answer"]}, "macro", "media")
         return _payload("daily_briefing", briefing["answer"], [], extra={"briefing": briefing}, memory=store)
 
     if route.intent == "market_overview":
-        overview = get_news_macro_agent().market_overview()
+        overview = get_news_macro_agent().market_overview(clean)
         store.save_event("market_overview", {"summary": overview["answer"]}, "macro", "media")
         return _payload("market_overview", overview["answer"], [], extra={"overview": overview}, memory=store)
 

@@ -5,7 +5,7 @@ from typing import Any
 
 class ResponseComposer:
     def general(self) -> str:
-        return "Puedo ayudarte con mercado, cartera, seguimiento, ballenas, alertas, clima o una grafica. Dime el activo o el tema que quieres revisar."
+        return "Te sigo. Puedo revisar mercado, cartera, seguimiento, ballenas, alertas, clima o una grafica. Si falta una fuente, te lo digo sin inventar datos."
 
     def greeting(self) -> str:
         return "Hola. Que quieres revisar hoy?"

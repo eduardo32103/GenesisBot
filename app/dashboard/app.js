@@ -299,9 +299,20 @@ function dailyMoveLabel(item) {
   return `${formatChange(usd)} ${formatPercent(pct)}`;
 }
 
+function firstDirectionalValue(...values) {
+  let fallback = null;
+  for (const value of values) {
+    const numeric = numberOrNull(value);
+    if (numeric === null) continue;
+    if (fallback === null) fallback = numeric;
+    if (numeric !== 0) return numeric;
+  }
+  return fallback;
+}
+
 function movementTone(itemOrValue) {
   const value = typeof itemOrValue === "object"
-    ? itemDailyPct(itemOrValue) ?? itemDailyUsd(itemOrValue) ?? positionPnl(itemOrValue)
+    ? firstDirectionalValue(itemDailyPct(itemOrValue), itemDailyUsd(itemOrValue), positionPnl(itemOrValue))
     : numberOrNull(itemOrValue);
   return positiveClass(value);
 }
@@ -343,7 +354,7 @@ function chartIntentFromText(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   if (!/(GRAFICA|GRAFICO|CHART)/.test(normalized)) return null;
-  const stop = new Set(["ANALIZA", "ANALIZAR", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "QUE", "RESUMEN", "DIA", "OYE", "GENESIS", "MERCADO"]);
+  const stop = new Set(["ANALIZA", "ANALIZAR", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO"]);
   const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F" };
   const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
   const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
@@ -463,6 +474,7 @@ function chartDebugMarkup(payload) {
       <span>Fuente ${escapeHtml(source.provider || "FMP")}</span>
       <span>${escapeHtml(payload.history_points || source.raw_eod_points || 0)} puntos</span>
       <span>MAX ${escapeHtml(payload.max_history_years || source.max_history_years || 0)} anos</span>
+      <span>${payload.is_max_truncated || source.is_max_truncated ? "MAX limitado" : "MAX completo"}</span>
       <span>${escapeHtml(payload.first_date || "sin inicio")} -> ${escapeHtml(payload.last_date || "sin cierre")}</span>
       <span>${escapeHtml(money(payload.first_close, "sin base"))} -> ${escapeHtml(money(payload.last_close, "sin cierre"))}</span>
     </div>

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 from services.genesis.chart_intent import detect_chart_intent
 from services.genesis.ticker_parser import extract_tickers_from_prompt, normalize_ticker
-from services.genesis.time_tool import detect_time_request
+from services.genesis.time_tool import detect_date_request, detect_time_request
 from services.genesis.weather_tool import detect_weather_request
 
 
@@ -34,13 +35,15 @@ class AgentRouter:
         )
 
     def detect_intent(self, message: str, *, tickers: list[str] | None = None, chart: dict[str, Any] | None = None) -> str:
-        text = str(message or "").casefold().strip(" .!?")
+        text = _fold(message).strip(" .!?")
         tickers = tickers or []
         chart = chart or {}
         if text in {"hola", "buen dia", "buenos dias", "buenas", "hey", "hello"}:
             return "greeting"
         if detect_time_request(message):
             return "time"
+        if detect_date_request(message):
+            return "date"
         if detect_weather_request(message):
             return "weather"
         if "imagen" in text or "foto" in text:
@@ -75,6 +78,7 @@ class AgentRouter:
 _AGENT_BY_INTENT = {
     "greeting": "response_composer",
     "time": "time_agent",
+    "date": "time_agent",
     "weather": "weather_agent",
     "daily_briefing": "news_macro_agent",
     "market_overview": "news_macro_agent",
@@ -94,11 +98,15 @@ _AGENT_BY_INTENT = {
 
 
 def _mentions_daily_briefing(text: str) -> bool:
-    return any(token in text for token in ("resumen del dia", "resumen del día", "briefing", "resumen diario"))
+    return any(token in text for token in ("resumen del dia", "briefing", "resumen diario"))
 
 
 def _mentions_market_overview(text: str) -> bool:
-    return "mercado" in text and not any(token in text for token in ("seguimiento", "cartera"))
+    return (
+        ("mercado" in text and not any(token in text for token in ("seguimiento", "cartera")))
+        or "que esta pasando hoy" in text
+        or "que esta pasando" in text
+    )
 
 
 def _mentions_portfolio(text: str) -> bool:
@@ -148,3 +156,8 @@ def _mentions_technical(text: str) -> bool:
             "atr",
         )
     )
+
+
+def _fold(value: object) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or "").casefold())
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
