@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.genesis.agent_router import AgentRouter
+from services.genesis.alerts_agent import get_alerts_agent
 from services.genesis.llm_orchestrator import get_llm_orchestrator
 from services.genesis.market_format import format_signed_money, format_signed_percent
 from services.genesis.memory_store import MemoryStore
@@ -80,6 +81,11 @@ def route_message(message: str, context: str = "general", ticker: str = "", pane
     if route.intent == "whale_activity":
         learned = get_whale_agent().activity(explicit_ticker or None, memory=store)
         return _payload("whale_activity", learned["answer"], tickers, extra={"whales": learned}, memory=store)
+
+    if route.intent == "alerts":
+        alerts = get_alerts_agent().summary()
+        store.save_event("alerts_summary", {"count": len(alerts.get("items", [])), "answer": alerts.get("answer")}, "alerts", "media")
+        return _payload("alerts", alerts["answer"], [], extra={"alerts": alerts}, memory=store)
 
     if route.intent == "comparison":
         quotes = [price_agent.quote(item) for item in tickers[:2]]

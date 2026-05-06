@@ -37,7 +37,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
             "name": "NVIDIA",
         }
         client.get_profile.return_value = {"companyName": "NVIDIA Corporation"}
-        client.get_historical_eod.return_value = [
+        client.get_full_historical_eod.return_value = [
             {"date": "2026-01-03", "open": 115, "high": 122, "low": 114, "close": 120, "volume": 3000},
             {"date": "2026-01-01", "open": 98, "high": 101, "low": 97, "close": 100, "volume": 1000},
             {"date": "2026-01-02", "open": 100, "high": 112, "low": 99, "close": 110, "volume": 2000},
@@ -63,8 +63,9 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["last_close"], 120)
         self.assertEqual(payload["return_details"]["MAX"]["first_close"], 100)
         self.assertEqual(payload["return_details"]["MAX"]["last_close"], 120)
+        self.assertEqual(payload["return_details"]["MAX"]["points_used"], 3)
         self.assertEqual(payload["source"]["endpoint"], "historical-price-eod/full")
-        client.get_historical_eod.assert_called_once_with("NVDA", limit=None, symbol_map=None)
+        client.get_full_historical_eod.assert_called_once_with("NVDA", symbol_map=None)
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")
@@ -73,7 +74,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         client = mock_fmp_client.return_value
         client.get_quote.return_value = {"price": 608.75, "name": "Meta"}
         client.get_profile.return_value = {"companyName": "Meta Platforms"}
-        client.get_historical_eod.return_value = [
+        client.get_full_historical_eod.return_value = [
             {"date": "2026-04-30", "open": 590, "high": 602, "low": 588, "close": 600},
             {"date": "2026-05-01", "open": 600, "high": 610, "low": 599, "close": 606},
         ]
@@ -90,7 +91,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["change_pct"], 0.8319)
         self.assertEqual(payload["ohlc"][0]["open"], 600)
         client.get_intraday_history.assert_called_once_with("META", interval="5min", limit=160, symbol_map=None)
-        client.get_historical_eod.assert_called_once_with("META", limit=None, symbol_map=None)
+        client.get_full_historical_eod.assert_called_once_with("META", symbol_map=None)
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")
@@ -99,7 +100,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         client = mock_fmp_client.return_value
         client.get_quote.return_value = {"price": 64000, "name": "Bitcoin"}
         client.get_profile.return_value = {}
-        client.get_historical_eod.return_value = [
+        client.get_full_historical_eod.return_value = [
             {"date": "2026-01-01", "open": 59000, "high": 61000, "low": 58000, "close": 60000},
             {"date": "2026-01-02", "open": 60000, "high": 65000, "low": 59800, "close": 64000},
         ]
@@ -108,7 +109,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["ticker"], "BTC")
-        client.get_historical_eod.assert_called_once_with("BTC", limit=None, symbol_map={"BTC": "BTCUSD"})
+        client.get_full_historical_eod.assert_called_once_with("BTC", symbol_map={"BTC": "BTCUSD"})
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")
@@ -123,7 +124,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
             current = start + timedelta(days=index)
             price = 50 + index * 0.1
             rows.append({"date": current.isoformat(), "open": price, "high": price + 2, "low": price - 2, "close": price + 1})
-        client.get_historical_eod.return_value = rows
+        client.get_full_historical_eod.return_value = rows
 
         payload = get_asset_chart_series("NVDA", "MAX")
 
@@ -134,12 +135,15 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertNotEqual(payload["returns"]["MAX"], payload["returns"]["5Y"])
         self.assertEqual(payload["source"]["raw_eod_points"], 2300)
         self.assertFalse(payload["is_max_truncated"])
+        self.assertFalse(payload["max_truncated"])
         self.assertFalse(payload["source"]["is_max_truncated"])
+        self.assertFalse(payload["source"]["max_truncated"])
         self.assertEqual(payload["truncation_reason"], "")
         self.assertEqual(payload["first_date"], "2016-01-01")
         self.assertEqual(payload["first_close"], 51)
         self.assertEqual(payload["return_details"]["MAX"]["first_close"], 51)
         self.assertEqual(payload["return_details"]["MAX"]["last_close"], 280.9)
+        self.assertEqual(payload["return_details"]["MAX"]["points_used"], 2300)
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")
@@ -148,7 +152,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         client = mock_fmp_client.return_value
         client.get_quote.return_value = {"price": 120, "name": "NVIDIA"}
         client.get_profile.return_value = {}
-        client.get_historical_eod.return_value = [{"date": "2026-01-01", "close": 100}]
+        client.get_full_historical_eod.return_value = [{"date": "2026-01-01", "close": 100}]
 
         payload = get_asset_chart_series("NVDA", "1Y")
 

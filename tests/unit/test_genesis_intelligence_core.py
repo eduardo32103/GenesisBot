@@ -88,6 +88,9 @@ class GenesisMemoryStoreTests(unittest.TestCase):
             store.save_learned_context("asset_interest:NVDA", {"ticker": "NVDA"}, "test", "alta")
             store.track_entity("NVDA", "asset", {"reason": "test"})
             store.save_recent_topic("ticker_analysis", {"ticker": "NVDA"})
+            store.save_market_observation("NVDA", "Observacion sin secreto")
+            store.save_whale_event("NVDA", entity="Fondo Test", action="Compra", amount=1000, date="2026-01-01", confidence="alta")
+            store.save_alert_event("NVDA", "cambio_fuerte_diario", {"summary": "Movimiento relevante"}, confidence="media")
 
             fresh = MemoryStore(database_url="", sqlite_path=path)
             events = fresh.get_recent_events(10, "ticker_analysis")
@@ -99,6 +102,9 @@ class GenesisMemoryStoreTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"], "analiza NVDA")
         self.assertEqual(summary["tracked_entities"][0]["ticker"], "NVDA")
         self.assertEqual(summary["learned_context"][0]["key"], "asset_interest:NVDA")
+        self.assertEqual(summary["market_observations"][0]["ticker"], "NVDA")
+        self.assertEqual(summary["whale_events"][0]["payload"]["entity"], "Fondo Test")
+        self.assertEqual(summary["alert_events"][0]["payload"]["alert_type"], "cambio_fuerte_diario")
         rendered = json.dumps(events)
         self.assertNotIn("SECRET", rendered)
         self.assertNotIn("FMP_API_KEY", rendered)
@@ -197,7 +203,8 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(briefing["intent"], "daily_briefing")
         self.assertEqual(briefing["tickers"], [])
         self.assertIn("1. Lectura rapida", briefing["answer"])
-        self.assertIn("6. Siguiente paso", briefing["answer"])
+        self.assertIn("5. Alertas relevantes", briefing["answer"])
+        self.assertIn("7. Siguiente paso", briefing["answer"])
         self.assertEqual(overview["intent"], "market_overview")
         self.assertEqual(overview["tickers"], [])
         self.assertEqual(friday["intent"], "market_overview")
@@ -212,6 +219,25 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "memory_query")
         self.assertEqual(payload["tickers"], [])
         self.assertIn("NVDA", payload["answer"])
+
+    @patch("services.dashboard.get_alerts_snapshot.get_alerts_snapshot")
+    @patch("services.dashboard.get_radar_snapshot.get_radar_snapshot")
+    def test_alerts_agent_derives_useful_events_without_dry_list(self, mock_radar: Mock, mock_alerts: Mock) -> None:
+        mock_alerts.return_value = {"items": []}
+        mock_radar.return_value = {
+            "items": [
+                {"ticker": "NVDA", "daily_change_pct": 4.2, "daily_change": 12.4, "watchlist": True},
+                {"ticker": "BNO", "daily_change_pct": 0.0, "daily_change": 0.0, "watchlist": True},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("que alertas tengo", memory=store)
+
+        self.assertEqual(payload["intent"], "alerts")
+        self.assertEqual(payload["tickers"], [])
+        self.assertEqual(payload["alerts"]["items"][0]["ticker"], "NVDA")
+        self.assertIn("alertas activas", payload["answer"].lower())
 
     def test_agent_modules_exist_as_internal_brain_components(self) -> None:
         self.assertIsInstance(PriceAgent(), PriceAgent)
@@ -248,6 +274,8 @@ class GenesisReturnsEngineTests(unittest.TestCase):
         self.assertEqual(returns["MAX"], 500.0)
         self.assertEqual(details["MAX"]["first_close"], 50)
         self.assertEqual(details["MAX"]["last_close"], 300)
+        self.assertEqual(details["1D"]["points_used"], 2)
+        self.assertEqual(details["MAX"]["points_used"], 6)
 
     def test_fmp_client_chooses_longest_history_for_unlimited_max(self) -> None:
         client = FmpClient("test-key")
@@ -255,7 +283,7 @@ class GenesisReturnsEngineTests(unittest.TestCase):
         legacy = [{"date": f"201{i}-01-01", "close": 50 + i} for i in range(7)]
 
         with patch.object(client, "_request_json", side_effect=[(200, stable), (200, {"historical": legacy})]):
-            rows = client.get_historical_eod("NVDA", limit=None)
+            rows = client.get_full_historical_eod("NVDA")
 
         self.assertEqual(rows, sorted(legacy, key=lambda item: item["date"], reverse=True))
         self.assertGreater(len(rows), len(stable))

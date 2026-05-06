@@ -18,6 +18,7 @@ def calculate_return_detail(points: list[dict[str, Any]], range_name: str, *, so
             "last_close": None,
             "return_pct": None,
             "source": source,
+            "points_used": len(clean),
         }
     first = clean[0]
     last = clean[-1]
@@ -32,6 +33,7 @@ def calculate_return_detail(points: list[dict[str, Any]], range_name: str, *, so
         "last_close": round(last_close, 6),
         "return_pct": round(return_pct, 4) if return_pct is not None else None,
         "source": source,
+        "points_used": len(clean),
     }
 
 

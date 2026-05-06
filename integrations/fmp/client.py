@@ -231,6 +231,10 @@ class FmpClient:
             self.last_error_by_ticker[tk] = f"Historico FMP no disponible para {tk}"
         return None
 
+    def get_full_historical_eod(self, ticker: str, symbol_map: dict[str, str] | None = None) -> list[dict] | None:
+        """Return the longest EOD history FMP exposes for MAX calculations."""
+        return self.get_historical_eod(ticker, limit=None, symbol_map=symbol_map)
+
     def get_intraday_history(
         self,
         ticker: str,

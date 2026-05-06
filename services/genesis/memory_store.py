@@ -313,26 +313,43 @@ class MemoryStore:
         return {str(row[0]): _loads(row[1]) for row in rows}
 
     def save_market_observation(self, ticker: str, observation: str) -> None:
-        self.save_event("market_observation", {"ticker": str(ticker or "").upper(), "observation": observation}, "market", "media")
+        payload = {"ticker": str(ticker or "").upper(), "observation": observation}
+        self.save_event("market_observation", payload, "market", "media")
+        self._save_market_observation_row(payload["ticker"], observation, "market", "media")
 
     def get_market_memory(self, ticker: str) -> list[dict[str, Any]]:
         normalized = str(ticker or "").upper()
+        rows = self._get_market_observation_rows(normalized)
+        if rows:
+            return rows
         return [event for event in self.get_recent_events(100, "market_observation") if str(event.get("payload", {}).get("ticker") or "").upper() == normalized]
 
     def save_whale_event(self, ticker: str, entity: str = "", action: str = "", amount: object = None, date: str = "", confidence: str | float = "media") -> None:
+        payload = {"ticker": str(ticker or "").upper(), "entity": entity, "action": action, "amount": amount, "date": date}
         self.save_event(
             "whale_event",
-            {"ticker": str(ticker or "").upper(), "entity": entity, "action": action, "amount": amount, "date": date},
+            payload,
             "whales",
             confidence,
         )
+        self._save_whale_event_row(payload, "whales", confidence)
 
     def get_whale_memory(self, ticker: str | None = None) -> list[dict[str, Any]]:
-        events = self.get_recent_events(100, "whale_event")
+        events = self._get_whale_event_rows(ticker)
+        if not events:
+            events = self.get_recent_events(100, "whale_event")
         if ticker:
             normalized = str(ticker or "").upper()
-            return [event for event in events if str(event.get("payload", {}).get("ticker") or "").upper() == normalized]
+            return [event for event in events if str(event.get("payload", {}).get("ticker") or event.get("ticker") or "").upper() == normalized]
         return events
+
+    def save_alert_event(self, ticker: str, alert_type: str, payload: dict[str, Any] | None = None, confidence: str | float = "media") -> None:
+        clean_payload = {"ticker": str(ticker or "").upper(), "alert_type": alert_type, **_sanitize(payload or {})}
+        self.save_event("alert_event", clean_payload, "alerts", confidence)
+        self._save_alert_event_row(clean_payload, "alerts", confidence)
+
+    def get_alert_memory(self, ticker: str | None = None) -> list[dict[str, Any]]:
+        return self._get_alert_event_rows(ticker)
 
     def save_genesis_conversation_summary(self, summary: str) -> None:
         self.save_event("conversation_summary", {"summary": summary}, "genesis", "media")
@@ -358,8 +375,175 @@ class MemoryStore:
             "learned_context": self.get_learned_context(8),
             "tracked_entities": self.get_tracked_entities(8),
             "recent_topics": self.get_recent_topics(8),
+            "market_observations": self._get_market_observation_rows("", limit=8),
+            "whale_events": self._get_whale_event_rows(None, limit=8),
+            "alert_events": self._get_alert_event_rows(None, limit=8),
             "relevant": self.get_relevant_memory(query) if query else [],
         }
+
+    def _save_market_observation_row(self, ticker: str, observation: str, source: str, confidence: str | float) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(_sanitize({"observation": observation}))
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                "INSERT INTO genesis_market_observations (ticker, observation_json, source, confidence, created_at) VALUES (%s, %s, %s, %s, %s)",
+                (str(ticker or "").upper()[:40], payload, str(source or "market")[:80], str(confidence or "media")[:40], now),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT INTO genesis_market_observations (ticker, observation_json, source, confidence, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (str(ticker or "").upper()[:40], payload, str(source or "market")[:80], str(confidence or "media")[:40], now),
+                )
+                conn.commit()
+
+    def _get_market_observation_rows(self, ticker: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 50), 200))
+        normalized = str(ticker or "").upper()
+        if self.backend == "postgres" and self._pg is not None:
+            if normalized:
+                rows = self._pg_fetch(
+                    "SELECT ticker, observation_json, source, confidence, created_at FROM genesis_market_observations WHERE ticker = %s ORDER BY id DESC LIMIT %s",
+                    (normalized, safe_limit),
+                )
+            else:
+                rows = self._pg_fetch(
+                    "SELECT ticker, observation_json, source, confidence, created_at FROM genesis_market_observations ORDER BY id DESC LIMIT %s",
+                    (safe_limit,),
+                )
+        else:
+            with closing(self._sqlite()) as conn:
+                if normalized:
+                    rows = conn.execute(
+                        "SELECT ticker, observation_json, source, confidence, created_at FROM genesis_market_observations WHERE ticker = ? ORDER BY id DESC LIMIT ?",
+                        (normalized, safe_limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT ticker, observation_json, source, confidence, created_at FROM genesis_market_observations ORDER BY id DESC LIMIT ?",
+                        (safe_limit,),
+                    ).fetchall()
+        return [_domain_row("market_observation", row) for row in rows]
+
+    def _save_whale_event_row(self, payload: dict[str, Any], source: str, confidence: str | float) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        clean_payload = _sanitize(payload)
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                "INSERT INTO genesis_whale_events (ticker, entity, action, amount_json, event_date, source, confidence, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    str(clean_payload.get("ticker") or "").upper()[:40],
+                    str(clean_payload.get("entity") or "")[:200],
+                    str(clean_payload.get("action") or "")[:120],
+                    json.dumps(clean_payload.get("amount")),
+                    str(clean_payload.get("date") or "")[:80],
+                    str(source or "whales")[:80],
+                    str(confidence or "media")[:40],
+                    now,
+                ),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT INTO genesis_whale_events (ticker, entity, action, amount_json, event_date, source, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(clean_payload.get("ticker") or "").upper()[:40],
+                        str(clean_payload.get("entity") or "")[:200],
+                        str(clean_payload.get("action") or "")[:120],
+                        json.dumps(clean_payload.get("amount")),
+                        str(clean_payload.get("date") or "")[:80],
+                        str(source or "whales")[:80],
+                        str(confidence or "media")[:40],
+                        now,
+                    ),
+                )
+                conn.commit()
+
+    def _get_whale_event_rows(self, ticker: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 50), 200))
+        normalized = str(ticker or "").upper()
+        if self.backend == "postgres" and self._pg is not None:
+            if normalized:
+                rows = self._pg_fetch(
+                    "SELECT ticker, entity, action, amount_json, event_date, source, confidence, created_at FROM genesis_whale_events WHERE ticker = %s ORDER BY id DESC LIMIT %s",
+                    (normalized, safe_limit),
+                )
+            else:
+                rows = self._pg_fetch(
+                    "SELECT ticker, entity, action, amount_json, event_date, source, confidence, created_at FROM genesis_whale_events ORDER BY id DESC LIMIT %s",
+                    (safe_limit,),
+                )
+        else:
+            with closing(self._sqlite()) as conn:
+                if normalized:
+                    rows = conn.execute(
+                        "SELECT ticker, entity, action, amount_json, event_date, source, confidence, created_at FROM genesis_whale_events WHERE ticker = ? ORDER BY id DESC LIMIT ?",
+                        (normalized, safe_limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT ticker, entity, action, amount_json, event_date, source, confidence, created_at FROM genesis_whale_events ORDER BY id DESC LIMIT ?",
+                        (safe_limit,),
+                    ).fetchall()
+        return [_whale_row(row) for row in rows]
+
+    def _save_alert_event_row(self, payload: dict[str, Any], source: str, confidence: str | float) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        clean_payload = _sanitize(payload)
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                "INSERT INTO genesis_alert_events (ticker, alert_type, payload_json, source, confidence, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    str(clean_payload.get("ticker") or "").upper()[:40],
+                    str(clean_payload.get("alert_type") or "alert")[:120],
+                    json.dumps(clean_payload),
+                    str(source or "alerts")[:80],
+                    str(confidence or "media")[:40],
+                    now,
+                ),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    "INSERT INTO genesis_alert_events (ticker, alert_type, payload_json, source, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        str(clean_payload.get("ticker") or "").upper()[:40],
+                        str(clean_payload.get("alert_type") or "alert")[:120],
+                        json.dumps(clean_payload),
+                        str(source or "alerts")[:80],
+                        str(confidence or "media")[:40],
+                        now,
+                    ),
+                )
+                conn.commit()
+
+    def _get_alert_event_rows(self, ticker: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 50), 200))
+        normalized = str(ticker or "").upper()
+        if self.backend == "postgres" and self._pg is not None:
+            if normalized:
+                rows = self._pg_fetch(
+                    "SELECT ticker, alert_type, payload_json, source, confidence, created_at FROM genesis_alert_events WHERE ticker = %s ORDER BY id DESC LIMIT %s",
+                    (normalized, safe_limit),
+                )
+            else:
+                rows = self._pg_fetch(
+                    "SELECT ticker, alert_type, payload_json, source, confidence, created_at FROM genesis_alert_events ORDER BY id DESC LIMIT %s",
+                    (safe_limit,),
+                )
+        else:
+            with closing(self._sqlite()) as conn:
+                if normalized:
+                    rows = conn.execute(
+                        "SELECT ticker, alert_type, payload_json, source, confidence, created_at FROM genesis_alert_events WHERE ticker = ? ORDER BY id DESC LIMIT ?",
+                        (normalized, safe_limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT ticker, alert_type, payload_json, source, confidence, created_at FROM genesis_alert_events ORDER BY id DESC LIMIT ?",
+                        (safe_limit,),
+                    ).fetchall()
+        return [_alert_row(row) for row in rows]
 
     def _ensure_schema(self) -> None:
         if self.backend == "postgres" and self._pg is not None:
@@ -443,6 +627,49 @@ class MemoryStore:
                 """,
                 (),
             )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_market_observations (
+                    id SERIAL PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    observation_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_whale_events (
+                    id SERIAL PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    entity TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    amount_json TEXT NOT NULL,
+                    event_date TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
+            self._pg_execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_alert_events (
+                    id SERIAL PRIMARY KEY,
+                    ticker TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """,
+                (),
+            )
             return
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._sqlite()) as conn:
@@ -515,6 +742,46 @@ class MemoryStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     topic TEXT NOT NULL,
                     context_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_market_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    observation_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_whale_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    entity TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    amount_json TEXT NOT NULL,
+                    event_date TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS genesis_alert_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -597,6 +864,55 @@ def _topic_row(row: Any) -> dict[str, Any]:
         "topic": row[0],
         "context": _loads(row[1]),
         "created_at": row[2],
+    }
+
+
+def _domain_row(event_type: str, row: Any) -> dict[str, Any]:
+    payload = _loads(row[1])
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["ticker"] = row[0]
+    return {
+        "event_type": event_type,
+        "ticker": row[0],
+        "payload": payload,
+        "source": row[2],
+        "confidence": row[3],
+        "created_at": row[4],
+    }
+
+
+def _whale_row(row: Any) -> dict[str, Any]:
+    payload = {
+        "ticker": row[0],
+        "entity": row[1],
+        "action": row[2],
+        "amount": _loads(row[3]),
+        "date": row[4],
+    }
+    return {
+        "event_type": "whale_event",
+        "ticker": row[0],
+        "payload": payload,
+        "source": row[5],
+        "confidence": row[6],
+        "created_at": row[7],
+    }
+
+
+def _alert_row(row: Any) -> dict[str, Any]:
+    payload = _loads(row[2])
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["ticker"] = row[0]
+    payload["alert_type"] = row[1]
+    return {
+        "event_type": "alert_event",
+        "ticker": row[0],
+        "payload": payload,
+        "source": row[3],
+        "confidence": row[4],
+        "created_at": row[5],
     }
 
 

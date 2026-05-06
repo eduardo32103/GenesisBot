@@ -1,6 +1,14 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 
+function initialChatMessage() {
+  return {
+    id: `welcome-${Date.now()}`,
+    role: "assistant",
+    text: "Hola. Que quieres revisar hoy?",
+  };
+}
+
 const appState = {
   activeScreen: "genesis",
   trackingItems: [],
@@ -35,13 +43,8 @@ const appState = {
   refreshTimer: null,
   refreshInFlight: false,
   refreshPromise: null,
-  chatMessages: [
-    {
-      id: "welcome",
-      role: "assistant",
-      text: "Hola. Que quieres revisar hoy?",
-    },
-  ],
+  chatHistoryOpen: false,
+  chatMessages: [initialChatMessage()],
 };
 
 const REFRESH_MS = 15000;
@@ -339,6 +342,10 @@ function iconSvg(name) {
     remove: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`,
     send: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13"/><path d="M13 6l6 6-6 6"/></svg>`,
     upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V5"/><path d="M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>`,
+    menu: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12h.01M19 12h.01M5 12h.01"/></svg>`,
+    history: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg>`,
+    new: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
+    clear: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>`,
   };
   return icons[name] || "";
 }
@@ -825,6 +832,12 @@ function renderGenesisScreen() {
   root.innerHTML = `
     <section class="genesis-stage">
       <div class="genesis-conversation">
+        <div class="chat-toolbar" aria-label="Controles de conversacion">
+          <button type="button" data-chat-new aria-label="Nuevo chat" title="Nuevo chat">${iconSvg("new")}</button>
+          <button type="button" data-chat-history aria-label="Historial" title="Historial">${iconSvg("history")}</button>
+          <button type="button" data-chat-clear aria-label="Limpiar chat actual" title="Limpiar chat actual">${iconSvg("clear")}</button>
+        </div>
+        ${appState.chatHistoryOpen ? chatHistoryPanelMarkup() : ""}
         <div class="chat-thread" id="genesis-thread">
           ${appState.chatMessages.map(chatBubbleMarkup).join("")}
         </div>
@@ -834,7 +847,7 @@ function renderGenesisScreen() {
             <input id="genesis-image-input" type="file" accept="image/*">
           </label>
           <input id="genesis-chat-input" placeholder="Pregunta a Genesis..." autocomplete="off">
-          <button type="submit" aria-label="Enviar">${iconSvg("send")}</button>
+          <button type="submit" aria-label="Mandar mensaje">${iconSvg("send")}</button>
         </form>
         <div class="chat-attachment-name" id="genesis-attachment-name" hidden></div>
       </div>
@@ -851,6 +864,23 @@ function renderGenesisScreen() {
   });
   const thread = document.getElementById("genesis-thread");
   if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+function chatHistoryPanelMarkup() {
+  const history = appState.chatMessages
+    .filter((message) => String(message.text || "").trim() && cleanCopy(message.text) !== "Hola. Que quieres revisar hoy?")
+    .slice(-8)
+    .reverse();
+  return `
+    <div class="chat-history-panel">
+      ${history.length ? history.map((message) => `
+        <button type="button" data-chat-history-pick="${escapeHtml(message.id)}">
+          <small>${message.role === "user" ? "Tu" : "Genesis"}</small>
+          <span>${escapeHtml(cleanCopy(message.text).slice(0, 96))}</span>
+        </button>
+      `).join("") : `<span>Sin historial visible todavia.</span>`}
+    </div>
+  `;
 }
 
 function chatBubbleMarkup(message) {
@@ -1115,12 +1145,6 @@ function assetRowMarkup(item, mode, totalValue = 0) {
   const ticker = itemTicker(item);
   const tone = movementTone(item);
   const pnl = positionPnl(item);
-  const action = mode === "paper"
-    ? `<button class="icon-action danger" type="button" data-paper-close="${escapeHtml(ticker)}" aria-label="Cerrar paper ${escapeHtml(ticker)}" title="Cerrar paper">${iconSvg("remove")}</button>`
-    : `<button class="icon-action danger" type="button" data-watch-remove="${escapeHtml(ticker)}" aria-label="Quitar ${escapeHtml(ticker)} de seguimiento" title="Quitar">${iconSvg("remove")}</button>`;
-  const buyAction = mode === "paper"
-    ? ""
-    : `<button class="icon-action" type="button" data-paper-buy="${escapeHtml(ticker)}" aria-label="Compra simulada ${escapeHtml(ticker)}" title="Compra simulada">${iconSvg("cart")}</button>`;
   const subline = compactAssetSubline(item, mode, totalValue);
   return `
     <article class="asset-row compact-market-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
@@ -1135,11 +1159,24 @@ function assetRowMarkup(item, mode, totalValue = 0) {
           ${mode === "paper" ? `<span class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "P/L sin dato"))}</span>` : ""}
         </span>
       </button>
-      <div class="row-actions">
-        ${buyAction}
-        ${action}
-      </div>
+      ${assetRowMenuMarkup(ticker, mode)}
     </article>
+  `;
+}
+
+function assetRowMenuMarkup(ticker, mode) {
+  const normalized = escapeHtml(ticker);
+  return `
+    <details class="market-menu">
+      <summary aria-label="Acciones ${normalized}" title="Acciones">${iconSvg("menu")}</summary>
+      <div class="market-menu-panel">
+        <button type="button" data-open-asset="${normalized}">Ver detalle</button>
+        ${mode === "paper" ? "" : `<button type="button" data-paper-buy="${normalized}">Compra paper</button>`}
+        ${mode === "paper"
+          ? `<button class="danger" type="button" data-paper-close="${normalized}">Cerrar paper</button>`
+          : `<button class="danger" type="button" data-watch-remove="${normalized}">Quitar seguimiento</button>`}
+      </div>
+    </details>
   `;
 }
 
@@ -1226,18 +1263,17 @@ function extractWhaleRows(causal, detection) {
     if (!ticker || byTicker.has(ticker)) return;
     const whale = typeof item.whale === "object" && item.whale ? item.whale : {};
     const identified = Boolean(item.whale_identified || whale.identified || whale.entity);
+    if (!identified) return;
     byTicker.set(ticker, {
       ticker,
-      event: identified ? classifyWhaleType(whale.movement_type || item.direction || item.primary_label) : "No confirmado",
-      entity: identified ? (whale.entity || item.whale_entity || "") : "",
+      event: classifyWhaleType(whale.movement_type || item.direction || item.primary_label),
+      entity: whale.entity || item.whale_entity || "",
       amount: whale.movement_value || item.movement_value || item.amount_usd || "",
       date: item.money_flow_timestamp || item.timestamp || item.updated_at || "",
       source: whale.source || item.source || item.origin || "Fuente activa",
       confidence: whale.confidence || item.confidence || item.confidence_label || "no concluyente",
-      read: identified
-        ? `Genesis detecta una entidad reportada y lo trata como evidencia adicional, no como causalidad garantizada.`
-        : "No hay entidad institucional confirmada con la fuente activa.",
-      missing: identified ? "Falta continuidad y contexto de precio para elevar conviccion." : "Faltan entidad, monto o fecha confirmada.",
+      read: "Genesis detecta una entidad reportada y lo trata como evidencia adicional, no como causalidad garantizada.",
+      missing: "Falta continuidad y contexto de precio para elevar conviccion.",
     });
   });
   return Array.from(byTicker.values()).slice(0, 12);
@@ -1540,6 +1576,40 @@ function bindGlobalEvents() {
   document.body.addEventListener("click", async (event) => {
     if (event.target.closest("[data-toast-close]")) {
       hideToast();
+      return;
+    }
+
+    if (event.target.closest("[data-chat-new]")) {
+      event.preventDefault();
+      appState.chatHistoryOpen = false;
+      appState.chatMessages = [initialChatMessage()];
+      renderGenesisScreen();
+      return;
+    }
+
+    if (event.target.closest("[data-chat-clear]")) {
+      event.preventDefault();
+      appState.chatHistoryOpen = false;
+      appState.chatMessages = [initialChatMessage()];
+      renderGenesisScreen();
+      toast("Chat actual limpio. La memoria util se conserva.", "info");
+      return;
+    }
+
+    if (event.target.closest("[data-chat-history]")) {
+      event.preventDefault();
+      appState.chatHistoryOpen = !appState.chatHistoryOpen;
+      renderGenesisScreen();
+      return;
+    }
+
+    const historyPick = event.target.closest("[data-chat-history-pick]");
+    if (historyPick) {
+      event.preventDefault();
+      appState.chatHistoryOpen = false;
+      const thread = document.getElementById("genesis-thread");
+      if (thread) thread.scrollTop = thread.scrollHeight;
+      renderGenesisScreen();
       return;
     }
 

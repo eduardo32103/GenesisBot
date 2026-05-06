@@ -176,6 +176,7 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "raw_eod_points": 0,
         "selected_range_points": 0,
         "is_max_truncated": True,
+        "max_truncated": True,
         "truncation_reason": "sin_historico_fmp",
         "first_date": "",
         "last_date": "",
@@ -209,10 +210,11 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     quote = client.get_quote(normalized_ticker) or {}
     profile = client.get_profile(normalized_ticker) or {}
 
-    eod_rows = client.get_historical_eod(normalized_ticker, limit=None, symbol_map=symbol_map) or []
+    eod_rows = client.get_full_historical_eod(normalized_ticker, symbol_map=symbol_map) or []
     eod_points = _shape_ohlc(eod_rows)
     max_history_years = _history_years(eod_points)
     max_truncation = _max_truncation(max_history_years, eod_points)
+    max_truncation_alias = {**max_truncation, "max_truncated": max_truncation["is_max_truncated"]}
     intraday_points: list[dict[str, Any]] = []
     endpoint_label = "historical-price-eod/full"
     if normalized_timeframe == "1D":
@@ -238,7 +240,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "return_details": return_details,
             "indicators": compute_technical_indicators([]),
             "max_history_years": max_history_years,
-            **max_truncation,
+            **max_truncation_alias,
             "history_points": len(eod_points),
             "raw_eod_points": len(eod_points),
             "selected_range_points": raw_count,
@@ -255,7 +257,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
                 "selected_range_points": raw_count,
                 "raw_eod_points": len(eod_points),
                 "max_uses_full_history": True,
-                **max_truncation,
+                **max_truncation_alias,
             },
         }
 
@@ -274,7 +276,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "indicators": compute_technical_indicators(selected_points),
         "summary": _summary(selected_points),
         "max_history_years": max_history_years,
-        **max_truncation,
+        **max_truncation_alias,
         "history_points": len(eod_points),
         "raw_eod_points": len(eod_points),
         "selected_range_points": raw_count,
@@ -300,6 +302,6 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "raw_eod_points": len(eod_points),
             "max_history_years": max_history_years,
             "max_uses_full_history": True,
-            **max_truncation,
+            **max_truncation_alias,
         },
     }

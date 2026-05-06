@@ -89,7 +89,7 @@ _AGENT_BY_INTENT = {
     "tracking_summary": "tracking_agent",
     "memory_query": "memory_agent",
     "whale_activity": "whale_agent",
-    "alerts": "news_macro_agent",
+    "alerts": "alerts_agent",
     "macro_news": "news_macro_agent",
     "comparison": "price_agent",
     "technical_indicators": "technical_agent",

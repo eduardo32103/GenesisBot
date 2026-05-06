@@ -13,6 +13,7 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
     normalized = normalize_ticker(ticker or "")
     rows = _extract_rows(get_money_flow_causal_snapshot()) + _extract_rows(get_money_flow_detection_snapshot())
     learned = 0
+    watched_without_entity: set[str] = set()
     for row in rows:
         row_ticker = normalize_ticker(row.get("ticker") or row.get("symbol"))
         if normalized and row_ticker != normalized:
@@ -20,7 +21,7 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
         whale = row.get("whale") if isinstance(row.get("whale"), dict) else {}
         entity = whale.get("entity") or row.get("whale_entity") or ""
         if not entity:
-            store.save_market_observation(row_ticker or normalized, "Ballena vigilada sin entidad institucional confirmada.")
+            watched_without_entity.add(row_ticker or normalized or "MERCADO")
             continue
         store.save_whale_event(
             row_ticker,
@@ -31,10 +32,21 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
             confidence=whale.get("confidence") or row.get("confidence") or "media",
         )
         learned += 1
+    for row_ticker in watched_without_entity:
+        store.save_market_observation(row_ticker, "Ballena vigilada sin entidad institucional confirmada.")
+    memory = store.get_whale_memory(normalized or None)
+    if learned == 0:
+        scope = f" para {normalized}" if normalized else ""
+        answer = f"Sin ballena institucional confirmada{scope} con la fuente activa."
+        if watched_without_entity:
+            answer += " Deje la observacion en memoria como vigilancia de baja confianza, sin inventar entidad ni monto."
+    else:
+        answer = f"{learned} eventos de ballenas guardados con entidad, fecha o monto reportado."
     return {
         "learned": learned,
-        "memory": store.get_whale_memory(normalized or None),
-        "answer": "Sin ballena institucional confirmada con la fuente activa." if learned == 0 else f"{learned} eventos de ballenas guardados.",
+        "memory": memory,
+        "unconfirmed_watch": sorted(watched_without_entity),
+        "answer": answer,
     }
 
 
@@ -50,4 +62,3 @@ def _extract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(nested, dict):
             rows.extend(_extract_rows(nested))
     return rows
-
