@@ -1,18 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+import html
+import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import quote_plus
+from xml.etree import ElementTree
+
+import requests
 
 from app.settings import load_settings
 from integrations.fmp.client import FmpClient
 from services.genesis.ticker_parser import normalize_ticker
 
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_OG_CACHE: dict[str, tuple[float, str]] = {}
 _SOURCE_STATUS: dict[str, Any] = {}
 _NEWS_TTL_SECONDS = 15 * 60
+_OG_TTL_SECONDS = 30 * 60
 _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", "BTC-USD", "BZ=F"]
+_RSS_TIMEOUT_SECONDS = 2
+_MAX_OG_IMAGES_PER_BATCH = 3
+_RSS_QUERIES = [
+    "stock market",
+    "S&P 500",
+    "Nasdaq",
+    "Bitcoin BTC",
+    "Brent crude oil",
+    "gold market",
+]
 
 
 def get_recent_market_news(tickers: list[str] | None = None, *, limit: int = 12, max_age_days: int = 30) -> list[dict[str, Any]]:
@@ -42,6 +62,30 @@ def get_recent_market_news(tickers: list[str] | None = None, *, limit: int = 12,
         status = "unavailable"
         safe_error = "news source unavailable"
         raw_news = raw_news or []
+
+    rss_started = time.monotonic()
+    rss_items: list[dict[str, Any]] = []
+    if len(raw_news) < max(6, int(limit or 12)):
+        try:
+            focus = safe_tickers or _GLOBAL_TICKERS
+            rss_items = _fetch_public_rss_news(focus, limit=max(int(limit or 12) * 2, 12))
+            raw_news.extend(rss_items)
+            _set_source_status(
+                "rss_news",
+                "ok" if rss_items else "empty",
+                elapsed_ms=int((time.monotonic() - rss_started) * 1000),
+                cache_hit=False,
+                count=len(rss_items),
+            )
+        except Exception:
+            _set_source_status(
+                "rss_news",
+                "unavailable",
+                elapsed_ms=int((time.monotonic() - rss_started) * 1000),
+                cache_hit=False,
+                count=0,
+                last_error_safe="rss source unavailable",
+            )
 
     normalized = _normalize_news(raw_news, safe_tickers, max_age_days=max_age_days)
     if not normalized:
@@ -75,13 +119,14 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
     seen_titles: set[str] = set()
     items: list[dict[str, Any]] = []
     focus = set(focus_tickers)
+    og_attempts = 0
     for raw in raw_news:
         if not isinstance(raw, dict):
             continue
-        title = str(raw.get("title") or raw.get("headline") or "").strip()
+        title = _strip_html(raw.get("title") or raw.get("headline") or "")
         if not title:
             continue
-        title_key = " ".join(title.casefold().split())
+        title_key = _dedupe_key(title)
         if title_key in seen_titles:
             continue
         published_at = _published_at(raw)
@@ -90,10 +135,15 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
         seen_titles.add(title_key)
         tickers = _article_tickers(raw, focus)
         impact = _impact(title, raw.get("text") or raw.get("summary") or "", raw.get("sentiment") or raw.get("impact"))
-        source = str(raw.get("site") or raw.get("publisher") or raw.get("source") or "FMP").strip()
+        source = _strip_html(raw.get("site") or raw.get("publisher") or raw.get("source") or "FMP")
         summary = _summary(raw, title)
+        url = str(raw.get("url") or raw.get("link") or "").strip()
+        image_url = str(raw.get("image") or raw.get("image_url") or raw.get("thumbnail") or raw.get("urlToImage") or "").strip()
+        if not image_url and url and og_attempts < _MAX_OG_IMAGES_PER_BATCH:
+            og_attempts += 1
+            image_url = _fetch_og_image(url)
         item = {
-            "id": _news_id(title, raw.get("url") or raw.get("link") or ""),
+            "id": _news_id(title, source, published_at.isoformat() if published_at else raw.get("publishedDate") or raw.get("date") or "", url),
             "title": title,
             "summary": summary,
             "source": source,
@@ -102,9 +152,9 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "assets": tickers,
             "impact": impact,
             "confidence": _confidence(raw, tickers, published_at),
-            "image_url": raw.get("image") or raw.get("image_url") or raw.get("thumbnail") or raw.get("urlToImage") or "",
-            "thumbnail": raw.get("image") or raw.get("image_url") or raw.get("thumbnail") or raw.get("urlToImage") or "",
-            "url": raw.get("url") or raw.get("link") or "",
+            "image_url": image_url,
+            "thumbnail": image_url,
+            "url": url,
             "category": _category(raw, tickers),
             "genesis_takeaway": _takeaway(title, impact, tickers),
             "why_it_matters": _why_it_matters(impact, tickers),
@@ -115,10 +165,188 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
         item["relevance_score"] = relevance
         item["is_important"] = _is_important(item, relevance, recency)
         item["placeholder_key"] = item["category"]
+        item["is_latest"] = recency >= 1
         item["risk"] = _risk_for_impact(impact)
         item["watch"] = _watch_for_news(impact, tickers)
         items.append(item)
     return sorted(items, key=lambda item: (item.get("is_important") is True, item.get("relevance_score") or 0, item.get("recency_score") or 0), reverse=True)
+
+
+def _fetch_public_rss_news(focus_tickers: list[str], *, limit: int) -> list[dict[str, Any]]:
+    queries = _rss_queries(focus_tickers)
+    feeds = _rss_urls(queries, focus_tickers)[:12]
+    output: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    try:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(_fetch_rss_feed, feed) for feed in feeds]
+            for future in as_completed(futures, timeout=5):
+                if len(output) >= limit:
+                    break
+                for item in future.result() or []:
+                    url = str(item.get("url") or item.get("link") or "").strip()
+                    key = url or _dedupe_key(item.get("title") or "")
+                    if key in seen_urls:
+                        continue
+                    seen_urls.add(key)
+                    output.append(item)
+                    if len(output) >= limit:
+                        break
+    except TimeoutError:
+        pass
+    return output
+
+
+def _rss_queries(focus_tickers: list[str]) -> list[str]:
+    queries: list[str] = []
+    for query in _RSS_QUERIES:
+        if query not in queries:
+            queries.append(query)
+    for ticker in focus_tickers[:10]:
+        label = {
+            "BTC-USD": "Bitcoin BTC",
+            "BZ=F": "Brent crude oil",
+            "GC=F": "gold futures",
+        }.get(ticker, ticker)
+        if label not in queries:
+            queries.append(label)
+    return queries[:16]
+
+
+def _rss_urls(queries: list[str], focus_tickers: list[str]) -> list[str]:
+    urls: list[str] = []
+    for query in queries:
+        safe = quote_plus(f"{query} finance market when:30d")
+        urls.append(f"https://news.google.com/rss/search?q={safe}&hl=en-US&gl=US&ceid=US:en")
+    for ticker in focus_tickers[:8]:
+        if ticker.endswith("-USD") or ticker in {"BZ=F", "GC=F"}:
+            continue
+        urls.append(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote_plus(ticker)}&region=US&lang=en-US")
+    urls.extend(
+        [
+            "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+            "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://cointelegraph.com/rss",
+        ]
+    )
+    return urls
+
+
+def _fetch_rss_feed(url: str) -> list[dict[str, Any]]:
+    try:
+        response = requests.get(url, timeout=_RSS_TIMEOUT_SECONDS, headers={"User-Agent": "GenesisBot/1.0"})
+        if response.status_code != 200 or not response.content:
+            return []
+        root = ElementTree.fromstring(response.content[:1_500_000])
+    except Exception:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for item in root.findall(".//item")[:12]:
+        title = _node_text(item, "title")
+        if not title:
+            continue
+        link = _node_text(item, "link")
+        description = _node_text(item, "description")
+        published = _node_text(item, "pubDate") or _node_text(item, "published") or _node_text(item, "updated")
+        source = _node_text(item, "source") or _source_from_url(url)
+        image = _rss_image(item)
+        rows.append(
+            {
+                "title": title,
+                "summary": description,
+                "text": description,
+                "source": source,
+                "publishedDate": _rss_date(published),
+                "url": link,
+                "link": link,
+                "image_url": image,
+                "thumbnail": image,
+                "category": _category({"title": f"{title} {description}", "category": source}, []),
+                "source_type": "rss",
+            }
+        )
+    return rows
+
+
+def _node_text(node: ElementTree.Element, tag: str) -> str:
+    child = node.find(tag)
+    if child is None:
+        for candidate in node:
+            if candidate.tag.endswith(tag):
+                child = candidate
+                break
+    return _strip_html(child.text if child is not None else "")
+
+
+def _rss_image(item: ElementTree.Element) -> str:
+    for child in item.iter():
+        tag = str(child.tag or "").casefold()
+        if tag.endswith("content") or tag.endswith("thumbnail"):
+            url = child.attrib.get("url")
+            if url:
+                return str(url).strip()
+        if tag.endswith("enclosure"):
+            url = child.attrib.get("url")
+            mime = str(child.attrib.get("type") or "")
+            if url and ("image" in mime or not mime):
+                return str(url).strip()
+    return ""
+
+
+def _rss_date(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed:
+            parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat()
+    except Exception:
+        pass
+    return text
+
+
+def _source_from_url(url: str) -> str:
+    text = str(url or "")
+    if "yahoo" in text:
+        return "Yahoo Finance"
+    if "google" in text:
+        return "Google News"
+    if "cnbc" in text:
+        return "CNBC"
+    if "marketwatch" in text or "dowjones" in text:
+        return "MarketWatch"
+    if "coindesk" in text:
+        return "CoinDesk"
+    if "cointelegraph" in text:
+        return "CoinTelegraph"
+    return "RSS"
+
+
+def _fetch_og_image(url: str) -> str:
+    text = str(url or "").strip()
+    if not text.startswith(("http://", "https://")):
+        return ""
+    now = time.monotonic()
+    cached = _OG_CACHE.get(text)
+    if cached and now - cached[0] <= _OG_TTL_SECONDS:
+        return cached[1]
+    image = ""
+    try:
+        response = requests.get(text, timeout=1, headers={"User-Agent": "GenesisBot/1.0"})
+        if response.status_code == 200:
+            body = response.text[:250_000]
+            match = re.search(r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']', body, re.I)
+            if not match:
+                match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']', body, re.I)
+            image = html.unescape(match.group(1).strip()) if match else ""
+    except Exception:
+        image = ""
+    _OG_CACHE[text] = (now, image)
+    return image
 
 
 def _published_at(raw: dict[str, Any]) -> datetime | None:
@@ -138,6 +366,12 @@ def _published_at(raw: dict[str, Any]) -> datetime | None:
         except Exception:
             pass
     try:
+        parsed = parsedate_to_datetime(text)
+        if parsed:
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    try:
         return datetime.strptime(text[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except Exception:
         return None
@@ -156,7 +390,14 @@ def _article_tickers(raw: dict[str, Any], focus: set[str]) -> list[str]:
     if not tickers and focus:
         text = f"{raw.get('title') or ''} {raw.get('text') or ''} {raw.get('summary') or ''}".upper()
         for ticker in focus:
-            if ticker in text and ticker not in tickers:
+            aliases = {ticker}
+            if ticker == "BTC-USD":
+                aliases.update({"BTC", "BITCOIN"})
+            if ticker == "BZ=F":
+                aliases.update({"BRENT", "CRUDE", "OIL"})
+            if ticker == "GC=F":
+                aliases.update({"GOLD", "ORO"})
+            if any(alias in text for alias in aliases) and ticker not in tickers:
                 tickers.append(ticker)
     return tickers[:5]
 
@@ -172,7 +413,7 @@ def _impact(title: str, body: str, explicit: object) -> str:
 
 
 def _summary(raw: dict[str, Any], title: str) -> str:
-    text = str(raw.get("summary") or raw.get("text") or raw.get("content") or raw.get("snippet") or "").strip()
+    text = _strip_html(raw.get("summary") or raw.get("text") or raw.get("content") or raw.get("snippet") or "")
     if not text:
         text = title
     return " ".join(text.split())[:320]
@@ -285,9 +526,21 @@ def _set_source_status(source: str, status: str, *, elapsed_ms: int, cache_hit: 
     }
 
 
-def _news_id(title: str, url: object) -> str:
-    raw = f"{title}|{url}"
+def _news_id(title: str, source: object = "", published_at: object = "", url: object = "") -> str:
+    raw = f"{title}|{source}|{published_at}|{url}"
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _strip_html(value: object) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(text.split()).strip()
+
+
+def _dedupe_key(title: object) -> str:
+    text = _strip_html(title).casefold()
+    text = re.sub(r"[^a-z0-9áéíóúñü\s]", " ", text)
+    return " ".join(text.split())
 
 
 def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
@@ -310,6 +563,7 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "genesis_takeaway": "Sin noticia externa confirmada; operar solo con precio, volumen y niveles.",
         "why_it_matters": "Evita una pantalla vacia sin inventar titulares ni fuentes.",
         "is_important": True,
+        "is_latest": True,
         "recency_score": 1,
         "relevance_score": 1,
         "placeholder_key": "macro",

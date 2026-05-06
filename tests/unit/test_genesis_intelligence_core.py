@@ -474,6 +474,36 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertIn("no hay ballena institucional confirmada", payload["answer"].casefold())
         self.assertEqual(memory[0]["payload"]["event_type"], "unusual_volume")
 
+    @patch("services.genesis.whale_learning.load_settings")
+    @patch("services.genesis.whale_learning.get_money_flow_detection_snapshot")
+    @patch("services.genesis.whale_learning.get_money_flow_causal_snapshot")
+    def test_whale_agent_blocks_absurd_estimated_values(self, mock_causal: Mock, mock_detection: Mock, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
+        mock_causal.return_value = {
+            "items": [
+                {
+                    "ticker": "NVDA",
+                    "primary_label": "volumen anormal",
+                    "source": "technical",
+                    "confidence": "media",
+                    "current_price": 100,
+                    "volume": 1000,
+                    "amount_usd": 9_000_000_000_000,
+                }
+            ]
+        }
+        mock_detection.return_value = {"items": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("dame resumen de ballenas", memory=store)
+
+        event = payload["whales"]["events"][0]
+        self.assertIsNone(event["amount_usd"])
+        self.assertIsNone(event["estimated_value"])
+        self.assertTrue(event["amount_suspicious"])
+        self.assertEqual(event["dollar_volume"], 100000)
+        self.assertEqual(event["entity_name"], "")
+
     def test_agent_modules_exist_as_internal_brain_components(self) -> None:
         self.assertIsInstance(PriceAgent(), PriceAgent)
         self.assertIsInstance(PriceTruthService(), PriceTruthService)

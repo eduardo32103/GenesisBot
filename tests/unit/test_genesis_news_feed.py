@@ -9,9 +9,11 @@ from services.genesis.news_feed import get_news_source_status, get_recent_market
 
 class GenesisNewsFeedTests(unittest.TestCase):
     @patch("services.genesis.news_feed.FmpClient")
+    @patch("services.genesis.news_feed._fetch_public_rss_news")
     @patch("services.genesis.news_feed.load_settings")
-    def test_recent_news_are_deduplicated_and_visual(self, mock_settings: Mock, mock_client_cls: Mock) -> None:
+    def test_recent_news_are_deduplicated_and_visual(self, mock_settings: Mock, mock_rss: Mock, mock_client_cls: Mock) -> None:
         mock_settings.return_value = SimpleNamespace(fmp_api_key="fmp-key", fmp_live_enabled=True)
+        mock_rss.return_value = []
         client = mock_client_cls.return_value
         client.get_market_news.return_value = [
             {
@@ -46,6 +48,8 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(items[0]["impact"], "bullish")
         self.assertEqual(items[0]["image_url"], "https://example.com/nvda.jpg")
         self.assertEqual(items[0]["source"], "Market Source")
+        self.assertTrue(items[0]["id"])
+        self.assertTrue(items[0]["is_latest"])
         self.assertTrue(items[0]["is_important"])
         self.assertGreaterEqual(items[0]["recency_score"], 1)
         self.assertGreaterEqual(items[0]["relevance_score"], 1)
@@ -53,9 +57,11 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(get_news_source_status()["fmp_market_news"]["status"], "ok")
 
     @patch("services.genesis.news_feed.FmpClient")
+    @patch("services.genesis.news_feed._fetch_public_rss_news")
     @patch("services.genesis.news_feed.load_settings")
-    def test_news_fallback_is_not_empty(self, mock_settings: Mock, mock_client_cls: Mock) -> None:
+    def test_news_fallback_is_not_empty(self, mock_settings: Mock, mock_rss: Mock, mock_client_cls: Mock) -> None:
         mock_settings.return_value = SimpleNamespace(fmp_api_key="fmp-key", fmp_live_enabled=True)
+        mock_rss.return_value = []
         client = mock_client_cls.return_value
         client.get_market_news.return_value = []
         client.get_stock_news.return_value = []
@@ -66,6 +72,33 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(items[0]["source"], "Genesis")
         self.assertIn("Genesis mantiene vigilancia", items[0]["title"])
         self.assertTrue(items[0]["is_important"])
+
+    @patch("services.genesis.news_feed._fetch_og_image")
+    @patch("services.genesis.news_feed._fetch_public_rss_news")
+    @patch("services.genesis.news_feed.FmpClient")
+    @patch("services.genesis.news_feed.load_settings")
+    def test_rss_fallback_produces_recent_real_news(self, mock_settings: Mock, mock_client_cls: Mock, mock_rss: Mock, mock_og: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
+        mock_client_cls.return_value.get_market_news.return_value = []
+        mock_og.return_value = "https://example.com/oil.jpg"
+        mock_rss.return_value = [
+            {
+                "title": "Brent crude rises as supply risk returns",
+                "summary": "Oil traders watch supply risk.",
+                "source": "Reuters",
+                "publishedDate": "2026-05-06T12:00:00+00:00",
+                "url": "https://example.com/oil",
+                "image_url": "",
+            }
+        ]
+
+        items = get_recent_market_news(["BZ=F"], limit=5, max_age_days=30)
+
+        self.assertEqual(items[0]["source"], "Reuters")
+        self.assertEqual(items[0]["category"], "commodity")
+        self.assertEqual(items[0]["image_url"], "https://example.com/oil.jpg")
+        self.assertIn("BZ=F", items[0]["tickers"])
+        self.assertTrue(items[0]["id"])
 
 
 if __name__ == "__main__":

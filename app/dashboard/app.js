@@ -43,8 +43,16 @@ const appState = {
   newsSnapshot: null,
   newsLoading: false,
   selectedNewsId: "",
+  newsItemsById: {},
   selectedAlertId: "",
   selectedWhaleId: "",
+  searchOpen: {
+    tracking: false,
+    portfolio: false,
+    news: false,
+    alerts: false,
+    whales: false,
+  },
   chartCache: {},
   assetChartRanges: {},
   refreshTimer: null,
@@ -82,6 +90,16 @@ function positiveOrNull(value) {
 
 function normalizeTicker(value) {
   return String(value || "").trim().toUpperCase();
+}
+
+function simpleHash(value) {
+  let hash = 5381;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash) + text.charCodeAt(index);
+    hash >>>= 0;
+  }
+  return hash.toString(36);
 }
 
 function nextMessageId() {
@@ -485,6 +503,7 @@ function iconSvg(name) {
     new: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
     clear: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>`,
     back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>`,
+    refresh: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.6 5.7"/><path d="M4 12A8 8 0 0 1 17.6 6.3"/><path d="M17 2v5h5"/><path d="M7 22v-5H2"/></svg>`,
   };
   return icons[name] || "";
 }
@@ -1657,23 +1676,24 @@ function renderNewsScreen() {
   const briefing = snapshot.briefing || {};
   const briefingData = briefing.briefing || briefing.overview || {};
   const newsItems = newsFeedItems(snapshot);
+  indexNewsItems(newsItems);
   const importantItems = importantNewsItems(newsItems);
   const latestItems = latestNewsItems(newsItems);
-  const affected = newsAffectedAssets(snapshot);
-  const sourceStatus = briefingData.source_status?.sources?.fmp_news || {};
   root.innerHTML = `
     <section class="screen-stack news-screen">
-      <section class="news-briefing">
-        <span>Noticias</span>
-        <strong>${escapeHtml(stripMarkdownCopy(macro.summary || briefingData.summary || "Contexto listo para cargar.").slice(0, 180))}</strong>
-        <p>${escapeHtml(stripMarkdownCopy(macro.dominant_risk || macro.note || briefingData.answer || "Genesis separa noticias de alertas: aqui va contexto; en Alertas van eventos accionables.").slice(0, 220))}</p>
-        <button type="button" class="secondary-button small" data-news-refresh>${appState.newsLoading ? "Actualizando..." : "Actualizar"}</button>
+      <section class="app-section-header">
+        <div>
+          <span class="app-kicker">Radar real</span>
+          <h2>Noticias</h2>
+          <p>${escapeHtml(stripMarkdownCopy(macro.summary || briefingData.summary || "Feed financiero reciente ordenado por impacto y recencia.").slice(0, 150))}</p>
+        </div>
+        <button type="button" class="icon-action" data-news-refresh aria-label="Actualizar noticias">${appState.newsLoading ? "..." : iconSvg("refresh") || "Actualizar"}</button>
       </section>
-      <section class="market-table">
-        <div><small>Tono</small><strong>${escapeHtml(macro.sentiment?.label || "Neutral")}</strong></div>
-        <div><small>Confianza</small><strong>${escapeHtml(`${macro.confidence ?? 0}%`)}</strong></div>
-        <div><small>Activos</small><strong>${escapeHtml(affected || "Sin activos")}</strong></div>
-        <div><small>Fuente news</small><strong>${escapeHtml(sourceStatus.status || "validando")}</strong></div>
+      <section class="feed-tabs" aria-label="Filtros de noticias">
+        <span class="is-active">Importantes</span>
+        <span>Ultimas</span>
+        <span>Mis activos</span>
+        <span>Global</span>
       </section>
       <section class="news-section">
         <div class="section-heading">
@@ -1858,12 +1878,28 @@ function newsImpactTone(value) {
   return "flat";
 }
 
-function newsItemId(item, index = 0) {
-  return item.id || `news-${index}-${cleanCopy(item.title || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 48)}`;
+function newsItemId(item) {
+  const explicit = cleanCopy(item?.id || item?.news_id || "");
+  if (explicit) return explicit;
+  const raw = [
+    item?.title || "",
+    item?.source || "",
+    item?.published_at || item?.time || "",
+    item?.url || "",
+  ].join("|");
+  return `news-${simpleHash(raw)}`;
 }
 
-function newsCardMarkup(item, index = 0) {
-  const id = newsItemId(item, index);
+function indexNewsItems(items) {
+  appState.newsItemsById = {};
+  (items || []).forEach((item) => {
+    const id = newsItemId(item);
+    appState.newsItemsById[id] = { ...item, id };
+  });
+}
+
+function newsCardMarkup(item) {
+  const id = newsItemId(item);
   const assets = Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 4) : [];
   const assetLabels = assets.map((asset) => {
     const normalized = normalizeTicker(asset);
@@ -1875,8 +1911,8 @@ function newsCardMarkup(item, index = 0) {
   const image = item.imageUrl || item.image_url || item.thumbnail || "";
   const category = cleanCopy(item.category || item.placeholder_key || "contexto").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
   return `
-    <article class="news-card" data-news-open="${escapeHtml(id)}">
-      <button class="news-card-main" type="button" data-news-open="${escapeHtml(id)}">
+    <article class="news-card" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
+      <button class="news-card-main" type="button" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
         <span class="news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
           ${image ? `<img src="${escapeHtml(image)}" alt="">` : newsPlaceholderMarkup(category, item)}
         </span>
@@ -1899,22 +1935,30 @@ function newsCardMarkup(item, index = 0) {
 
 function newsPlaceholderMarkup(category, item = {}) {
   const ticker = (Array.isArray(item.assets) && item.assets[0]) || "";
-  const labels = {
-    commodity: "OIL",
-    crypto: "BTC",
-    macro: "MAC",
-    geopolitics: "GEO",
-    earnings: "EPS",
-    ticker: ticker ? normalizeTicker(ticker).slice(0, 4) : "MKT",
+  const key = String(category || "").toLowerCase();
+  const symbols = {
+    commodity: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20h8"/><path d="M10 20V9a4 4 0 0 1 8 0v11"/><path d="M6 20V8h4"/><path d="M4 8h8"/></svg>`,
+    crypto: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v18M15 3v18"/><path d="M7 6h7a3 3 0 0 1 0 6H7h8a3 3 0 0 1 0 6H7"/></svg>`,
+    macro: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16l5-5 4 4 7-8"/><path d="M4 20h16"/></svg>`,
+    geopolitics: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16"/><path d="M12 4a12 12 0 0 1 0 16"/><path d="M12 4a12 12 0 0 0 0 16"/></svg>`,
+    earnings: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V5h14v14z"/><path d="M8 15h8M8 11h8M8 7h5"/></svg>`,
+    ticker: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l5-5 4 4 7-9"/><path d="M4 20h16"/></svg>`,
   };
-  return `<span>${escapeHtml(labels[category] || labels.ticker || "MKT")}</span>`;
+  const label = ticker ? normalizeTicker(ticker).slice(0, 5) : "";
+  return `${symbols[key] || symbols.ticker}<small>${escapeHtml(label || "Market")}</small>`;
 }
 
 function openNewsDetail(newsId) {
   const items = newsFeedItems(appState.newsSnapshot || {});
-  const item = items.find((entry, index) => newsItemId(entry, index) === newsId);
+  if (!Object.keys(appState.newsItemsById || {}).length) indexNewsItems(items);
+  let item = appState.newsItemsById?.[newsId];
   if (!item) {
-    toast("No encontre esa noticia en la lectura actual.", "error");
+    item = items.find((entry) => newsItemId(entry) === newsId)
+      || items.find((entry) => cleanCopy(entry.url || "") && cleanCopy(entry.url) === cleanCopy(newsId))
+      || null;
+  }
+  if (!item) {
+    toast("Actualiza Noticias para volver a abrir ese detalle.", "info");
     return;
   }
   appState.selectedNewsId = newsId;
@@ -1967,10 +2011,15 @@ function renderTrackingScreen() {
   root.innerHTML = `
     <section class="screen-stack">
       ${status}
-      <form class="search-card premium-search" id="tracking-search-form">
-        <input id="portfolio-search-input" placeholder="Buscar activos, empresas o ETFs..." autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
-        <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">${iconSvg("add")}</button>
-      </form>
+      <div class="compact-actions">
+        <button type="button" class="secondary-button small" data-toggle-search="tracking">${appState.searchOpen.tracking ? "Cerrar busqueda" : "Buscar activo"}</button>
+      </div>
+      ${appState.searchOpen.tracking ? `
+        <form class="search-card premium-search" id="tracking-search-form">
+          <input id="portfolio-search-input" placeholder="Buscar activos, empresas o ETFs..." autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
+          <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">${iconSvg("add")}</button>
+        </form>
+      ` : ""}
       <div class="market-filters" aria-label="Filtros de seguimiento">
         ${trackingFilterMarkup()}
       </div>
@@ -1983,14 +2032,20 @@ function renderTrackingScreen() {
     </section>
   `;
   const searchButton = document.getElementById("portfolio-search-button");
-  searchButton.addEventListener("click", searchAndAddPortfolioTicker);
-  document.getElementById("portfolio-search-input").addEventListener("input", (event) => {
-    appState.trackingSearchQuery = event.target.value;
-  });
-  document.getElementById("tracking-search-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    searchTrackingOnly();
-  });
+  if (searchButton) searchButton.addEventListener("click", searchAndAddPortfolioTicker);
+  const searchInput = document.getElementById("portfolio-search-input");
+  if (searchInput) {
+    searchInput.addEventListener("input", (event) => {
+      appState.trackingSearchQuery = event.target.value;
+    });
+  }
+  const searchForm = document.getElementById("tracking-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      searchTrackingOnly();
+    });
+  }
 }
 
 function trackingFilterMarkup() {
@@ -2039,10 +2094,15 @@ function renderPortfolioScreen() {
   root.innerHTML = `
     <section class="screen-stack">
       ${status}
-      <form class="search-card premium-search" id="portfolio-buy-search-form">
-        <input id="portfolio-buy-search-input" placeholder="Buscar ticker o empresa para simular compra" autocomplete="off" value="${escapeHtml(appState.portfolioSearchQuery)}">
-        <button class="primary-button small" type="button" id="portfolio-sim-buy-button">Buscar</button>
-      </form>
+      <div class="compact-actions">
+        <button type="button" class="secondary-button small" data-toggle-search="portfolio">${appState.searchOpen.portfolio ? "Cerrar busqueda" : "Buscar para compra paper"}</button>
+      </div>
+      ${appState.searchOpen.portfolio ? `
+        <form class="search-card premium-search" id="portfolio-buy-search-form">
+          <input id="portfolio-buy-search-input" placeholder="Buscar ticker o empresa para simular compra" autocomplete="off" value="${escapeHtml(appState.portfolioSearchQuery)}">
+          <button class="primary-button small" type="button" id="portfolio-sim-buy-button">Buscar</button>
+        </form>
+      ` : ""}
       <div class="search-results" id="portfolio-buy-search-result" ${appState.marketSearchResults.portfolio.length ? "" : "hidden"}>
         ${appState.marketSearchResults.portfolio.map((item) => searchResultMarkup(item, "portfolio")).join("")}
       </div>
@@ -2071,14 +2131,21 @@ function renderPortfolioScreen() {
       <span id="radar-reference-count" hidden>${appState.trackingItems.length}</span>
     </section>
   `;
-  document.getElementById("portfolio-sim-buy-button").addEventListener("click", searchPortfolioBuyTicker);
-  document.getElementById("portfolio-buy-search-input").addEventListener("input", (event) => {
-    appState.portfolioSearchQuery = event.target.value;
-  });
-  document.getElementById("portfolio-buy-search-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    searchPortfolioBuyTicker();
-  });
+  const buyButton = document.getElementById("portfolio-sim-buy-button");
+  if (buyButton) buyButton.addEventListener("click", searchPortfolioBuyTicker);
+  const buyInput = document.getElementById("portfolio-buy-search-input");
+  if (buyInput) {
+    buyInput.addEventListener("input", (event) => {
+      appState.portfolioSearchQuery = event.target.value;
+    });
+  }
+  const buyForm = document.getElementById("portfolio-buy-search-form");
+  if (buyForm) {
+    buyForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      searchPortfolioBuyTicker();
+    });
+  }
 }
 
 function emptyStateMarkup(title, text) {
@@ -2240,7 +2307,9 @@ function extractWhaleRows(causal, detection) {
     const currentPrice = numberOrNull(item.current_price ?? item.price ?? asset.current_price ?? asset.price);
     const volume = numberOrNull(item.volume ?? asset.volume);
     const dollarVolume = numberOrNull(item.dollar_volume ?? item.dollarVolume) ?? (currentPrice !== null && volume !== null ? currentPrice * volume : null);
-    const amount = whale.movement_value || item.movement_value || item.amount_usd || item.estimated_value || dollarVolume || "";
+    const rawAmount = whale.movement_value || item.movement_value || item.amount_usd || item.estimated_value || dollarVolume || "";
+    const amountCheck = saneFlowAmount(rawAmount, dollarVolume);
+    const amount = amountCheck.value ?? "";
     const hasFlowSignal = Boolean(
       item.flow_detected
       || item.money_flow_detected
@@ -2264,6 +2333,7 @@ function extractWhaleRows(causal, detection) {
       volume,
       relativeVolume,
       dollarVolume,
+      amountSuspicious: amountCheck.suspicious || Boolean(item.amount_suspicious),
       netFlow: /venta|salida|distrib/i.test(actionText) && numberOrNull(amount) !== null ? -Math.abs(numberOrNull(amount)) : numberOrNull(amount),
       date: item.money_flow_timestamp || item.timestamp || item.updated_at || "",
       source: whale.source || item.source || item.origin || "Fuente activa",
@@ -2278,6 +2348,15 @@ function extractWhaleRows(causal, detection) {
     });
   });
   return Array.from(byTicker.values()).slice(0, 12);
+}
+
+function saneFlowAmount(value, dollarVolume = null) {
+  const numeric = numberOrNull(value);
+  if (numeric === null) return { value: null, suspicious: false };
+  if (numeric <= 0 || numeric > 1_000_000_000_000) return { value: null, suspicious: true };
+  const dv = numberOrNull(dollarVolume);
+  if (dv !== null && dv > 0 && numeric > dv * 20) return { value: null, suspicious: true };
+  return { value: numeric, suspicious: false };
 }
 
 function whaleFallbackRows() {
@@ -2341,7 +2420,7 @@ function whaleRowMarkup(row) {
       <p>${escapeHtml(row.read)}</p>
       <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="asset-meta">
-        <span>Monto: ${escapeHtml(row.amount || row.amountUsd || row.estimatedValue || "No confirmado")}</span>
+        <span>Monto: ${escapeHtml(row.amountSuspicious ? "No confirmado" : money(row.amount || row.amountUsd || row.estimatedValue, "No confirmado"))}</span>
         <span>Volumen $: ${escapeHtml(money(row.dollarVolume, "No confirmado"))}</span>
         <span>Vol. rel: ${escapeHtml(row.relativeVolume ? `${compactNumber(row.relativeVolume)}x` : "No confirmado")}</span>
         <span>Fecha: ${escapeHtml(formatDate(row.date))}</span>
@@ -2433,6 +2512,10 @@ function derivedAlertRows() {
       const ticker = itemTicker(item);
       const pct = numberOrNull(item.daily_change_pct ?? item.change_pct ?? item.changesPercentage);
       const change = numberOrNull(item.daily_change ?? item.change);
+      const price = itemPrice(item);
+      const volume = numberOrNull(item.volume);
+      const avgVolume = numberOrNull(item.avg_volume ?? item.avgVolume ?? item.average_volume);
+      const relativeVolume = numberOrNull(item.relative_volume ?? item.relativeVolume) ?? (volume !== null && avgVolume ? volume / avgVolume : null);
       const absPct = Math.abs(pct || 0);
       if (!ticker || pct === null || absPct < 1) return null;
       const direction = pct > 0 ? "bullish" : "bearish";
@@ -2442,9 +2525,21 @@ function derivedAlertRows() {
         title: pct > 0 ? `${ticker}: impulso positivo` : `${ticker}: presion bajista`,
         summary: `Movimiento ${formatChange(change, "sin cambio")} / ${formatPercent(pct, "sin dato")}. Revisar volumen, soporte/resistencia y noticia asociada antes de operar.`,
         impact: pct > 0 ? "positivo" : "negativo",
+        direction,
         severity: absPct >= 3 ? "high" : "medium",
         confidence: "medium",
         source: priceSourceLabel(item),
+        price,
+        change,
+        change_pct: pct,
+        volume,
+        avg_volume: avgVolume,
+        relative_volume: relativeVolume,
+        dollar_volume: price !== null && volume !== null ? price * volume : null,
+        support: numberOrNull(item.support ?? item.support_level ?? item.day_low ?? item.dayLow),
+        resistance: numberOrNull(item.resistance ?? item.resistance_level ?? item.day_high ?? item.dayHigh),
+        mini_series: [pct, relativeVolume, change].filter((value) => value !== null),
+        genesis_reading: "Alerta tecnica derivada de precio y movimiento; confirmar con volumen antes de operar.",
         created_at: item.quote_timestamp || item.updated_at || appState.lastUpdated,
         context: "Precio live",
         status: "En vigilancia",
@@ -2483,11 +2578,16 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
         <span>Valor est. ${escapeHtml(estimatedTotal ? money(estimatedTotal) : "No confirmado")}</span>
       </div>
     </section>
-    <form class="search-card whale-search" id="money-flow-jarvis-form">
-      <input id="money-flow-jarvis-input" placeholder="Consultar ticker o flujo smart money" autocomplete="off">
-      <button type="submit">${iconSvg("send")}</button>
-    </form>
-    <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
+    <div class="compact-actions">
+      <button type="button" class="secondary-button small" data-toggle-search="whales">${appState.searchOpen.whales ? "Cerrar consulta" : "Consultar ballenas"}</button>
+    </div>
+    ${appState.searchOpen.whales ? `
+      <form class="search-card whale-search" id="money-flow-jarvis-form">
+        <input id="money-flow-jarvis-input" placeholder="Consultar ticker o flujo smart money" autocomplete="off">
+        <button type="submit">${iconSvg("send")}</button>
+      </form>
+      <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
+    ` : ""}
     <div class="asset-list whales-list" id="whales-list">
       ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("Sin ballenas confirmadas.", "Cuando FMP confirme entidad, monto y fecha, Genesis lo mostrara aqui sin inventar instituciones.")}
     </div>
@@ -2603,7 +2703,7 @@ function openWhaleDetail(whaleId) {
       ["Tipo", cleanCopy(row.event || "Flujo")],
       ["Direccion", cleanCopy(row.direction || "neutral")],
       ["Entidad", cleanCopy(row.entity || "Sin entidad confirmada")],
-      ["Monto", money(row.amount || row.estimatedValue || row.netFlow, "No confirmado")],
+      ["Monto", row.amountSuspicious ? "No confirmado" : money(row.amount || row.estimatedValue || row.netFlow, "No confirmado")],
       ["Precio usado", money(row.price || row.currentPrice, "Sin precio")],
       ["Volumen", row.volume ? compactNumber(row.volume) : "Sin volumen"],
       ["Dollar volume", money(row.dollarVolume, "No confirmado")],
@@ -3014,6 +3114,20 @@ function bindGlobalEvents() {
       event.preventDefault();
       appState.trackingFilter = trackingFilter.dataset.trackingFilter || "all";
       renderTrackingScreen();
+      return;
+    }
+
+    const searchToggle = event.target.closest("[data-toggle-search]");
+    if (searchToggle) {
+      event.preventDefault();
+      const key = searchToggle.dataset.toggleSearch;
+      if (key && Object.prototype.hasOwnProperty.call(appState.searchOpen, key)) {
+        appState.searchOpen[key] = !appState.searchOpen[key];
+        if (key === "tracking") renderTrackingScreen();
+        if (key === "portfolio") renderPortfolioScreen();
+        if (key === "whales" || key === "alerts") renderAlertsScreen();
+        if (key === "news") renderNewsScreen();
+      }
       return;
     }
 

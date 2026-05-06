@@ -156,10 +156,13 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
     units = _num(amount)
     price = _num(row.get("price") or row.get("transaction_price") or whale.get("price"))
     current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
-    estimated_value = amount_usd if amount_usd is not None else (units * (price or current_price) if units is not None and (price or current_price) else None)
     volume = _num(row.get("volume") or row.get("session_volume"))
     relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio"))
     dollar_volume = volume * current_price if volume is not None and current_price is not None else _num(row.get("dollar_volume") or row.get("dollarVolume"))
+    amount_usd, amount_suspicious = _sanitize_flow_value(amount_usd, dollar_volume)
+    estimated_value = amount_usd if amount_usd is not None else (units * (price or current_price) if units is not None and (price or current_price) else None)
+    estimated_value, estimated_suspicious = _sanitize_flow_value(estimated_value, dollar_volume)
+    amount_suspicious = amount_suspicious or estimated_suspicious
     date = str(row.get("money_flow_timestamp") or row.get("timestamp") or row.get("date") or "").strip()
     source = str(row.get("source") or whale.get("source") or "fmp").strip()
     confidence = str(whale.get("confidence") or row.get("confidence") or "medium").strip().lower()
@@ -183,6 +186,7 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "amount_usd": amount_usd,
         "current_price": current_price,
         "estimated_value": estimated_value,
+        "amount_suspicious": amount_suspicious,
         "volume": volume,
         "relative_volume": relative_volume,
         "dollar_volume": dollar_volume,
@@ -213,6 +217,7 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         dollar_volume = volume * current_price
     if amount_usd is None:
         amount_usd = dollar_volume
+    amount_usd, amount_suspicious = _sanitize_flow_value(amount_usd, dollar_volume)
     event_type = "unusual_volume" if _has_unusual_volume(row) else "smart_money_estimate"
     direction = "alcista" if action in {"buy", "accumulation"} else "bajista" if action in {"sell", "distribution", "reduction"} else "neutral"
     return {
@@ -231,6 +236,7 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "amount_usd": amount_usd,
         "current_price": current_price,
         "estimated_value": amount_usd,
+        "amount_suspicious": amount_suspicious,
         "volume": volume,
         "avg_volume": avg_volume,
         "relative_volume": relative_volume,
@@ -261,6 +267,18 @@ def _normalize_action(value: object) -> str:
     if "transfer" in raw:
         return "transfer"
     return "unknown"
+
+
+def _sanitize_flow_value(value: float | None, dollar_volume: float | None) -> tuple[float | None, bool]:
+    if value is None:
+        return None, False
+    if value <= 0:
+        return None, True
+    if value > 1_000_000_000_000:
+        return None, True
+    if dollar_volume is not None and dollar_volume > 0 and value > dollar_volume * 20:
+        return None, True
+    return value, False
 
 
 def _estimate_action(row: dict[str, Any]) -> str:

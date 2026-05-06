@@ -324,7 +324,9 @@ def _source_status_sources(confirmed_quotes: list[dict[str, Any]]) -> dict[str, 
     openai_ready = bool(settings and getattr(settings, "openai_api_key", "") and getattr(settings, "genesis_llm_enabled", False))
     vision_ready = bool(settings and getattr(settings, "openai_api_key", "") and getattr(settings, "genesis_vision_enabled", False))
     db_ready = bool(settings and getattr(settings, "database_url", ""))
-    news_status = get_news_source_status().get("fmp_market_news", {})
+    all_news_status = get_news_source_status()
+    news_status = all_news_status.get("fmp_market_news", {})
+    rss_status = all_news_status.get("rss_news", {})
 
     def item(source: str, status: str, *, elapsed_ms: int | None = None, cache_hit: bool = False, last_error_safe: str = "") -> dict[str, Any]:
         return {
@@ -340,6 +342,7 @@ def _source_status_sources(confirmed_quotes: list[dict[str, Any]]) -> dict[str, 
         "fmp_historical": item("fmp_historical", "empty" if fmp_ready else "missing_env", last_error_safe="Historical data is reserved for asset detail/chart requests."),
         "fmp_news": news_status or item("fmp_news", "empty" if fmp_ready else "missing_env", last_error_safe="No news query completed yet."),
         "fmp_market_news": news_status or item("fmp_market_news", "empty" if fmp_ready else "missing_env", last_error_safe="No market news query completed yet."),
+        "rss_news": rss_status or item("rss_news", "empty", last_error_safe="No RSS query completed yet."),
         "fmp_insider": item("fmp_insider", "empty" if fmp_ready else "missing_env", last_error_safe="No insider query completed in this response."),
         "fmp_institutional": item("fmp_institutional", "empty" if fmp_ready else "missing_env", last_error_safe="No institutional ownership query completed in this response."),
         "fmp_ownership": item("fmp_ownership", "empty" if fmp_ready else "missing_env", last_error_safe="No ownership query completed in this response."),
