@@ -143,6 +143,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertFalse(payload["source"]["is_max_truncated"])
         self.assertFalse(payload["source"]["max_truncated"])
         self.assertEqual(payload["truncation_reason"], "")
+        self.assertIn("MAX usa", payload["max_history_note"])
         self.assertEqual(payload["first_date"], "2016-01-01")
         self.assertEqual(payload["first_close"], 51)
         self.assertEqual(payload["return_details"]["MAX"]["first_close"], 51)
@@ -164,6 +165,28 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["status"], "no_data")
         self.assertEqual(payload["ohlc"], [])
         self.assertIn("OHLC", payload["message"])
+        self.assertNotIn("fmp_devolvio", payload["truncation_reason"])
+        self.assertIn("MAX", payload["max_history_note"])
+
+    @patch("services.dashboard.get_asset_chart_series.FmpClient")
+    @patch("services.dashboard.get_asset_chart_series.load_settings")
+    def test_short_max_history_uses_clean_human_note(self, mock_settings: Mock, mock_fmp_client: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="test-key", fmp_live_enabled=True)
+        client = mock_fmp_client.return_value
+        client.get_quote.return_value = {"price": 120, "name": "Short History"}
+        client.get_profile.return_value = {}
+        client.get_full_historical_eod.return_value = [
+            {"date": "2025-01-01", "open": 90, "high": 101, "low": 88, "close": 100},
+            {"date": "2026-01-01", "open": 100, "high": 125, "low": 99, "close": 120},
+        ]
+
+        payload = get_asset_chart_series("NVDA", "MAX")
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["is_max_truncated"])
+        self.assertEqual(payload["truncation_reason"], "max_disponible_menor_o_igual_5y")
+        self.assertIn("MAX disponible", payload["max_history_note"])
+        self.assertNotIn("fmp_devolvio", payload["max_history_note"].lower())
 
     def test_app_config_exposes_asset_chart_endpoint(self) -> None:
         app_config = create_app()

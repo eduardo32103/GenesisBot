@@ -33,6 +33,7 @@ def _empty_snapshot(note: str) -> dict[str, Any]:
             "data_origin": "unavailable",
             "last_update": "",
         },
+        "items": [],
         "recent_alerts": [],
     }
 
@@ -211,6 +212,7 @@ def _fetch_alerts_snapshot(database_url: str, *, window_days: int = _DEFAULT_ALE
                 "data_origin": "database",
                 "last_update": last_update,
             },
+            "items": recent_alerts,
             "recent_alerts": recent_alerts,
         }
     except Exception as exc:

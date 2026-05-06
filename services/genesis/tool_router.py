@@ -143,11 +143,13 @@ def _payload(
     prompt: str = "",
     conversation_id: str = "default",
 ) -> dict[str, Any]:
+    response_type = _response_type_for_intent(intent)
     memory_context = memory.get_memory_summary(answer)
     llm_result = get_llm_orchestrator().compose(
         prompt or answer,
         {
             "intent": intent,
+            "response_type": response_type,
             "tickers": tickers,
             "deterministic_answer": answer,
             "data": extra or {},
@@ -162,6 +164,7 @@ def _payload(
         "ok": True,
         "status": "genesis_intelligence_ready",
         "intent": intent,
+        "response_type": response_type,
         "answer": answer,
         "tickers": tickers,
         "memory": {
@@ -177,6 +180,23 @@ def _payload(
     if extra:
         payload.update(extra)
     return payload
+
+
+def _response_type_for_intent(intent: str) -> str:
+    return {
+        "daily_briefing": "market_summary",
+        "market_overview": "market_summary",
+        "ticker_analysis": "asset_analysis",
+        "technical_indicators": "asset_analysis",
+        "chart_request": "chart_analysis",
+        "comparison": "comparison",
+        "weather": "weather",
+        "alerts": "alerts_digest",
+        "whale_activity": "whale_flow",
+        "portfolio_summary": "general_assistant",
+        "tracking_summary": "general_assistant",
+        "image_chart_analysis": "chart_analysis",
+    }.get(intent, "general_assistant")
 
 
 def _chart_answer(ticker: str, quote: dict[str, Any], overlays: list[str] | None = None) -> str:

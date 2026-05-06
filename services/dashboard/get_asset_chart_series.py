@@ -143,9 +143,17 @@ def _max_truncation(max_history_years: float, eod_points: list[dict[str, Any]]) 
     if max_history_years <= 5.05:
         return {
             "is_max_truncated": True,
-            "truncation_reason": "fmp_devolvio_hasta_5y_o_activo_sin_mas_historia",
+            "truncation_reason": "max_disponible_menor_o_igual_5y",
         }
     return {"is_max_truncated": False, "truncation_reason": ""}
+
+
+def _max_history_note(max_history_years: float, eod_points: list[dict[str, Any]]) -> str:
+    if not eod_points:
+        return "MAX sin historico confirmado por FMP."
+    if max_history_years <= 5.05:
+        return f"MAX disponible: {max_history_years:.2f} anos reales de historico FMP."
+    return f"MAX usa {max_history_years:.2f} anos reales de historico FMP."
 
 
 def _first_date(points: list[dict[str, Any]]) -> str:
@@ -180,6 +188,7 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "is_max_truncated": True,
         "max_truncated": True,
         "truncation_reason": "sin_historico_fmp",
+        "max_history_note": "MAX sin historico confirmado por FMP.",
         "first_date": "",
         "last_date": "",
         "first_close": None,
@@ -220,11 +229,16 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     history_meta = history_meta if isinstance(history_meta, dict) else {}
     eod_points = _shape_ohlc(eod_rows)
     max_history_years = float(history_meta.get("max_history_years") or _history_years(eod_points))
+    derived_truncation = _max_truncation(max_history_years, eod_points)
+    raw_reason = str(history_meta.get("truncation_reason") or derived_truncation["truncation_reason"])
+    if raw_reason.startswith("FMP devolvio solo"):
+        raw_reason = "max_disponible_menor_o_igual_5y"
     max_truncation = {
-        "is_max_truncated": bool(history_meta.get("is_max_truncated", history_meta.get("max_truncated", _max_truncation(max_history_years, eod_points)["is_max_truncated"]))),
-        "truncation_reason": str(history_meta.get("truncation_reason") or _max_truncation(max_history_years, eod_points)["truncation_reason"]),
+        "is_max_truncated": bool(history_meta.get("is_max_truncated", history_meta.get("max_truncated", derived_truncation["is_max_truncated"]))),
+        "truncation_reason": raw_reason,
     }
     max_truncation_alias = {**max_truncation, "max_truncated": max_truncation["is_max_truncated"]}
+    max_history_note = _max_history_note(max_history_years, eod_points)
     intraday_points: list[dict[str, Any]] = []
     full_history_endpoint = str(history_meta.get("fmp_endpoint_used") or "historical-price-eod/full")
     endpoint_label = full_history_endpoint
@@ -259,6 +273,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "indicators": compute_technical_indicators([]),
             "max_history_years": max_history_years,
             **max_truncation_alias,
+            "max_history_note": max_history_note,
             "history_points": len(eod_points),
             "raw_eod_points": len(eod_points),
             "selected_range_points": raw_count,
@@ -279,6 +294,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
                 "fmp_endpoint_used": full_history_endpoint,
                 "has_full_history": bool(history_meta.get("has_full_history", max_history_years > 5.05)),
                 "max_uses_full_history": True,
+                "max_history_note": max_history_note,
                 **max_truncation_alias,
             },
         }
@@ -299,6 +315,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "summary": _summary(selected_points),
         "max_history_years": max_history_years,
         **max_truncation_alias,
+        "max_history_note": max_history_note,
         "history_points": len(eod_points),
         "raw_eod_points": len(eod_points),
         "selected_range_points": raw_count,
@@ -328,6 +345,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "has_full_history": bool(history_meta.get("has_full_history", max_history_years > 5.05)),
             "max_history_years": max_history_years,
             "max_uses_full_history": True,
+            "max_history_note": max_history_note,
             **max_truncation_alias,
         },
     }

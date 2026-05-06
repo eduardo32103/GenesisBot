@@ -310,6 +310,7 @@ class GenesisToolRouterTests(unittest.TestCase):
                 friday = route_message("como estuvo el mercado el viernes pasado", memory=store)
 
         self.assertEqual(briefing["intent"], "daily_briefing")
+        self.assertEqual(briefing["response_type"], "market_summary")
         self.assertEqual(briefing["tickers"], [])
         self.assertIn("1. Lectura rapida", briefing["answer"])
         self.assertIn("5. Alertas relevantes", briefing["answer"])
@@ -401,8 +402,11 @@ class GenesisToolRouterTests(unittest.TestCase):
             payload = route_message("analiza nvda", memory=store)
 
         self.assertEqual(payload["intent"], "ticker_analysis")
+        self.assertEqual(payload["response_type"], "asset_analysis")
         self.assertEqual(payload["kind"], "asset_analysis")
         self.assertEqual(payload["structured"]["kind"], "asset_analysis")
+        self.assertIn("ema", payload["structured"]["indicators"])
+        self.assertIn("fibonacci", payload["structured"]["indicators"])
         rendered = json.dumps(payload["structured"])
         self.assertNotIn("###", rendered)
         self.assertNotIn("**", rendered)
