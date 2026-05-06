@@ -5,7 +5,7 @@ function initialChatMessage() {
   return {
     id: `welcome-${Date.now()}`,
     role: "assistant",
-    text: "Hola. Que quieres revisar hoy?",
+    text: "Hola. ¿Qué quieres revisar hoy?",
   };
 }
 
@@ -36,8 +36,12 @@ const appState = {
   radarSnapshot: null,
   trackingSearchQuery: "",
   portfolioSearchQuery: "",
+  trackingFilter: "all",
   whalesSnapshot: null,
   alertsSnapshot: null,
+  alertSubtab: "alerts",
+  newsSnapshot: null,
+  newsLoading: false,
   chartCache: {},
   assetChartRanges: {},
   refreshTimer: null,
@@ -346,6 +350,7 @@ function iconSvg(name) {
     history: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg>`,
     new: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
     clear: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>`,
+    back: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>`,
   };
   return icons[name] || "";
 }
@@ -558,14 +563,14 @@ function findAsset(ticker) {
 function normalizeScreen(view) {
   if (view === "watchlist") return "tracking";
   if (view === "radar") return "portfolio";
-  if (view === "money-flow") return "whales";
+  if (view === "money-flow") return "news";
   return view || "genesis";
 }
 
 function screenId(screen) {
   if (screen === "tracking") return "view-watchlist";
   if (screen === "portfolio") return "view-radar";
-  if (screen === "whales") return "view-money-flow";
+  if (screen === "news") return "view-news";
   return `view-${screen}`;
 }
 
@@ -686,11 +691,11 @@ function setActiveScreen(screen) {
     stopPortfolioAutoRefresh();
   }
 
-  if (screen === "whales") {
-    loadWhales().catch((error) => toast(error.message, "error"));
+  if (screen === "news") {
+    loadNews().catch((error) => toast(error.message, "error"));
   }
   if (screen === "alerts") {
-    loadAlerts().catch((error) => toast(error.message, "error"));
+    Promise.all([loadAlerts(), loadWhalesData()]).then(() => renderAlertsScreen()).catch((error) => toast(error.message, "error"));
   }
 }
 
@@ -809,18 +814,18 @@ async function removePaperTicker(ticker) {
 function render() {
   renderGenesisScreen();
   renderAssetDetailScreen();
+  renderNewsScreen();
   renderTrackingScreen();
   renderPortfolioScreen();
-  renderWhalesScreen();
   renderAlertsScreen();
   updateNav();
 }
 
 function renderActiveScreen() {
   if (appState.activeScreen === "genesis") renderGenesisScreen();
+  if (appState.activeScreen === "news") renderNewsScreen();
   if (appState.activeScreen === "tracking") renderTrackingScreen();
   if (appState.activeScreen === "portfolio") renderPortfolioScreen();
-  if (appState.activeScreen === "whales") renderWhalesScreen();
   if (appState.activeScreen === "alerts") renderAlertsScreen();
   if (appState.activeScreen === "asset-detail") renderAssetDetailScreen();
   updateNav();
@@ -868,7 +873,7 @@ function renderGenesisScreen() {
 
 function chatHistoryPanelMarkup() {
   const history = appState.chatMessages
-    .filter((message) => String(message.text || "").trim() && cleanCopy(message.text) !== "Hola. Que quieres revisar hoy?")
+    .filter((message) => String(message.text || "").trim() && cleanCopy(message.text) !== "Hola. ¿Qué quieres revisar hoy?")
     .slice(-8)
     .reverse();
   return `
@@ -997,9 +1002,126 @@ async function loadGenesisMemoryHistory() {
   }
 }
 
+async function loadNews() {
+  if (appState.newsLoading) return appState.newsSnapshot;
+  appState.newsLoading = true;
+  renderNewsScreen();
+  try {
+    const [macroResult, briefingResult] = await Promise.allSettled([
+      getJson("/api/dashboard/macro-activity"),
+      postJson("/api/genesis/ask", { message: "dame resumen del dia", context: "news" }),
+    ]);
+    appState.newsSnapshot = {
+      macro: macroResult.status === "fulfilled" ? macroResult.value : null,
+      briefing: briefingResult.status === "fulfilled" ? briefingResult.value : null,
+      errors: [
+        macroResult.status === "rejected" ? macroResult.reason?.message : "",
+        briefingResult.status === "rejected" ? briefingResult.reason?.message : "",
+      ].filter(Boolean),
+      loadedAt: new Date().toISOString(),
+    };
+  } finally {
+    appState.newsLoading = false;
+    renderNewsScreen();
+  }
+  return appState.newsSnapshot;
+}
+
+function renderNewsScreen() {
+  const root = document.getElementById("view-news");
+  if (!root) return;
+  const snapshot = appState.newsSnapshot || {};
+  const macro = snapshot.macro?.macro || {};
+  const briefing = snapshot.briefing || {};
+  const newsItems = newsFeedItems(snapshot);
+  const affected = newsAffectedAssets(snapshot);
+  root.innerHTML = `
+    <section class="screen-stack news-screen">
+      <section class="news-briefing">
+        <span>Noticias</span>
+        <strong>${escapeHtml(cleanCopy(macro.summary || briefing.answer || "Contexto listo para cargar."))}</strong>
+        <p>${escapeHtml(cleanCopy(macro.dominant_risk || macro.note || "Genesis separa noticias de alertas: aqui va contexto; en Alertas van eventos accionables."))}</p>
+        <button type="button" class="secondary-button small" data-news-refresh>${appState.newsLoading ? "Actualizando..." : "Actualizar"}</button>
+      </section>
+      <section class="market-table">
+        <div><small>Tono</small><strong>${escapeHtml(macro.sentiment?.label || "Neutral")}</strong></div>
+        <div><small>Confianza</small><strong>${escapeHtml(`${macro.confidence ?? 0}%`)}</strong></div>
+        <div><small>Activos</small><strong>${escapeHtml(affected || "Sin activos")}</strong></div>
+      </section>
+      <div class="news-feed">
+        ${appState.newsLoading ? `<div class="empty-state"><strong>Cargando noticias.</strong><p>Genesis esta armando el resumen del dia.</p></div>` : ""}
+        ${newsItems.length ? newsItems.map(newsCardMarkup).join("") : emptyStateMarkup("Sin noticias activas.", "Cuando exista macro, geopolitica, earnings o catalizadores, Genesis lo mostrara aqui sin inventar impacto.")}
+      </div>
+    </section>
+  `;
+}
+
+function newsFeedItems(snapshot = {}) {
+  const macro = snapshot.macro?.macro || {};
+  const activity = snapshot.macro?.activity || {};
+  const headlines = Array.isArray(macro.headlines) ? macro.headlines : [];
+  const activityItems = Array.isArray(activity.items) ? activity.items : [];
+  return [
+    ...headlines.map((item) => ({
+      category: "Macro",
+      title: item.title,
+      source: item.source,
+      time: item.published_at,
+      impact: item.impact_summary || macro.bias_label || "Neutral",
+      summary: item.impact_summary || "Catalizador macro en vigilancia.",
+      assets: macro.sensitive_tickers || [],
+    })),
+    ...activityItems.map((item) => ({
+      category: item.event || "Evento",
+      title: item.summary,
+      source: "Genesis",
+      time: item.occurred_at,
+      impact: item.level || "neutral",
+      summary: item.summary,
+      assets: Object.values(item.fields || {}).filter((value) => typeof value === "string").slice(0, 3),
+    })),
+  ].filter((item) => String(item.title || "").trim()).slice(0, 12);
+}
+
+function newsAffectedAssets(snapshot = {}) {
+  const macro = snapshot.macro?.macro || {};
+  const assets = [...(macro.high_risk_tickers || []), ...(macro.sensitive_tickers || [])]
+    .map(normalizeTicker)
+    .filter(Boolean);
+  return Array.from(new Set(assets)).slice(0, 4).join(", ");
+}
+
+function newsImpactTone(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("alcista") || text.includes("bull") || text.includes("positivo") || text.includes("info")) return "up";
+  if (text.includes("bajista") || text.includes("bear") || text.includes("negativo") || text.includes("risk") || text.includes("error")) return "down";
+  return "flat";
+}
+
+function newsCardMarkup(item) {
+  const assets = Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 4) : [];
+  const tone = newsImpactTone(item.impact);
+  return `
+    <article class="news-card">
+      <div>
+        <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))}</span>
+        <strong>${escapeHtml(cleanCopy(item.title || "Noticia"))}</strong>
+        <p>${escapeHtml(cleanCopy(item.summary || "Sin lectura adicional."))}</p>
+      </div>
+      <div class="news-meta">
+        <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
+        <span>${escapeHtml(formatDate(item.time))}</span>
+        <span class="${tone}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
+        ${assets.length ? `<span>${escapeHtml(assets.join(", "))}</span>` : ""}
+      </div>
+    </article>
+  `;
+}
+
 function renderTrackingScreen() {
   const root = document.getElementById("view-watchlist");
   if (!root) return;
+  const items = filteredTrackingItems();
   const status = `
     <div class="screen-status inline-status">
       <span>Datos directos activos</span>
@@ -1010,14 +1132,17 @@ function renderTrackingScreen() {
     <section class="screen-stack">
       ${status}
       <form class="search-card premium-search" id="tracking-search-form">
-        <input id="portfolio-search-input" placeholder="Buscar ticker o empresa" autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
+        <input id="portfolio-search-input" placeholder="Buscar activos, empresas o ETFs..." autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
         <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">${iconSvg("add")}</button>
       </form>
+      <div class="market-filters" aria-label="Filtros de seguimiento">
+        ${trackingFilterMarkup()}
+      </div>
       <div class="search-results" id="portfolio-search-result" ${appState.marketSearchResults.tracking.length ? "" : "hidden"}>
         ${appState.marketSearchResults.tracking.map((item) => searchResultMarkup(item, "tracking")).join("")}
       </div>
       <div class="asset-list" id="watchlist-screen-body">
-        ${appState.trackingItems.length ? appState.trackingItems.map((item) => assetRowMarkup(item, "tracking")).join("") : emptyStateMarkup("Sin activos en seguimiento.", "Busca un ticker y agregalo para ver precio, sesion y movimiento.")}
+        ${items.length ? items.map((item) => assetRowMarkup(item, "tracking")).join("") : emptyStateMarkup("Sin activos en seguimiento.", "Busca un ticker y agregalo para ver precio, sesion y movimiento.")}
       </div>
     </section>
   `;
@@ -1030,6 +1155,33 @@ function renderTrackingScreen() {
     event.preventDefault();
     searchTrackingOnly();
   });
+}
+
+function trackingFilterMarkup() {
+  const filters = [
+    ["all", "Todos"],
+    ["stocks", "Acciones"],
+    ["crypto", "Cripto"],
+    ["etf", "ETFs"],
+    ["commodities", "Materias primas"],
+  ];
+  return filters.map(([key, label]) => (
+    `<button type="button" class="${appState.trackingFilter === key ? "is-active" : ""}" data-tracking-filter="${key}">${label}</button>`
+  )).join("");
+}
+
+function filteredTrackingItems() {
+  if (appState.trackingFilter === "all") return appState.trackingItems;
+  return appState.trackingItems.filter((item) => assetCategory(item) === appState.trackingFilter);
+}
+
+function assetCategory(item) {
+  const ticker = itemTicker(item);
+  const type = String(item?.asset_type || item?.type || item?.category || item?.exchange || "").toLowerCase();
+  if (ticker.endsWith("-USD") || type.includes("crypto")) return "crypto";
+  if (ticker.includes("=F") || ["BNO", "USO", "GLD", "IAU", "SLV"].includes(ticker) || type.includes("commodity")) return "commodities";
+  if (type.includes("etf") || ["SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "IXC"].includes(ticker)) return "etf";
+  return "stocks";
 }
 
 function renderPortfolioScreen() {
@@ -1078,7 +1230,7 @@ function renderPortfolioScreen() {
       <span id="portfolio-day-stat" hidden>${escapeHtml(signedMoney(totals.dailyPnl))}</span>
       <span id="radar-tracked-count" hidden>${appState.allItems.length}</span>
       <span id="radar-last-update" hidden>${escapeHtml(appState.lastUpdated)}</span>
-      <span id="radar-summary-note" hidden>Genesis App V3</span>
+      <span id="radar-summary-note" hidden>Cartera</span>
       <span id="radar-investment-count" hidden>${appState.paperPositions.length}</span>
       <span id="radar-reference-count" hidden>${appState.trackingItems.length}</span>
     </section>
@@ -1113,7 +1265,7 @@ function compactAssetSubline(item, mode, totalValue = 0) {
     const units = itemUnits(item);
     const value = itemValue(item);
     const weight = totalValue > 0 && value !== null ? (value / totalValue) * 100 : numberOrNull(item.weight_pct);
-    return `${units ?? "Sin"} units · ${money(value, "Sin valor")} · ${compactPercent(weight)}`;
+    return `${units ?? "Sin"} units - ${money(value, "Sin valor")} - ${compactPercent(weight)}`;
   }
   return shortAssetName(item);
 }
@@ -1210,44 +1362,26 @@ function donutGradient(distribution) {
 }
 
 async function loadWhales() {
+  await loadWhalesData();
+  renderAlertsScreen();
+}
+
+async function loadWhalesData() {
   const [causal, detection] = await Promise.all([
     fetch("/api/dashboard/money-flow/causal", { cache: "no-store" }).then((response) => response.json()),
     fetch("/api/dashboard/money-flow/detection", { cache: "no-store" }).then((response) => response.json()),
   ]);
   appState.whalesSnapshot = { causal, detection };
-  renderWhalesScreen();
+  return appState.whalesSnapshot;
 }
 
 function renderMoneyFlowSnapshot(causalPayload = {}, detectionPayload = {}) {
   appState.whalesSnapshot = { causal: causalPayload, detection: detectionPayload };
-  renderWhalesScreen();
+  renderAlertsScreen();
 }
 
 function renderWhalesScreen() {
-  const root = document.getElementById("view-money-flow");
-  if (!root) return;
-  const snapshot = appState.whalesSnapshot || {};
-  const rows = extractWhaleRows(snapshot.causal || {}, snapshot.detection || {});
-  root.innerHTML = `
-    <section class="screen-stack">
-      <section class="feed-intro">
-        <div>
-          <strong>Smart money</strong>
-          <p>${rows.length ? "Lecturas confirmadas por fuente activa." : "Sin evidencia institucional confirmada ahora."}</p>
-        </div>
-        <span>${rows.length ? `${rows.length} insights` : "Limpio"}</span>
-      </section>
-      <form class="search-card" id="money-flow-jarvis-form">
-        <input id="money-flow-jarvis-input" placeholder="Preguntar a Ballenas" autocomplete="off">
-        <button type="submit">Preguntar</button>
-      </form>
-      <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
-      <div class="asset-list whales-list" id="whales-list">
-        ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("No hay ballena institucional confirmada con la fuente activa.", "Cuando la fuente confirme entidad, monto y fecha, Genesis lo mostrara como feed limpio.")}
-      </div>
-    </section>
-  `;
-  bindMoneyFlowJarvisForm();
+  renderAlertsScreen();
 }
 
 function extractWhaleRows(causal, detection) {
@@ -1338,26 +1472,61 @@ function renderMoneyFlowJarvisAnswer(payload = {}) {
 
 async function loadAlerts() {
   appState.alertsSnapshot = await getJson("/api/dashboard/alerts");
-  renderAlertsScreen();
+  return appState.alertsSnapshot;
 }
 
 function renderAlertsScreen() {
   const root = document.getElementById("view-alerts");
   if (!root) return;
   const items = Array.isArray(appState.alertsSnapshot?.items) ? appState.alertsSnapshot.items : [];
+  const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
   root.innerHTML = `
     <section class="screen-stack">
       <section class="feed-intro">
         <div>
           <strong>Eventos</strong>
-          <p>${items.length ? "Feed limpio de senales activas." : "Sin alertas activas por ahora."}</p>
+          <p>${appState.alertSubtab === "alerts" ? (items.length ? "Feed limpio de senales activas." : "Sin alertas activas por ahora.") : (whales.length ? "Smart money confirmado por fuente activa." : "Sin ballena institucional confirmada ahora.")}</p>
         </div>
-        <span>${items.length} eventos</span>
+        <span>${appState.alertSubtab === "alerts" ? `${items.length} eventos` : `${whales.length} ballenas`}</span>
       </section>
-      <div class="asset-list">
-        ${items.length ? items.slice(0, 14).map(alertMarkup).join("") : emptyStateMarkup("Sin alertas activas.", "Genesis mantiene la pantalla limpia hasta que exista una senal relevante.")}
+      <div class="subtabs" aria-label="Eventos">
+        <button type="button" class="${appState.alertSubtab === "alerts" ? "is-active" : ""}" data-alert-tab="alerts">Alertas</button>
+        <button type="button" class="${appState.alertSubtab === "whales" ? "is-active" : ""}" data-alert-tab="whales">Ballenas</button>
+      </div>
+      ${appState.alertSubtab === "alerts" ? alertsPanelMarkup(items) : whalesPanelMarkup(whales)}
+    </section>
+  `;
+  bindMoneyFlowJarvisForm();
+}
+
+function alertsPanelMarkup(items) {
+  return `
+    <div class="asset-list">
+      ${items.length ? items.slice(0, 14).map(alertMarkup).join("") : emptyStateMarkup("Sin alertas activas.", "Genesis mantiene la pantalla limpia hasta que exista una senal relevante.")}
+    </div>
+  `;
+}
+
+function whalesPanelMarkup(rows) {
+  return `
+    <section class="whale-flow-card">
+      <div>
+        <span>Flujo de ballenas</span>
+        <strong>${rows.length ? `${rows.length} eventos relevantes` : "Sin flujo confirmado"}</strong>
+        <p>${rows.length ? "Genesis muestra solo eventos con entidad o evidencia reportada." : "No hay ballena institucional confirmada con la fuente activa."}</p>
+      </div>
+      <div class="whale-flow-bars" aria-hidden="true">
+        ${rows.length ? rows.slice(0, 6).map((row, index) => `<i style="height:${Math.max(18, 34 + index * 8)}px"></i>`).join("") : `<i></i><i></i><i></i>`}
       </div>
     </section>
+    <form class="search-card whale-search" id="money-flow-jarvis-form">
+      <input id="money-flow-jarvis-input" placeholder="Consultar ticker o flujo smart money" autocomplete="off">
+      <button type="submit">${iconSvg("send")}</button>
+    </form>
+    <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
+    <div class="asset-list whales-list" id="whales-list">
+      ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("Sin ballenas confirmadas.", "Cuando FMP confirme entidad, monto y fecha, Genesis lo mostrara aqui sin inventar instituciones.")}
+    </div>
   `;
 }
 
@@ -1365,8 +1534,10 @@ function alertMarkup(item) {
   const ticker = itemTicker(item) || "Mercado";
   const priority = cleanCopy(item.priority || item.severity || item.status_label || item.status || "Seguimiento");
   const date = item.created_at || item.updated_at || item.timestamp || appState.lastUpdated;
+  const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || priority;
+  const tone = newsImpactTone(impact);
   return `
-    <article class="whale-row feed-row">
+    <article class="whale-row feed-row alert-event tone-${tone}">
       <div class="whale-topline">
         <div>
           <strong>${escapeHtml(ticker)}</strong>
@@ -1375,7 +1546,9 @@ function alertMarkup(item) {
         <span class="event-chip">${escapeHtml(priority)}</span>
       </div>
       <p>${escapeHtml(cleanCopy(item.summary || item.message || item.note || "Revisar antes de operar."))}</p>
+      <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="asset-meta">
+        <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact || "Por confirmar"))}</span>
         <span>Contexto: ${escapeHtml(cleanCopy(item.context || item.category || "Mercado"))}</span>
         <span>Fecha: ${escapeHtml(formatDate(date))}</span>
         <span>Estado: ${escapeHtml(cleanCopy(item.status || "En vigilancia"))}</span>
@@ -1399,6 +1572,9 @@ function openAssetDetail(ticker) {
   loadChartSeries(normalized, range).then(() => {
     if (appState.activeScreen === "asset-detail" && appState.selectedAsset === normalized) renderAssetDetailScreen();
   });
+  Promise.allSettled([loadAlerts(), loadWhalesData(), loadNews()]).then(() => {
+    if (appState.activeScreen === "asset-detail" && appState.selectedAsset === normalized) renderAssetDetailScreen();
+  });
 }
 
 function renderAssetDetailScreen() {
@@ -1414,12 +1590,25 @@ function renderAssetDetailScreen() {
   const isTracked = appState.trackingItems.some((row) => itemTicker(row) === normalized && itemInWatchlist(row));
   const chartRange = appState.assetChartRanges[normalized] || "1Y";
   const relatedAlerts = assetRelatedAlerts(normalized);
+  const relatedWhales = assetRelatedWhales(normalized);
+  const relatedNews = assetRelatedNews(normalized);
   const units = itemUnits(item);
   const value = itemValue(item);
   const pnl = positionPnl(item);
   root.innerHTML = `
     <section class="asset-detail">
-      <button class="detail-back" type="button" data-asset-back>Volver</button>
+      <div class="detail-topbar">
+        <button class="detail-back" type="button" data-asset-back aria-label="Volver">${iconSvg("back")} Volver</button>
+        <details class="market-menu detail-menu">
+          <summary aria-label="Acciones ${escapeHtml(normalized)}">${iconSvg("menu")}</summary>
+          <div class="market-menu-panel">
+            ${!isTracked ? `<button type="button" data-market-add="${escapeHtml(normalized)}">Agregar seguimiento</button>` : ""}
+            <button type="button" data-paper-buy="${escapeHtml(normalized)}">Compra paper</button>
+            ${isPaper ? `<button class="danger" type="button" data-paper-close="${escapeHtml(normalized)}">Cerrar paper</button>` : ""}
+            ${isTracked ? `<button class="danger" type="button" data-watch-remove="${escapeHtml(normalized)}">Quitar seguimiento</button>` : ""}
+          </div>
+        </details>
+      </div>
       <section class="detail-hero">
         <div>
           <strong>${escapeHtml(normalized)}</strong>
@@ -1435,24 +1624,30 @@ function renderAssetDetailScreen() {
         <span><small>Rango</small><strong>${escapeHtml(item.day_low && item.day_high ? `${money(item.day_low)} - ${money(item.day_high)}` : "Sin dato")}</strong></span>
         <span><small>Volumen</small><strong>${escapeHtml(item.volume ? Number(item.volume).toLocaleString("en-US") : "Sin dato")}</strong></span>
         <span><small>Actualizado</small><strong>${escapeHtml(formatDate(item.quote_timestamp || item.updated_at || appState.lastUpdated))}</strong></span>
-        ${isPaper ? `<span><small>Paper</small><strong>${escapeHtml(units ?? "Sin")} units · ${escapeHtml(money(value, "Sin valor"))}</strong></span>` : ""}
+        ${isPaper ? `<span><small>Paper</small><strong>${escapeHtml(units ?? "Sin")} units - ${escapeHtml(money(value, "Sin valor"))}</strong></span>` : ""}
         ${isPaper ? `<span><small>P/L</small><strong class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "Sin dato"))}</strong></span>` : ""}
       </section>
       ${chartBlockMarkup(normalized, chartRange, `detail:${normalized}`)}
       <section class="detail-analysis">
         <strong>Lectura Genesis</strong>
-        <p>Precio y retornos vienen de FMP o snapshot validado. La lectura operativa queda condicionada a confirmacion de precio, volumen y riesgo; no hay compra real ni broker.</p>
+        <p>${escapeHtml(assetGenesisReading(item, chartRange))}</p>
+      </section>
+      <section class="detail-analysis">
+        <strong>Catalizadores</strong>
+        <p>${escapeHtml(assetCatalystLine(normalized))}</p>
+      </section>
+      <section class="detail-alerts">
+        <strong>Noticias clave</strong>
+        ${relatedNews.length ? relatedNews.map(newsCardMarkup).join("") : `<p>Sin noticias relacionadas confirmadas.</p>`}
       </section>
       <section class="detail-alerts">
         <strong>Alertas relacionadas</strong>
         ${relatedAlerts.length ? relatedAlerts.map(alertMarkup).join("") : `<p>Sin alertas relacionadas confirmadas.</p>`}
       </section>
-      <div class="sheet-actions detail-actions">
-        ${!isTracked ? `<button class="secondary-button" type="button" data-market-add="${escapeHtml(normalized)}">+ Seguimiento</button>` : ""}
-        <button class="primary-button" type="button" data-paper-buy="${escapeHtml(normalized)}">Compra paper</button>
-        ${isPaper ? `<button class="danger-button" type="button" data-paper-close="${escapeHtml(normalized)}">Cerrar paper</button>` : ""}
-        ${isTracked ? `<button class="danger-button" type="button" data-watch-remove="${escapeHtml(normalized)}">Quitar seguimiento</button>` : ""}
-      </div>
+      <section class="detail-alerts">
+        <strong>Ballenas relacionadas</strong>
+        ${relatedWhales.length ? relatedWhales.map(whaleRowMarkup).join("") : `<p>Sin ballenas relacionadas confirmadas.</p>`}
+      </section>
     </section>
   `;
 }
@@ -1461,6 +1656,38 @@ function assetRelatedAlerts(ticker) {
   const normalized = normalizeTicker(ticker);
   const items = Array.isArray(appState.alertsSnapshot?.items) ? appState.alertsSnapshot.items : [];
   return items.filter((item) => itemTicker(item) === normalized).slice(0, 3);
+}
+
+function assetRelatedWhales(ticker) {
+  const normalized = normalizeTicker(ticker);
+  return extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {})
+    .filter((item) => itemTicker(item) === normalized)
+    .slice(0, 3);
+}
+
+function assetRelatedNews(ticker) {
+  const normalized = normalizeTicker(ticker);
+  return newsFeedItems(appState.newsSnapshot || {})
+    .filter((item) => (item.assets || []).map(normalizeTicker).includes(normalized) || cleanCopy(item.title || "").toUpperCase().includes(normalized))
+    .slice(0, 3);
+}
+
+function assetGenesisReading(item, range) {
+  const ticker = itemTicker(item);
+  const tone = movementTone(item);
+  const price = priceLabel(item);
+  const move = dailyMoveLabel(item);
+  if (tone === "up") return `${ticker} mantiene sesgo positivo con precio ${price} y movimiento ${move}. Veredicto: vigilar continuidad; entrada condicional solo con volumen y cierre firme. Invalidacion: perdida de soporte o deterioro de mercado.`;
+  if (tone === "down") return `${ticker} esta bajo presion con precio ${price} y movimiento ${move}. Veredicto: cautela; entrada condicional solo si recupera estructura. Invalidacion: nuevo minimo o falta de precio confirmado.`;
+  return `${ticker} esta neutral o sin cambio confirmado en ${range}. Veredicto: esperar confirmacion; razon principal: falta direccion clara. Riesgo: operar sin volumen. Siguiente paso: revisar velas y catalizadores.`;
+}
+
+function assetCatalystLine(ticker) {
+  const relatedNews = assetRelatedNews(ticker);
+  const relatedAlerts = assetRelatedAlerts(ticker);
+  if (relatedNews.length) return cleanCopy(relatedNews[0].summary || relatedNews[0].title || "Catalizador en vigilancia.");
+  if (relatedAlerts.length) return cleanCopy(relatedAlerts[0].summary || relatedAlerts[0].title || "Alerta relacionada en vigilancia.");
+  return "Sin catalizadores confirmados en la fuente activa. Genesis no inventa noticias ni eventos.";
 }
 
 function openAssetSheet(ticker) {
@@ -1579,6 +1806,12 @@ function bindGlobalEvents() {
       return;
     }
 
+    if (event.target.closest("[data-news-refresh]")) {
+      event.preventDefault();
+      loadNews().catch((error) => toast(error.message, "error"));
+      return;
+    }
+
     if (event.target.closest("[data-chat-new]")) {
       event.preventDefault();
       appState.chatHistoryOpen = false;
@@ -1610,6 +1843,22 @@ function bindGlobalEvents() {
       const thread = document.getElementById("genesis-thread");
       if (thread) thread.scrollTop = thread.scrollHeight;
       renderGenesisScreen();
+      return;
+    }
+
+    const trackingFilter = event.target.closest("[data-tracking-filter]");
+    if (trackingFilter) {
+      event.preventDefault();
+      appState.trackingFilter = trackingFilter.dataset.trackingFilter || "all";
+      renderTrackingScreen();
+      return;
+    }
+
+    const alertTab = event.target.closest("[data-alert-tab]");
+    if (alertTab) {
+      event.preventDefault();
+      appState.alertSubtab = alertTab.dataset.alertTab || "alerts";
+      renderAlertsScreen();
       return;
     }
 

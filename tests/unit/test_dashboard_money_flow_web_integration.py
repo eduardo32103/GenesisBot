@@ -7,19 +7,24 @@ from api.main import create_app
 
 
 class DashboardMoneyFlowWebIntegrationTests(unittest.TestCase):
-    def test_real_dashboard_static_files_expose_ballenas_app_screen(self) -> None:
+    def test_real_dashboard_static_files_move_ballenas_inside_alerts_and_expose_news(self) -> None:
         root = Path(__file__).resolve().parents[2]
         html = (root / "app" / "dashboard" / "index.html").read_text(encoding="utf-8")
         script = (root / "app" / "dashboard" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('data-view="money-flow"', html)
-        self.assertIn('id="view-money-flow"', html)
-        self.assertIn("Ballenas", html)
-        self.assertIn('id="whales-list"', html)
-        self.assertIn('id="money-flow-jarvis-form"', html)
-        self.assertIn("Lectura Genesis", html)
+        self.assertIn('data-view="news"', html)
+        self.assertIn('id="view-news"', html)
+        self.assertNotIn('data-view="money-flow"', html)
+        self.assertNotIn('id="view-money-flow"', html)
+        self.assertIn('data-alert-tab="whales"', script)
+        self.assertIn("Ballenas", script)
+        self.assertIn('id="whales-list"', script)
+        self.assertIn('id="money-flow-jarvis-form"', script)
+        self.assertIn("Lectura Genesis", script)
+        self.assertIn("loadNews", script)
         self.assertIn('fetch("/api/dashboard/money-flow/causal"', script)
         self.assertIn('fetch(`/api/dashboard/money-flow/jarvis?q=', script)
+        self.assertIn("loadWhalesData", script)
         self.assertIn("renderMoneyFlowSnapshot", script)
         self.assertIn("renderMoneyFlowJarvisAnswer", script)
 
