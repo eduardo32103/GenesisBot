@@ -9,11 +9,29 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
 
         self.assertIn("newsItemsById", script)
+        self.assertIn("alertItemsById", script)
+        self.assertIn("whaleItemsById", script)
         self.assertIn("function indexNewsItems", script)
+        self.assertIn("function indexAlertItems", script)
+        self.assertIn("function indexWhaleItems", script)
         self.assertIn("data-news-id", script)
+        self.assertIn("data-alert-id", script)
+        self.assertIn("data-whale-id", script)
         self.assertIn("function openNewsDetail", script)
+        self.assertIn("function openAlertDetail", script)
+        self.assertIn("function openWhaleDetail", script)
         self.assertIn("news-sheet", Path("app/dashboard/index.html").read_text(encoding="utf-8"))
         self.assertNotIn("No encontre esa noticia en la lectura actual", script)
+        self.assertNotIn("[data-alert-open]", script)
+        self.assertNotIn("[data-whale-open]", script)
+
+    def test_news_feed_does_not_promote_internal_placeholders_as_real_news(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function isInternalNewsPlaceholder", script)
+        self.assertNotIn("contexto pendiente de catalizador", script)
+        self.assertNotIn("...alertItems.slice", script)
+        self.assertNotIn("...whaleItems.slice", script)
 
     def test_search_bars_are_collapsed_by_default(self) -> None:
         script = Path("app/dashboard/app.js").read_text(encoding="utf-8")

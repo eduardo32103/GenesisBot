@@ -26,12 +26,17 @@ _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", 
 _RSS_TIMEOUT_SECONDS = 2
 _MAX_OG_IMAGES_PER_BATCH = 3
 _RSS_QUERIES = [
+    "market today",
+    "stock market today",
     "stock market",
     "S&P 500",
     "Nasdaq",
     "Bitcoin BTC",
+    "oil prices",
     "Brent crude oil",
     "gold market",
+    "Nvidia",
+    "Microsoft",
 ]
 
 
@@ -125,6 +130,8 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             continue
         title = _strip_html(raw.get("title") or raw.get("headline") or "")
         if not title:
+            continue
+        if _is_bad_news_title(title):
             continue
         title_key = _dedupe_key(title)
         if title_key in seen_titles:
@@ -226,6 +233,7 @@ def _rss_urls(queries: list[str], focus_tickers: list[str]) -> list[str]:
         [
             "https://feeds.content.dowjones.io/public/rss/mw_topstories",
             "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+            "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
             "https://www.coindesk.com/arc/outboundfeeds/rss/",
             "https://cointelegraph.com/rss",
         ]
@@ -541,6 +549,21 @@ def _dedupe_key(title: object) -> str:
     text = _strip_html(title).casefold()
     text = re.sub(r"[^a-z0-9áéíóúñü\s]", " ", text)
     return " ".join(text.split())
+
+
+def _is_bad_news_title(title: object) -> bool:
+    text = _strip_html(title).casefold()
+    blocked = (
+        "contexto pendiente",
+        "sin contexto",
+        "genesis mantiene vigilancia",
+        "stock price, news, quote",
+        "stock price news quote",
+        "quote & history",
+        "quote and history",
+        "company profile",
+    )
+    return any(token in text for token in blocked)
 
 
 def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:

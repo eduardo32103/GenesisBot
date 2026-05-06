@@ -45,7 +45,9 @@ const appState = {
   selectedNewsId: "",
   newsItemsById: {},
   selectedAlertId: "",
+  alertItemsById: {},
   selectedWhaleId: "",
+  whaleItemsById: {},
   searchOpen: {
     tracking: false,
     portfolio: false,
@@ -1721,18 +1723,9 @@ function renderNewsScreen() {
 
 function newsFeedItems(snapshot = {}) {
   const macro = snapshot.macro?.macro || {};
-  const activity = snapshot.macro?.activity || {};
   const briefingData = snapshot.briefing?.briefing || snapshot.briefing?.overview || {};
   const headlines = Array.isArray(macro.headlines) ? macro.headlines : [];
-  const activityItems = Array.isArray(activity.items) ? activity.items : [];
   const briefingNews = Array.isArray(briefingData.news) ? briefingData.news : [];
-  const alertItems = Array.isArray(appState.alertsSnapshot?.items)
-    ? appState.alertsSnapshot.items
-    : Array.isArray(appState.alertsSnapshot?.recent_alerts)
-      ? appState.alertsSnapshot.recent_alerts
-      : [];
-  const whaleItems = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
-  const focusAssets = currentFocusAssets();
   const items = [
     ...headlines.map((item) => ({
       category: "Macro",
@@ -1742,15 +1735,6 @@ function newsFeedItems(snapshot = {}) {
       impact: item.impact_summary || macro.bias_label || "Neutral",
       summary: item.impact_summary || "Catalizador macro en vigilancia.",
       assets: macro.sensitive_tickers || [],
-    })),
-    ...activityItems.map((item) => ({
-      category: item.event || "Evento",
-      title: item.summary,
-      source: "Genesis",
-      time: item.occurred_at,
-      impact: item.level || "neutral",
-      summary: item.summary,
-      assets: Object.values(item.fields || {}).filter((value) => typeof value === "string").slice(0, 3),
     })),
     ...briefingNews.map((item) => ({
       id: item.id,
@@ -1772,46 +1756,7 @@ function newsFeedItems(snapshot = {}) {
       risk: item.risk,
       watch: item.watch,
     })),
-    ...alertItems.slice(0, 4).map((item) => ({
-      category: "Alerta",
-      title: item.title || item.event || `${itemTicker(item) || "Mercado"} en vigilancia`,
-      source: item.source || "Genesis",
-      time: item.created_at || item.updated_at || item.timestamp,
-      impact: item.impact || item.severity || "Vigilancia",
-      summary: item.summary || item.message || "Alerta derivada de precio, volumen o evento guardado.",
-      assets: [itemTicker(item)].filter(Boolean),
-      isImportant: true,
-      relevanceScore: 2,
-      recencyScore: 2,
-    })),
-    ...whaleItems.slice(0, 3).map((item) => ({
-      category: "Smart money",
-      title: `${item.ticker || "Mercado"}: ${item.event || "flujo en vigilancia"}`,
-      source: item.source || "Fuente activa",
-      time: item.date,
-      impact: item.confidence || "No confirmado",
-      summary: item.read || "Lectura de flujo institucional sin inventar entidad.",
-      assets: [item.ticker].filter(Boolean),
-      isImportant: true,
-      relevanceScore: 2,
-      recencyScore: 1,
-    })),
   ].filter((item) => String(item.title || "").trim());
-
-  if (!items.length && focusAssets.length) {
-    return focusAssets.slice(0, 6).map((item) => ({
-      category: "Activo en foco",
-      title: `${itemTicker(item)}: contexto pendiente de catalizador`,
-      source: priceSourceLabel(item),
-      time: item.quote_timestamp || item.updated_at || appState.lastUpdated,
-      impact: movementTone(item) === "up" ? "positivo" : movementTone(item) === "down" ? "negativo" : "neutral",
-      summary: `Precio ${priceLabel(item)} y movimiento ${dailyMoveLabel(item)}. Sin titular especifico confirmado; Genesis lo mantiene en vigilancia por datos de mercado.`,
-      assets: [itemTicker(item)],
-      isImportant: false,
-      relevanceScore: 1,
-      recencyScore: 1,
-    }));
-  }
 
   if (!items.length) {
     return [{
@@ -1829,12 +1774,24 @@ function newsFeedItems(snapshot = {}) {
   }
 
   const seenTitles = new Set();
-  return items.filter((item) => {
+  const filtered = items.filter((item) => {
     const key = cleanCopy(item.title || "").toLowerCase().replace(/\s+/g, " ").trim();
     if (!key || seenTitles.has(key)) return false;
+    if (isInternalNewsPlaceholder(item) && items.some((candidate) => !isInternalNewsPlaceholder(candidate))) return false;
     seenTitles.add(key);
     return true;
-  }).slice(0, 12);
+  });
+  return filtered.slice(0, 12);
+}
+
+function isInternalNewsPlaceholder(item) {
+  const title = cleanCopy(item?.title || "").toLowerCase();
+  return (
+    title.includes("contexto pendiente")
+    || title.includes("sin contexto")
+    || title.includes("genesis mantiene vigilancia")
+    || title.includes("briefing genesis listo")
+  );
 }
 
 function importantNewsItems(items) {
@@ -2307,7 +2264,7 @@ function extractWhaleRows(causal, detection) {
     const currentPrice = numberOrNull(item.current_price ?? item.price ?? asset.current_price ?? asset.price);
     const volume = numberOrNull(item.volume ?? asset.volume);
     const dollarVolume = numberOrNull(item.dollar_volume ?? item.dollarVolume) ?? (currentPrice !== null && volume !== null ? currentPrice * volume : null);
-    const rawAmount = whale.movement_value || item.movement_value || item.amount_usd || item.estimated_value || dollarVolume || "";
+    const rawAmount = identified ? (whale.movement_value || item.movement_value || item.amount_usd || item.estimated_value || "") : "";
     const amountCheck = saneFlowAmount(rawAmount, dollarVolume);
     const amount = amountCheck.value ?? "";
     const hasFlowSignal = Boolean(
@@ -2334,7 +2291,7 @@ function extractWhaleRows(causal, detection) {
       relativeVolume,
       dollarVolume,
       amountSuspicious: amountCheck.suspicious || Boolean(item.amount_suspicious),
-      netFlow: /venta|salida|distrib/i.test(actionText) && numberOrNull(amount) !== null ? -Math.abs(numberOrNull(amount)) : numberOrNull(amount),
+      netFlow: /venta|salida|distrib/i.test(actionText) && numberOrNull(dollarVolume) !== null ? -Math.abs(numberOrNull(dollarVolume)) : numberOrNull(dollarVolume),
       date: item.money_flow_timestamp || item.timestamp || item.updated_at || "",
       source: whale.source || item.source || item.origin || "Fuente activa",
       confidence: whale.confidence || item.confidence || item.confidence_label || (identified ? "media" : "baja"),
@@ -2407,9 +2364,10 @@ function classifyWhaleType(value) {
 function whaleRowMarkup(row) {
   const eventClass = `event-${String(row.event || "no-confirmado").toLowerCase().replace(/\s+/g, "-")}`;
   const display = getAssetDisplayName(row.ticker);
+  const whaleId = whaleItemId(row);
   return `
-    <article class="whale-row feed-row" data-whale-open="${escapeHtml(row.id || row.ticker)}">
-      <button class="event-main" type="button" data-whale-open="${escapeHtml(row.id || row.ticker)}">
+    <article class="whale-row feed-row" data-whale-id="${escapeHtml(whaleId)}">
+      <button class="event-main" type="button" data-whale-id="${escapeHtml(whaleId)}">
       <div class="whale-topline">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
@@ -2485,8 +2443,10 @@ function renderAlertsScreen() {
       : [];
   const alertRows = items.length ? items : derivedAlertRows();
   const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
-  const hasConfirmedWhales = whales.some((row) => row.entity || row.amount);
-  const whaleRows = hasConfirmedWhales ? whales : whaleFallbackRows();
+  const hasConfirmedWhales = whales.some((row) => row.entity && numberOrNull(row.amount) !== null && !row.amountSuspicious);
+  const whaleRows = whales.length ? whales : whaleFallbackRows();
+  indexAlertItems(alertRows);
+  indexWhaleItems(whaleRows);
   root.innerHTML = `
     <section class="screen-stack">
       <section class="feed-intro">
@@ -2558,8 +2518,36 @@ function alertsPanelMarkup(items) {
   `;
 }
 
+function alertItemId(item) {
+  const explicit = cleanCopy(item?.alert_id || item?.id || "");
+  if (explicit) return explicit;
+  const raw = [
+    itemTicker(item) || "Mercado",
+    item?.alert_type || item?.type || "",
+    item?.title || item?.event || "",
+    item?.created_at || item?.updated_at || item?.timestamp || "",
+    item?.source || "",
+  ].join("|");
+  return `alert-${simpleHash(raw)}`;
+}
+
+function indexAlertItems(items) {
+  appState.alertItemsById = {};
+  (items || []).forEach((item) => {
+    const id = alertItemId(item);
+    appState.alertItemsById[id] = { ...item, alert_id: id };
+  });
+}
+
 function whalesPanelMarkup(rows, hasConfirmed = false) {
-  const estimatedTotal = rows.reduce((sum, row) => sum + (numberOrNull(row.amount || row.amountUsd || row.estimatedValue) || 0), 0);
+  const confirmedValue = rows.reduce((sum, row) => {
+    if (!row.entity || row.amountSuspicious) return sum;
+    return sum + (numberOrNull(row.amount || row.amountUsd || row.estimatedValue) || 0);
+  }, 0);
+  const watchedVolume = rows.reduce((sum, row) => {
+    if (row.entity) return sum;
+    return sum + (numberOrNull(row.dollarVolume || row.dollar_volume) || 0);
+  }, 0);
   const inflows = rows.filter((row) => /compra|acumul|buy|inflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
   const outflows = rows.filter((row) => /venta|reduccion|distrib|sell|outflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
   return `
@@ -2575,7 +2563,8 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
       <div class="whale-flow-summary">
         <span>Entradas ${escapeHtml(String(inflows))}</span>
         <span>Salidas ${escapeHtml(String(outflows))}</span>
-        <span>Valor est. ${escapeHtml(estimatedTotal ? money(estimatedTotal) : "No confirmado")}</span>
+        <span>Valor confirmado ${escapeHtml(confirmedValue ? money(confirmedValue) : "No confirmado")}</span>
+        <span>Volumen vigilado ${escapeHtml(watchedVolume ? money(watchedVolume) : "No confirmado")}</span>
       </div>
     </section>
     <div class="compact-actions">
@@ -2594,6 +2583,26 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
   `;
 }
 
+function whaleItemId(item) {
+  const explicit = cleanCopy(item?.id || item?.whale_id || "");
+  if (explicit) return explicit;
+  const raw = [
+    item?.ticker || "MERCADO",
+    item?.event || item?.action || "",
+    item?.date || item?.timestamp || "",
+    item?.source || "",
+  ].join("|");
+  return `whale-${simpleHash(raw)}`;
+}
+
+function indexWhaleItems(items) {
+  appState.whaleItemsById = {};
+  (items || []).forEach((item) => {
+    const id = whaleItemId(item);
+    appState.whaleItemsById[id] = { ...item, id };
+  });
+}
+
 function alertMarkup(item) {
   const ticker = itemTicker(item) || "Mercado";
   const display = ticker === "Mercado" ? { displayName: "Mercado", subtitle: "" } : getAssetDisplayName(ticker);
@@ -2601,10 +2610,10 @@ function alertMarkup(item) {
   const date = item.created_at || item.updated_at || item.timestamp || appState.lastUpdated;
   const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || priority;
   const tone = newsImpactTone(impact);
-  const alertId = item.alert_id || `${ticker}-${cleanCopy(item.alert_type || item.title || "alert").replace(/[^a-z0-9]+/gi, "-")}`;
+  const alertId = alertItemId(item);
   return `
-    <article class="whale-row feed-row alert-event tone-${tone}" data-alert-open="${escapeHtml(alertId)}">
-      <button class="event-main" type="button" data-alert-open="${escapeHtml(alertId)}">
+    <article class="whale-row feed-row alert-event tone-${tone}" data-alert-id="${escapeHtml(alertId)}">
+      <button class="event-main" type="button" data-alert-id="${escapeHtml(alertId)}">
       <div class="whale-topline">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
@@ -2616,7 +2625,7 @@ function alertMarkup(item) {
       <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="asset-meta">
         <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact || "Por confirmar"))}</span>
-        <span>Precio: ${escapeHtml(money(item.price, "Sin precio"))}</span>
+        <span>Precio: ${escapeHtml(item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica"))}</span>
         <span>Cambio: ${escapeHtml(formatPercent(item.change_pct, "Sin dato"))}</span>
         <span>Volumen: ${escapeHtml(item.volume ? compactNumber(item.volume) : "Sin volumen")}</span>
         <span>Vol. rel: ${escapeHtml(item.relative_volume ? `${compactNumber(item.relative_volume)}x` : "Sin dato")}</span>
@@ -2645,10 +2654,10 @@ function currentWhaleRows() {
 }
 
 function openAlertDetail(alertId) {
-  const rows = currentAlertRows();
-  const item = rows.find((row) => (row.alert_id || `${itemTicker(row) || "Mercado"}-${cleanCopy(row.alert_type || row.title || "alert").replace(/[^a-z0-9]+/gi, "-")}`) === alertId);
+  if (!Object.keys(appState.alertItemsById || {}).length) indexAlertItems(currentAlertRows());
+  const item = appState.alertItemsById?.[alertId];
   if (!item) {
-    toast("No encontre esa alerta en la lectura actual.", "error");
+    toast(`No encontre alerta ${cleanCopy(alertId)}. Actualiza Alertas.`, "error");
     return;
   }
   appState.selectedAlertId = alertId;
@@ -2662,7 +2671,7 @@ function openAlertDetail(alertId) {
     <p>${escapeHtml(cleanCopy(item.summary || item.message || "Evento en vigilancia."))}</p>
     ${eventMetricGridMarkup([
       ["Activo", ticker],
-      ["Precio", money(item.price, "Sin precio")],
+      ["Precio", item.price === null || item.price === undefined ? "No aplica a precio directo" : money(item.price, "No aplica")],
       ["Cambio", `${formatChange(item.change, "Sin dato")} ${formatPercent(item.change_pct, "")}`],
       ["Volumen", item.volume ? compactNumber(item.volume) : "Sin volumen"],
       ["Vol. rel", item.relative_volume ? `${compactNumber(item.relative_volume)}x` : "Sin dato"],
@@ -2685,10 +2694,10 @@ function openAlertDetail(alertId) {
 }
 
 function openWhaleDetail(whaleId) {
-  const rows = currentWhaleRows();
-  const row = rows.find((item) => (item.id || item.ticker) === whaleId);
+  if (!Object.keys(appState.whaleItemsById || {}).length) indexWhaleItems(currentWhaleRows());
+  const row = appState.whaleItemsById?.[whaleId];
   if (!row) {
-    toast("No encontre ese flujo en la lectura actual.", "error");
+    toast(`No encontre flujo ${cleanCopy(whaleId)}. Actualiza Ballenas.`, "error");
     return;
   }
   appState.selectedWhaleId = whaleId;
@@ -3056,17 +3065,17 @@ function bindGlobalEvents() {
       return;
     }
 
-    const alertOpen = event.target.closest("[data-alert-open]");
+    const alertOpen = event.target.closest("[data-alert-id]");
     if (alertOpen) {
       event.preventDefault();
-      openAlertDetail(alertOpen.dataset.alertOpen);
+      openAlertDetail(alertOpen.dataset.alertId);
       return;
     }
 
-    const whaleOpen = event.target.closest("[data-whale-open]");
+    const whaleOpen = event.target.closest("[data-whale-id]");
     if (whaleOpen) {
       event.preventDefault();
-      openWhaleDetail(whaleOpen.dataset.whaleOpen);
+      openWhaleDetail(whaleOpen.dataset.whaleId);
       return;
     }
 

@@ -17,6 +17,14 @@ class GenesisNewsFeedTests(unittest.TestCase):
         client = mock_client_cls.return_value
         client.get_market_news.return_value = [
             {
+                "title": "Alphabet Inc. (GOOGL) Stock Price, News, Quote & History",
+                "text": "Generic quote page.",
+                "site": "Yahoo Finance",
+                "publishedDate": "2026-05-05T11:00:00Z",
+                "symbol": "GOOGL",
+                "url": "https://example.com/quote",
+            },
+            {
                 "title": "NVIDIA rallies after AI demand update",
                 "text": "Demand update lifts chip sentiment.",
                 "site": "Market Source",
@@ -44,6 +52,7 @@ class GenesisNewsFeedTests(unittest.TestCase):
         items = get_recent_market_news(["NVDA"], limit=5, max_age_days=30)
 
         self.assertEqual(len(items), 1)
+        self.assertNotIn("Stock Price", items[0]["title"])
         self.assertEqual(items[0]["tickers"], ["NVDA"])
         self.assertEqual(items[0]["impact"], "bullish")
         self.assertEqual(items[0]["image_url"], "https://example.com/nvda.jpg")
