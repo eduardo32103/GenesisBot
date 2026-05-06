@@ -227,4 +227,96 @@ def _fetch_alerts_snapshot(database_url: str, *, window_days: int = _DEFAULT_ALE
 
 def get_alerts_snapshot() -> dict[str, Any]:
     settings = load_settings()
-    return _fetch_alerts_snapshot(settings.database_url)
+    snapshot = _fetch_alerts_snapshot(settings.database_url)
+    if isinstance(snapshot.get("items"), list) and snapshot.get("items"):
+        return snapshot
+    derived = _derived_technical_alerts()
+    if derived:
+        items = [*derived, *[item for item in snapshot.get("items", []) if isinstance(item, dict)]]
+        snapshot["items"] = items[:12]
+        snapshot["recent_alerts"] = snapshot["items"]
+        summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+        summary["total_recent"] = max(int(summary.get("total_recent") or 0), len(snapshot["items"]))
+        summary["active_alerts"] = max(int(summary.get("active_alerts") or 0), len(derived))
+        if not summary.get("engine_summary") or "Todavia no hay" in str(summary.get("engine_summary")):
+            summary["engine_summary"] = "Genesis genero alertas tecnicas con precio, cambio, volumen y rango disponible."
+        snapshot["summary"] = summary
+    return snapshot
+
+
+def _derived_technical_alerts() -> list[dict[str, Any]]:
+    try:
+        from services.dashboard.get_radar_snapshot import get_radar_snapshot
+
+        radar = get_radar_snapshot()
+    except Exception:
+        return []
+    rows = radar.get("items") if isinstance(radar, dict) and isinstance(radar.get("items"), list) else []
+    alerts: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows[:25]:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
+        if not ticker:
+            continue
+        price = _num(row.get("current_price") or row.get("price"))
+        pct = _num(row.get("daily_change_pct") or row.get("changesPercentage"))
+        volume = _num(row.get("volume"))
+        avg_volume = _num(row.get("avg_volume") or row.get("average_volume") or row.get("avgVolume"))
+        day_high = _num(row.get("day_high") or row.get("dayHigh"))
+        day_low = _num(row.get("day_low") or row.get("dayLow"))
+        if pct is not None and abs(pct) >= 3:
+            direction = "alza" if pct > 0 else "baja"
+            alerts.append(_technical_alert(ticker, f"Movimiento fuerte de {direction}", f"{ticker} se mueve {pct:+.2f}% en la sesion.", "price_change", pct, now))
+        if volume and avg_volume and avg_volume > 0 and volume / avg_volume >= 1.8:
+            rel = volume / avg_volume
+            alerts.append(_technical_alert(ticker, "Volumen inusual", f"{ticker} opera {rel:.1f}x su volumen promedio disponible.", "unusual_volume", rel, now))
+        if price and day_high and day_low and day_high > day_low:
+            position = (price - day_low) / (day_high - day_low)
+            if position >= 0.92:
+                alerts.append(_technical_alert(ticker, "Precio cerca de resistencia diaria", f"{ticker} esta cerca del maximo del dia; vigilar ruptura con volumen.", "range_breakout", position, now))
+            elif position <= 0.08:
+                alerts.append(_technical_alert(ticker, "Precio cerca de soporte diario", f"{ticker} esta cerca del minimo del dia; vigilar defensa del soporte.", "range_support", position, now))
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for alert in alerts:
+        key = f"{alert['ticker']}:{alert['alert_type']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(alert)
+    return unique[:8]
+
+
+def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, strength: float, now: str) -> dict[str, Any]:
+    severity = "high" if abs(strength) >= 5 else "medium"
+    impact = "bullish" if strength > 0 and alert_type != "range_support" else "bearish" if strength < 0 else "neutral"
+    return {
+        "alert_id": f"technical:{ticker}:{alert_type}",
+        "alert_type": alert_type,
+        "alert_type_label": "Tecnica",
+        "ticker": ticker,
+        "title": title,
+        "summary": summary,
+        "source": "technical",
+        "signal_strength": round(float(strength or 0), 4),
+        "status": "tracking",
+        "created_at": now,
+        "timestamp": now,
+        "severity": severity,
+        "impact": impact,
+        "confidence": "medium",
+        "state_label": "Vigilancia",
+        "evidence": {"derived_from": "radar_snapshot", "source": "technical"},
+        "genesis_reading": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
+    }
+
+
+def _num(value: object) -> float | None:
+    try:
+        if value in (None, "", "None"):
+            return None
+        return float(value)
+    except Exception:
+        return None

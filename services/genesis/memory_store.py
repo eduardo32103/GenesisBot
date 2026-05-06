@@ -339,15 +339,50 @@ class MemoryStore:
             return rows
         return [event for event in self.get_recent_events(100, "market_observation") if str(event.get("payload", {}).get("ticker") or "").upper() == normalized]
 
-    def save_whale_event(self, ticker: str, entity: str = "", action: str = "", amount: object = None, date: str = "", confidence: str | float = "media") -> None:
-        payload = {"ticker": str(ticker or "").upper(), "entity": entity, "action": action, "amount": amount, "date": date}
+    def save_whale_event(
+        self,
+        ticker: str,
+        entity: str = "",
+        action: str = "",
+        amount: object = None,
+        date: str = "",
+        confidence: str | float = "media",
+        event: dict[str, Any] | None = None,
+    ) -> None:
+        base = {
+            "ticker": str(ticker or "").upper(),
+            "asset_name": "",
+            "asset_type": "",
+            "event_type": "whale_confirmed" if entity else "smart_money_estimate",
+            "entity_name": entity,
+            "entity_type": "",
+            "entity": entity,
+            "action": action,
+            "units": None,
+            "price": None,
+            "amount": amount,
+            "amount_usd": amount if isinstance(amount, (int, float)) else None,
+            "current_price": None,
+            "estimated_value": amount if isinstance(amount, (int, float)) else None,
+            "date": date,
+            "source": "whales",
+            "confidence": confidence,
+            "evidence": {},
+            "genesis_reading": "",
+        }
+        payload = {**base, **_sanitize(event or {})}
+        payload["ticker"] = str(payload.get("ticker") or ticker or "").upper()
+        payload["entity_name"] = payload.get("entity_name") or payload.get("entity") or entity
+        payload["entity"] = payload.get("entity_name") or ""
+        payload["action"] = payload.get("action") or action
+        payload["date"] = payload.get("date") or date
         self.save_event(
             "whale_event",
             payload,
-            "whales",
-            confidence,
+            str(payload.get("source") or "whales"),
+            payload.get("confidence") or confidence,
         )
-        self._save_whale_event_row(payload, "whales", confidence)
+        self._save_whale_event_row(payload, str(payload.get("source") or "whales"), payload.get("confidence") or confidence)
 
     def get_whale_memory(self, ticker: str | None = None) -> list[dict[str, Any]]:
         events = self._get_whale_event_rows(ticker)
@@ -448,9 +483,9 @@ class MemoryStore:
                 "INSERT INTO genesis_whale_events (ticker, entity, action, amount_json, event_date, source, confidence, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     str(clean_payload.get("ticker") or "").upper()[:40],
-                    str(clean_payload.get("entity") or "")[:200],
+                    str(clean_payload.get("entity_name") or clean_payload.get("entity") or "")[:200],
                     str(clean_payload.get("action") or "")[:120],
-                    json.dumps(clean_payload.get("amount")),
+                    json.dumps(clean_payload),
                     str(clean_payload.get("date") or "")[:80],
                     str(source or "whales")[:80],
                     str(confidence or "media")[:40],
@@ -463,9 +498,9 @@ class MemoryStore:
                     "INSERT INTO genesis_whale_events (ticker, entity, action, amount_json, event_date, source, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(clean_payload.get("ticker") or "").upper()[:40],
-                        str(clean_payload.get("entity") or "")[:200],
+                        str(clean_payload.get("entity_name") or clean_payload.get("entity") or "")[:200],
                         str(clean_payload.get("action") or "")[:120],
-                        json.dumps(clean_payload.get("amount")),
+                        json.dumps(clean_payload),
                         str(clean_payload.get("date") or "")[:80],
                         str(source or "whales")[:80],
                         str(confidence or "media")[:40],
@@ -906,15 +941,34 @@ def _domain_row(event_type: str, row: Any) -> dict[str, Any]:
 
 
 def _whale_row(row: Any) -> dict[str, Any]:
+    stored = _loads(row[3])
+    if isinstance(stored, dict):
+        payload = stored
+        payload.setdefault("ticker", row[0])
+        payload.setdefault("entity", row[1])
+        payload.setdefault("entity_name", row[1])
+        payload.setdefault("action", row[2])
+        payload.setdefault("date", row[4])
+    else:
+        payload = {
+            "ticker": row[0],
+            "entity": row[1],
+            "entity_name": row[1],
+            "action": row[2],
+            "amount": stored,
+            "amount_usd": stored if isinstance(stored, (int, float)) else None,
+            "estimated_value": stored if isinstance(stored, (int, float)) else None,
+            "date": row[4],
+            "event_type": "whale_confirmed" if row[1] else "smart_money_estimate",
+        }
     payload = {
-        "ticker": row[0],
-        "entity": row[1],
-        "action": row[2],
-        "amount": _loads(row[3]),
-        "date": row[4],
+        **payload,
+        "source": payload.get("source") or row[5],
+        "confidence": payload.get("confidence") or row[6],
+        "created_at": payload.get("created_at") or row[7],
     }
     return {
-        "event_type": "whale_event",
+        "event_type": payload.get("event_type") or "whale_event",
         "ticker": row[0],
         "payload": payload,
         "source": row[5],

@@ -4,6 +4,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 from app.settings import load_settings
 
@@ -48,13 +49,15 @@ def get_weather_answer(message: str) -> dict:
     temp = weather.get("temp") or 0.0
     feels = weather.get("feels_like") or 0.0
     humidity = weather.get("humidity") or 0.0
-    wind = weather.get("wind_speed") or 0.0
+    wind = (weather.get("wind_speed") or 0.0) * 3.6
     description = weather.get("description") or "sin descripcion"
     place = weather.get("name") or city
+    icon = _weather_icon(weather.get("weather_code"), description)
+    updated_at = _timestamp_to_iso(weather.get("timestamp"))
     answer = (
         f"Clima en {place}: {description}. "
         f"Temperatura {temp:.1f} C, sensacion {feels:.1f} C, humedad {humidity:.0f}% "
-        f"y viento {wind:.1f} m/s. Fuente: OpenWeather."
+        f"y viento {wind:.1f} km/h. Fuente: OpenWeather."
     )
     return {
         "ok": True,
@@ -62,6 +65,16 @@ def get_weather_answer(message: str) -> dict:
         "city": place,
         "answer": answer,
         "source": "openweather",
+        "condition": description,
+        "weather_code": weather.get("weather_code"),
+        "icon": icon,
+        "temperature": temp,
+        "feels_like": feels,
+        "min_temp": weather.get("min_temp"),
+        "max_temp": weather.get("max_temp"),
+        "precipitation_probability": weather.get("rain_probability"),
+        "wind_speed": wind,
+        "updated_at": updated_at,
         "data": weather,
     }
 
@@ -97,6 +110,7 @@ def _open_meteo_answer(city: str) -> dict:
     rain = weather.get("rain_probability")
     wind = weather.get("wind_speed")
     condition = weather.get("condition") or "condicion no especificada"
+    icon = _weather_icon(weather.get("weather_code"), condition, bool(weather.get("is_day", True)))
     answer = (
         f"En {label} esta {condition}, cerca de {temp:.1f} C. "
         f"Rango esperado {low:.1f} C a {high:.1f} C, lluvia {rain:.0f}% y viento {wind:.1f} km/h. "
@@ -108,6 +122,16 @@ def _open_meteo_answer(city: str) -> dict:
         "city": label,
         "answer": answer,
         "source": "open_meteo",
+        "condition": condition,
+        "weather_code": weather.get("weather_code"),
+        "icon": icon,
+        "temperature": temp,
+        "feels_like": weather.get("feels_like"),
+        "min_temp": low,
+        "max_temp": high,
+        "precipitation_probability": rain,
+        "wind_speed": wind,
+        "updated_at": weather.get("updated_at"),
         "data": {**weather, "place": place},
     }
 
@@ -123,10 +147,14 @@ def _fetch_openweather(city: str, api_key: str) -> dict:
     return {
         "name": payload.get("name") or city,
         "description": weather.get("description") or weather.get("main") or "",
+        "weather_code": weather.get("id"),
         "temp": _num(main.get("temp")),
         "feels_like": _num(main.get("feels_like")),
+        "min_temp": _num(main.get("temp_min")),
+        "max_temp": _num(main.get("temp_max")),
         "humidity": _num(main.get("humidity")),
         "wind_speed": _num(wind.get("speed")),
+        "rain_probability": None,
         "timestamp": payload.get("dt"),
     }
 
@@ -156,7 +184,7 @@ def _fetch_open_meteo_weather(place: dict) -> dict:
         {
             "latitude": place["latitude"],
             "longitude": place["longitude"],
-            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m",
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m,is_day",
             "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
             "timezone": "auto",
         }
@@ -166,14 +194,17 @@ def _fetch_open_meteo_weather(place: dict) -> dict:
         payload = json.loads(response.read().decode("utf-8"))
     current = payload.get("current") or {}
     daily = payload.get("daily") or {}
+    code = int(_num(current.get("weather_code")))
     return {
         "temperature": _num(current.get("temperature_2m")),
         "feels_like": _num(current.get("apparent_temperature")),
         "humidity": _num(current.get("relative_humidity_2m")),
         "precipitation": _num(current.get("precipitation")),
         "rain": _num(current.get("rain")),
-        "weather_code": int(_num(current.get("weather_code"))),
-        "condition": _weather_code_label(int(_num(current.get("weather_code")))),
+        "weather_code": code,
+        "condition": _weather_code_label(code),
+        "icon": _weather_icon(code, _weather_code_label(code), bool(_num(current.get("is_day")) or 0)),
+        "is_day": bool(_num(current.get("is_day")) or 0),
         "wind_speed": _num(current.get("wind_speed_10m")),
         "max_temp": _first_num(daily.get("temperature_2m_max")),
         "min_temp": _first_num(daily.get("temperature_2m_min")),
@@ -200,6 +231,38 @@ def _weather_code_label(code: int) -> str:
     if code in {95, 96, 99}:
         return "con tormenta"
     return "sin condicion confirmada"
+
+
+def _weather_icon(code: object, condition: str = "", is_day: bool = True) -> str:
+    numeric = int(_num(code))
+    text = str(condition or "").casefold()
+    if numeric == 0:
+        return "\u2600\ufe0f" if is_day else "\U0001f319"
+    if numeric in {1, 2}:
+        return "\u26c5"
+    if numeric == 3 or "nublado" in text:
+        return "\u2601\ufe0f"
+    if numeric in {45, 48} or "niebla" in text:
+        return "\U0001f32b\ufe0f"
+    if numeric in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82} or "lluvia" in text or "llovizna" in text:
+        return "\U0001f327\ufe0f"
+    if numeric in {95, 96, 99} or "tormenta" in text:
+        return "\u26c8\ufe0f"
+    if "viento" in text:
+        return "\U0001f4a8"
+    if "claro" in text or "despejado" in text:
+        return "\u2600\ufe0f" if is_day else "\U0001f319"
+    return "\u2601\ufe0f"
+
+
+def _timestamp_to_iso(value: object) -> str:
+    try:
+        numeric = float(value)
+        if numeric <= 0:
+            return ""
+        return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat()
+    except Exception:
+        return ""
 
 
 def _first_num(value: object) -> float:

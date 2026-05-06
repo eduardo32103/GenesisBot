@@ -119,6 +119,8 @@ class GenesisMemoryStoreTests(unittest.TestCase):
         self.assertEqual(summary["learned_context"][0]["key"], "asset_interest:NVDA")
         self.assertEqual(summary["market_observations"][0]["ticker"], "NVDA")
         self.assertEqual(summary["whale_events"][0]["payload"]["entity"], "Fondo Test")
+        self.assertEqual(summary["whale_events"][0]["payload"]["event_type"], "whale_confirmed")
+        self.assertEqual(summary["whale_events"][0]["payload"]["estimated_value"], 1000)
         self.assertEqual(summary["alert_events"][0]["payload"]["alert_type"], "cambio_fuerte_diario")
         rendered = json.dumps(events)
         self.assertNotIn("SECRET", rendered)
@@ -256,6 +258,11 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "weather")
         self.assertEqual(payload["tickers"], [])
         self.assertEqual(payload["weather"]["source"], "open_meteo")
+        self.assertEqual(payload["weather"]["icon"], "⛅")
+        self.assertEqual(payload["weather"]["temperature"], 28.4)
+        self.assertEqual(payload["weather"]["min_temp"], 22.7)
+        self.assertEqual(payload["weather"]["max_temp"], 35.1)
+        self.assertEqual(payload["weather"]["precipitation_probability"], 8.0)
         self.assertIn("Los Mochis, Sinaloa, Mexico", payload["answer"])
         self.assertIn("28.4 C", payload["answer"])
 
@@ -297,6 +304,8 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["source"], "openweather")
         self.assertEqual(payload["city"], "Los Mochis")
+        self.assertEqual(payload["icon"], "☀️")
+        self.assertEqual(payload["temperature"], 28.2)
         self.assertIn("28.2 C", payload["answer"])
 
     def test_briefing_and_market_overview_do_not_use_fake_tickers(self) -> None:
@@ -414,18 +423,21 @@ class GenesisToolRouterTests(unittest.TestCase):
     @patch("services.genesis.whale_learning.load_settings")
     @patch("services.genesis.whale_learning.get_money_flow_detection_snapshot")
     @patch("services.genesis.whale_learning.get_money_flow_causal_snapshot")
-    def test_whale_agent_uses_single_fallback_without_fake_entities(self, mock_causal: Mock, mock_detection: Mock, mock_settings: Mock) -> None:
+    def test_whale_agent_stores_estimated_flow_without_fake_entities(self, mock_causal: Mock, mock_detection: Mock, mock_settings: Mock) -> None:
         mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
-        mock_causal.return_value = {"items": [{"ticker": "NVDA", "confidence": "media"}]}
+        mock_causal.return_value = {"items": [{"ticker": "BTC-USD", "primary_label": "volumen anormal", "source": "technical", "confidence": "media"}]}
         mock_detection.return_value = {"items": []}
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             payload = route_message("que estan haciendo las ballenas", memory=store)
+            memory = store.get_whale_memory("BTC-USD")
 
         self.assertEqual(payload["intent"], "whale_activity")
-        self.assertTrue(payload["whales"]["fallback"])
-        self.assertEqual(payload["whales"]["events"], [])
-        self.assertIn("Sin ballena institucional confirmada", payload["answer"])
+        self.assertFalse(payload["whales"]["fallback"])
+        self.assertEqual(payload["whales"]["events"][0]["event_type"], "unusual_volume")
+        self.assertEqual(payload["whales"]["events"][0]["entity_name"], "")
+        self.assertIn("no hay ballena institucional confirmada", payload["answer"].casefold())
+        self.assertEqual(memory[0]["payload"]["event_type"], "unusual_volume")
 
     def test_agent_modules_exist_as_internal_brain_components(self) -> None:
         self.assertIsInstance(PriceAgent(), PriceAgent)

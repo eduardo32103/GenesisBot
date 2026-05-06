@@ -42,6 +42,7 @@ const appState = {
   alertSubtab: "alerts",
   newsSnapshot: null,
   newsLoading: false,
+  selectedNewsId: "",
   chartCache: {},
   assetChartRanges: {},
   refreshTimer: null,
@@ -1211,14 +1212,20 @@ function briefingVisual(payload, answer = "") {
 
 function weatherVisual(payload, answer = "") {
   const weather = payload?.weather || {};
+  const data = weather.data && typeof weather.data === "object" ? weather.data : {};
   return {
     kind: "weather",
     title: weather.city ? `Clima en ${weather.city}` : "Clima",
     thesis: stripMarkdownCopy(weather.answer || answer || "No pude confirmar clima con la fuente activa."),
-    temperature: firstKnownValue(weather.temperature, weather.temp),
-    condition: weather.condition || weather.description || "",
-    wind: weather.wind_speed,
-    rain: weather.rain_probability,
+    icon: weather.icon || data.icon || "☁️",
+    temperature: firstKnownValue(weather.temperature, weather.temp, data.temperature, data.temp),
+    feelsLike: firstKnownValue(weather.feels_like, data.feels_like),
+    minTemp: firstKnownValue(weather.min_temp, data.min_temp),
+    maxTemp: firstKnownValue(weather.max_temp, data.max_temp),
+    condition: weather.condition || data.condition || weather.description || data.description || "",
+    wind: firstKnownValue(weather.wind_speed, data.wind_speed),
+    rain: firstKnownValue(weather.precipitation_probability, weather.rain_probability, data.precipitation_probability, data.rain_probability),
+    updatedAt: weather.updated_at || data.updated_at || data.timestamp,
     source: weather.source || "Open-Meteo",
   };
 }
@@ -1379,6 +1386,9 @@ function briefingVisualMarkup(visual) {
 }
 
 function weatherVisualMarkup(visual) {
+  const range = visual.minTemp !== null && visual.minTemp !== undefined && visual.maxTemp !== null && visual.maxTemp !== undefined
+    ? `${compactNumber(visual.minTemp)}-${compactNumber(visual.maxTemp)} C`
+    : "Sin rango";
   return `
     <section class="visual-response weather-visual">
       <div class="visual-hero">
@@ -1389,10 +1399,18 @@ function weatherVisualMarkup(visual) {
         <span class="conviction-pill neutral">${escapeHtml(visual.condition || "Clima")}</span>
       </div>
       <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="weather-hero-metric">
+        <span class="weather-icon">${escapeHtml(visual.icon || "☁️")}</span>
+        <div>
+          <strong>${escapeHtml(visual.temperature === null || visual.temperature === undefined ? "Sin dato" : `${compactNumber(visual.temperature)} C`)}</strong>
+          <small>${escapeHtml(visual.condition || "Condicion no confirmada")}</small>
+        </div>
+      </div>
       <div class="visual-market-strip">
-        <span><small>Temperatura</small><strong>${escapeHtml(visual.temperature === null || visual.temperature === undefined ? "Sin dato" : `${compactNumber(visual.temperature)} C`)}</strong></span>
+        <span><small>Rango</small><strong>${escapeHtml(range)}</strong></span>
         <span><small>Lluvia</small><strong>${escapeHtml(visual.rain === null || visual.rain === undefined ? "Sin dato" : `${compactNumber(visual.rain)}%`)}</strong></span>
         <span><small>Viento</small><strong>${escapeHtml(visual.wind === null || visual.wind === undefined ? "Sin dato" : `${compactNumber(visual.wind)} km/h`)}</strong></span>
+        <span><small>Actualizacion</small><strong>${escapeHtml(formatDate(visual.updatedAt))}</strong></span>
       </div>
     </section>
   `;
@@ -1420,6 +1438,7 @@ function comparisonVisualMarkup(visual) {
 }
 
 function feedVisualMarkup(visual) {
+  const rows = Array.isArray(visual.rows) ? visual.rows.slice(0, 4) : [];
   return `
     <section class="visual-response feed-visual">
       <div class="visual-hero">
@@ -1430,8 +1449,15 @@ function feedVisualMarkup(visual) {
         <span class="conviction-pill neutral">${escapeHtml(String(visual.rows?.length || 0))}</span>
       </div>
       <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
-      <div class="visual-sections">
-        ${(visual.rows?.length ? visual.rows.map((row) => cleanCopy(row.title || row.summary || row.answer || row.ticker || "Evento confirmado")) : ["Sin eventos confirmados con la fuente activa."]).slice(0, 4).map((line) => `<p>${escapeHtml(stripMarkdownCopy(line))}</p>`).join("")}
+      <div class="visual-feed-cards">
+        ${(rows.length ? rows : [{ title: "Sin eventos confirmados", summary: "Genesis vigila flujo institucional, volumen anormal y acumulacion/distribucion sin inventar entidades." }]).map((row) => `
+          <article>
+            <strong>${escapeHtml(cleanCopy(row.ticker || row.title || row.event || "Evento"))}</strong>
+            <p>${escapeHtml(stripMarkdownCopy(cleanCopy(row.genesis_reading || row.read || row.summary || row.answer || "Lectura en vigilancia.")))}</p>
+            <div class="mini-flow-bar"><i style="width:${Math.max(10, Math.min(100, Math.abs(numberOrNull(row.amount_usd || row.estimated_value || row.intensity) || 18)))}%"></i></div>
+            <small>${escapeHtml(cleanCopy(row.source || "Fuente activa"))} | ${escapeHtml(cleanCopy(row.confidence || "confianza baja"))}</small>
+          </article>
+        `).join("")}
       </div>
     </section>
   `;
@@ -1685,13 +1711,19 @@ function newsFeedItems(snapshot = {}) {
       assets: Object.values(item.fields || {}).filter((value) => typeof value === "string").slice(0, 3),
     })),
     ...briefingNews.map((item) => ({
+      id: item.id,
       category: "Mercado",
       title: item.title || item.headline || "Titular de mercado",
       source: item.site || item.publisher || item.source || "FMP",
-      time: item.publishedDate || item.published_at || item.date,
+      time: item.published_at || item.publishedDate || item.date,
       impact: item.sentiment || item.impact || "Contexto",
       summary: item.text || item.summary || item.title || "Titular confirmado por fuente de mercado.",
-      assets: [item.symbol || item.ticker].filter(Boolean),
+      assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
+      imageUrl: item.image_url || item.thumbnail || item.image || "",
+      url: item.url || "",
+      genesisTakeaway: item.genesis_takeaway || "",
+      whyItMatters: item.why_it_matters || "",
+      confidence: item.confidence || "media",
     })),
     ...alertItems.slice(0, 4).map((item) => ({
       category: "Alerta",
@@ -1737,7 +1769,13 @@ function newsFeedItems(snapshot = {}) {
     }];
   }
 
-  return items.slice(0, 12);
+  const seenTitles = new Set();
+  return items.filter((item) => {
+    const key = cleanCopy(item.title || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!key || seenTitles.has(key)) return false;
+    seenTitles.add(key);
+    return true;
+  }).slice(0, 12);
 }
 
 function currentFocusAssets() {
@@ -1768,7 +1806,12 @@ function newsImpactTone(value) {
   return "flat";
 }
 
-function newsCardMarkup(item) {
+function newsItemId(item, index = 0) {
+  return item.id || `news-${index}-${cleanCopy(item.title || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 48)}`;
+}
+
+function newsCardMarkup(item, index = 0) {
+  const id = newsItemId(item, index);
   const assets = Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 4) : [];
   const assetLabels = assets.map((asset) => {
     const normalized = normalizeTicker(asset);
@@ -1777,21 +1820,70 @@ function newsCardMarkup(item) {
     return display.displayName === normalized ? normalized : `${display.displayName} (${normalized})`;
   });
   const tone = newsImpactTone(item.impact);
+  const image = item.imageUrl || item.image_url || item.thumbnail || "";
   return `
-    <article class="news-card">
-      <div>
+    <article class="news-card" data-news-open="${escapeHtml(id)}">
+      <button class="news-card-main" type="button" data-news-open="${escapeHtml(id)}">
+        <span class="news-thumb ${image ? "" : "is-placeholder"}">
+          ${image ? `<img src="${escapeHtml(image)}" alt="">` : `<span>${escapeHtml((item.category || "N").slice(0, 1).toUpperCase())}</span>`}
+        </span>
+      <div class="news-card-copy">
         <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))}</span>
         <strong>${escapeHtml(cleanCopy(item.title || "Noticia"))}</strong>
-        <p>${escapeHtml(cleanCopy(item.summary || "Sin lectura adicional."))}</p>
+        <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || item.summary || "Sin lectura adicional."))}</p>
       </div>
+      </button>
       <div class="news-meta">
         <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
         <span>${escapeHtml(formatDate(item.time))}</span>
         <span class="${tone}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
+        ${item.confidence ? `<span>${escapeHtml(`Confianza ${cleanCopy(item.confidence)}`)}</span>` : ""}
         ${assetLabels.length ? `<span>${escapeHtml(assetLabels.join(", "))}</span>` : ""}
       </div>
     </article>
   `;
+}
+
+function openNewsDetail(newsId) {
+  const items = newsFeedItems(appState.newsSnapshot || {});
+  const item = items.find((entry, index) => newsItemId(entry, index) === newsId);
+  if (!item) {
+    toast("No encontre esa noticia en la lectura actual.", "error");
+    return;
+  }
+  appState.selectedNewsId = newsId;
+  const sheet = document.getElementById("news-sheet");
+  const body = document.getElementById("news-sheet-body");
+  if (!sheet || !body) return;
+  const image = item.imageUrl || item.image_url || item.thumbnail || "";
+  const assets = Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 5) : [];
+  body.innerHTML = `
+    ${image ? `<img class="news-detail-image" src="${escapeHtml(image)}" alt="">` : `<div class="news-detail-image is-placeholder">${escapeHtml(cleanCopy(item.category || "Noticias"))}</div>`}
+    <span class="app-kicker">${escapeHtml(cleanCopy(item.category || "Noticias"))}</span>
+    <h2>${escapeHtml(cleanCopy(item.title || "Noticia"))}</h2>
+    <div class="news-detail-meta">
+      <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
+      <span>${escapeHtml(formatDate(item.time))}</span>
+      <span class="${newsImpactTone(item.impact)}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
+      ${item.confidence ? `<span>${escapeHtml(`Confianza ${cleanCopy(item.confidence)}`)}</span>` : ""}
+    </div>
+    <p>${escapeHtml(cleanCopy(item.summary || "Sin resumen disponible."))}</p>
+    <section class="genesis-mini">
+      <strong>Lectura Genesis</strong>
+      <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como senal aislada."))}</p>
+      <p>Por que importa: ${escapeHtml(cleanCopy(item.whyItMatters || item.why_it_matters || "Puede afectar apetito de riesgo, momentum o niveles de los activos relacionados."))}</p>
+      <p>Que vigilar: reaccion de precio, volumen y confirmacion en la siguiente vela relevante.</p>
+    </section>
+    ${assets.length ? `<div class="news-meta">${assets.map((asset) => `<span>${escapeHtml(asset)}</span>`).join("")}</div>` : ""}
+    ${item.url ? `<a class="secondary-button full" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Abrir fuente original</a>` : ""}
+  `;
+  sheet.hidden = false;
+}
+
+function closeNewsDetail() {
+  const sheet = document.getElementById("news-sheet");
+  if (sheet) sheet.hidden = true;
+  appState.selectedNewsId = "";
 }
 
 function renderTrackingScreen() {
@@ -2105,18 +2197,24 @@ function extractWhaleRows(causal, detection) {
 }
 
 function whaleFallbackRows() {
-  return currentFocusAssets().slice(0, 4).map((item) => ({
-    ticker: itemTicker(item) || "MERCADO",
-    event: "No confirmado",
+  const assets = currentFocusAssets();
+  const strongest = assets
+    .map((item) => ({ ticker: itemTicker(item), intensity: Math.abs(numberOrNull(item.daily_change_pct) || 0), item }))
+    .filter((row) => row.ticker)
+    .sort((a, b) => b.intensity - a.intensity);
+  return [{
+    ticker: strongest[0]?.ticker || "MERCADO",
+    event: "Smart money estimado",
     entity: "",
     amount: "",
-    date: item.quote_timestamp || item.updated_at || appState.lastUpdated,
-    source: priceSourceLabel(item),
+    estimatedValue: "",
+    date: strongest[0]?.item?.quote_timestamp || strongest[0]?.item?.updated_at || appState.lastUpdated,
+    source: "technical / market_flow",
     confidence: "baja",
-    intensity: Math.abs(numberOrNull(item.daily_change_pct) || 0),
-    read: "Sin ballena identificada con la fuente activa; Genesis mantiene el activo en vigilancia por precio y volumen.",
-    missing: "Falta entidad institucional, monto y documento/fuente confirmada.",
-  }));
+    intensity: strongest[0]?.intensity || 0,
+    read: "No hay ballenas confirmadas, pero Genesis vigila flujo institucional, volumen anormal y acumulacion/distribucion en tus activos.",
+    missing: "Falta entidad institucional, monto y fuente directa para llamarlo ballena confirmada.",
+  }];
 }
 
 function classifyWhaleType(value) {
@@ -2142,7 +2240,7 @@ function whaleRowMarkup(row) {
       </div>
       <p>${escapeHtml(row.read)}</p>
       <div class="asset-meta">
-        <span>Monto: ${escapeHtml(row.amount || "No confirmado")}</span>
+        <span>Monto: ${escapeHtml(row.amount || row.amountUsd || row.estimatedValue || "No confirmado")}</span>
         <span>Fecha: ${escapeHtml(formatDate(row.date))}</span>
         <span>Fuente: ${escapeHtml(cleanCopy(row.source || "Fuente activa"))}</span>
         <span>Confianza: ${escapeHtml(cleanCopy(row.confidence))}</span>
@@ -2204,13 +2302,14 @@ function renderAlertsScreen() {
       : [];
   const alertRows = items.length ? items : derivedAlertRows();
   const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
-  const whaleRows = whales.length ? whales : whaleFallbackRows();
+  const hasConfirmedWhales = whales.some((row) => row.entity || row.amount);
+  const whaleRows = hasConfirmedWhales ? whales : whaleFallbackRows();
   root.innerHTML = `
     <section class="screen-stack">
       <section class="feed-intro">
         <div>
           <strong>Eventos</strong>
-          <p>${appState.alertSubtab === "alerts" ? (items.length ? "Feed limpio de senales activas." : "Alertas derivadas de tus activos con precio live.") : (whales.length ? "Smart money confirmado por fuente activa." : "Flujo en vigilancia, sin entidad institucional confirmada.")}</p>
+        <p>${appState.alertSubtab === "alerts" ? (items.length ? "Feed limpio de senales activas." : "Alertas derivadas de tus activos con precio live.") : (hasConfirmedWhales ? "Smart money confirmado por fuente activa." : "Flujo en vigilancia, sin entidad institucional confirmada.")}</p>
         </div>
         <span>${appState.alertSubtab === "alerts" ? `${alertRows.length} eventos` : `${whaleRows.length} lecturas`}</span>
       </section>
@@ -2218,7 +2317,7 @@ function renderAlertsScreen() {
         <button type="button" class="${appState.alertSubtab === "alerts" ? "is-active" : ""}" data-alert-tab="alerts">Alertas</button>
         <button type="button" class="${appState.alertSubtab === "whales" ? "is-active" : ""}" data-alert-tab="whales">Ballenas</button>
       </div>
-      ${appState.alertSubtab === "alerts" ? alertsPanelMarkup(alertRows) : whalesPanelMarkup(whaleRows, whales.length > 0)}
+      ${appState.alertSubtab === "alerts" ? alertsPanelMarkup(alertRows) : whalesPanelMarkup(whaleRows, hasConfirmedWhales)}
     </section>
   `;
   bindMoneyFlowJarvisForm();
@@ -2261,6 +2360,9 @@ function alertsPanelMarkup(items) {
 }
 
 function whalesPanelMarkup(rows, hasConfirmed = false) {
+  const estimatedTotal = rows.reduce((sum, row) => sum + (numberOrNull(row.amount || row.amountUsd || row.estimatedValue) || 0), 0);
+  const inflows = rows.filter((row) => /compra|acumul|buy|inflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
+  const outflows = rows.filter((row) => /venta|reduccion|distrib|sell|outflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
   return `
     <section class="whale-flow-card">
       <div>
@@ -2270,6 +2372,11 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
       </div>
       <div class="whale-flow-bars" aria-hidden="true">
         ${rows.length ? rows.slice(0, 6).map((row, index) => `<i style="height:${Math.max(18, Math.min(74, 28 + (numberOrNull(row.intensity) || index + 1) * 8))}px"></i>`).join("") : `<i></i><i></i><i></i>`}
+      </div>
+      <div class="whale-flow-summary">
+        <span>Entradas ${escapeHtml(String(inflows))}</span>
+        <span>Salidas ${escapeHtml(String(outflows))}</span>
+        <span>Valor est. ${escapeHtml(estimatedTotal ? money(estimatedTotal) : "No confirmado")}</span>
       </div>
     </section>
     <form class="search-card whale-search" id="money-flow-jarvis-form">
@@ -2608,6 +2715,19 @@ function bindGlobalEvents() {
     if (event.target.closest("[data-news-refresh]")) {
       event.preventDefault();
       loadNews().catch((error) => toast(error.message, "error"));
+      return;
+    }
+
+    const newsOpen = event.target.closest("[data-news-open]");
+    if (newsOpen) {
+      event.preventDefault();
+      openNewsDetail(newsOpen.dataset.newsOpen);
+      return;
+    }
+
+    if (event.target.closest("[data-news-close]")) {
+      event.preventDefault();
+      closeNewsDetail();
       return;
     }
 

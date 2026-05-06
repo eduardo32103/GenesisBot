@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.settings import load_settings
-from integrations.fmp.client import FmpClient
 from services.genesis.market_format import format_market_number, format_signed_money, format_signed_percent, number_or_none
+from services.genesis.news_feed import get_recent_market_news
 from services.genesis.price_agent import get_price_agent
 from services.genesis.ticker_parser import normalize_ticker
 
@@ -56,6 +56,8 @@ class MarketOverviewAgent:
             "source_status": {
                 "quotes_confirmed": len(confirmed),
                 "news_count": len(news_items),
+                "news_cache_hit": any(bool(item.get("cache_hit")) for item in news_items),
+                "news_elapsed_ms": max([int(item.get("elapsed_ms") or 0) for item in news_items] or [0]),
                 "alerts_count": len(alert_items),
                 "fmp_live": _fmp_live_enabled(),
                 "whales_confirmed": 0,
@@ -292,19 +294,13 @@ def _safe_alerts_snapshot() -> dict[str, Any]:
 
 
 def _safe_market_news(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    try:
-        settings = load_settings()
-    except Exception:
-        return []
-    if not getattr(settings, "fmp_api_key", "") or not getattr(settings, "fmp_live_enabled", False):
-        return []
     tickers = []
     for item in items:
         ticker = normalize_ticker(item.get("ticker") or item.get("symbol"))
         if ticker and ticker not in tickers:
             tickers.append(ticker)
     try:
-        return FmpClient(settings.fmp_api_key).get_market_news(tickers, limit=10)
+        return get_recent_market_news(tickers, limit=10)
     except Exception:
         return []
 

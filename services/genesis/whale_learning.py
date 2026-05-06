@@ -16,7 +16,9 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
     rows = _extract_rows(get_money_flow_causal_snapshot()) + _extract_rows(get_money_flow_detection_snapshot())
     rows.extend(_fmp_rows(normalized, rows))
     learned = 0
+    confirmed = 0
     watched_without_entity: set[str] = set()
+    seen_event_ids: set[str] = set()
     events: list[dict[str, Any]] = []
     for row in rows:
         row_ticker = normalize_ticker(row.get("ticker") or row.get("symbol"))
@@ -26,8 +28,25 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
         entity = whale.get("entity") or row.get("whale_entity") or ""
         if not entity:
             watched_without_entity.add(row_ticker or normalized or "MERCADO")
+            event = _shape_estimate_event(row_ticker or normalized or "MERCADO", row)
+            if event["id"] not in seen_event_ids:
+                seen_event_ids.add(event["id"])
+                events.append(event)
+                store.save_whale_event(
+                    event["ticker"],
+                    entity="",
+                    action=event["action"],
+                    amount=event["amount_usd"] if event["amount_usd"] is not None else event.get("estimated_value"),
+                    date=event["date"],
+                    confidence=event["confidence"],
+                    event=event,
+                )
+                learned += 1
             continue
         event = _shape_event(row_ticker, entity, row)
+        if event["id"] in seen_event_ids:
+            continue
+        seen_event_ids.add(event["id"])
         events.append(event)
         store.save_whale_event(
             row_ticker,
@@ -36,26 +55,35 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
             amount=event["amount_usd"] if event["amount_usd"] is not None else event["amount"] or "",
             date=event["date"],
             confidence=event["confidence"],
+            event=event,
         )
         learned += 1
+        confirmed += 1
     for row_ticker in watched_without_entity:
         store.save_market_observation(row_ticker, "Ballena vigilada sin entidad institucional confirmada.")
     memory = store.get_whale_memory(normalized or None)
     summary = _summary(events)
-    if learned == 0:
+    if not events:
         scope = f" para {normalized}" if normalized else ""
         answer = f"Sin ballena institucional confirmada{scope} con la fuente activa."
         if watched_without_entity:
-            answer += " Deje la observacion en memoria como vigilancia de baja confianza, sin inventar entidad ni monto."
+            answer += " Genesis vigila flujo institucional, volumen anormal y acumulacion/distribucion sin inventar entidad ni monto."
+    elif confirmed == 0:
+        focus = ", ".join(summary.get("top_assets") or []) or (normalized or "mercado")
+        answer = (
+            f"En sencillo: no hay ballena institucional confirmada con nombre y monto, "
+            f"pero Genesis detecta flujo en vigilancia en {focus}. No confirma compra directa; sirve para priorizar vigilancia."
+        )
     else:
-        answer = f"{learned} eventos de ballenas guardados con entidad, fecha o monto reportado."
+        answer = f"{confirmed} eventos de ballenas guardados con entidad, fecha o monto reportado."
     return {
         "learned": learned,
+        "confirmed": confirmed,
         "memory": memory,
         "events": events[:20],
         "summary": summary,
         "unconfirmed_watch": sorted(watched_without_entity),
-        "fallback": learned == 0,
+        "fallback": not events,
         "answer": answer,
     }
 
@@ -125,6 +153,10 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
     action = _normalize_action(whale.get("movement_type") or row.get("direction") or row.get("type"))
     amount = row.get("amount") or whale.get("shares") or row.get("shares")
     amount_usd = _num(whale.get("movement_value") or row.get("amount_usd") or row.get("value"))
+    units = _num(amount)
+    price = _num(row.get("price") or row.get("transaction_price") or whale.get("price"))
+    current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
+    estimated_value = amount_usd if amount_usd is not None else (units * (price or current_price) if units is not None and (price or current_price) else None)
     date = str(row.get("money_flow_timestamp") or row.get("timestamp") or row.get("date") or "").strip()
     source = str(row.get("source") or whale.get("source") or "fmp").strip()
     confidence = str(whale.get("confidence") or row.get("confidence") or "medium").strip().lower()
@@ -135,15 +167,62 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
     return {
         "id": f"whale:{ticker}:{entity}:{date or 'sin_fecha'}",
         "ticker": ticker,
+        "asset_name": str(row.get("name") or row.get("asset_name") or ticker),
+        "asset_type": str(row.get("asset_type") or "equity"),
+        "event_type": "whale_confirmed" if entity and (amount_usd is not None or amount) else "institutional_flow",
         "entity": entity,
+        "entity_name": entity,
+        "entity_type": str(row.get("entity_type") or whale.get("entity_type") or "institution"),
         "action": action,
         "amount": amount,
+        "units": units,
+        "price": price,
         "amount_usd": amount_usd,
+        "current_price": current_price,
+        "estimated_value": estimated_value,
         "date": date,
         "source": source,
         "confidence": confidence,
         "impact": impact,
+        "evidence": _evidence(row),
         "genesis_reading": _event_reading(ticker, entity, action, confidence),
+    }
+
+
+def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
+    action = _estimate_action(row)
+    confidence = _estimate_confidence(row)
+    date = str(row.get("money_flow_timestamp") or row.get("timestamp") or row.get("date") or "").strip()
+    source = str(row.get("source") or "market_flow").strip()
+    current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
+    amount_usd = _num(row.get("amount_usd") or row.get("estimated_value") or row.get("value"))
+    event_type = "unusual_volume" if _has_unusual_volume(row) else "smart_money_estimate"
+    direction = "alcista" if action in {"buy", "accumulation"} else "bajista" if action in {"sell", "distribution", "reduction"} else "neutral"
+    return {
+        "id": f"flow:{ticker}:{event_type}:{action}:{date or 'sin_fecha'}",
+        "ticker": ticker,
+        "asset_name": str(row.get("name") or row.get("asset_name") or ticker),
+        "asset_type": "crypto" if str(ticker).endswith("-USD") else str(row.get("asset_type") or "market"),
+        "event_type": event_type,
+        "entity": "",
+        "entity_name": "",
+        "entity_type": "",
+        "action": action,
+        "amount": None,
+        "units": None,
+        "price": current_price,
+        "amount_usd": amount_usd,
+        "current_price": current_price,
+        "estimated_value": amount_usd,
+        "date": date,
+        "source": source if source not in {"", "runtime"} else "technical",
+        "confidence": confidence,
+        "impact": "bullish" if direction == "alcista" else "bearish" if direction == "bajista" else "neutral",
+        "evidence": _evidence(row),
+        "genesis_reading": (
+            f"{ticker}: flujo institucional en vigilancia ({direction}). "
+            "No hay entidad confirmada; Genesis lo usa como senal secundaria, no como compra directa."
+        ),
     }
 
 
@@ -151,7 +230,7 @@ def _normalize_action(value: object) -> str:
     raw = str(value or "").strip().casefold()
     if any(word in raw for word in ("buy", "compra", "acumula", "acquisition")):
         return "buy"
-    if any(word in raw for word in ("sell", "venta", "reduce", "disposition")):
+    if any(word in raw for word in ("sell", "venta", "reduce", "disposition", "distribution")):
         return "sell"
     if "accum" in raw:
         return "accumulation"
@@ -160,6 +239,61 @@ def _normalize_action(value: object) -> str:
     if "transfer" in raw:
         return "transfer"
     return "unknown"
+
+
+def _estimate_action(row: dict[str, Any]) -> str:
+    raw = " ".join(
+        str(row.get(key) or "")
+        for key in (
+            "direction",
+            "signal",
+            "primary_signal",
+            "primary_label",
+            "probable_cause_label",
+            "attention",
+            "summary",
+            "event",
+        )
+    ).casefold()
+    if any(token in raw for token in ("inflow", "entrada", "acumul", "compra", "buy", "positivo", "alcista")):
+        return "accumulation"
+    if any(token in raw for token in ("outflow", "salida", "distrib", "venta", "sell", "negativo", "bajista")):
+        return "distribution"
+    return "unknown"
+
+
+def _estimate_confidence(row: dict[str, Any]) -> str:
+    raw = str(row.get("confidence") or row.get("confidence_label") or row.get("level") or "").casefold()
+    if any(token in raw for token in ("high", "alta", "fuerte")):
+        return "medium"
+    if any(token in raw for token in ("low", "baja", "debil")):
+        return "low"
+    return "low"
+
+
+def _has_unusual_volume(row: dict[str, Any]) -> bool:
+    raw = " ".join(str(row.get(key) or "") for key in ("signal", "primary_signal", "primary_label", "summary", "event")).casefold()
+    return any(token in raw for token in ("volume", "volumen", "unusual", "anomalo", "anormal"))
+
+
+def _evidence(row: dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "ticker",
+        "symbol",
+        "direction",
+        "signal",
+        "primary_signal",
+        "primary_label",
+        "probable_cause_label",
+        "attention",
+        "source",
+        "timestamp",
+        "date",
+        "amount_usd",
+        "value",
+        "shares",
+    )
+    return {key: row.get(key) for key in allowed if row.get(key) not in (None, "", [])}
 
 
 def _event_reading(ticker: str, entity: str, action: str, confidence: str) -> str:
@@ -172,18 +306,24 @@ def _event_reading(ticker: str, entity: str, action: str, confidence: str) -> st
 
 def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     signed_flow = 0.0
+    inflow = 0.0
+    outflow = 0.0
+    total_estimated = 0.0
     accumulation: list[str] = []
     distribution: list[str] = []
     for event in events:
-        amount = _num(event.get("amount_usd")) or 0.0
+        amount = _num(event.get("amount_usd") or event.get("estimated_value")) or 0.0
+        total_estimated += amount
         action = event.get("action")
         ticker = normalize_ticker(event.get("ticker"))
         if action in {"buy", "accumulation"}:
             signed_flow += amount
+            inflow += amount
             if ticker and ticker not in accumulation:
                 accumulation.append(ticker)
-        elif action in {"sell", "reduction"}:
+        elif action in {"sell", "reduction", "distribution"}:
             signed_flow -= amount
+            outflow += amount
             if ticker and ticker not in distribution:
                 distribution.append(ticker)
     top_assets = []
@@ -195,10 +335,15 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             top_assets.append(ticker)
     return {
         "net_flow": round(signed_flow, 2) if signed_flow else None,
+        "inflow_value": round(inflow, 2) if inflow else None,
+        "outflow_value": round(outflow, 2) if outflow else None,
+        "total_estimated_value": round(total_estimated, 2) if total_estimated else None,
         "accumulation": accumulation[:8],
         "distribution": distribution[:8],
         "top_assets": top_assets[:8],
         "confidence": "medium" if events else "low",
+        "confirmed_count": len([event for event in events if event.get("entity_name")]),
+        "estimated_count": len([event for event in events if not event.get("entity_name")]),
     }
 
 
