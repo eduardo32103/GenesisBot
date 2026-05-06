@@ -5,7 +5,7 @@ function initialChatMessage() {
   return {
     id: `welcome-${Date.now()}`,
     role: "assistant",
-    text: "Hola. Que quieres revisar hoy?",
+    text: "Hola. ¿Qué quieres revisar hoy?",
   };
 }
 
@@ -254,6 +254,87 @@ function cleanCopy(value) {
     .replace(/\binsufficient_confirmation\b/gi, "no concluyente")
     .replace(/\bTelegram\b/gi, "Genesis")
     .replace(/\blegacy\b/gi, "local");
+}
+
+function stripMarkdownCopy(value) {
+  return cleanCopy(value)
+    .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, ""))
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function cleanSentenceList(value, limit = 4) {
+  const copy = stripMarkdownCopy(value);
+  if (!copy) return [];
+  const lines = copy
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*[:;|,-]+\s*/, "").trim())
+    .filter(Boolean);
+  if (lines.length > 1) return lines.slice(0, limit);
+  return copy
+    .split(/[.!?]\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function quotePrice(quote) {
+  return numberOrNull(quote?.current_price ?? quote?.price ?? quote?.quote?.price);
+}
+
+function quoteChange(quote) {
+  return numberOrNull(quote?.daily_change ?? quote?.change ?? quote?.quote?.change);
+}
+
+function quoteChangePct(quote) {
+  return numberOrNull(quote?.daily_change_pct ?? quote?.changesPercentage ?? quote?.change_pct ?? quote?.quote?.changesPercentage);
+}
+
+function quoteSourceLabel(quote) {
+  if (!quote) return "Sin fuente confirmada";
+  if (quotePrice(quote) === null) return "Sin fuente confirmada";
+  return cleanCopy(quote.source_label || quote.source || "FMP / fuente verificada");
+}
+
+function biasFromMove(value) {
+  const numeric = numberOrNull(value);
+  if (numeric === null || numeric === 0) return "neutral";
+  return numeric > 0 ? "bullish" : "bearish";
+}
+
+function biasLabel(value) {
+  if (value === "bullish") return "Alcista";
+  if (value === "bearish") return "Bajista";
+  return "Neutral";
+}
+
+function confidenceFromQuote(quote) {
+  const price = quotePrice(quote);
+  const source = String(quote?.source || quote?.source_label || "").toLowerCase();
+  if (price === null) return 0.35;
+  if (source.includes("fmp") || quote?.is_live) return 0.78;
+  return 0.58;
+}
+
+function compactNumber(value, empty = "Sin dato") {
+  const numeric = numberOrNull(value);
+  if (numeric === null) return empty;
+  return Math.abs(numeric) >= 1000
+    ? numeric.toLocaleString("en-US", { maximumFractionDigits: 0 })
+    : numeric.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function firstKnownValue(...values) {
+  for (const value of values) {
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
+  return null;
 }
 
 function normalizeToastTone(tone) {
@@ -505,17 +586,30 @@ function chartReturnsMarkup(payload) {
   `;
 }
 
-function chartDebugMarkup(payload) {
-  if (!payload) return "";
-  const source = payload.source || {};
+function indicatorStripMarkup(payload) {
+  const indicators = payload?.indicators || payload?.technical?.indicators || {};
+  if (!indicators || indicators.ok === false) return "";
+  const macd = indicators.macd || {};
+  const ema = indicators.ema || {};
+  const fibonacci = indicators.fibonacci || {};
+  const golden = indicators.golden_pocket || {};
+  const items = [
+    ["Volumen", payload?.quote?.volume ?? payload?.summary?.volume ?? indicators.relative_volume],
+    ["RSI", indicators.rsi],
+    ["MACD", macd.line],
+    ["EMA 50", ema["50"] ?? indicators.ema_50],
+    ["Fib 0.618", fibonacci["0.618"]],
+    ["Golden", firstKnownValue(golden.from, golden.to)],
+  ].filter(([, value]) => numberOrNull(value) !== null);
+  if (!items.length) return "";
   return `
-    <div class="chart-debug">
-      <span>Fuente ${escapeHtml(source.provider || "FMP")}</span>
-      <span>${escapeHtml(payload.history_points || source.raw_eod_points || 0)} puntos</span>
-      <span>MAX ${escapeHtml(payload.max_history_years || source.max_history_years || 0)} anos</span>
-      <span>${payload.is_max_truncated || source.is_max_truncated ? "MAX limitado" : "MAX completo"}</span>
-      <span>${escapeHtml(payload.first_date || "sin inicio")} -> ${escapeHtml(payload.last_date || "sin cierre")}</span>
-      <span>${escapeHtml(money(payload.first_close, "sin base"))} -> ${escapeHtml(money(payload.last_close, "sin cierre"))}</span>
+    <div class="indicator-strip" aria-label="Indicadores tecnicos">
+      ${items.slice(0, 6).map(([label, value]) => `
+        <span>
+          <small>${escapeHtml(label)}</small>
+          <strong>${escapeHtml(compactNumber(value))}</strong>
+        </span>
+      `).join("")}
     </div>
   `;
 }
@@ -523,10 +617,9 @@ function chartDebugMarkup(payload) {
 function chartMaxNote(payload) {
   if (!payload) return "";
   const years = numberOrNull(payload.max_history_years ?? payload.source?.max_history_years);
-  const reason = payload.truncation_reason || payload.source?.truncation_reason || "";
   if (years === null) return "";
   if (years > 5.05) return `MAX usa ${years.toFixed(2)} anos reales de historico FMP.`;
-  if (years > 0) return `MAX disponible: ${years.toFixed(2)} anos. ${reason ? cleanCopy(reason) : "FMP no entrego mas historico para este activo."}`;
+  if (years > 0) return `MAX disponible: ${years.toFixed(2)} anos. FMP no entrego mas historico confirmado para este activo.`;
   return payload.ok === false ? "MAX sin datos historicos en este entorno." : "";
 }
 
@@ -559,8 +652,8 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
         ${state.loading ? `<div class="chart-empty">Cargando grafica...</div>` : chartSvgMarkup(payload)}
       </div>
       ${payload ? chartReturnsMarkup(payload) : ""}
+      ${payload ? indicatorStripMarkup(payload) : ""}
       ${payload ? `<p class="chart-source-note">${escapeHtml(chartMaxNote(payload))}</p>` : ""}
-      ${target.startsWith("detail:") ? chartDebugMarkup(payload) : ""}
       <p class="chart-read">${escapeHtml(chartReading(payload))}</p>
     </section>
   `;
@@ -914,7 +1007,10 @@ function chatHistoryPanelMarkup() {
   const history = conversations.length
     ? conversations
     : appState.chatMessages
-      .filter((message) => String(message.text || "").trim() && cleanCopy(message.text) !== "Hola. Que quieres revisar hoy?")
+      .filter((message) => {
+        const text = cleanCopy(message.text);
+        return String(text || "").trim() && !["Hola. Que quieres revisar hoy?", "Hola. ¿Qué quieres revisar hoy?"].includes(text);
+      })
       .slice(-8)
       .reverse()
       .map((message) => ({
@@ -934,11 +1030,304 @@ function chatHistoryPanelMarkup() {
   `;
 }
 
+function genesisAssistantMessageFromPayload(payload, fallbackText = "") {
+  const answer = stripMarkdownCopy(payload?.assistant_narrative || payload?.answer || fallbackText || "No tengo lectura suficiente.");
+  const visual = genesisVisualFromPayload(payload, answer);
+  const chart = genesisChartFromPayload(payload, fallbackText);
+  return {
+    id: nextMessageId(),
+    role: "assistant",
+    text: answer,
+    visual,
+    chart,
+  };
+}
+
+function genesisChartFromPayload(payload, prompt = "") {
+  const intent = String(payload?.intent || "");
+  const chart = payload?.chart || {};
+  const chartTicker = normalizeTicker(chart.ticker || chart.symbol);
+  if (chartTicker) return { ticker: chartTicker, range: String(chart.range || "1Y").toUpperCase() };
+  const ticker = normalizeTicker(payload?.quote?.ticker || payload?.tickers?.[0]);
+  if ((intent === "ticker_analysis" || intent === "technical_indicators") && ticker) {
+    return { ticker, range: "1Y" };
+  }
+  const detected = chartIntentFromText(prompt);
+  return detected ? { ticker: detected.ticker, range: detected.range } : null;
+}
+
+function genesisVisualFromPayload(payload, answer = "") {
+  const intent = String(payload?.intent || "");
+  if (["ticker_analysis", "technical_indicators", "chart_request"].includes(intent) && (payload?.quote || payload?.chart)) {
+    return assetAnalysisVisual(payload, answer);
+  }
+  if (intent === "comparison") return comparisonVisual(payload, answer);
+  if (intent === "daily_briefing" || intent === "market_overview") return briefingVisual(payload, answer);
+  if (intent === "weather") return weatherVisual(payload, answer);
+  if (intent === "alerts") return feedVisual("Alertas", payload?.alerts?.items || [], answer);
+  if (intent === "whale_activity") return feedVisual("Ballenas", payload?.whales?.items || payload?.whales?.events || [], answer);
+  if (intent === "portfolio_summary") return summaryVisual("Cartera", answer);
+  if (intent === "tracking_summary") return summaryVisual("Seguimiento", answer);
+  if (intent === "image_chart_analysis") return summaryVisual("Imagen", answer);
+  return null;
+}
+
+function assetAnalysisVisual(payload, answer = "") {
+  const quote = payload?.quote || {};
+  const ticker = normalizeTicker(quote.ticker || payload?.chart?.ticker || payload?.tickers?.[0]);
+  const changePct = quoteChangePct(quote);
+  const bias = biasFromMove(changePct ?? quoteChange(quote));
+  const technical = payload?.technical?.indicators || {};
+  const sections = cleanSentenceList(answer, 5);
+  const price = quotePrice(quote);
+  const support = firstKnownValue(technical.support, quote.day_low, quote.dayLow);
+  const resistance = firstKnownValue(technical.resistance, quote.day_high, quote.dayHigh);
+  return {
+    kind: "asset_analysis",
+    ticker,
+    name: assetDisplayName({ ticker, name: quote.name || payload?.name }),
+    thesis: sections[0] || `${ticker || "El activo"} queda en vigilancia con datos confirmados por backend.`,
+    bias,
+    confidence: confidenceFromQuote(quote),
+    price: {
+      value: price,
+      change: quoteChange(quote),
+      changePct,
+      source: quoteSourceLabel(quote),
+    },
+    levels: {
+      support,
+      resistance,
+      previousClose: firstKnownValue(quote.previous_close, quote.previousClose),
+    },
+    indicators: {
+      rsi: technical.rsi,
+      macd: technical.macd?.line,
+      volume: firstKnownValue(quote.volume, technical.relative_volume),
+      moneyFlow: payload?.whales?.answer || "Sin flujo institucional confirmado.",
+    },
+    sections: sections.slice(1),
+  };
+}
+
+function briefingVisual(payload, answer = "") {
+  const source = payload?.briefing || payload?.overview || {};
+  const sections = cleanSentenceList(source.answer || answer, 6);
+  return {
+    kind: "briefing",
+    title: payload?.intent === "market_overview" ? "Pulso de mercado" : "Resumen del dia",
+    thesis: sections[0] || "Genesis sintetiza mercado, cartera, alertas y fuentes disponibles sin inventar datos.",
+    sections: sections.slice(1),
+    confidence: 0.62,
+  };
+}
+
+function weatherVisual(payload, answer = "") {
+  const weather = payload?.weather || {};
+  return {
+    kind: "weather",
+    title: weather.city ? `Clima en ${weather.city}` : "Clima",
+    thesis: stripMarkdownCopy(weather.answer || answer || "No pude confirmar clima con la fuente activa."),
+    temperature: firstKnownValue(weather.temperature, weather.temp),
+    condition: weather.condition || weather.description || "",
+    wind: weather.wind_speed,
+    rain: weather.rain_probability,
+    source: weather.source || "Open-Meteo",
+  };
+}
+
+function comparisonVisual(payload, answer = "") {
+  const quotes = Array.isArray(payload?.quotes) ? payload.quotes : [];
+  return {
+    kind: "comparison",
+    title: "Comparacion",
+    thesis: cleanSentenceList(answer, 1)[0] || "Comparo solo datos confirmados.",
+    quotes,
+  };
+}
+
+function summaryVisual(title, answer = "") {
+  const sections = cleanSentenceList(answer, 5);
+  return {
+    kind: "summary",
+    title,
+    thesis: sections[0] || "Genesis mantiene la lectura limpia y sin datos inventados.",
+    sections: sections.slice(1),
+  };
+}
+
+function feedVisual(title, rows, answer = "") {
+  return {
+    kind: "feed",
+    title,
+    thesis: cleanSentenceList(answer, 1)[0] || "Genesis muestra solo eventos confirmados por la fuente activa.",
+    rows: Array.isArray(rows) ? rows.slice(0, 4) : [],
+  };
+}
+
+function visualResponseMarkup(visual) {
+  if (!visual) return "";
+  if (visual.kind === "asset_analysis") return assetAnalysisVisualMarkup(visual);
+  if (visual.kind === "briefing") return briefingVisualMarkup(visual);
+  if (visual.kind === "weather") return weatherVisualMarkup(visual);
+  if (visual.kind === "comparison") return comparisonVisualMarkup(visual);
+  if (visual.kind === "feed") return feedVisualMarkup(visual);
+  return summaryVisualMarkup(visual);
+}
+
+function assetAnalysisVisualMarkup(visual) {
+  const confidencePct = Math.round(Math.max(0, Math.min(1, visual.confidence || 0)) * 100);
+  const changeTone = positiveClass(visual.price?.changePct ?? visual.price?.change);
+  return `
+    <section class="visual-response asset-visual tone-${visual.bias}">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">${escapeHtml(visual.name || "Activo")}</span>
+          <strong>${escapeHtml(visual.ticker || "Analisis")}</strong>
+        </div>
+        <span class="conviction-pill ${visual.bias}">${escapeHtml(biasLabel(visual.bias))}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-market-strip">
+        <span>
+          <small>Precio confirmado</small>
+          <strong class="market-number ${changeTone}">${escapeHtml(money(visual.price?.value, "Sin precio"))}</strong>
+        </span>
+        <span>
+          <small>Cambio</small>
+          <strong class="${changeTone}">${escapeHtml(formatChange(visual.price?.change, "Sin cambio"))} ${escapeHtml(formatPercent(visual.price?.changePct, "Sin dato"))}</strong>
+        </span>
+        <span>
+          <small>Fuente</small>
+          <strong>${escapeHtml(visual.price?.source || "FMP")}</strong>
+        </span>
+      </div>
+      <div class="confidence-row">
+        <span>Confianza ${confidencePct}%</span>
+        <i><b style="width:${confidencePct}%"></b></i>
+      </div>
+      <div class="visual-grid">
+        ${visualMetricMarkup("Soporte", visual.levels?.support, money)}
+        ${visualMetricMarkup("Resistencia", visual.levels?.resistance, money)}
+        ${visualMetricMarkup("RSI", visual.indicators?.rsi, compactNumber)}
+        ${visualMetricMarkup("MACD", visual.indicators?.macd, compactNumber)}
+        ${visualMetricMarkup("Volumen", visual.indicators?.volume, compactNumber)}
+        <span><small>Money flow</small><strong>${escapeHtml(stripMarkdownCopy(visual.indicators?.moneyFlow || "Sin dato").slice(0, 42))}</strong></span>
+      </div>
+      <div class="visual-sections">
+        ${(visual.sections?.length ? visual.sections : ["Vigilar confirmacion de precio, volumen y riesgo antes de subir conviccion."]).slice(0, 4).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function visualMetricMarkup(label, value, formatter) {
+  return `
+    <span>
+      <small>${escapeHtml(label)}</small>
+      <strong>${escapeHtml(numberOrNull(value) === null ? "Sin dato" : formatter(value))}</strong>
+    </span>
+  `;
+}
+
+function briefingVisualMarkup(visual) {
+  return `
+    <section class="visual-response briefing-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Genesis</span>
+          <strong>${escapeHtml(visual.title)}</strong>
+        </div>
+        <span class="conviction-pill neutral">Lectura</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-sections">
+        ${(visual.sections?.length ? visual.sections : ["Sin fuente adicional confirmada; Genesis conserva cautela y usa precio, volumen y alertas disponibles."]).slice(0, 5).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function weatherVisualMarkup(visual) {
+  return `
+    <section class="visual-response weather-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">${escapeHtml(visual.source || "Open-Meteo")}</span>
+          <strong>${escapeHtml(visual.title)}</strong>
+        </div>
+        <span class="conviction-pill neutral">${escapeHtml(visual.condition || "Clima")}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-market-strip">
+        <span><small>Temperatura</small><strong>${escapeHtml(visual.temperature === null || visual.temperature === undefined ? "Sin dato" : `${compactNumber(visual.temperature)} C`)}</strong></span>
+        <span><small>Lluvia</small><strong>${escapeHtml(visual.rain === null || visual.rain === undefined ? "Sin dato" : `${compactNumber(visual.rain)}%`)}</strong></span>
+        <span><small>Viento</small><strong>${escapeHtml(visual.wind === null || visual.wind === undefined ? "Sin dato" : `${compactNumber(visual.wind)} km/h`)}</strong></span>
+      </div>
+    </section>
+  `;
+}
+
+function comparisonVisualMarkup(visual) {
+  return `
+    <section class="visual-response comparison-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Genesis</span>
+          <strong>${escapeHtml(visual.title)}</strong>
+        </div>
+        <span class="conviction-pill neutral">Comparacion</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-market-strip">
+        ${visual.quotes.map((quote) => {
+          const tone = positiveClass(quoteChangePct(quote) ?? quoteChange(quote));
+          return `<span><small>${escapeHtml(quote.ticker || "Activo")}</small><strong class="${tone}">${escapeHtml(money(quotePrice(quote), "Sin precio"))} ${escapeHtml(formatPercent(quoteChangePct(quote), ""))}</strong></span>`;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function feedVisualMarkup(visual) {
+  return `
+    <section class="visual-response feed-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Eventos</span>
+          <strong>${escapeHtml(visual.title)}</strong>
+        </div>
+        <span class="conviction-pill neutral">${escapeHtml(String(visual.rows?.length || 0))}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-sections">
+        ${(visual.rows?.length ? visual.rows.map((row) => cleanCopy(row.title || row.summary || row.answer || row.ticker || "Evento confirmado")) : ["Sin eventos confirmados con la fuente activa."]).slice(0, 4).map((line) => `<p>${escapeHtml(stripMarkdownCopy(line))}</p>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function summaryVisualMarkup(visual) {
+  return `
+    <section class="visual-response summary-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Genesis</span>
+          <strong>${escapeHtml(visual.title || "Lectura")}</strong>
+        </div>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis || "Sin lectura suficiente.")}</p>
+      ${visual.sections?.length ? `<div class="visual-sections">${visual.sections.slice(0, 4).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}</div>` : ""}
+    </section>
+  `;
+}
+
 function chatBubbleMarkup(message) {
   const role = message.role === "user" ? "user" : "assistant";
+  const text = stripMarkdownCopy(message.text);
   return `
     <article class="chat-bubble ${role}">
-      <p>${escapeHtml(cleanCopy(message.text))}</p>
+      ${role === "assistant" && message.visual ? visualResponseMarkup(message.visual) : `<p>${escapeHtml(text)}</p>`}
       ${message.imageName ? `<small class="chat-image-chip">Imagen: ${escapeHtml(message.imageName)}</small>` : ""}
       ${message.chart ? chartBlockMarkup(message.chart.ticker, message.chart.range, `chat:${message.id}`) : ""}
     </article>
@@ -983,7 +1372,10 @@ async function submitGenesisQuestion(event) {
           data_url: dataUrl,
         },
       });
-      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(payload.answer || "Recibi la imagen.") });
+      appState.chatMessages.push(genesisAssistantMessageFromPayload(
+        { ...payload, intent: payload.intent || "image_chart_analysis" },
+        payload.answer || "Recibi la imagen."
+      ));
     } catch (error) {
       appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude analizar la imagen: ${cleanCopy(error.message)}` });
     }
@@ -1002,7 +1394,8 @@ async function submitGenesisQuestion(event) {
     const message = {
       id: nextMessageId(),
       role: "assistant",
-      text: routed?.answer || `Cargo velas japonesas de ${chartIntent.ticker}.`,
+      text: stripMarkdownCopy(routed?.answer || `Cargo velas japonesas de ${chartIntent.ticker}.`),
+      visual: routed ? genesisVisualFromPayload(routed, routed.answer || "") : assetAnalysisVisual({ intent: "chart_request", chart: chartIntent, quote: { ticker: chartIntent.ticker } }, ""),
       chart: { ticker: chartIntent.ticker, range: chartIntent.range },
     };
     appState.chatMessages.push(message);
@@ -1014,13 +1407,19 @@ async function submitGenesisQuestion(event) {
   }
   try {
     const payload = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId });
-    const answer = payload.assistant_narrative || payload.answer || "No tengo lectura suficiente.";
-    appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(answer) });
+    const message = genesisAssistantMessageFromPayload(payload, question);
+    appState.chatMessages.push(message);
+    renderGenesisScreen();
+    if (message.chart) {
+      loadChartSeries(message.chart.ticker, message.chart.range).then(() => {
+        if (appState.activeScreen === "genesis") renderGenesisScreen();
+      });
+    }
+    return;
   } catch (error) {
     try {
       const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
-      const answer = payload.assistant_narrative || payload.answer || "No tengo lectura suficiente.";
-      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(answer) });
+      appState.chatMessages.push(genesisAssistantMessageFromPayload(payload, question));
     } catch (fallbackError) {
       appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude responder ahora: ${cleanCopy(fallbackError.message)}` });
     }
@@ -1383,6 +1782,7 @@ function assetRowMenuMarkup(ticker, mode) {
       <div class="market-menu-panel">
         <button type="button" data-open-asset="${normalized}">Ver detalle</button>
         ${mode === "paper" ? "" : `<button type="button" data-paper-buy="${normalized}">Compra paper</button>`}
+        <button type="button" data-create-alert="${normalized}">Crear alerta</button>
         ${mode === "paper"
           ? `<button class="danger" type="button" data-paper-close="${normalized}">Cerrar paper</button>`
           : `<button class="danger" type="button" data-watch-remove="${normalized}">Quitar seguimiento</button>`}
@@ -1663,6 +2063,7 @@ function renderAssetDetailScreen() {
           <div class="market-menu-panel">
             ${!isTracked ? `<button type="button" data-market-add="${escapeHtml(normalized)}">Agregar seguimiento</button>` : ""}
             <button type="button" data-paper-buy="${escapeHtml(normalized)}">Compra paper</button>
+            <button type="button" data-create-alert="${escapeHtml(normalized)}">Crear alerta</button>
             ${isPaper ? `<button class="danger" type="button" data-paper-close="${escapeHtml(normalized)}">Cerrar paper</button>` : ""}
             ${isTracked ? `<button class="danger" type="button" data-watch-remove="${escapeHtml(normalized)}">Quitar seguimiento</button>` : ""}
           </div>
@@ -1968,6 +2369,24 @@ function bindGlobalEvents() {
         await addTickerToWatchlist(marketAdd.dataset.marketAdd);
       } catch (error) {
         toast(error.message, "error");
+      }
+      return;
+    }
+
+    const createAlert = event.target.closest("[data-create-alert]");
+    if (createAlert) {
+      event.preventDefault();
+      const ticker = normalizeTicker(createAlert.dataset.createAlert);
+      try {
+        await postJson("/api/genesis/memory/event", {
+          event_type: "alert_request",
+          source: "ui",
+          confidence: "media",
+          payload: { ticker, requested_from: appState.activeScreen },
+        });
+        toast(`Alerta de ${ticker} guardada como solicitud para Genesis.`, "success");
+      } catch (error) {
+        toast(`No pude guardar la solicitud de alerta: ${cleanCopy(error.message)}`, "error");
       }
       return;
     }
