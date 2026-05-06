@@ -79,7 +79,7 @@ def load_settings() -> Settings:
         fmp_live_enabled=_env_flag(os.getenv("FMP_LIVE_ENABLED", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         genesis_llm_enabled=_env_flag(os.getenv("GENESIS_LLM_ENABLED", "")),
-        genesis_llm_model=os.getenv("GENESIS_LLM_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini",
+        genesis_llm_model=os.getenv("GENESIS_LLM_MODEL", "gpt-5.5").strip() or "gpt-5.5",
         genesis_vision_enabled=_env_flag(os.getenv("GENESIS_VISION_ENABLED", "")),
         weather_api_key=os.getenv("WEATHER_API_KEY", os.getenv("OPENWEATHER_API_KEY", "")).strip(),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),

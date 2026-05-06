@@ -70,7 +70,7 @@ class MemoryStore:
         }
         if not message["content"]:
             return message
-        self.save_conversation(message["conversation_id"])
+        self.save_conversation(message["conversation_id"], message["content"][:120] if message["role"] == "user" else "")
         if self.backend == "postgres" and self._pg is not None:
             self._pg_execute(
                 "INSERT INTO genesis_messages (conversation_id, role, content, metadata_json, created_at) VALUES (%s, %s, %s, %s, %s)",
@@ -112,6 +112,21 @@ class MemoryStore:
                     (clean_id, safe_limit),
                 ).fetchall()
         return [_message_row(row) for row in reversed(rows)]
+
+    def list_conversations(self, limit: int = 20) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 20), 100))
+        if self.backend == "postgres" and self._pg is not None:
+            rows = self._pg_fetch(
+                "SELECT conversation_id, summary, updated_at FROM genesis_conversations ORDER BY updated_at DESC LIMIT %s",
+                (safe_limit,),
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                rows = conn.execute(
+                    "SELECT conversation_id, summary, updated_at FROM genesis_conversations ORDER BY updated_at DESC LIMIT ?",
+                    (safe_limit,),
+                ).fetchall()
+        return [_conversation_row(row) for row in rows]
 
     def save_conversation(self, conversation_id: str = "default", summary: str = "") -> None:
         clean_id = str(conversation_id or "default").strip()[:120] or "default"
@@ -837,6 +852,14 @@ def _message_row(row: Any) -> dict[str, Any]:
         "content": row[2],
         "metadata": _loads(row[3]),
         "created_at": row[4],
+    }
+
+
+def _conversation_row(row: Any) -> dict[str, Any]:
+    return {
+        "conversation_id": row[0],
+        "summary": row[1],
+        "updated_at": row[2],
     }
 
 

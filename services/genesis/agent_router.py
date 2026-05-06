@@ -26,6 +26,9 @@ class AgentRouter:
         primary_ticker = normalize_ticker(tickers[0] if tickers else ticker)
         chart = detect_chart_intent(clean, context=context)
         intent = self.detect_intent(clean, tickers=tickers, chart=chart)
+        if intent in {"greeting", "time", "date", "weather", "daily_briefing", "market_overview", "general_question"}:
+            tickers = []
+            primary_ticker = ""
         return AgentRoute(
             intent=intent,
             agent=_AGENT_BY_INTENT.get(intent, "response_composer"),
@@ -106,6 +109,7 @@ def _mentions_market_overview(text: str) -> bool:
         ("mercado" in text and not any(token in text for token in ("seguimiento", "cartera")))
         or "que esta pasando hoy" in text
         or "que esta pasando" in text
+        or "viernes pasado" in text
     )
 
 

@@ -112,6 +112,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 context=str(body.get("context") or "general"),
                 ticker=str(body.get("ticker") or ""),
                 panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                conversation_id=str(body.get("conversation_id") or "default"),
             )
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
@@ -296,13 +297,15 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             event_type = (query.get("event_type") or [""])[0] or None
             limit = int((query.get("limit") or ["20"])[0] or 20)
+            conversation_id = (query.get("conversation_id") or ["default"])[0] or "default"
             store = MemoryStore()
             payload = json.dumps(
                 {
                     "ok": True,
                     "backend": store.backend,
                     "items": store.get_recent_events(limit, event_type),
-                    "messages": store.get_recent_messages(limit=limit),
+                    "messages": store.get_recent_messages(conversation_id=conversation_id, limit=limit),
+                    "conversations": store.list_conversations(limit),
                     "learned_context": store.get_learned_context(limit),
                     "tracked_entities": store.get_tracked_entities(limit),
                     "recent_topics": store.get_recent_topics(min(limit, 20)),

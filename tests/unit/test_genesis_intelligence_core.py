@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from api.main import create_app
+from app.settings import load_settings
 from integrations.fmp.client import FmpClient
 from services.genesis.agent_router import AgentRouter
 from services.genesis.chart_image_analysis import analyze_chart_image
@@ -26,6 +28,7 @@ from services.genesis.technical_analysis import compute_technical_indicators
 from services.genesis.technical_agent import TechnicalAgent
 from services.genesis.ticker_parser import extract_tickers_from_prompt
 from services.genesis.tool_router import route_message
+from services.genesis.weather_tool import get_weather_answer
 
 
 class GenesisTickerParserTests(unittest.TestCase):
@@ -182,13 +185,107 @@ class GenesisToolRouterTests(unittest.TestCase):
         mock_quote.assert_called_once_with("NVDA")
         self.assertIn("$905.25", payload["answer"])
 
-    def test_weather_fallback_is_honest(self) -> None:
+    @patch("services.genesis.weather_tool.urllib.request.urlopen")
+    @patch("services.genesis.weather_tool.load_settings")
+    def test_weather_uses_open_meteo_without_weather_key(self, mock_settings: Mock, mock_urlopen: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(weather_api_key="")
+
+        class Response:
+            def __init__(self, payload: dict):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        mock_urlopen.side_effect = [
+            Response(
+                {
+                    "results": [
+                        {
+                            "name": "Los Mochis",
+                            "admin1": "Sinaloa",
+                            "country": "Mexico",
+                            "latitude": 25.79,
+                            "longitude": -108.99,
+                        }
+                    ]
+                }
+            ),
+            Response(
+                {
+                    "current": {
+                        "temperature_2m": 28.4,
+                        "apparent_temperature": 30.0,
+                        "relative_humidity_2m": 61,
+                        "precipitation": 0,
+                        "rain": 0,
+                        "weather_code": 2,
+                        "wind_speed_10m": 9.3,
+                        "time": "2026-05-06T12:00",
+                    },
+                    "daily": {
+                        "temperature_2m_max": [35.1],
+                        "temperature_2m_min": [22.7],
+                        "precipitation_probability_max": [8],
+                    },
+                }
+            ),
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
-            payload = route_message("como esta el clima en Mazatlan", memory=store)
+            payload = route_message("como esta el clima en Los Mochis", memory=store)
 
         self.assertEqual(payload["intent"], "weather")
-        self.assertIn("No tengo proveedor de clima", payload["answer"])
+        self.assertEqual(payload["tickers"], [])
+        self.assertEqual(payload["weather"]["source"], "open_meteo")
+        self.assertIn("Los Mochis, Sinaloa, Mexico", payload["answer"])
+        self.assertIn("28.4 C", payload["answer"])
+
+    @patch("services.genesis.weather_tool.load_settings")
+    def test_weather_without_city_asks_for_location(self, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(weather_api_key="")
+        payload = get_weather_answer("como esta el clima")
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["source"], "weather_missing_city")
+        self.assertIn("Dime la ciudad", payload["answer"])
+
+    @patch("services.genesis.weather_tool.urllib.request.urlopen")
+    @patch("services.genesis.weather_tool.load_settings")
+    def test_weather_uses_provider_when_key_exists(self, mock_settings: Mock, mock_urlopen: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(weather_api_key="weather-key")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "name": "Los Mochis",
+                        "weather": [{"description": "cielo claro"}],
+                        "main": {"temp": 28.2, "feels_like": 30.1, "humidity": 62},
+                        "wind": {"speed": 3.4},
+                        "dt": 1760000000,
+                    }
+                ).encode("utf-8")
+
+        mock_urlopen.return_value = Response()
+        payload = get_weather_answer("como esta el clima en Los Mochis")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["source"], "openweather")
+        self.assertEqual(payload["city"], "Los Mochis")
+        self.assertIn("28.2 C", payload["answer"])
 
     def test_briefing_and_market_overview_do_not_use_fake_tickers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,6 +347,31 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertIsInstance(ResponseComposer(), ResponseComposer)
         with patch("services.genesis.llm_orchestrator.load_settings", return_value=SimpleNamespace(genesis_llm_enabled=False, openai_api_key="", genesis_llm_model="test")):
             self.assertFalse(LlmOrchestrator().enabled())
+
+    def test_llm_model_defaults_to_gpt_55_when_missing(self) -> None:
+        with patch.dict(os.environ, {"GENESIS_LLM_ENABLED": "true", "OPENAI_API_KEY": "test-key"}, clear=True):
+            settings = load_settings()
+
+        self.assertTrue(settings.genesis_llm_enabled)
+        self.assertEqual(settings.genesis_llm_model, "gpt-5.5")
+
+    def test_llm_model_uses_configured_value(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GENESIS_LLM_ENABLED": "true", "OPENAI_API_KEY": "test-key", "GENESIS_LLM_MODEL": "gpt-5.5"},
+            clear=True,
+        ):
+            settings = load_settings()
+
+        self.assertEqual(settings.genesis_llm_model, "gpt-5.5")
+
+    def test_llm_falls_back_without_openai_key(self) -> None:
+        with patch("services.genesis.llm_orchestrator.load_settings", return_value=SimpleNamespace(genesis_llm_enabled=True, openai_api_key="", genesis_llm_model="gpt-5.5")):
+            result = LlmOrchestrator().compose("hola", {"api_key": "SECRET", "price": 10}, "fallback local")
+
+        self.assertFalse(result["used_llm"])
+        self.assertEqual(result["reason"], "llm_disabled")
+        self.assertEqual(result["answer"], "fallback local")
 
 
 class GenesisReturnsEngineTests(unittest.TestCase):

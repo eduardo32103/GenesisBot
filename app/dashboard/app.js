@@ -5,7 +5,7 @@ function initialChatMessage() {
   return {
     id: `welcome-${Date.now()}`,
     role: "assistant",
-    text: "Hola. ¿Qué quieres revisar hoy?",
+    text: "Hola. Que quieres revisar hoy?",
   };
 }
 
@@ -49,6 +49,8 @@ const appState = {
   refreshPromise: null,
   chatHistoryOpen: false,
   chatMessages: [initialChatMessage()],
+  chatConversations: [],
+  currentConversationId: `chat-${Date.now()}`,
 };
 
 const REFRESH_MS = 15000;
@@ -85,6 +87,31 @@ function nextMessageId() {
 
 function itemTicker(item) {
   return normalizeTicker(item?.ticker || item?.symbol);
+}
+
+const FRIENDLY_ASSET_NAMES = {
+  "BZ=F": "Brent Crude Oil",
+  BNO: "United States Brent Oil Fund",
+  "BTC-USD": "Bitcoin",
+  "ETH-USD": "Ethereum",
+  "SOL-USD": "Solana",
+  IAU: "iShares Gold Trust",
+  SLV: "iShares Silver Trust",
+  IXC: "iShares Global Energy ETF",
+  SPY: "S&P 500 ETF",
+  QQQ: "Nasdaq 100 ETF",
+  DIA: "Dow Jones ETF",
+};
+
+function assetDisplayName(itemOrTicker) {
+  const ticker = typeof itemOrTicker === "string" ? normalizeTicker(itemOrTicker) : itemTicker(itemOrTicker);
+  const raw = typeof itemOrTicker === "string"
+    ? ""
+    : String(itemOrTicker?.name || itemOrTicker?.display_name || itemOrTicker?.companyName || "").trim();
+  if (FRIENDLY_ASSET_NAMES[ticker] && (!raw || normalizeTicker(raw) === ticker || raw.length <= 5)) {
+    return FRIENDLY_ASSET_NAMES[ticker];
+  }
+  return raw || FRIENDLY_ASSET_NAMES[ticker] || ticker;
 }
 
 function itemUnits(item) {
@@ -493,6 +520,16 @@ function chartDebugMarkup(payload) {
   `;
 }
 
+function chartMaxNote(payload) {
+  if (!payload) return "";
+  const years = numberOrNull(payload.max_history_years ?? payload.source?.max_history_years);
+  const reason = payload.truncation_reason || payload.source?.truncation_reason || "";
+  if (years === null) return "";
+  if (years > 5.05) return `MAX usa ${years.toFixed(2)} anos reales de historico FMP.`;
+  if (years > 0) return `MAX disponible: ${years.toFixed(2)} anos. ${reason ? cleanCopy(reason) : "FMP no entrego mas historico para este activo."}`;
+  return payload.ok === false ? "MAX sin datos historicos en este entorno." : "";
+}
+
 function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
   const normalizedTicker = normalizeTicker(ticker);
   const normalizedRange = CHART_RANGES.includes(String(range).toUpperCase()) ? String(range).toUpperCase() : "1Y";
@@ -502,7 +539,7 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
   const quotePrice = payload?.quote?.price ?? payload?.summary?.end_price;
   const change = payload?.quote?.change ?? payload?.summary?.change;
   const changePct = payload?.quote?.changesPercentage ?? payload?.summary?.change_pct;
-  const title = payload?.name || normalizedTicker;
+  const title = assetDisplayName({ ticker: normalizedTicker, name: payload?.name });
   return `
     <section class="chart-card" data-chart-card="${escapeHtml(normalizedTicker)}">
       <div class="chart-card-header">
@@ -522,6 +559,7 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
         ${state.loading ? `<div class="chart-empty">Cargando grafica...</div>` : chartSvgMarkup(payload)}
       </div>
       ${payload ? chartReturnsMarkup(payload) : ""}
+      ${payload ? `<p class="chart-source-note">${escapeHtml(chartMaxNote(payload))}</p>` : ""}
       ${target.startsWith("detail:") ? chartDebugMarkup(payload) : ""}
       <p class="chart-read">${escapeHtml(chartReading(payload))}</p>
     </section>
@@ -872,16 +910,24 @@ function renderGenesisScreen() {
 }
 
 function chatHistoryPanelMarkup() {
-  const history = appState.chatMessages
-    .filter((message) => String(message.text || "").trim() && cleanCopy(message.text) !== "Hola. ¿Qué quieres revisar hoy?")
-    .slice(-8)
-    .reverse();
+  const conversations = Array.isArray(appState.chatConversations) ? appState.chatConversations : [];
+  const history = conversations.length
+    ? conversations
+    : appState.chatMessages
+      .filter((message) => String(message.text || "").trim() && cleanCopy(message.text) !== "Hola. Que quieres revisar hoy?")
+      .slice(-8)
+      .reverse()
+      .map((message) => ({
+        conversation_id: appState.currentConversationId,
+        summary: cleanCopy(message.text),
+        updated_at: "",
+      }));
   return `
     <div class="chat-history-panel">
-      ${history.length ? history.map((message) => `
-        <button type="button" data-chat-history-pick="${escapeHtml(message.id)}">
-          <small>${message.role === "user" ? "Tu" : "Genesis"}</small>
-          <span>${escapeHtml(cleanCopy(message.text).slice(0, 96))}</span>
+      ${history.length ? history.map((conversation) => `
+        <button type="button" data-chat-history-pick="${escapeHtml(conversation.conversation_id || appState.currentConversationId)}">
+          <small>${escapeHtml(formatDate(conversation.updated_at))}</small>
+          <span>${escapeHtml(cleanCopy(conversation.summary || conversation.conversation_id || "Chat Genesis").slice(0, 96))}</span>
         </button>
       `).join("") : `<span>Sin historial visible todavia.</span>`}
     </div>
@@ -929,6 +975,7 @@ async function submitGenesisQuestion(event) {
       const dataUrl = await fileToDataUrl(imageFile);
       const payload = await postJson("/api/genesis/analyze-image", {
         message: question,
+        conversation_id: appState.currentConversationId,
         image: {
           name: imageFile.name,
           type: imageFile.type,
@@ -947,7 +994,7 @@ async function submitGenesisQuestion(event) {
   if (chartIntent) {
     let routed = null;
     try {
-      routed = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen });
+      routed = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId });
       if (routed?.chart?.ticker) chartIntent.ticker = routed.chart.ticker;
     } catch (error) {
       routed = null;
@@ -966,7 +1013,7 @@ async function submitGenesisQuestion(event) {
     return;
   }
   try {
-    const payload = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen });
+    const payload = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId });
     const answer = payload.assistant_narrative || payload.answer || "No tengo lectura suficiente.";
     appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: cleanCopy(answer) });
   } catch (error) {
@@ -984,21 +1031,34 @@ async function submitGenesisQuestion(event) {
 async function loadGenesisMemoryHistory() {
   try {
     const payload = await getJson("/api/genesis/memory/recent?limit=12");
+    appState.chatConversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
+  } catch (error) {
+    // Memory is additive; the chat stays usable if local dev has no store yet.
+  }
+}
+
+async function openGenesisConversation(conversationId) {
+  const id = String(conversationId || "").trim();
+  if (!id) return;
+  try {
+    const payload = await getJson(`/api/genesis/memory/recent?limit=40&conversation_id=${encodeURIComponent(id)}`);
+    appState.currentConversationId = id;
+    appState.chatConversations = Array.isArray(payload.conversations) ? payload.conversations : appState.chatConversations;
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const cleanMessages = messages
       .filter((item) => ["user", "assistant"].includes(String(item.role || "")) && String(item.content || "").trim())
-      .slice(-12)
+      .slice(-40)
       .map((item, index) => ({
         id: `memory-${index}-${Date.now()}`,
         role: item.role === "user" ? "user" : "assistant",
         text: item.content,
       }));
-    if (cleanMessages.length) {
-      appState.chatMessages = cleanMessages;
-      if (appState.activeScreen === "genesis") renderGenesisScreen();
-    }
+    appState.chatMessages = cleanMessages.length ? cleanMessages : [initialChatMessage()];
+    appState.chatHistoryOpen = false;
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
   } catch (error) {
-    // Memory is additive; the chat stays usable if local dev has no store yet.
+    toast("No pude abrir ese chat.", "error");
   }
 }
 
@@ -1009,7 +1069,7 @@ async function loadNews() {
   try {
     const [macroResult, briefingResult] = await Promise.allSettled([
       getJson("/api/dashboard/macro-activity"),
-      postJson("/api/genesis/ask", { message: "dame resumen del dia", context: "news" }),
+      postJson("/api/genesis/ask", { message: "dame resumen del dia", context: "news", conversation_id: appState.currentConversationId }),
     ]);
     appState.newsSnapshot = {
       macro: macroResult.status === "fulfilled" ? macroResult.value : null,
@@ -1255,8 +1315,7 @@ function emptyStateMarkup(title, text) {
 }
 
 function shortAssetName(item) {
-  const ticker = itemTicker(item);
-  const raw = String(item?.name || item?.display_name || ticker || "").trim();
+  const raw = assetDisplayName(item);
   return raw.length > 34 ? `${raw.slice(0, 31)}...` : raw;
 }
 
@@ -1612,7 +1671,7 @@ function renderAssetDetailScreen() {
       <section class="detail-hero">
         <div>
           <strong>${escapeHtml(normalized)}</strong>
-          <p>${escapeHtml(shortAssetName(item))}</p>
+          <p>${escapeHtml(assetDisplayName(item))}</p>
         </div>
         <div class="detail-price">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
@@ -1706,7 +1765,7 @@ function openAssetSheet(ticker) {
   body.innerHTML = `
     <span class="app-kicker">${isPaper ? "Paper" : isTracked ? "Seguimiento" : "No agregado"}</span>
     <h2>${escapeHtml(normalized)}</h2>
-    <p class="asset-name">${escapeHtml(item.name || item.display_name || normalized)}</p>
+    <p class="asset-name">${escapeHtml(assetDisplayName(item))}</p>
     <div class="sheet-price ${movementTone(item)}">
       <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
       <span>${escapeHtml(dailyMoveLabel(item))}</span>
@@ -1759,7 +1818,7 @@ function openPaperBuySheet(ticker) {
   const item = findAsset(normalized) || { ticker: normalized };
   const price = itemPrice(item);
   document.getElementById("paper-buy-ticker").value = normalized;
-  document.getElementById("paper-buy-label").value = `${normalized} | ${item.name || item.display_name || normalized}`;
+  document.getElementById("paper-buy-label").value = `${normalized} | ${assetDisplayName(item)}`;
   document.getElementById("paper-buy-live-price").value = price === null ? "Sin precio" : `${money(price)} | ${priceSourceLabel(item)}`;
   document.getElementById("paper-buy-units").value = "";
   document.getElementById("paper-buy-entry").value = price === null ? "" : String(price);
@@ -1815,6 +1874,7 @@ function bindGlobalEvents() {
     if (event.target.closest("[data-chat-new]")) {
       event.preventDefault();
       appState.chatHistoryOpen = false;
+      appState.currentConversationId = `chat-${Date.now()}`;
       appState.chatMessages = [initialChatMessage()];
       renderGenesisScreen();
       return;
@@ -1823,6 +1883,7 @@ function bindGlobalEvents() {
     if (event.target.closest("[data-chat-clear]")) {
       event.preventDefault();
       appState.chatHistoryOpen = false;
+      appState.currentConversationId = `chat-${Date.now()}`;
       appState.chatMessages = [initialChatMessage()];
       renderGenesisScreen();
       toast("Chat actual limpio. La memoria util se conserva.", "info");
@@ -1839,10 +1900,7 @@ function bindGlobalEvents() {
     const historyPick = event.target.closest("[data-chat-history-pick]");
     if (historyPick) {
       event.preventDefault();
-      appState.chatHistoryOpen = false;
-      const thread = document.getElementById("genesis-thread");
-      if (thread) thread.scrollTop = thread.scrollHeight;
-      renderGenesisScreen();
+      openGenesisConversation(historyPick.dataset.chatHistoryPick);
       return;
     }
 
