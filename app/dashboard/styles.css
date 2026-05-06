@@ -1320,6 +1320,30 @@ input:focus-visible {
   gap: 8px;
 }
 
+.news-section {
+  display: grid;
+  gap: 9px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 2px 0;
+}
+
+.section-heading strong {
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.section-heading small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
 .news-card {
   display: grid;
   gap: 10px;
@@ -1355,6 +1379,31 @@ input:focus-visible {
   color: var(--text);
   font-size: 1.1rem;
   font-weight: 900;
+}
+
+.news-thumb.is-placeholder {
+  background:
+    radial-gradient(circle at 30% 20%, rgba(123, 224, 173, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(145, 167, 255, 0.16), rgba(255, 255, 255, 0.03));
+}
+
+.news-thumb.placeholder-crypto {
+  background:
+    radial-gradient(circle at 35% 25%, rgba(239, 189, 111, 0.28), transparent 36%),
+    linear-gradient(135deg, rgba(239, 189, 111, 0.14), rgba(255, 255, 255, 0.03));
+}
+
+.news-thumb.placeholder-commodity {
+  background:
+    radial-gradient(circle at 35% 25%, rgba(127, 217, 223, 0.22), transparent 36%),
+    linear-gradient(135deg, rgba(127, 217, 223, 0.13), rgba(255, 255, 255, 0.03));
+}
+
+.news-thumb.placeholder-geopolitics,
+.news-thumb.placeholder-macro {
+  background:
+    radial-gradient(circle at 35% 25%, rgba(236, 127, 119, 0.2), transparent 36%),
+    linear-gradient(135deg, rgba(236, 127, 119, 0.11), rgba(255, 255, 255, 0.03));
 }
 
 .news-thumb img {
@@ -1399,6 +1448,10 @@ input:focus-visible {
 }
 
 .news-detail-sheet {
+  gap: 12px;
+}
+
+.event-detail-sheet {
   gap: 12px;
 }
 
@@ -1918,6 +1971,69 @@ input:focus-visible {
   background: rgba(255, 255, 255, 0.035);
   color: var(--soft);
   text-transform: none;
+}
+
+.event-main {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.event-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.event-metric-grid span {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.event-metric-grid small {
+  display: block;
+  color: var(--faint);
+  font-size: 0.62rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.event-metric-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-flow-chart {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  height: 96px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.detail-flow-chart i {
+  width: 100%;
+  min-width: 10px;
+  max-width: 24px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(123, 224, 173, 0.76), rgba(145, 167, 255, 0.18));
 }
 
 .whale-search {

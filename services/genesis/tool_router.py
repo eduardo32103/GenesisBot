@@ -72,6 +72,21 @@ def route_message(
         structured = composer.market_briefing(overview)
         return _payload("market_overview", overview["answer"], [], extra={"overview": overview, "structured": structured, "kind": structured["kind"]}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
+    if route.intent == "macro_news":
+        overview = get_news_macro_agent().market_overview(clean)
+        store.save_event("news_brief", {"summary": overview["answer"], "news_count": len(overview.get("news") or [])}, "macro", "media")
+        structured = composer.market_briefing(overview)
+        structured["kind"] = "news_brief"
+        return _payload(
+            "macro_news",
+            overview["answer"],
+            tickers,
+            extra={"overview": overview, "briefing": overview, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
     if route.intent == "portfolio_summary":
         briefing = get_portfolio_agent().summary()
         store.save_event("portfolio_briefing", {"summary": briefing["answer"]}, "portfolio", "media")
@@ -193,6 +208,7 @@ def _response_type_for_intent(intent: str) -> str:
         "weather": "weather",
         "alerts": "alerts_digest",
         "whale_activity": "whale_flow",
+        "macro_news": "news_brief",
         "portfolio_summary": "general_assistant",
         "tracking_summary": "general_assistant",
         "image_chart_analysis": "chart_analysis",

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=genesis-phase73-visual-news-whales">
+  <link rel="stylesheet" href="./styles.css?v=genesis-phase74-news-alerts-whales">
 </head>
 <body>
   <main class="phone-shell" id="genesis-app">
@@ -107,6 +107,14 @@
     </section>
   </aside>
 
+  <aside class="asset-sheet" id="event-sheet" hidden>
+    <div class="sheet-backdrop" data-event-close></div>
+    <section class="sheet-card event-detail-sheet">
+      <button class="sheet-close" type="button" data-event-close>Cerrar</button>
+      <div id="event-sheet-body"></div>
+    </section>
+  </aside>
+
   <aside class="asset-sheet" id="portfolio-close-modal" hidden>
     <div class="sheet-backdrop" data-close-paper-cancel></div>
     <form class="sheet-card sheet-form" id="portfolio-close-form">
@@ -123,6 +131,6 @@
   </aside>
 
   <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
-  <script src="./app.js?v=genesis-phase73-visual-news-whales"></script>
+  <script src="./app.js?v=genesis-phase74-news-alerts-whales"></script>
 </body>
 </html>

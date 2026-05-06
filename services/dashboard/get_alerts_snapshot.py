@@ -266,18 +266,31 @@ def _derived_technical_alerts() -> list[dict[str, Any]]:
         avg_volume = _num(row.get("avg_volume") or row.get("average_volume") or row.get("avgVolume"))
         day_high = _num(row.get("day_high") or row.get("dayHigh"))
         day_low = _num(row.get("day_low") or row.get("dayLow"))
+        context = {
+            "price": price,
+            "change": _num(row.get("daily_change") or row.get("change")),
+            "change_pct": pct,
+            "volume": volume,
+            "avg_volume": avg_volume,
+            "relative_volume": (volume / avg_volume if volume and avg_volume else _num(row.get("relative_volume") or row.get("relativeVolume"))),
+            "day_high": day_high,
+            "day_low": day_low,
+            "support": _num(row.get("support") or row.get("support_level")),
+            "resistance": _num(row.get("resistance") or row.get("resistance_level")),
+        }
         if pct is not None and abs(pct) >= 3:
             direction = "alza" if pct > 0 else "baja"
-            alerts.append(_technical_alert(ticker, f"Movimiento fuerte de {direction}", f"{ticker} se mueve {pct:+.2f}% en la sesion.", "price_change", pct, now))
+            alerts.append(_technical_alert(ticker, f"Movimiento fuerte de {direction}", f"{ticker} se mueve {pct:+.2f}% en la sesion.", "price_change", pct, now, context))
         if volume and avg_volume and avg_volume > 0 and volume / avg_volume >= 1.8:
             rel = volume / avg_volume
-            alerts.append(_technical_alert(ticker, "Volumen inusual", f"{ticker} opera {rel:.1f}x su volumen promedio disponible.", "unusual_volume", rel, now))
+            context["relative_volume"] = rel
+            alerts.append(_technical_alert(ticker, "Volumen inusual", f"{ticker} opera {rel:.1f}x su volumen promedio disponible.", "unusual_volume", rel, now, context))
         if price and day_high and day_low and day_high > day_low:
             position = (price - day_low) / (day_high - day_low)
             if position >= 0.92:
-                alerts.append(_technical_alert(ticker, "Precio cerca de resistencia diaria", f"{ticker} esta cerca del maximo del dia; vigilar ruptura con volumen.", "range_breakout", position, now))
+                alerts.append(_technical_alert(ticker, "Precio cerca de resistencia diaria", f"{ticker} esta cerca del maximo del dia; vigilar ruptura con volumen.", "range_breakout", position, now, context))
             elif position <= 0.08:
-                alerts.append(_technical_alert(ticker, "Precio cerca de soporte diario", f"{ticker} esta cerca del minimo del dia; vigilar defensa del soporte.", "range_support", position, now))
+                alerts.append(_technical_alert(ticker, "Precio cerca de soporte diario", f"{ticker} esta cerca del minimo del dia; vigilar defensa del soporte.", "range_support", position, now, context))
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for alert in alerts:
@@ -289,9 +302,14 @@ def _derived_technical_alerts() -> list[dict[str, Any]]:
     return unique[:8]
 
 
-def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, strength: float, now: str) -> dict[str, Any]:
+def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, strength: float, now: str, context: dict[str, Any]) -> dict[str, Any]:
     severity = "high" if abs(strength) >= 5 else "medium"
     impact = "bullish" if strength > 0 and alert_type != "range_support" else "bearish" if strength < 0 else "neutral"
+    price = context.get("price")
+    volume = context.get("volume")
+    dollar_volume = price * volume if price is not None and volume is not None else None
+    day_low = context.get("day_low")
+    day_high = context.get("day_high")
     return {
         "alert_id": f"technical:{ticker}:{alert_type}",
         "alert_type": alert_type,
@@ -307,8 +325,20 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "severity": severity,
         "impact": impact,
         "confidence": "medium",
+        "direction": "inflow" if impact == "bullish" else "outflow" if impact == "bearish" else "neutral",
+        "price": price,
+        "change": context.get("change"),
+        "change_pct": context.get("change_pct"),
+        "volume": volume,
+        "avg_volume": context.get("avg_volume"),
+        "relative_volume": context.get("relative_volume"),
+        "dollar_volume": dollar_volume,
+        "support": context.get("support") or day_low,
+        "resistance": context.get("resistance") or day_high,
+        "day_range": {"low": day_low, "high": day_high},
+        "mini_series": [context.get("change_pct") or 0, strength, context.get("relative_volume") or 0],
         "state_label": "Vigilancia",
-        "evidence": {"derived_from": "radar_snapshot", "source": "technical"},
+        "evidence": {"derived_from": "radar_snapshot", "source": "technical", **{key: value for key, value in context.items() if value is not None}},
         "genesis_reading": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
     }
 

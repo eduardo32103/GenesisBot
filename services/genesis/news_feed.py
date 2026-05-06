@@ -10,6 +10,7 @@ from integrations.fmp.client import FmpClient
 from services.genesis.ticker_parser import normalize_ticker
 
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_SOURCE_STATUS: dict[str, Any] = {}
 _NEWS_TTL_SECONDS = 15 * 60
 _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", "BTC-USD", "BZ=F"]
 
@@ -20,19 +21,26 @@ def get_recent_market_news(tickers: list[str] | None = None, *, limit: int = 12,
     now = time.monotonic()
     cached = _CACHE.get(cache_key)
     if cached and now - cached[0] <= _NEWS_TTL_SECONDS:
+        _set_source_status("fmp_market_news", "ok", elapsed_ms=0, cache_hit=True, count=len(cached[1]))
         return [dict(item, cache_hit=True) for item in cached[1]]
 
     started = time.monotonic()
     raw_news: list[dict[str, Any]] = []
+    status = "missing_env"
+    safe_error = ""
     try:
         settings = load_settings()
         if getattr(settings, "fmp_api_key", "") and getattr(settings, "fmp_live_enabled", False):
+            status = "empty"
             client = FmpClient(settings.fmp_api_key)
             focus = safe_tickers or _GLOBAL_TICKERS
             raw_news.extend(client.get_market_news(focus, limit=max(int(limit) * 2, 12)) or [])
             for ticker in focus[:8]:
                 raw_news.extend(client.get_stock_news(ticker, limit=3) or [])
+            status = "ok" if raw_news else "empty"
     except Exception:
+        status = "unavailable"
+        safe_error = "news source unavailable"
         raw_news = raw_news or []
 
     normalized = _normalize_news(raw_news, safe_tickers, max_age_days=max_age_days)
@@ -43,8 +51,14 @@ def get_recent_market_news(tickers: list[str] | None = None, *, limit: int = 12,
     for item in output:
         item["elapsed_ms"] = elapsed_ms
         item["cache_hit"] = False
+        item["source_status"] = status
     _CACHE[cache_key] = (now, output)
+    _set_source_status("fmp_market_news", status, elapsed_ms=elapsed_ms, cache_hit=False, count=len(output), last_error_safe=safe_error)
     return output
+
+
+def get_news_source_status() -> dict[str, Any]:
+    return dict(_SOURCE_STATUS)
 
 
 def _safe_tickers(tickers: list[str] | None) -> list[str]:
@@ -95,8 +109,16 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "genesis_takeaway": _takeaway(title, impact, tickers),
             "why_it_matters": _why_it_matters(impact, tickers),
         }
+        recency = _recency_score(published_at)
+        relevance = _relevance_score(item, focus)
+        item["recency_score"] = recency
+        item["relevance_score"] = relevance
+        item["is_important"] = _is_important(item, relevance, recency)
+        item["placeholder_key"] = item["category"]
+        item["risk"] = _risk_for_impact(impact)
+        item["watch"] = _watch_for_news(impact, tickers)
         items.append(item)
-    return sorted(items, key=lambda item: (_relevance_score(item, focus), item.get("published_at") or ""), reverse=True)
+    return sorted(items, key=lambda item: (item.get("is_important") is True, item.get("relevance_score") or 0, item.get("recency_score") or 0), reverse=True)
 
 
 def _published_at(raw: dict[str, Any]) -> datetime | None:
@@ -210,6 +232,59 @@ def _relevance_score(item: dict[str, Any], focus: set[str]) -> int:
     return score
 
 
+def _recency_score(published_at: datetime | None) -> int:
+    if not published_at:
+        return 0
+    age = datetime.now(timezone.utc) - published_at
+    if age <= timedelta(hours=24):
+        return 5
+    if age <= timedelta(days=7):
+        return 3
+    if age <= timedelta(days=30):
+        return 1
+    return 0
+
+
+def _is_important(item: dict[str, Any], relevance: int, recency: int) -> bool:
+    category = str(item.get("category") or "").casefold()
+    impact = str(item.get("impact") or "").casefold()
+    if relevance >= 3 and recency >= 1:
+        return True
+    if category in {"macro", "geopolitics", "commodity", "earnings"} and recency >= 1:
+        return True
+    if impact in {"bullish", "bearish"} and recency >= 3:
+        return True
+    return False
+
+
+def _risk_for_impact(impact: str) -> str:
+    if impact == "bullish":
+        return "Riesgo: perseguir precio sin confirmacion de volumen."
+    if impact == "bearish":
+        return "Riesgo: aumento de volatilidad o perdida de soporte."
+    return "Riesgo: impacto todavia no confirmado por precio."
+
+
+def _watch_for_news(impact: str, tickers: list[str]) -> str:
+    asset = ", ".join(tickers[:3]) or "activos relacionados"
+    if impact == "bullish":
+        return f"Vigilar si {asset} confirma ruptura con volumen."
+    if impact == "bearish":
+        return f"Vigilar defensa de soporte en {asset} y reaccion del volumen."
+    return f"Vigilar reaccion de precio en {asset} antes de operar."
+
+
+def _set_source_status(source: str, status: str, *, elapsed_ms: int, cache_hit: bool, count: int, last_error_safe: str = "") -> None:
+    _SOURCE_STATUS[source] = {
+        "source": source,
+        "status": status,
+        "last_error_safe": last_error_safe,
+        "elapsed_ms": elapsed_ms,
+        "cache_hit": cache_hit,
+        "count": count,
+    }
+
+
 def _news_id(title: str, url: object) -> str:
     raw = f"{title}|{url}"
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
@@ -234,6 +309,12 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "category": "macro",
         "genesis_takeaway": "Sin noticia externa confirmada; operar solo con precio, volumen y niveles.",
         "why_it_matters": "Evita una pantalla vacia sin inventar titulares ni fuentes.",
+        "is_important": True,
+        "recency_score": 1,
+        "relevance_score": 1,
+        "placeholder_key": "macro",
+        "risk": "Riesgo: falta catalizador externo confirmado.",
+        "watch": "Vigilar precio, volumen y alertas de tus activos.",
         "elapsed_ms": 0,
         "cache_hit": False,
     }

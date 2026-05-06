@@ -4,7 +4,7 @@ from typing import Any
 
 from app.settings import load_settings
 from services.genesis.market_format import format_market_number, format_signed_money, format_signed_percent, number_or_none
-from services.genesis.news_feed import get_recent_market_news
+from services.genesis.news_feed import get_news_source_status, get_recent_market_news
 from services.genesis.price_agent import get_price_agent
 from services.genesis.ticker_parser import normalize_ticker
 
@@ -58,6 +58,7 @@ class MarketOverviewAgent:
                 "news_count": len(news_items),
                 "news_cache_hit": any(bool(item.get("cache_hit")) for item in news_items),
                 "news_elapsed_ms": max([int(item.get("elapsed_ms") or 0) for item in news_items] or [0]),
+                "sources": _source_status_sources(confirmed),
                 "alerts_count": len(alert_items),
                 "fmp_live": _fmp_live_enabled(),
                 "whales_confirmed": 0,
@@ -311,6 +312,42 @@ def _fmp_live_enabled() -> bool:
         return bool(getattr(settings, "fmp_api_key", "") and getattr(settings, "fmp_live_enabled", False))
     except Exception:
         return False
+
+
+def _source_status_sources(confirmed_quotes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    try:
+        settings = load_settings()
+    except Exception:
+        settings = None
+
+    fmp_ready = bool(settings and getattr(settings, "fmp_api_key", "") and getattr(settings, "fmp_live_enabled", False))
+    openai_ready = bool(settings and getattr(settings, "openai_api_key", "") and getattr(settings, "genesis_llm_enabled", False))
+    vision_ready = bool(settings and getattr(settings, "openai_api_key", "") and getattr(settings, "genesis_vision_enabled", False))
+    db_ready = bool(settings and getattr(settings, "database_url", ""))
+    news_status = get_news_source_status().get("fmp_market_news", {})
+
+    def item(source: str, status: str, *, elapsed_ms: int | None = None, cache_hit: bool = False, last_error_safe: str = "") -> dict[str, Any]:
+        return {
+            "source": source,
+            "status": status,
+            "last_error_safe": last_error_safe,
+            "elapsed_ms": elapsed_ms,
+            "cache_hit": cache_hit,
+        }
+
+    return {
+        "fmp_quotes": item("fmp_quotes", "ok" if confirmed_quotes else "empty" if fmp_ready else "missing_env", last_error_safe="" if confirmed_quotes else "No quote confirmed in this response."),
+        "fmp_historical": item("fmp_historical", "empty" if fmp_ready else "missing_env", last_error_safe="Historical data is reserved for asset detail/chart requests."),
+        "fmp_news": news_status or item("fmp_news", "empty" if fmp_ready else "missing_env", last_error_safe="No news query completed yet."),
+        "fmp_market_news": news_status or item("fmp_market_news", "empty" if fmp_ready else "missing_env", last_error_safe="No market news query completed yet."),
+        "fmp_insider": item("fmp_insider", "empty" if fmp_ready else "missing_env", last_error_safe="No insider query completed in this response."),
+        "fmp_institutional": item("fmp_institutional", "empty" if fmp_ready else "missing_env", last_error_safe="No institutional ownership query completed in this response."),
+        "fmp_ownership": item("fmp_ownership", "empty" if fmp_ready else "missing_env", last_error_safe="No ownership query completed in this response."),
+        "openai_llm": item("openai_llm", "ok" if openai_ready else "missing_env", last_error_safe="" if openai_ready else "OPENAI_API_KEY or GENESIS_LLM_ENABLED is not active in this runtime."),
+        "openai_vision": item("openai_vision", "ok" if vision_ready else "missing_env", last_error_safe="" if vision_ready else "Vision is not active in this runtime."),
+        "memory_store": item("memory_store", "ok", last_error_safe="" if db_ready else "Using local fallback memory store in this runtime."),
+        "open_meteo": item("open_meteo", "ok", last_error_safe="Open-Meteo fallback is available without secrets."),
+    }
 
 
 def get_market_overview_agent() -> MarketOverviewAgent:

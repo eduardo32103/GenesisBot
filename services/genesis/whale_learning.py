@@ -157,6 +157,9 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
     price = _num(row.get("price") or row.get("transaction_price") or whale.get("price"))
     current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
     estimated_value = amount_usd if amount_usd is not None else (units * (price or current_price) if units is not None and (price or current_price) else None)
+    volume = _num(row.get("volume") or row.get("session_volume"))
+    relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio"))
+    dollar_volume = volume * current_price if volume is not None and current_price is not None else _num(row.get("dollar_volume") or row.get("dollarVolume"))
     date = str(row.get("money_flow_timestamp") or row.get("timestamp") or row.get("date") or "").strip()
     source = str(row.get("source") or whale.get("source") or "fmp").strip()
     confidence = str(whale.get("confidence") or row.get("confidence") or "medium").strip().lower()
@@ -180,6 +183,10 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "amount_usd": amount_usd,
         "current_price": current_price,
         "estimated_value": estimated_value,
+        "volume": volume,
+        "relative_volume": relative_volume,
+        "dollar_volume": dollar_volume,
+        "net_flow": estimated_value if action in {"buy", "accumulation"} else (-estimated_value if action in {"sell", "reduction", "distribution"} and estimated_value is not None else None),
         "date": date,
         "source": source,
         "confidence": confidence,
@@ -196,6 +203,16 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
     source = str(row.get("source") or "market_flow").strip()
     current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
     amount_usd = _num(row.get("amount_usd") or row.get("estimated_value") or row.get("value"))
+    volume = _num(row.get("volume") or row.get("total_volume") or row.get("session_volume"))
+    avg_volume = _num(row.get("avg_volume") or row.get("average_volume") or row.get("avgVolume"))
+    relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio") or row.get("intensity"))
+    if relative_volume is None and volume is not None and avg_volume:
+        relative_volume = volume / avg_volume
+    dollar_volume = _num(row.get("dollar_volume") or row.get("dollarVolume"))
+    if dollar_volume is None and volume is not None and current_price is not None:
+        dollar_volume = volume * current_price
+    if amount_usd is None:
+        amount_usd = dollar_volume
     event_type = "unusual_volume" if _has_unusual_volume(row) else "smart_money_estimate"
     direction = "alcista" if action in {"buy", "accumulation"} else "bajista" if action in {"sell", "distribution", "reduction"} else "neutral"
     return {
@@ -214,6 +231,11 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "amount_usd": amount_usd,
         "current_price": current_price,
         "estimated_value": amount_usd,
+        "volume": volume,
+        "avg_volume": avg_volume,
+        "relative_volume": relative_volume,
+        "dollar_volume": dollar_volume,
+        "net_flow": amount_usd if action in {"buy", "accumulation"} else (-amount_usd if action in {"sell", "distribution", "reduction"} and amount_usd is not None else None),
         "date": date,
         "source": source if source not in {"", "runtime"} else "technical",
         "confidence": confidence,
@@ -292,6 +314,14 @@ def _evidence(row: dict[str, Any]) -> dict[str, Any]:
         "amount_usd",
         "value",
         "shares",
+        "volume",
+        "avg_volume",
+        "average_volume",
+        "relative_volume",
+        "volume_ratio",
+        "current_price",
+        "price",
+        "dollar_volume",
     )
     return {key: row.get(key) for key in allowed if row.get(key) not in (None, "", [])}
 

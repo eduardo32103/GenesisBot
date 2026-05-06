@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from services.genesis.news_feed import get_recent_market_news
+from services.genesis.news_feed import get_news_source_status, get_recent_market_news
 
 
 class GenesisNewsFeedTests(unittest.TestCase):
@@ -46,7 +46,11 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(items[0]["impact"], "bullish")
         self.assertEqual(items[0]["image_url"], "https://example.com/nvda.jpg")
         self.assertEqual(items[0]["source"], "Market Source")
+        self.assertTrue(items[0]["is_important"])
+        self.assertGreaterEqual(items[0]["recency_score"], 1)
+        self.assertGreaterEqual(items[0]["relevance_score"], 1)
         self.assertIn("why_it_matters", items[0])
+        self.assertEqual(get_news_source_status()["fmp_market_news"]["status"], "ok")
 
     @patch("services.genesis.news_feed.FmpClient")
     @patch("services.genesis.news_feed.load_settings")
@@ -61,6 +65,7 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["source"], "Genesis")
         self.assertIn("Genesis mantiene vigilancia", items[0]["title"])
+        self.assertTrue(items[0]["is_important"])
 
 
 if __name__ == "__main__":

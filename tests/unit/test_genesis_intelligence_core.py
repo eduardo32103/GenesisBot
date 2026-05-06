@@ -141,6 +141,7 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("que aprendiste de mis consultas recientes").intent, "memory_query")
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
         self.assertEqual(router.route("dame una grafica de nvda con sma 50").intent, "chart_request")
+        self.assertEqual(router.route("que noticias afectan mis activos").intent, "macro_news")
 
     def test_app_config_exposes_genesis_intelligence_endpoints(self) -> None:
         app_config = create_app()
@@ -157,6 +158,38 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         self.assertEqual(payload["intent"], "greeting")
         self.assertIn("Hola", payload["answer"])
+
+    @patch("services.genesis.tool_router.get_news_macro_agent")
+    def test_news_question_uses_news_brief_visual_payload(self, mock_news_agent: Mock) -> None:
+        mock_news_agent.return_value.market_overview.return_value = {
+            "answer": "Noticias relevantes detectadas para tus activos.",
+            "summary": "Mercado atento a chips y energia.",
+            "tone": "neutral",
+            "movers": [],
+            "risks": [],
+            "alerts": [],
+            "whales": [],
+            "news": [
+                {
+                    "title": "NVIDIA updates AI demand outlook",
+                    "source": "FMP",
+                    "published_at": "2026-05-06T12:00:00Z",
+                    "impact": "bullish",
+                    "summary": "Demanda de IA sostiene el foco del mercado.",
+                }
+            ],
+            "watch": [],
+            "source_status": {"sources": {"fmp_news": {"status": "ok"}}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("que noticias afectan mis activos", memory=store)
+
+        self.assertEqual(payload["intent"], "macro_news")
+        self.assertEqual(payload["response_type"], "news_brief")
+        self.assertEqual(payload["kind"], "news_brief")
+        self.assertEqual(payload["structured"]["kind"], "news_brief")
+        self.assertEqual(len(payload["overview"]["news"]), 1)
 
     def test_time_request_is_not_ticker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -425,7 +458,7 @@ class GenesisToolRouterTests(unittest.TestCase):
     @patch("services.genesis.whale_learning.get_money_flow_causal_snapshot")
     def test_whale_agent_stores_estimated_flow_without_fake_entities(self, mock_causal: Mock, mock_detection: Mock, mock_settings: Mock) -> None:
         mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
-        mock_causal.return_value = {"items": [{"ticker": "BTC-USD", "primary_label": "volumen anormal", "source": "technical", "confidence": "media"}]}
+        mock_causal.return_value = {"items": [{"ticker": "BTC-USD", "primary_label": "volumen anormal", "source": "technical", "confidence": "media", "current_price": 100000, "volume": 12, "avg_volume": 6}]}
         mock_detection.return_value = {"items": []}
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
@@ -436,6 +469,8 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertFalse(payload["whales"]["fallback"])
         self.assertEqual(payload["whales"]["events"][0]["event_type"], "unusual_volume")
         self.assertEqual(payload["whales"]["events"][0]["entity_name"], "")
+        self.assertEqual(payload["whales"]["events"][0]["dollar_volume"], 1200000)
+        self.assertEqual(payload["whales"]["events"][0]["relative_volume"], 2)
         self.assertIn("no hay ballena institucional confirmada", payload["answer"].casefold())
         self.assertEqual(memory[0]["payload"]["event_type"], "unusual_volume")
 
