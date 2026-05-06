@@ -84,6 +84,13 @@ input:focus-visible {
 
 #view-genesis {
   overflow: hidden;
+  padding-bottom: 0;
+}
+
+#view-genesis.app-screen.is-active {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .bottom-nav {
@@ -230,11 +237,12 @@ input:focus-visible {
 }
 
 .genesis-stage {
-  height: 100%;
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  padding: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
 }
 
 .genesis-command {
@@ -348,10 +356,11 @@ input:focus-visible {
 }
 
 .genesis-conversation {
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
-  display: grid;
-  grid-template-rows: auto auto 1fr auto auto;
+  height: auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -360,6 +369,7 @@ input:focus-visible {
 }
 
 .chat-toolbar {
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 6px;
@@ -392,6 +402,7 @@ input:focus-visible {
 }
 
 .chat-history-panel {
+  flex: 0 0 auto;
   max-height: 164px;
   overflow: auto;
   display: grid;
@@ -416,6 +427,7 @@ input:focus-visible {
 }
 
 .chat-thread {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 10px 2px 18px;
@@ -612,14 +624,15 @@ input:focus-visible {
 .chat-form {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  position: sticky;
-  bottom: 0;
+  flex: 0 0 auto;
+  position: relative;
+  bottom: auto;
   z-index: 4;
   border-top: 0;
   background:
     linear-gradient(180deg, rgba(9, 9, 9, 0), rgba(9, 9, 9, 0.96) 24%),
     var(--shell);
-  padding: 10px 0 4px;
+  padding: 10px 0 8px;
 }
 
 .chat-form input,
@@ -673,7 +686,8 @@ input:focus-visible {
 }
 
 .chat-attachment-name {
-  padding: 0 13px 10px;
+  flex: 0 0 auto;
+  padding: 0 13px 6px;
   color: var(--muted);
   font-size: 0.75rem;
 }
@@ -1990,7 +2004,6 @@ input:focus-visible {
   }
 
   .genesis-stage {
-    grid-template-rows: minmax(0, 1fr);
     padding-top: 0;
   }
 

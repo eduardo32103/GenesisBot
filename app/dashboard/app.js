@@ -90,28 +90,47 @@ function itemTicker(item) {
 }
 
 const FRIENDLY_ASSET_NAMES = {
-  "BZ=F": "Brent Crude Oil",
-  BNO: "United States Brent Oil Fund",
-  "BTC-USD": "Bitcoin",
-  "ETH-USD": "Ethereum",
-  "SOL-USD": "Solana",
-  IAU: "iShares Gold Trust",
-  SLV: "iShares Silver Trust",
-  IXC: "iShares Global Energy ETF",
-  SPY: "S&P 500 ETF",
-  QQQ: "Nasdaq 100 ETF",
-  DIA: "Dow Jones ETF",
+  "BZ=F": { displayName: "Brent Crude Oil", subtitle: "Brent Front Month" },
+  BNO: { displayName: "United States Brent Oil Fund", subtitle: "ETF petrolero" },
+  "BTC-USD": { displayName: "Bitcoin", subtitle: "Cripto" },
+  "ETH-USD": { displayName: "Ethereum", subtitle: "Cripto" },
+  "SOL-USD": { displayName: "Solana", subtitle: "Cripto" },
+  IAU: { displayName: "iShares Gold Trust", subtitle: "Oro ETF" },
+  SLV: { displayName: "iShares Silver Trust", subtitle: "Plata ETF" },
+  IXC: { displayName: "iShares Global Energy ETF", subtitle: "Energia ETF" },
+  SPY: { displayName: "S&P 500 ETF", subtitle: "Indice EEUU" },
+  QQQ: { displayName: "Nasdaq 100 ETF", subtitle: "Indice tecnologia" },
+  DIA: { displayName: "Dow Jones ETF", subtitle: "Indice EEUU" },
 };
 
-function assetDisplayName(itemOrTicker) {
+function getAssetDisplayName(itemOrTicker) {
   const ticker = typeof itemOrTicker === "string" ? normalizeTicker(itemOrTicker) : itemTicker(itemOrTicker);
   const raw = typeof itemOrTicker === "string"
     ? ""
     : String(itemOrTicker?.name || itemOrTicker?.display_name || itemOrTicker?.companyName || "").trim();
-  if (FRIENDLY_ASSET_NAMES[ticker] && (!raw || normalizeTicker(raw) === ticker || raw.length <= 5)) {
-    return FRIENDLY_ASSET_NAMES[ticker];
+  const friendly = FRIENDLY_ASSET_NAMES[ticker];
+  if (friendly) {
+    const displayName = friendly.displayName || String(friendly);
+    return {
+      displayName,
+      subtitle: friendly.subtitle || (ticker ? `${ticker}` : ""),
+      ticker,
+    };
   }
-  return raw || FRIENDLY_ASSET_NAMES[ticker] || ticker;
+  const displayName = raw || ticker;
+  return {
+    displayName,
+    subtitle: ticker && displayName !== ticker ? ticker : "",
+    ticker,
+  };
+}
+
+function assetDisplayName(itemOrTicker) {
+  return getAssetDisplayName(itemOrTicker).displayName;
+}
+
+function assetSubtitle(itemOrTicker) {
+  return getAssetDisplayName(itemOrTicker).subtitle;
 }
 
 function itemUnits(item) {
@@ -632,13 +651,13 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
   const quotePrice = payload?.quote?.price ?? payload?.summary?.end_price;
   const change = payload?.quote?.change ?? payload?.summary?.change;
   const changePct = payload?.quote?.changesPercentage ?? payload?.summary?.change_pct;
-  const title = assetDisplayName({ ticker: normalizedTicker, name: payload?.name });
+  const display = getAssetDisplayName({ ticker: normalizedTicker, name: payload?.name });
   return `
     <section class="chart-card" data-chart-card="${escapeHtml(normalizedTicker)}">
       <div class="chart-card-header">
         <div>
-          <strong>${escapeHtml(normalizedTicker)}</strong>
-          <small>${escapeHtml(title)}</small>
+          <strong>${escapeHtml(display.displayName)}</strong>
+          <small>${escapeHtml(display.subtitle || normalizedTicker)}</small>
         </div>
         <div class="chart-price">
           <strong class="market-number ${tone}">${escapeHtml(money(quotePrice, "Sin precio"))}</strong>
@@ -977,6 +996,7 @@ function renderGenesisScreen() {
         <div class="chat-thread" id="genesis-thread">
           ${appState.chatMessages.map(chatBubbleMarkup).join("")}
         </div>
+        <div class="chat-attachment-name" id="genesis-attachment-name" hidden></div>
         <form class="chat-form" id="genesis-chat-form">
           <label class="chat-attach" title="Adjuntar grafica" aria-label="Adjuntar imagen de grafica">
             ${iconSvg("upload")}
@@ -985,7 +1005,6 @@ function renderGenesisScreen() {
           <input id="genesis-chat-input" placeholder="Pregunta a Genesis..." autocomplete="off">
           <button type="submit" aria-label="Mandar mensaje">${iconSvg("send")}</button>
         </form>
-        <div class="chat-attachment-name" id="genesis-attachment-name" hidden></div>
       </div>
     </section>
   `;
@@ -1086,6 +1105,7 @@ function assetAnalysisVisual(payload, answer = "") {
     kind: "asset_analysis",
     ticker,
     name: assetDisplayName({ ticker, name: quote.name || payload?.name }),
+    subtitle: assetSubtitle({ ticker, name: quote.name || payload?.name }) || ticker,
     thesis: sections[0] || `${ticker || "El activo"} queda en vigilancia con datos confirmados por backend.`,
     bias,
     confidence: confidenceFromQuote(quote),
@@ -1182,8 +1202,8 @@ function assetAnalysisVisualMarkup(visual) {
     <section class="visual-response asset-visual tone-${visual.bias}">
       <div class="visual-hero">
         <div>
-          <span class="visual-kicker">${escapeHtml(visual.name || "Activo")}</span>
-          <strong>${escapeHtml(visual.ticker || "Analisis")}</strong>
+          <span class="visual-kicker">${escapeHtml(visual.subtitle || visual.ticker || "Activo")}</span>
+          <strong>${escapeHtml(visual.name || visual.ticker || "Analisis")}</strong>
         </div>
         <span class="conviction-pill ${visual.bias}">${escapeHtml(biasLabel(visual.bias))}</span>
       </div>
@@ -1559,6 +1579,12 @@ function newsImpactTone(value) {
 
 function newsCardMarkup(item) {
   const assets = Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 4) : [];
+  const assetLabels = assets.map((asset) => {
+    const normalized = normalizeTicker(asset);
+    if (!normalized) return cleanCopy(asset);
+    const display = getAssetDisplayName(normalized);
+    return display.displayName === normalized ? normalized : `${display.displayName} (${normalized})`;
+  });
   const tone = newsImpactTone(item.impact);
   return `
     <article class="news-card">
@@ -1571,7 +1597,7 @@ function newsCardMarkup(item) {
         <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
         <span>${escapeHtml(formatDate(item.time))}</span>
         <span class="${tone}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
-        ${assets.length ? `<span>${escapeHtml(assets.join(", "))}</span>` : ""}
+        ${assetLabels.length ? `<span>${escapeHtml(assetLabels.join(", "))}</span>` : ""}
       </div>
     </article>
   `;
@@ -1725,12 +1751,13 @@ function compactAssetSubline(item, mode, totalValue = 0) {
     const weight = totalValue > 0 && value !== null ? (value / totalValue) * 100 : numberOrNull(item.weight_pct);
     return `${units ?? "Sin"} units - ${money(value, "Sin valor")} - ${compactPercent(weight)}`;
   }
-  return shortAssetName(item);
+  return assetSubtitle(item) || shortAssetName(item);
 }
 
 function searchResultMarkup(item, mode) {
   const ticker = itemTicker(item);
   const tone = movementTone(item);
+  const display = getAssetDisplayName(item);
   const action = mode === "tracking"
     ? `<button class="compact-action" type="button" data-market-add="${escapeHtml(ticker)}">${iconSvg("add")}<span>Seguimiento</span></button>`
     : `<button class="compact-action" type="button" data-paper-buy="${escapeHtml(ticker)}">${iconSvg("cart")}<span>Comprar</span></button>`;
@@ -1738,8 +1765,8 @@ function searchResultMarkup(item, mode) {
     <article class="search-result compact-market-row" data-search-result="${escapeHtml(ticker)}">
       <button class="search-main" type="button" data-open-asset="${escapeHtml(ticker)}">
         <span>
-          <strong>${escapeHtml(ticker)}</strong>
-          <small>${escapeHtml(shortAssetName(item))}</small>
+          <strong>${escapeHtml(display.displayName)}</strong>
+          <small>${escapeHtml(display.subtitle || ticker)}</small>
         </span>
         <span class="price-stack">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
@@ -1756,12 +1783,13 @@ function assetRowMarkup(item, mode, totalValue = 0) {
   const tone = movementTone(item);
   const pnl = positionPnl(item);
   const subline = compactAssetSubline(item, mode, totalValue);
+  const display = getAssetDisplayName(item);
   return `
     <article class="asset-row compact-market-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
       <button class="asset-main" type="button" data-open-asset="${escapeHtml(ticker)}">
         <span class="asset-title">
-          <strong>${escapeHtml(ticker)}</strong>
-          <small>${escapeHtml(subline)}</small>
+          <strong>${escapeHtml(display.displayName)}</strong>
+          <small>${escapeHtml(subline || display.subtitle || ticker)}</small>
         </span>
         <span class="price-stack">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
@@ -1883,11 +1911,12 @@ function classifyWhaleType(value) {
 
 function whaleRowMarkup(row) {
   const eventClass = `event-${String(row.event || "no-confirmado").toLowerCase().replace(/\s+/g, "-")}`;
+  const display = getAssetDisplayName(row.ticker);
   return `
     <article class="whale-row feed-row">
       <div class="whale-topline">
         <div>
-          <strong>${escapeHtml(row.ticker)}</strong>
+          <strong>${escapeHtml(display.displayName)}</strong>
           <small>${escapeHtml(row.entity || "Entidad no identificada")}</small>
         </div>
         <span class="event-chip ${eventClass}">${escapeHtml(row.event)}</span>
@@ -1991,6 +2020,7 @@ function whalesPanelMarkup(rows) {
 
 function alertMarkup(item) {
   const ticker = itemTicker(item) || "Mercado";
+  const display = ticker === "Mercado" ? { displayName: "Mercado", subtitle: "" } : getAssetDisplayName(ticker);
   const priority = cleanCopy(item.priority || item.severity || item.status_label || item.status || "Seguimiento");
   const date = item.created_at || item.updated_at || item.timestamp || appState.lastUpdated;
   const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || priority;
@@ -1999,7 +2029,7 @@ function alertMarkup(item) {
     <article class="whale-row feed-row alert-event tone-${tone}">
       <div class="whale-topline">
         <div>
-          <strong>${escapeHtml(ticker)}</strong>
+          <strong>${escapeHtml(display.displayName)}</strong>
           <small>${escapeHtml(cleanCopy(item.title || item.event || item.status || "Alerta"))}</small>
         </div>
         <span class="event-chip">${escapeHtml(priority)}</span>
@@ -2054,6 +2084,7 @@ function renderAssetDetailScreen() {
   const units = itemUnits(item);
   const value = itemValue(item);
   const pnl = positionPnl(item);
+  const display = getAssetDisplayName(item);
   root.innerHTML = `
     <section class="asset-detail">
       <div class="detail-topbar">
@@ -2071,8 +2102,8 @@ function renderAssetDetailScreen() {
       </div>
       <section class="detail-hero">
         <div>
-          <strong>${escapeHtml(normalized)}</strong>
-          <p>${escapeHtml(assetDisplayName(item))}</p>
+          <strong>${escapeHtml(display.displayName)}</strong>
+          <p>${escapeHtml(display.subtitle ? `${display.subtitle} · ${normalized}` : normalized)}</p>
         </div>
         <div class="detail-price">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
@@ -2134,12 +2165,13 @@ function assetRelatedNews(ticker) {
 
 function assetGenesisReading(item, range) {
   const ticker = itemTicker(item);
+  const label = assetDisplayName(item) || ticker;
   const tone = movementTone(item);
   const price = priceLabel(item);
   const move = dailyMoveLabel(item);
-  if (tone === "up") return `${ticker} mantiene sesgo positivo con precio ${price} y movimiento ${move}. Veredicto: vigilar continuidad; entrada condicional solo con volumen y cierre firme. Invalidacion: perdida de soporte o deterioro de mercado.`;
-  if (tone === "down") return `${ticker} esta bajo presion con precio ${price} y movimiento ${move}. Veredicto: cautela; entrada condicional solo si recupera estructura. Invalidacion: nuevo minimo o falta de precio confirmado.`;
-  return `${ticker} esta neutral o sin cambio confirmado en ${range}. Veredicto: esperar confirmacion; razon principal: falta direccion clara. Riesgo: operar sin volumen. Siguiente paso: revisar velas y catalizadores.`;
+  if (tone === "up") return `${label} mantiene sesgo positivo con precio ${price} y movimiento ${move}. Veredicto: vigilar continuidad; entrada condicional solo con volumen y cierre firme. Invalidacion: perdida de soporte o deterioro de mercado.`;
+  if (tone === "down") return `${label} esta bajo presion con precio ${price} y movimiento ${move}. Veredicto: cautela; entrada condicional solo si recupera estructura. Invalidacion: nuevo minimo o falta de precio confirmado.`;
+  return `${label} esta neutral o sin cambio confirmado en ${range}. Veredicto: esperar confirmacion; razon principal: falta direccion clara. Riesgo: operar sin volumen. Siguiente paso: revisar velas y catalizadores.`;
 }
 
 function assetCatalystLine(ticker) {
@@ -2161,12 +2193,13 @@ function openAssetSheet(ticker) {
   const isPaper = appState.paperPositions.some((row) => itemTicker(row) === normalized);
   const isTracked = appState.trackingItems.some((row) => itemTicker(row) === normalized && itemInWatchlist(row));
   const chartRange = appState.assetChartRanges[normalized] || "1Y";
+  const display = getAssetDisplayName(item);
   const sheet = document.getElementById("asset-sheet");
   const body = document.getElementById("asset-sheet-body");
   body.innerHTML = `
     <span class="app-kicker">${isPaper ? "Paper" : isTracked ? "Seguimiento" : "No agregado"}</span>
-    <h2>${escapeHtml(normalized)}</h2>
-    <p class="asset-name">${escapeHtml(assetDisplayName(item))}</p>
+    <h2>${escapeHtml(display.displayName)}</h2>
+    <p class="asset-name">${escapeHtml(display.subtitle ? `${display.subtitle} · ${normalized}` : normalized)}</p>
     <div class="sheet-price ${movementTone(item)}">
       <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
       <span>${escapeHtml(dailyMoveLabel(item))}</span>
@@ -2219,7 +2252,8 @@ function openPaperBuySheet(ticker) {
   const item = findAsset(normalized) || { ticker: normalized };
   const price = itemPrice(item);
   document.getElementById("paper-buy-ticker").value = normalized;
-  document.getElementById("paper-buy-label").value = `${normalized} | ${assetDisplayName(item)}`;
+  const display = getAssetDisplayName(item);
+  document.getElementById("paper-buy-label").value = `${display.displayName} | ${display.subtitle || normalized}`;
   document.getElementById("paper-buy-live-price").value = price === null ? "Sin precio" : `${money(price)} | ${priceSourceLabel(item)}`;
   document.getElementById("paper-buy-units").value = "";
   document.getElementById("paper-buy-entry").value = price === null ? "" : String(price);
