@@ -65,6 +65,8 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["return_details"]["MAX"]["last_close"], 120)
         self.assertEqual(payload["return_details"]["MAX"]["points_used"], 3)
         self.assertEqual(payload["source"]["endpoint"], "historical-price-eod/full")
+        self.assertEqual(payload["fmp_endpoint_used"], "historical-price-eod/full")
+        self.assertFalse(payload["has_full_history"])
         client.get_full_historical_eod.assert_called_once_with("NVDA", symbol_map=None)
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
@@ -134,6 +136,8 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertEqual(payload["raw_eod_points"], 2300)
         self.assertNotEqual(payload["returns"]["MAX"], payload["returns"]["5Y"])
         self.assertEqual(payload["source"]["raw_eod_points"], 2300)
+        self.assertEqual(payload["fmp_endpoint_used"], "historical-price-eod/full")
+        self.assertTrue(payload["has_full_history"])
         self.assertFalse(payload["is_max_truncated"])
         self.assertFalse(payload["max_truncated"])
         self.assertFalse(payload["source"]["is_max_truncated"])

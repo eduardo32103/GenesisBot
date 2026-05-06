@@ -74,10 +74,11 @@ def get_verified_market_quote(
 
 
 def _shape_fmp_quote(ticker: str, quote: dict[str, Any], source: str) -> dict[str, Any]:
-    current = number_or_none(quote.get("price") or quote.get("current_price"))
-    previous = number_or_none(quote.get("previousClose") or quote.get("previous_close"))
-    change = number_or_none(quote.get("change") or quote.get("daily_change"))
-    pct = number_or_none(quote.get("changesPercentage") or quote.get("daily_change_pct"))
+    current = _first_number(quote, ("price", "current_price"))
+    previous = _first_number(quote, ("previousClose", "previous_close"))
+    change = _first_number(quote, ("change", "daily_change"))
+    pct = _first_number(quote, ("changesPercentage", "daily_change_pct"))
+    change, pct = _derive_change_fields(current, previous, change, pct)
     return {
         "ticker": ticker,
         "name": str(quote.get("name") or quote.get("companyName") or ticker),
@@ -148,8 +149,18 @@ def _snapshot_quote(ticker: str, snapshot: dict[str, Any] | None = None) -> dict
             "name": str(item.get("name") or item.get("display_name") or ticker),
             "current_price": price,
             "previous_close": previous,
-            "daily_change": number_or_none(item.get("daily_change") or item.get("change")),
-            "daily_change_pct": number_or_none(item.get("daily_change_pct") or item.get("changesPercentage")),
+            "daily_change": _derive_change_fields(
+                price,
+                previous,
+                _first_number(item, ("daily_change", "change")),
+                _first_number(item, ("daily_change_pct", "changesPercentage")),
+            )[0],
+            "daily_change_pct": _derive_change_fields(
+                price,
+                previous,
+                _first_number(item, ("daily_change", "change")),
+                _first_number(item, ("daily_change_pct", "changesPercentage")),
+            )[1],
             "day_low": number_or_none(item.get("day_low") or item.get("dayLow")),
             "day_high": number_or_none(item.get("day_high") or item.get("dayHigh")),
             "volume": number_or_none(item.get("volume")),
@@ -193,3 +204,30 @@ def _empty_quote(ticker: str, message: str) -> dict[str, Any]:
         "sanity": {"ok": False, "suspicious": False, "reason": message},
         "message": message,
     }
+
+
+def _first_number(payload: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = number_or_none(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _derive_change_fields(
+    current: float | None,
+    previous: float | None,
+    change: float | None,
+    pct: float | None,
+) -> tuple[float | None, float | None]:
+    if current is None or previous is None or previous <= 0:
+        return change, pct
+    derived_change = current - previous
+    derived_pct = (derived_change / previous) * 100
+    if change is None or (abs(change) < 1e-12 and abs(derived_change) > 1e-12):
+        change = round(derived_change, 6)
+    if pct is None or (abs(pct) < 1e-12 and abs(derived_pct) > 1e-12):
+        pct = round(derived_pct, 6)
+    return change, pct

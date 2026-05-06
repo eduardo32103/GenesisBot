@@ -63,12 +63,14 @@ def route_message(
     if route.intent == "daily_briefing":
         briefing = get_news_macro_agent().daily_briefing(clean)
         store.save_event("daily_briefing", {"summary": briefing["answer"]}, "macro", "media")
-        return _payload("daily_briefing", briefing["answer"], [], extra={"briefing": briefing}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
+        structured = composer.market_briefing(briefing)
+        return _payload("daily_briefing", briefing["answer"], [], extra={"briefing": briefing, "structured": structured, "kind": structured["kind"]}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
     if route.intent == "market_overview":
         overview = get_news_macro_agent().market_overview(clean)
         store.save_event("market_overview", {"summary": overview["answer"]}, "macro", "media")
-        return _payload("market_overview", overview["answer"], [], extra={"overview": overview}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
+        structured = composer.market_briefing(overview)
+        return _payload("market_overview", overview["answer"], [], extra={"overview": overview, "structured": structured, "kind": structured["kind"]}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
     if route.intent == "portfolio_summary":
         briefing = get_portfolio_agent().summary()
@@ -110,22 +112,20 @@ def route_message(
         store.save_event("chart_request", {"ticker": chart["ticker"], "range": chart["range"], "quote": _safe_quote_memory(quote)}, "chart", "alta" if quote.get("current_price") else "baja")
         store.track_entity(chart["ticker"], "asset", {"reason": "chart_request", "range": chart["range"]})
         store.save_learned_context(f"asset_interest:{chart['ticker']}", {"ticker": chart["ticker"], "last_intent": "chart_request"}, "genesis", "media")
-        technical = get_technical_agent().for_ticker(chart["ticker"], chart["range"]) if chart.get("overlays") else None
+        technical = get_technical_agent().for_ticker(chart["ticker"], chart["range"])
         answer = _chart_answer(chart["ticker"], quote, chart.get("overlays") or [])
-        extra = {"chart": chart, "quote": quote}
-        if technical:
-            extra["technical"] = technical
+        structured = composer.asset_analysis(chart["ticker"], quote=quote, technical=technical)
+        extra = {"chart": chart, "quote": quote, "technical": technical, "structured": structured, "kind": structured["kind"]}
         return _payload("chart_request", answer, [chart["ticker"], *[item for item in tickers if item != chart["ticker"]]], extra=extra, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
     if route.intent in {"ticker_analysis", "technical_indicators"} and explicit_ticker:
         quote = price_agent.quote(explicit_ticker)
-        technical = get_technical_agent().for_ticker(explicit_ticker, "1Y") if route.intent == "technical_indicators" else None
+        technical = get_technical_agent().for_ticker(explicit_ticker, "1Y")
         store.save_event("ticker_analysis", {"ticker": explicit_ticker, "quote": _safe_quote_memory(quote), "technical_requested": bool(technical)}, "price_truth", "alta" if quote.get("current_price") else "baja")
         store.track_entity(explicit_ticker, "asset", {"reason": route.intent})
         store.save_learned_context(f"asset_interest:{explicit_ticker}", {"ticker": explicit_ticker, "last_intent": route.intent}, "genesis", "media")
-        extra = {"quote": quote}
-        if technical:
-            extra["technical"] = technical
+        structured = composer.asset_analysis(explicit_ticker, quote=quote, technical=technical)
+        extra = {"quote": quote, "technical": technical, "structured": structured, "kind": structured["kind"]}
         return _payload(route.intent, _ticker_answer(explicit_ticker, quote, technical), tickers or [explicit_ticker], extra=extra, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
     answer = composer.general()

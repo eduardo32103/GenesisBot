@@ -175,6 +175,8 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
         "history_points": 0,
         "raw_eod_points": 0,
         "selected_range_points": 0,
+        "fmp_endpoint_used": "",
+        "has_full_history": False,
         "is_max_truncated": True,
         "max_truncated": True,
         "truncation_reason": "sin_historico_fmp",
@@ -188,6 +190,8 @@ def _empty_payload(ticker: str, timeframe: str, status: str, message: str) -> di
             "live_enabled": False,
             "downsampled": False,
             "raw_points": 0,
+            "fmp_endpoint_used": "",
+            "has_full_history": False,
         },
     }
 
@@ -211,12 +215,19 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     profile = client.get_profile(normalized_ticker) or {}
 
     eod_rows = client.get_full_historical_eod(normalized_ticker, symbol_map=symbol_map) or []
+    get_meta = getattr(client, "get_full_history_meta", None)
+    history_meta = get_meta(normalized_ticker) if callable(get_meta) else {}
+    history_meta = history_meta if isinstance(history_meta, dict) else {}
     eod_points = _shape_ohlc(eod_rows)
-    max_history_years = _history_years(eod_points)
-    max_truncation = _max_truncation(max_history_years, eod_points)
+    max_history_years = float(history_meta.get("max_history_years") or _history_years(eod_points))
+    max_truncation = {
+        "is_max_truncated": bool(history_meta.get("is_max_truncated", history_meta.get("max_truncated", _max_truncation(max_history_years, eod_points)["is_max_truncated"]))),
+        "truncation_reason": str(history_meta.get("truncation_reason") or _max_truncation(max_history_years, eod_points)["truncation_reason"]),
+    }
     max_truncation_alias = {**max_truncation, "max_truncated": max_truncation["is_max_truncated"]}
     intraday_points: list[dict[str, Any]] = []
-    endpoint_label = "historical-price-eod/full"
+    full_history_endpoint = str(history_meta.get("fmp_endpoint_used") or "historical-price-eod/full")
+    endpoint_label = full_history_endpoint
     if normalized_timeframe == "1D":
         rows = client.get_intraday_history(normalized_ticker, interval="5min", limit=160, symbol_map=symbol_map) or []
         endpoint_label = "historical-chart/5min"
@@ -228,7 +239,14 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     selected_points = points
     raw_count = len(selected_points)
     points = _downsample_ohlc(selected_points)
-    return_details = calculate_returns(eod_points, intraday_points, source="FMP")
+    return_details = calculate_returns(
+        eod_points,
+        intraday_points,
+        source="FMP",
+        current_price=quote.get("price"),
+        previous_close=quote.get("previousClose"),
+        current_date=str(quote.get("timestamp") or "live"),
+    )
     return_map = flatten_return_details(return_details)
     selected_return = calculate_return_detail(selected_points, normalized_timeframe, source="FMP")
     if not points:
@@ -244,6 +262,8 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "history_points": len(eod_points),
             "raw_eod_points": len(eod_points),
             "selected_range_points": raw_count,
+            "fmp_endpoint_used": full_history_endpoint,
+            "has_full_history": bool(history_meta.get("has_full_history", max_history_years > 5.05)),
             "first_date": selected_return.get("first_date") or _first_date(eod_points),
             "last_date": selected_return.get("last_date") or _last_date(eod_points),
             "first_close": selected_return.get("first_close"),
@@ -256,6 +276,8 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
                 "raw_points": 0,
                 "selected_range_points": raw_count,
                 "raw_eod_points": len(eod_points),
+                "fmp_endpoint_used": full_history_endpoint,
+                "has_full_history": bool(history_meta.get("has_full_history", max_history_years > 5.05)),
                 "max_uses_full_history": True,
                 **max_truncation_alias,
             },
@@ -280,6 +302,8 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "history_points": len(eod_points),
         "raw_eod_points": len(eod_points),
         "selected_range_points": raw_count,
+        "fmp_endpoint_used": full_history_endpoint,
+        "has_full_history": bool(history_meta.get("has_full_history", max_history_years > 5.05)),
         "first_date": selected_return.get("first_date"),
         "last_date": selected_return.get("last_date"),
         "first_close": selected_return.get("first_close"),
@@ -300,6 +324,8 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "raw_points": raw_count,
             "selected_range_points": raw_count,
             "raw_eod_points": len(eod_points),
+            "fmp_endpoint_used": full_history_endpoint,
+            "has_full_history": bool(history_meta.get("has_full_history", max_history_years > 5.05)),
             "max_history_years": max_history_years,
             "max_uses_full_history": True,
             **max_truncation_alias,

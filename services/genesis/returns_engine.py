@@ -6,7 +6,14 @@ from typing import Any
 _RANGES = ("1D", "1W", "1M", "1Y", "5Y", "MAX")
 
 
-def calculate_return_detail(points: list[dict[str, Any]], range_name: str, *, source: str = "FMP") -> dict[str, Any]:
+def calculate_return_detail(
+    points: list[dict[str, Any]],
+    range_name: str,
+    *,
+    source: str = "FMP",
+    used_live_quote_as_last: bool = False,
+    confidence: str | None = None,
+) -> dict[str, Any]:
     clean = [_shape_point(point) for point in points]
     clean = [point for point in clean if point is not None]
     if len(clean) < 2:
@@ -19,6 +26,8 @@ def calculate_return_detail(points: list[dict[str, Any]], range_name: str, *, so
             "return_pct": None,
             "source": source,
             "points_used": len(clean),
+            "used_live_quote_as_last": used_live_quote_as_last,
+            "confidence": confidence or "low",
         }
     first = clean[0]
     last = clean[-1]
@@ -34,6 +43,8 @@ def calculate_return_detail(points: list[dict[str, Any]], range_name: str, *, so
         "return_pct": round(return_pct, 4) if return_pct is not None else None,
         "source": source,
         "points_used": len(clean),
+        "used_live_quote_as_last": used_live_quote_as_last,
+        "confidence": confidence or "high",
     }
 
 
@@ -42,13 +53,29 @@ def calculate_returns(
     intraday_points: list[dict[str, Any]] | None = None,
     *,
     source: str = "FMP",
+    current_price: object = None,
+    previous_close: object = None,
+    current_date: str = "live",
 ) -> dict[str, dict[str, Any]]:
     eod = [_shape_point(point) for point in eod_points]
     eod = [point for point in eod if point is not None]
     intraday = [_shape_point(point) for point in (intraday_points or [])]
     intraday = [point for point in intraday if point is not None]
+    one_day_points, one_day_used_live, one_day_confidence = _one_day_points(
+        eod,
+        intraday,
+        current_price=current_price,
+        previous_close=previous_close,
+        current_date=current_date,
+    )
     return {
-        "1D": calculate_return_detail(intraday if len(intraday) >= 2 else eod[-2:], "1D", source=source),
+        "1D": calculate_return_detail(
+            one_day_points,
+            "1D",
+            source=source,
+            used_live_quote_as_last=one_day_used_live,
+            confidence=one_day_confidence,
+        ),
         "1W": calculate_return_detail(slice_points_for_range(eod, "1W"), "1W", source=source),
         "1M": calculate_return_detail(slice_points_for_range(eod, "1M"), "1M", source=source),
         "1Y": calculate_return_detail(slice_points_for_range(eod, "1Y"), "1Y", source=source),
@@ -95,6 +122,29 @@ def _shape_point(point: dict[str, Any]) -> dict[str, Any] | None:
     if close is None or close <= 0 or not date:
         return None
     return {"date": date, "time": date, "close": close}
+
+
+def _one_day_points(
+    eod: list[dict[str, Any]],
+    intraday: list[dict[str, Any]],
+    *,
+    current_price: object = None,
+    previous_close: object = None,
+    current_date: str = "live",
+) -> tuple[list[dict[str, Any]], bool, str]:
+    if len(intraday) >= 2:
+        return intraday, False, "high"
+    current = _num(current_price)
+    previous = _num(previous_close)
+    if current is not None and current > 0 and previous is not None and previous > 0:
+        previous_date = eod[-1]["date"] if eod else "previous_close"
+        return [
+            {"date": previous_date, "close": previous},
+            {"date": str(current_date or "live"), "close": current},
+        ], True, "high"
+    if len(eod) >= 2:
+        return eod[-2:], False, "medium"
+    return eod[-2:], False, "low"
 
 
 def _num(value: object) -> float | None:

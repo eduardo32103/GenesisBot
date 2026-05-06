@@ -4,6 +4,7 @@ import logging
 import math
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 import requests
 
@@ -26,12 +27,59 @@ def _first_float(quote: dict, keys: tuple[str, ...]) -> float:
     return 0.0
 
 
+def _history_years(rows: list[dict]) -> float:
+    dates: list[datetime] = []
+    for row in rows:
+        raw = str(row.get("date") or row.get("label") or "")[:10]
+        if not raw:
+            continue
+        try:
+            dates.append(datetime.fromisoformat(raw))
+        except Exception:
+            continue
+    if len(dates) < 2:
+        return 0.0
+    dates.sort()
+    return round(max((dates[-1] - dates[0]).days, 0) / 365.25, 2)
+
+
+def _full_history_meta(ticker: str, symbol: str, rows: list[dict], endpoint: str, reason: str) -> dict:
+    years = _history_years(rows)
+    dates = []
+    for row in rows:
+        raw = str(row.get("date") or row.get("label") or "")[:10]
+        if raw:
+            dates.append(raw)
+    dates.sort()
+    first_date = dates[0] if dates else ""
+    last_date = dates[-1] if dates else ""
+    truncated = not rows or years <= 5.05
+    truncation_reason = reason
+    if rows and truncated:
+        truncation_reason = f"FMP devolvio solo {years:.2f} anos para este activo"
+    return {
+        "ticker": ticker,
+        "symbol": symbol,
+        "fmp_endpoint_used": endpoint,
+        "endpoint": endpoint,
+        "raw_eod_points": len(rows),
+        "has_full_history": bool(rows and years > 5.05),
+        "first_date": first_date,
+        "last_date": last_date,
+        "max_history_years": years,
+        "max_truncated": truncated,
+        "is_max_truncated": truncated,
+        "truncation_reason": truncation_reason,
+    }
+
+
 @dataclass
 class FmpClient:
     api_key: str
     logger: logging.Logger | None = None
     session: requests.Session = field(default_factory=requests.Session)
     last_error_by_ticker: dict[str, str] = field(default_factory=dict)
+    last_full_history_meta_by_ticker: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.logger is None:
@@ -233,7 +281,66 @@ class FmpClient:
 
     def get_full_historical_eod(self, ticker: str, symbol_map: dict[str, str] | None = None) -> list[dict] | None:
         """Return the longest EOD history FMP exposes for MAX calculations."""
-        return self.get_historical_eod(ticker, limit=None, symbol_map=symbol_map)
+        tk = str(ticker or "").strip().upper()
+        if not self.api_key:
+            self.last_error_by_ticker[tk] = "FMP_API_KEY no detectada."
+            self.last_full_history_meta_by_ticker[tk] = _full_history_meta(tk, "", [], "", "FMP_API_KEY no detectada.")
+            return None
+
+        symbol = self.resolve_symbol(tk, symbol_map)
+        safe_symbol = urllib.parse.quote(symbol)
+        today = date.today().isoformat()
+        endpoints = [
+            (
+                "stable_full_from_1990",
+                f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={safe_symbol}&from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
+            (
+                "stable_full",
+                f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={safe_symbol}&apikey={self.api_key}",
+            ),
+            (
+                "legacy_full_from_1990",
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
+            (
+                "legacy_full",
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?apikey={self.api_key}",
+            ),
+        ]
+        last_status = None
+        best_rows: list[dict] = []
+        best_endpoint = ""
+
+        for endpoint_name, url in endpoints:
+            try:
+                status, payload = self._request_json(url, timeout=12)
+                last_status = status
+                self.logger.debug("FMP full historical %s status %s para %s", endpoint_name, status, tk)
+                if status != 200 or payload is None:
+                    continue
+                rows = self._parse_historical_payload(payload)
+                if rows and len(rows) > len(best_rows):
+                    best_rows = rows
+                    best_endpoint = endpoint_name
+            except Exception as exc:
+                self.logger.debug("FMP full historical %s error para %s: %s", endpoint_name, tk, exc)
+
+        if best_rows:
+            self.last_error_by_ticker.pop(tk, None)
+            self.last_full_history_meta_by_ticker[tk] = _full_history_meta(tk, symbol, best_rows, best_endpoint, "")
+            return best_rows
+
+        if last_status in (401, 403):
+            reason = f"Historico FMP no disponible para {tk}: HTTP {last_status}"
+        else:
+            reason = f"Historico FMP no disponible para {tk}"
+        self.last_error_by_ticker[tk] = reason
+        self.last_full_history_meta_by_ticker[tk] = _full_history_meta(tk, symbol, [], best_endpoint, reason)
+        return None
+
+    def get_full_history_meta(self, ticker: str) -> dict:
+        return self.last_full_history_meta_by_ticker.get(str(ticker or "").strip().upper(), {})
 
     def get_intraday_history(
         self,

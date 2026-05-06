@@ -45,6 +45,8 @@ class GenesisTickerParserTests(unittest.TestCase):
             "que esta pasando hoy": [],
             "oye genesis como se ve el mercado": [],
             "como estuvo el mercado el viernes pasado": [],
+            "que estan haciendo las ballenas": [],
+            "que noticias afectan a mis activos": [],
             "dame una grafica de bno": ["BNO"],
             "compara meta vs nvda": ["META", "NVDA"],
             "compara nflx contra nvda": ["NFLX", "NVDA"],
@@ -72,6 +74,16 @@ class GenesisPriceTruthTests(unittest.TestCase):
 
         self.assertFalse(sanity["ok"])
         self.assertTrue(sanity["suspicious"])
+
+    def test_price_truth_derives_missing_change_pct_from_current_and_previous(self) -> None:
+        quote = get_verified_market_quote(
+            "BNO",
+            quote={"price": 57.27, "previousClose": 58.53, "name": "United States Brent Oil Fund"},
+            settings=SimpleNamespace(fmp_api_key="", fmp_live_enabled=False),
+        )
+
+        self.assertEqual(quote["daily_change"], -1.26)
+        self.assertAlmostEqual(quote["daily_change_pct"], -2.1527, places=4)
 
     def test_market_color_classes(self) -> None:
         self.assertEqual(market_class(1.2), "up")
@@ -334,7 +346,82 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "alerts")
         self.assertEqual(payload["tickers"], [])
         self.assertEqual(payload["alerts"]["items"][0]["ticker"], "NVDA")
+        self.assertEqual(payload["alerts"]["items"][0]["source"], "technical")
+        self.assertEqual(payload["alerts"]["items"][0]["direction"], "bullish")
+        self.assertIn("evidence", payload["alerts"]["items"][0])
         self.assertIn("alertas activas", payload["answer"].lower())
+
+    @patch("services.genesis.market_overview_agent.load_settings")
+    @patch("services.genesis.price_agent.get_verified_market_quote")
+    def test_market_overview_returns_structured_briefing_not_dry_prices(self, mock_quote: Mock, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
+        mock_quote.side_effect = lambda ticker: {
+            "ticker": ticker,
+            "current_price": 100,
+            "formatted_price": "$100.00",
+            "daily_change": 1 if ticker in {"SPY", "QQQ"} else -1,
+            "daily_change_pct": 1 if ticker in {"SPY", "QQQ"} else -1,
+            "currency": "USD",
+            "source": "fmp",
+            "sanity": {"ok": True},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("dame un resumen del dia", memory=store)
+
+        self.assertEqual(payload["intent"], "daily_briefing")
+        self.assertEqual(payload["kind"], "market_briefing")
+        self.assertEqual(payload["structured"]["kind"], "market_briefing")
+        self.assertIn("summary", payload["briefing"])
+        self.assertIn("source_status", payload["briefing"])
+
+    @patch("services.genesis.price_agent.get_verified_market_quote")
+    @patch("services.genesis.technical_agent.get_asset_chart_series")
+    def test_asset_analysis_returns_visual_structure_without_markdown(self, mock_chart: Mock, mock_quote: Mock) -> None:
+        mock_quote.return_value = {
+            "ticker": "NVDA",
+            "current_price": 905.25,
+            "formatted_price": "$905.25",
+            "daily_change": 12.4,
+            "daily_change_pct": 1.39,
+            "source_label": "Precio confirmado",
+            "is_live": True,
+            "source": "datos_directos",
+            "previous_close": 892.85,
+            "sanity": {"ok": True},
+        }
+        mock_chart.return_value = {
+            "ok": True,
+            "ticker": "NVDA",
+            "range": "1Y",
+            "indicators": {"rsi": 62.4, "macd": {"line": 4.2}, "support": 880, "resistance": 930, "trend": "alcista"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("analiza nvda", memory=store)
+
+        self.assertEqual(payload["intent"], "ticker_analysis")
+        self.assertEqual(payload["kind"], "asset_analysis")
+        self.assertEqual(payload["structured"]["kind"], "asset_analysis")
+        rendered = json.dumps(payload["structured"])
+        self.assertNotIn("###", rendered)
+        self.assertNotIn("**", rendered)
+
+    @patch("services.genesis.whale_learning.load_settings")
+    @patch("services.genesis.whale_learning.get_money_flow_detection_snapshot")
+    @patch("services.genesis.whale_learning.get_money_flow_causal_snapshot")
+    def test_whale_agent_uses_single_fallback_without_fake_entities(self, mock_causal: Mock, mock_detection: Mock, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
+        mock_causal.return_value = {"items": [{"ticker": "NVDA", "confidence": "media"}]}
+        mock_detection.return_value = {"items": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("que estan haciendo las ballenas", memory=store)
+
+        self.assertEqual(payload["intent"], "whale_activity")
+        self.assertTrue(payload["whales"]["fallback"])
+        self.assertEqual(payload["whales"]["events"], [])
+        self.assertIn("Sin ballena institucional confirmada", payload["answer"])
 
     def test_agent_modules_exist_as_internal_brain_components(self) -> None:
         self.assertIsInstance(PriceAgent(), PriceAgent)
@@ -398,6 +485,20 @@ class GenesisReturnsEngineTests(unittest.TestCase):
         self.assertEqual(details["MAX"]["last_close"], 300)
         self.assertEqual(details["1D"]["points_used"], 2)
         self.assertEqual(details["MAX"]["points_used"], 6)
+        self.assertFalse(details["MAX"]["used_live_quote_as_last"])
+        self.assertEqual(details["MAX"]["confidence"], "high")
+
+    def test_one_day_return_can_use_verified_live_quote_with_metadata(self) -> None:
+        points = [
+            {"date": "2026-01-01", "close": 100},
+            {"date": "2026-01-02", "close": 101},
+        ]
+
+        details = calculate_returns(points, [], current_price=105, previous_close=100, current_date="2026-01-03T16:00:00Z")
+
+        self.assertEqual(details["1D"]["return_pct"], 5.0)
+        self.assertTrue(details["1D"]["used_live_quote_as_last"])
+        self.assertEqual(details["1D"]["confidence"], "high")
 
     def test_fmp_client_chooses_longest_history_for_unlimited_max(self) -> None:
         client = FmpClient("test-key")
@@ -409,6 +510,22 @@ class GenesisReturnsEngineTests(unittest.TestCase):
 
         self.assertEqual(rows, sorted(legacy, key=lambda item: item["date"], reverse=True))
         self.assertGreater(len(rows), len(stable))
+        meta = client.get_full_history_meta("NVDA")
+        self.assertEqual(meta["raw_eod_points"], len(legacy))
+        self.assertEqual(meta["fmp_endpoint_used"], "stable_full")
+
+    def test_fmp_full_history_attempts_1990_range_without_limit_for_max(self) -> None:
+        client = FmpClient("test-key")
+        payload = [{"date": "1995-01-01", "close": 10}, {"date": "2026-01-01", "close": 100}]
+
+        with patch.object(client, "_request_json", return_value=(200, payload)) as mock_request:
+            rows = client.get_full_historical_eod("NVDA")
+
+        self.assertEqual(len(rows or []), 2)
+        first_url = mock_request.call_args_list[0].args[0]
+        self.assertIn("from=1990-01-01", first_url)
+        self.assertNotIn("limit=1255", first_url)
+        self.assertGreater(client.get_full_history_meta("NVDA")["max_history_years"], 30)
 
 
 class GenesisTechnicalAnalysisTests(unittest.TestCase):
