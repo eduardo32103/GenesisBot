@@ -114,6 +114,30 @@ class ResponseComposer:
             ],
         }
 
+    def news_brief(self, overview: dict[str, Any]) -> dict[str, Any]:
+        news = overview.get("news") if isinstance(overview.get("news"), list) else []
+        important = [item for item in news if item.get("is_important")][:5] or news[:3]
+        latest = sorted(news, key=lambda item: str(item.get("published_at") or item.get("date") or ""), reverse=True)[:8]
+        summary = overview.get("summary") or overview.get("answer") or "Genesis revisa titulares confirmados sin inventar catalizadores."
+        return {
+            "kind": "news_brief",
+            "tone": overview.get("tone") or "neutral",
+            "summary": summary,
+            "important_news": important,
+            "latest_news": latest,
+            "news": news,
+            "alerts": overview.get("alerts") or [],
+            "whales": overview.get("whales") or [],
+            "watch": overview.get("watch") or [],
+            "source_status": overview.get("source_status") or {},
+            "sections": [
+                {"title": "Lectura rapida", "bullets": [summary]},
+                {"title": "Importantes", "bullets": _news_titles(important, 4)},
+                {"title": "Ultimas", "bullets": _news_titles(latest, 4)},
+                {"title": "Que vigilar", "bullets": [item.get("reason") or item.get("ticker") or str(item) for item in overview.get("watch", [])[:4]] or ["Confirmar impacto en precio, volumen y activos propios."]},
+            ],
+        }
+
     def general_answer(self, answer: str) -> dict[str, Any]:
         return {"kind": "general_answer", "answer": answer, "sections": [{"title": "Respuesta", "bullets": [answer]}]}
 
@@ -194,6 +218,18 @@ def _watch_items(ticker: str, indicators: dict[str, Any], levels: dict[str, Any]
     if indicators.get("macd"):
         items.append("MACD y volumen para confirmar direccion.")
     return items or ["Precio confirmado, volumen relativo y cierre de vela."]
+
+
+def _news_titles(items: list[dict[str, Any]], limit: int) -> list[str]:
+    titles = []
+    for item in items[:limit]:
+        title = str(item.get("title") or item.get("headline") or "").strip()
+        source = str(item.get("source") or "").strip()
+        if title and source:
+            titles.append(f"{title} ({source})")
+        elif title:
+            titles.append(title)
+    return titles or ["Sin titular confirmado en la fuente activa."]
 
 
 def get_response_composer() -> ResponseComposer:

@@ -189,6 +189,8 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["response_type"], "news_brief")
         self.assertEqual(payload["kind"], "news_brief")
         self.assertEqual(payload["structured"]["kind"], "news_brief")
+        self.assertEqual(payload["structured"]["important_news"][0]["title"], "NVIDIA updates AI demand outlook")
+        self.assertEqual(payload["structured"]["latest_news"][0]["source"], "FMP")
         self.assertEqual(len(payload["overview"]["news"]), 1)
 
     def test_time_request_is_not_ticker(self) -> None:

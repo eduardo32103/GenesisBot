@@ -75,8 +75,7 @@ def route_message(
     if route.intent == "macro_news":
         overview = get_news_macro_agent().market_overview(clean)
         store.save_event("news_brief", {"summary": overview["answer"], "news_count": len(overview.get("news") or [])}, "macro", "media")
-        structured = composer.market_briefing(overview)
-        structured["kind"] = "news_brief"
+        structured = composer.news_brief(overview)
         return _payload(
             "macro_news",
             overview["answer"],
