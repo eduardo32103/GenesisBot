@@ -62,7 +62,14 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertIn("volumen", alert["momentum"])
         self.assertIn("what_it_means", alert)
         self.assertIn("what_to_watch", alert)
+        self.assertEqual(alert["title_es"], alert["title"])
+        self.assertEqual(alert["summary_es"], alert["summary"])
+        self.assertIn("genesis_reading_es", alert)
+        self.assertIn("what_happened_es", alert)
+        self.assertIn("why_it_matters_es", alert)
+        self.assertIn("what_to_watch_es", alert)
         self.assertEqual(alert["affected_portfolio_assets"], ["NVDA"])
+        self.assertEqual(alert["affected_watchlist_assets"], ["NVDA"])
 
     @patch("services.dashboard.get_radar_snapshot.get_radar_snapshot")
     @patch("services.dashboard.get_alerts_snapshot._fetch_alerts_snapshot")
@@ -114,9 +121,12 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertEqual(alert["support"], 115.0)
         self.assertEqual(alert["resistance"], 121.0)
         self.assertIn("genesis_reading", alert)
+        self.assertIn("genesis_reading_es", alert)
         self.assertEqual(alert["trend"], "alcista intradia")
         self.assertIn("what_it_means", alert)
         self.assertIn("what_to_watch", alert)
+        self.assertEqual(alert["title_es"], "Ruptura en vigilancia")
+        self.assertIn("what_happened_es", alert)
 
 
 if __name__ == "__main__":

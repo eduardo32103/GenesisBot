@@ -162,22 +162,29 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "original_summary": summary,
             "source": source,
             "published_at": published_at.isoformat() if published_at else str(raw.get("publishedDate") or raw.get("date") or ""),
+            "relative_time": _relative_time(published_at),
             "tickers": tickers,
             "tickers_affected": tickers,
+            "asset_names_affected": [_asset_name(ticker) for ticker in tickers],
             "assets": tickers,
             "impact": impact,
             "sentiment": impact,
             "tone": impact,
             "confidence": _confidence(raw, tickers, published_at),
             "image_url": image_url,
+            "thumbnail_url": image_url,
             "thumbnail": image_url,
             "url": url,
             "category": category,
             "genesis_takeaway": _takeaway(title_es, impact, tickers),
+            "genesis_takeaway_es": _takeaway(title_es, impact, tickers),
             "why_it_matters": _why_it_matters(impact, tickers),
+            "why_it_matters_es": _why_it_matters(impact, tickers),
+            "what_to_watch_es": _watch_for_news(impact, tickers),
             "watch_points": [_watch_for_news(impact, tickers)],
             "language": "es",
             "image_kind": "real" if image_url else "category_placeholder",
+            "provider": raw.get("provider") or raw.get("source_type") or ("fmp" if source == "FMP" else "rss"),
         }
         recency = _recency_score(published_at)
         relevance = _relevance_score(item, focus)
@@ -448,6 +455,17 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
         (r"\bmarket today\b", "Mercado hoy"),
         (r"\bMarkets Rally\b", "mercados suben"),
         (r"\bPrices Plunge\b", "precios caen fuerte"),
+        (r"\bCurrent price of\b", "Precio actual de"),
+        (r"\bJumps Back Near\b", "vuelve cerca de"),
+        (r"\bHopes for\b", "expectativas de"),
+        (r"\bselling pressure\b", "presion vendedora"),
+        (r"\bmillion-an-hour\b", "millones por hora"),
+        (r"\bhit by\b", "afectado por"),
+        (r"\babove\b", "por encima de"),
+        (r"\bNear\b", "cerca de"),
+        (r"\bHopes\b", "expectativas"),
+        (r"\bShips\b", "buques"),
+        (r"\bU\.A\.E\.\b", "EAU"),
         (r"\bOil futures Rise\b", "futuros del petroleo suben"),
         (r"\bOil Futures Rise\b", "futuros del petroleo suben"),
         (r"\bOil prices\b", "precios del petroleo"),
@@ -513,6 +531,8 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
         (r"\bslips\b", "cede"),
         (r"\bafter\b", "tras"),
         (r"\bas\b", "mientras"),
+        (r"\bfor\b", "para"),
+        (r"\bAt\b", "a"),
         (r"\bon\b", "por"),
         (r"\bamid\b", "en medio de"),
         (r"\bset to\b", "listo para"),
@@ -581,6 +601,28 @@ def _confidence(raw: dict[str, Any], tickers: list[str], published_at: datetime 
     if published_at:
         score += 1
     return "high" if score >= 3 else "medium" if score >= 2 else "low"
+
+
+def _relative_time(published_at: datetime | None) -> str:
+    if not published_at:
+        return "fecha no confirmada"
+    delta = datetime.now(timezone.utc) - published_at
+    seconds = max(int(delta.total_seconds()), 0)
+    if seconds < 3600:
+        return f"hace {max(seconds // 60, 1)} min"
+    if seconds < 86_400:
+        return f"hace {seconds // 3600} h"
+    return f"hace {seconds // 86_400} d"
+
+
+def _asset_name(ticker: str) -> str:
+    return {
+        "BZ=F": "Brent Crude Oil",
+        "BTC-USD": "Bitcoin",
+        "GC=F": "Gold",
+        "SPY": "S&P 500 ETF",
+        "QQQ": "Nasdaq 100 ETF",
+    }.get(str(ticker or "").upper(), str(ticker or "").upper())
 
 
 def _takeaway(title: str, impact: str, tickers: list[str]) -> str:
@@ -709,19 +751,25 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "original_summary": "No hay titulares externos recientes confirmados por la fuente activa; Genesis sigue usando precios, alertas, cartera y seguimiento.",
         "source": "Genesis",
         "published_at": now,
+        "relative_time": "ahora",
         "tickers": tickers,
         "tickers_affected": tickers,
+        "asset_names_affected": [_asset_name(ticker) for ticker in tickers],
         "assets": tickers,
         "impact": "neutral",
         "sentiment": "neutral",
         "tone": "neutral",
         "confidence": "low",
         "image_url": "",
+        "thumbnail_url": "",
         "thumbnail": "",
         "url": "",
         "category": "macro",
         "genesis_takeaway": "Sin noticia externa confirmada; operar solo con precio, volumen y niveles.",
+        "genesis_takeaway_es": "Sin noticia externa confirmada; operar solo con precio, volumen y niveles.",
         "why_it_matters": "Evita una pantalla vacia sin inventar titulares ni fuentes.",
+        "why_it_matters_es": "Evita una pantalla vacia sin inventar titulares ni fuentes.",
+        "what_to_watch_es": "Vigilar precio, volumen y alertas de tus activos.",
         "is_important": True,
         "is_latest": True,
         "recency_score": 1,
@@ -734,4 +782,5 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "watch_points": ["Vigilar precio, volumen y alertas de tus activos."],
         "elapsed_ms": 0,
         "cache_hit": False,
+        "provider": "internal_fallback",
     }

@@ -27,6 +27,7 @@ from api.routes.dashboard import (
     get_dashboard_reliability,
     get_dashboard_radar_drilldown,
     get_dashboard_radar,
+    get_dashboard_source_health,
     get_dashboard_whales,
     remove_dashboard_portfolio_purchase,
     remove_dashboard_portfolio_ticker,
@@ -76,6 +77,7 @@ def create_app() -> dict[str, str]:
         "news_endpoint": "/api/dashboard/news",
         "whales_endpoint": "/api/dashboard/whales",
         "fmp_endpoint": "/api/dashboard/fmp",
+        "source_health_endpoint": "/api/dashboard/source-health",
         "macro_activity_endpoint": "/api/dashboard/macro-activity",
     }
 
@@ -392,6 +394,15 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/fmp":
             payload = json.dumps(get_dashboard_fmp_dependencies()).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/source-health":
+            payload = json.dumps(get_dashboard_source_health()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

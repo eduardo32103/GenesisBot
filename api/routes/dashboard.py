@@ -14,6 +14,7 @@ from services.dashboard.get_money_flow_signal_model import get_money_flow_signal
 from services.dashboard.get_news_snapshot import get_news_snapshot
 from services.dashboard.get_operational_reliability_snapshot import get_operational_reliability_snapshot
 from services.dashboard.get_radar_ticker_drilldown import get_dashboard_portfolio, get_dashboard_radar_ticker_drilldown
+from services.dashboard.get_source_health import get_source_health
 from services.dashboard.get_whales_snapshot import get_whales_snapshot
 from services.dashboard.get_operational_health import get_operational_health
 from services.dashboard.get_radar_snapshot import get_radar_snapshot
@@ -109,6 +110,10 @@ def get_dashboard_alert_drilldown(alert_id: str) -> dict:
 
 def get_dashboard_fmp_dependencies() -> dict:
     return get_fmp_dependencies_snapshot()
+
+
+def get_dashboard_source_health() -> dict:
+    return get_source_health()
 
 
 def get_dashboard_macro_activity() -> dict:

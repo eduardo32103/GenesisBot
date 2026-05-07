@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,9 +9,10 @@ from app.settings import load_settings
 from integrations.fmp.client import FmpClient
 from services.dashboard.get_operational_health import _connect_database, _safe_iso
 from services.portfolio.get_portfolio_snapshot import normalize_portfolio_positions
+from services.portfolio.portfolio_store import DEFAULT_PORTFOLIO_PATH, PortfolioStore
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
-_PORTFOLIO_FALLBACK_PATH = _ROOT_DIR / "portfolio.json"
+_PORTFOLIO_FALLBACK_PATH = DEFAULT_PORTFOLIO_PATH
 _MAX_LIVE_QUOTES = 25
 _MAX_LIVE_PROFILES = 12
 
@@ -301,15 +301,20 @@ def _fetch_wallet_rows(database_url: str, chat_id: str) -> list[dict[str, Any]]:
 
 
 def _parse_portfolio_fallback() -> list[dict[str, Any]]:
-    if not _PORTFOLIO_FALLBACK_PATH.exists():
-        return []
-
+    store = PortfolioStore()
     try:
-        raw = json.loads(_PORTFOLIO_FALLBACK_PATH.read_text(encoding="utf-8"))
-    except Exception:
+        raw = store.read_raw()
+        origin = "portfolio_store" if store.durable else "portfolio_fallback"
+    finally:
+        store.close()
+
+    if not raw:
         return []
 
-    timestamp = datetime.fromtimestamp(_PORTFOLIO_FALLBACK_PATH.stat().st_mtime, tz=timezone.utc).isoformat()
+    timestamp = str(raw.get("updated_at") or "").strip()
+    if not timestamp and _PORTFOLIO_FALLBACK_PATH.exists():
+        timestamp = datetime.fromtimestamp(_PORTFOLIO_FALLBACK_PATH.stat().st_mtime, tz=timezone.utc).isoformat()
+    timestamp = timestamp or datetime.now(timezone.utc).isoformat()
     items: list[dict[str, Any]] = []
 
     if isinstance(raw, dict) and ("positions" in raw or "portfolio" in raw):
@@ -324,7 +329,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                     entry_price=_coerce_float(position.get("entry_price")),
                     reference_price=_coerce_float(position.get("reference_price")),
                     updated_at=position.get("opened_at") or timestamp,
-                    origin="portfolio_fallback",
+                    origin=origin,
                     mode=position.get("mode", ""),
                     watchlist=bool(position.get("watchlist")),
                     removed_watchlist=bool(position.get("removed_watchlist")),
@@ -340,7 +345,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                         ticker,
                         reference_price=float(value),
                         updated_at=timestamp,
-                        origin="portfolio_fallback",
+                        origin=origin,
                     )
                 )
                 continue
@@ -361,7 +366,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
                         reference_price=_coerce_float(position.get("reference_price")),
                         source=str(value.get("source", "")),
                         updated_at=position.get("opened_at") or timestamp,
-                        origin="portfolio_fallback",
+                        origin=origin,
                         mode=position.get("mode", ""),
                         watchlist=bool(position.get("watchlist")),
                         removed_watchlist=bool(position.get("removed_watchlist")),
@@ -371,7 +376,7 @@ def _parse_portfolio_fallback() -> list[dict[str, Any]]:
 
     if isinstance(raw, list):
         for ticker in raw:
-            items.append(_shape_item(str(ticker), updated_at=timestamp, origin="portfolio_fallback"))
+            items.append(_shape_item(str(ticker), updated_at=timestamp, origin=origin))
     return sorted(items, key=lambda item: item["ticker"])
 
 
@@ -548,6 +553,8 @@ def _build_snapshot_summary(items: list[dict[str, Any]], data_origin: str, portf
         note = "No hay activos vigilados todavia."
     elif data_origin == "database":
         note = "Cartera leida desde la tabla wallet."
+    elif data_origin == "portfolio_store":
+        note = "Cartera paper/watchlist leida desde store durable."
     elif data_origin == "portfolio_fallback":
         note = "Cartera leida desde portfolio.json."
     else:
@@ -578,7 +585,7 @@ def get_radar_snapshot() -> dict[str, Any]:
         items = _merge_persistent_overlays(items, fallback_items)
     elif fallback_items:
         items = fallback_items
-        data_origin = "portfolio_fallback"
+        data_origin = "portfolio_store" if any(item.get("origin") == "portfolio_store" for item in fallback_items) else "portfolio_fallback"
 
     _enrich_items_with_fmp(items, settings)
     portfolio = _apply_portfolio_totals(items)

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=genesis-phase75-real-news-alerts-whales">
+  <link rel="stylesheet" href="./styles.css?v=genesis-phase80-ko4">
 </head>
 <body>
   <main class="phone-shell" id="genesis-app">
@@ -100,17 +100,17 @@
   </aside>
 
   <aside class="asset-sheet" id="news-sheet" hidden>
-    <div class="sheet-backdrop" data-news-close onpointerdown="event.stopPropagation(); document.getElementById('news-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('news-sheet').hidden = true"></div>
+    <div class="sheet-backdrop" data-news-close onclick="this.closest('.asset-sheet').hidden = true; return false"></div>
     <section class="sheet-card news-detail-sheet">
-      <button class="sheet-close" type="button" data-news-close onpointerdown="event.stopPropagation(); document.getElementById('news-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('news-sheet').hidden = true">Cerrar</button>
+      <button class="sheet-close" type="button" data-news-close onclick="this.closest('.asset-sheet').hidden = true; return false">Cerrar</button>
       <div id="news-sheet-body"></div>
     </section>
   </aside>
 
   <aside class="asset-sheet" id="event-sheet" hidden>
-    <div class="sheet-backdrop" data-event-close onpointerdown="event.stopPropagation(); document.getElementById('event-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('event-sheet').hidden = true"></div>
+    <div class="sheet-backdrop" data-event-close onclick="this.closest('.asset-sheet').hidden = true; return false"></div>
     <section class="sheet-card event-detail-sheet">
-      <button class="sheet-close" type="button" data-event-close onpointerdown="event.stopPropagation(); document.getElementById('event-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('event-sheet').hidden = true">Cerrar</button>
+      <button class="sheet-close" type="button" data-event-close onclick="this.closest('.asset-sheet').hidden = true; return false">Cerrar</button>
       <div id="event-sheet-body"></div>
     </section>
   </aside>
@@ -131,6 +131,6 @@
   </aside>
 
   <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
-  <script src="./app.js?v=genesis-phase76-contracts-news-alerts-whales"></script>
+  <script src="./app.js?v=genesis-phase80-ko4"></script>
 </body>
 </html>

@@ -18,6 +18,32 @@ from services.portfolio.update_portfolio import (
 
 
 class PortfolioUpdateTests(unittest.TestCase):
+    def test_default_actions_use_durable_store_when_available(self) -> None:
+        class FakeStore:
+            raw = {"owner_id": "dashboard_web", "positions": []}
+            written: list[dict] = []
+
+            def __init__(self):
+                pass
+
+            def read_raw(self):
+                return self.__class__.raw
+
+            def write_positions(self, positions, raw):
+                self.__class__.written = positions
+                self.__class__.raw = {"owner_id": raw.get("owner_id", "dashboard_web"), "positions": positions}
+
+            def close(self):
+                pass
+
+        with patch("services.portfolio.update_portfolio.PortfolioStore", FakeStore):
+            result = simulate_paper_position("META", units=10, entry_price=608.75)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(FakeStore.written[0]["ticker"], "META")
+        self.assertEqual(FakeStore.written[0]["mode"], "paper")
+        self.assertEqual(FakeStore.written[0]["units"], 10.0)
+
     def test_add_ticker_preserves_existing_watchlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "portfolio.json"

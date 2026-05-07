@@ -1787,7 +1787,8 @@ function renderNewsScreen() {
   indexNewsItems(newsItems);
   const scopedNewsItems = filteredNewsItems(newsItems);
   const importantItems = importantNewsItems(scopedNewsItems);
-  const latestItems = latestNewsItems(scopedNewsItems);
+  const importantIds = new Set(importantItems.map((item) => newsItemId(item)));
+  const latestItems = latestNewsItems(scopedNewsItems).filter((item) => !importantIds.has(newsItemId(item)));
   const headerSummary = newsHeaderSummary(macro.summary || briefingData.summary);
   root.innerHTML = `
     <section class="screen-stack news-screen">
@@ -1943,18 +1944,18 @@ function normalizeNewsItemForUi(item = {}) {
     impact: item.impact || item.sentiment || "Neutral",
     summary: item.summary_es || item.summary || item.text || item.title_es || item.title || "Titular confirmado.",
     assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
-    imageUrl: item.image_url || item.thumbnail || item.image || "",
+    imageUrl: item.image_url || item.thumbnail_url || item.thumbnail || item.image || "",
     url: item.url || item.link || "",
-    genesisTakeaway: item.genesis_takeaway || "",
-    whyItMatters: item.why_it_matters || "",
+    genesisTakeaway: item.genesis_takeaway_es || item.genesis_takeaway || "",
+    whyItMatters: item.why_it_matters_es || item.why_it_matters || "",
     confidence: item.confidence || "media",
     isImportant: Boolean(item.is_important),
     isLatest: Boolean(item.is_latest),
     recencyScore: item.recency_score,
     relevanceScore: item.relevance_score,
     risk: item.risk,
-    watch: item.watch,
-    watchPoints: item.watch_points || item.watchPoints || [],
+    watch: item.what_to_watch_es || item.watch,
+    watchPoints: item.watch_points || item.watchPoints || (item.what_to_watch_es ? [item.what_to_watch_es] : []),
     tickersAffected: item.tickers_affected || item.tickers || item.assets || [],
   };
 }
@@ -2509,7 +2510,7 @@ function normalizeWhaleEventForUi(item = {}) {
   const ticker = itemTicker(item);
   if (!ticker) return null;
   const confirmed = Boolean(item.confirmed || (item.entity_name && numberOrNull(item.confirmed_amount_usd ?? item.amount_usd) !== null));
-  const direction = item.direction_estimate || item.direction || (["buy", "accumulation"].includes(item.action) ? "inflow" : ["sell", "reduction", "distribution"].includes(item.action) ? "outflow" : "neutral");
+  const direction = item.estimated_flow_direction || item.direction_estimate || item.direction || (["buy", "accumulation"].includes(item.action) ? "inflow" : ["sell", "reduction", "distribution"].includes(item.action) ? "outflow" : "neutral");
   const confirmedAmount = numberOrNull(item.confirmed_amount_usd ?? item.amount_usd);
   const monitoredDollarVolume = numberOrNull(item.monitored_dollar_volume ?? item.dollar_volume);
   const display = getAssetDisplayName(ticker).displayName;
@@ -2525,7 +2526,7 @@ function normalizeWhaleEventForUi(item = {}) {
     amountUsd: confirmedAmount,
     estimatedValue: null,
     units: item.amount_asset ?? item.units ?? item.amount ?? "",
-    price: item.price || item.current_price || "",
+    price: item.price_used || item.price || item.current_price || "",
     currentPrice: item.current_price || item.price || "",
     volume: item.monitored_volume ?? item.volume ?? "",
     avgVolume: item.avg_volume ?? "",
@@ -2539,7 +2540,7 @@ function normalizeWhaleEventForUi(item = {}) {
     source: item.source || "market_flow",
     confidence: item.confidence || (confirmed ? "media" : "baja"),
     intensity: item.relative_volume || item.confidence_score || 1,
-    read: item.genesis_reading || (confirmed
+    read: item.genesis_reading_es || item.genesis_reading || (confirmed
       ? "Entidad y monto vienen de fuente reportada; Genesis lo trata como evidencia, no como garantia."
       : "Flujo estimado por volumen/precio; no confirma entidad ni compra directa."),
     missing: confirmed
@@ -2873,11 +2874,11 @@ function alertMarkup(item) {
       <div class="whale-topline">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
-          <small>${escapeHtml(cleanCopy(item.title || item.event || item.status || "Alerta"))}</small>
+          <small>${escapeHtml(cleanCopy(item.title_es || item.title || item.event || item.status || "Alerta"))}</small>
         </div>
         <span class="event-chip">${escapeHtml(priority)}</span>
       </div>
-      <p>${escapeHtml(cleanCopy(item.summary || item.message || item.note || "Revisar antes de operar."))}</p>
+      <p>${escapeHtml(cleanCopy(item.summary_es || item.summary || item.message || item.note || "Revisar antes de operar."))}</p>
       <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="asset-meta">
         <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact || "Por confirmar"))}</span>
@@ -2925,8 +2926,8 @@ function openAlertDetail(alertId) {
   if (!sheet || !body) return;
   body.innerHTML = `
     <span class="app-kicker">Alerta</span>
-    <h2>${escapeHtml(cleanCopy(item.title || "Alerta Genesis"))}</h2>
-    <p>${escapeHtml(cleanCopy(item.summary || item.message || "Evento en vigilancia."))}</p>
+    <h2>${escapeHtml(cleanCopy(item.title_es || item.title || "Alerta Genesis"))}</h2>
+    <p>${escapeHtml(cleanCopy(item.summary_es || item.summary || item.message || "Evento en vigilancia."))}</p>
     ${eventMetricGridMarkup([
       ["Activo", ticker],
       ["Precio", item.price === null || item.price === undefined ? "No aplica a precio directo" : money(item.price, "No aplica")],
@@ -2945,9 +2946,9 @@ function openAlertDetail(alertId) {
     <div class="detail-flow-chart" aria-hidden="true">${miniSeriesBars(item.mini_series || [item.change_pct, item.relative_volume, item.signal_strength])}</div>
     <section class="genesis-mini">
       <strong>Lectura Genesis</strong>
-      <p>${escapeHtml(cleanCopy(item.genesis_reading || "No es orden; sirve para decidir si esperar confirmacion o reducir riesgo."))}</p>
-      <p>Que significa: ${escapeHtml(cleanCopy(item.what_it_means || "Combina precio, volumen y rango para detectar urgencia operativa."))}</p>
-      <p>Que vigilar: ${escapeHtml(cleanCopy(item.what_to_watch || "Confirmacion en volumen, soporte/resistencia y noticias relacionadas."))}</p>
+      <p>${escapeHtml(cleanCopy(item.genesis_reading_es || item.genesis_reading || "No es orden; sirve para decidir si esperar confirmacion o reducir riesgo."))}</p>
+      <p>Que significa: ${escapeHtml(cleanCopy(item.why_it_matters_es || item.what_it_means || "Combina precio, volumen y rango para detectar urgencia operativa."))}</p>
+      <p>Que vigilar: ${escapeHtml(cleanCopy(item.what_to_watch_es || item.what_to_watch || "Confirmacion en volumen, soporte/resistencia y noticias relacionadas."))}</p>
       ${(item.affected_portfolio_assets || []).length ? `<p>Afecta vigilancia/cartera: ${escapeHtml((item.affected_portfolio_assets || []).join(", "))}</p>` : ""}
     </section>
     ${ticker !== "Mercado" ? `<button class="secondary-button full" type="button" data-open-asset="${escapeHtml(ticker)}">Ver activo</button>` : ""}
@@ -3309,6 +3310,22 @@ function bindGlobalEvents() {
   document.querySelectorAll(".nav-link").forEach((button) => {
     button.addEventListener("click", () => setActiveScreen(normalizeScreen(button.dataset.view)));
   });
+  const captureSheetClose = (event) => {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (!target) return;
+    if (target.closest("[data-news-close]")) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeNewsDetail();
+      return;
+    }
+    if (target.closest("[data-event-close]")) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeEventDetail();
+    }
+  };
+  document.addEventListener("click", captureSheetClose, true);
   document.querySelectorAll("[data-news-close]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();

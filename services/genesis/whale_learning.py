@@ -184,14 +184,18 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "amount_asset": units,
         "units": units,
         "price": price,
+        "price_used": price or current_price,
         "amount_usd": amount_usd,
         "confirmed_amount_usd": amount_usd,
+        "from_address": str(row.get("from_address") or row.get("from_entity") or ""),
+        "to_address": str(row.get("to_address") or row.get("to_entity") or ""),
         "current_price": current_price,
         "estimated_value": estimated_value,
         "monitored_volume": volume,
         "monitored_dollar_volume": dollar_volume,
         "estimated_flow": None,
         "direction_estimate": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "reduction", "distribution"} else "neutral",
+        "estimated_flow_direction": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "reduction", "distribution"} else "neutral",
         "confirmed": bool(entity and amount_usd is not None),
         "amount_suspicious": amount_suspicious,
         "volume": volume,
@@ -204,6 +208,8 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "impact": impact,
         "evidence": _evidence(row),
         "genesis_reading": _event_reading(ticker, entity, action, confidence),
+        "genesis_reading_es": _event_reading(ticker, entity, action, confidence),
+        "timestamp": date,
     }
 
 
@@ -240,6 +246,7 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "amount_asset": None,
         "units": None,
         "price": current_price,
+        "price_used": current_price,
         "amount_usd": amount_usd,
         "confirmed_amount_usd": None,
         "current_price": current_price,
@@ -248,6 +255,7 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "monitored_dollar_volume": dollar_volume,
         "estimated_flow": dollar_volume if action in {"buy", "accumulation"} else (-dollar_volume if action in {"sell", "distribution", "reduction"} and dollar_volume is not None else None),
         "direction_estimate": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "distribution", "reduction"} else "neutral",
+        "estimated_flow_direction": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "distribution", "reduction"} else "neutral",
         "confirmed": False,
         "amount_suspicious": amount_suspicious,
         "volume": volume,
@@ -264,6 +272,11 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
             f"{ticker}: flujo institucional en vigilancia ({direction}). "
             "No hay entidad confirmada; Genesis lo usa como senal secundaria, no como compra directa."
         ),
+        "genesis_reading_es": (
+            f"{ticker}: flujo institucional en vigilancia ({direction}). "
+            "No hay entidad confirmada; Genesis lo usa como senal secundaria, no como compra directa."
+        ),
+        "timestamp": date,
     }
 
 
@@ -374,9 +387,9 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     accumulation: list[str] = []
     distribution: list[str] = []
     for event in events:
-        confirmed = bool(event.get("entity_name") and _num(event.get("amount_usd")) is not None)
-        amount = _num(event.get("amount_usd")) if confirmed else 0.0
-        watched = _num(event.get("dollar_volume")) if not confirmed else 0.0
+        confirmed = bool(event.get("entity_name") and _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) is not None)
+        amount = _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) if confirmed else 0.0
+        watched = _num(event.get("monitored_dollar_volume") or event.get("dollar_volume")) if not confirmed else 0.0
         confirmed_value += amount or 0.0
         watched_volume += watched or 0.0
         action = event.get("action")
@@ -409,8 +422,8 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "distribution": distribution[:8],
         "top_assets": top_assets[:8],
         "confidence": "medium" if events else "low",
-        "confirmed_count": len([event for event in events if event.get("entity_name")]),
-        "estimated_count": len([event for event in events if not event.get("entity_name")]),
+        "confirmed_count": len([event for event in events if event.get("entity_name") and _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) is not None]),
+        "estimated_count": len([event for event in events if not (event.get("entity_name") and _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) is not None)]),
     }
 
 

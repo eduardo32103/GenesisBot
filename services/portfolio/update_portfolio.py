@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from services.portfolio.get_portfolio_snapshot import normalize_portfolio_positions
+from services.portfolio.portfolio_store import DEFAULT_PORTFOLIO_PATH, PortfolioStore
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
-_PORTFOLIO_PATH = _ROOT_DIR / "portfolio.json"
+_PORTFOLIO_PATH = DEFAULT_PORTFOLIO_PATH
 _TICKER_PATTERN = re.compile(r"^[A-Z0-9.\-=]{1,15}$")
 
 
@@ -26,6 +27,12 @@ def _coerce_positive_float(value: object) -> float:
 
 
 def _read_raw_portfolio(path: Path = _PORTFOLIO_PATH) -> dict[str, Any]:
+    if Path(path) == _PORTFOLIO_PATH:
+        store = PortfolioStore()
+        try:
+            return store.read_raw()
+        finally:
+            store.close()
     if not path.exists():
         return {"owner_id": "dashboard_web", "positions": []}
     try:
@@ -85,6 +92,13 @@ def _find_raw_mode(raw: dict[str, Any], ticker: str) -> str:
 
 
 def _write_positions(positions: list[dict[str, Any]], raw: dict[str, Any], path: Path = _PORTFOLIO_PATH) -> None:
+    if Path(path) == _PORTFOLIO_PATH:
+        store = PortfolioStore()
+        try:
+            store.write_positions(positions, raw)
+            return
+        finally:
+            store.close()
     payload = {
         "owner_id": raw.get("owner_id", "dashboard_web"),
         "updated_at": datetime.now(timezone.utc).isoformat(),

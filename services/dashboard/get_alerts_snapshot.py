@@ -359,7 +359,9 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "alert_type_label": "Tecnica",
         "ticker": ticker,
         "title": title,
+        "title_es": title,
         "summary": summary,
+        "summary_es": summary,
         "source": "technical",
         "signal_strength": round(float(strength or 0), 4),
         "status": "tracking",
@@ -382,13 +384,18 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "momentum": momentum,
         "risk": _risk_from_alert(impact, support, resistance),
         "what_it_means": _what_alert_means(ticker, impact, context.get("relative_volume")),
+        "what_happened_es": summary,
+        "why_it_matters_es": _what_alert_means(ticker, impact, context.get("relative_volume")),
         "what_to_watch": _what_alert_watch(ticker, support, resistance),
+        "what_to_watch_es": _what_alert_watch(ticker, support, resistance),
         "affected_portfolio_assets": [ticker],
+        "affected_watchlist_assets": [ticker],
         "day_range": {"low": day_low, "high": day_high},
         "mini_series": [context.get("change_pct") or 0, strength, context.get("relative_volume") or 0],
         "state_label": "Vigilancia",
         "evidence": {"derived_from": "radar_snapshot", "source": "technical", **{key: value for key, value in context.items() if value is not None}},
         "genesis_reading": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
+        "genesis_reading_es": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
     }
 
 
@@ -431,6 +438,8 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "id": alert_id,
                 "alert_id": alert_id,
                 "asset_name": str(market.get("name") or market.get("asset_name") or ticker or "Mercado"),
+                "title_es": item.get("title_es") or item.get("title") or "Alerta Genesis",
+                "summary_es": item.get("summary_es") or item.get("summary") or item.get("description") or "",
                 "description": item.get("description") or item.get("summary") or item.get("title") or "",
                 "severity": item.get("severity") or ("high" if change_pct is not None and abs(change_pct) >= 3 else "medium"),
                 "impact": impact,
@@ -452,9 +461,16 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "evidence": item.get("evidence") or {"source": item.get("source") or "database", "market_fields_enriched": bool(market)},
                 "genesis_reading": item.get("genesis_reading")
                 or _alert_reading(ticker, impact, item.get("title") or item.get("summary") or ""),
+                "genesis_reading_es": item.get("genesis_reading_es")
+                or item.get("genesis_reading")
+                or _alert_reading(ticker, impact, item.get("title") or item.get("summary") or ""),
                 "what_it_means": item.get("what_it_means") or _what_alert_means(ticker or "Mercado", impact, relative_volume),
+                "what_happened_es": item.get("what_happened_es") or item.get("summary") or item.get("description") or item.get("title") or "",
+                "why_it_matters_es": item.get("why_it_matters_es") or _what_alert_means(ticker or "Mercado", impact, relative_volume),
                 "what_to_watch": item.get("what_to_watch") or _what_alert_watch(ticker or "Mercado", support, resistance),
+                "what_to_watch_es": item.get("what_to_watch_es") or item.get("what_to_watch") or _what_alert_watch(ticker or "Mercado", support, resistance),
                 "affected_portfolio_assets": item.get("affected_portfolio_assets") or ([ticker] if ticker else []),
+                "affected_watchlist_assets": item.get("affected_watchlist_assets") or ([ticker] if ticker else []),
             }
         )
     return enriched
