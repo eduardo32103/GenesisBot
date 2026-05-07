@@ -138,6 +138,52 @@ class ResponseComposer:
             ],
         }
 
+    def alerts_digest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        alerts = payload.get("items") if isinstance(payload.get("items"), list) else []
+        summary_map = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        summary = payload.get("answer") or summary_map.get("engine_summary") or ""
+        return {
+            "kind": "alerts_digest",
+            "title": "Alertas Genesis",
+            "summary": summary or "Genesis vigila precio, volumen, soporte/resistencia y contexto sin inventar senales.",
+            "alerts": alerts[:8],
+            "metrics": {
+                "total": len(alerts),
+                "high": len([item for item in alerts if str(item.get("severity")).lower() == "high"]),
+                "technical": len([item for item in alerts if str(item.get("source")).lower() == "technical"]),
+            },
+            "sections": [
+                {"title": "Lectura rapida", "bullets": [_alert_line(item) for item in alerts[:3]] or ["Sin alerta fuerte confirmada."]},
+                {"title": "Que vigilar", "bullets": [str(item.get("what_to_watch") or item.get("summary") or "").strip() for item in alerts[:4] if str(item.get("what_to_watch") or item.get("summary") or "").strip()] or ["Confirmar precio, volumen relativo y niveles."]},
+            ],
+        }
+
+    def whale_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        events = payload.get("events") if isinstance(payload.get("events"), list) else []
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        confirmed = [item for item in events if item.get("event_type") == "whale_confirmed" and item.get("entity_name")]
+        estimated = [item for item in events if item not in confirmed]
+        return {
+            "kind": "whale_flow",
+            "title": "Ballenas / Smart money",
+            "summary": payload.get("answer") or _whale_summary_line(summary, confirmed, estimated),
+            "events": events[:8],
+            "confirmed": confirmed[:5],
+            "estimated": estimated[:5],
+            "metrics": {
+                "confirmed_value": summary.get("confirmed_value"),
+                "watched_volume": summary.get("watched_volume") or summary.get("total_estimated_value"),
+                "confirmed_count": len(confirmed),
+                "estimated_count": len(estimated),
+                "confidence": summary.get("confidence") or "low",
+            },
+            "sections": [
+                {"title": "Lectura rapida", "bullets": [_whale_event_line(item) for item in events[:3]] or ["Sin ballena confirmada; vigilancia de flujo tecnico activa."]},
+                {"title": "Que NO significa", "bullets": ["El dollar volume tecnico no es monto confirmado de ballena.", "Sin entidad confirmada no se afirma compra directa."]},
+                {"title": "Que vigilar", "bullets": ["Continuidad de volumen relativo, precio contra niveles y noticias relacionadas."]},
+            ],
+        }
+
     def general_answer(self, answer: str) -> dict[str, Any]:
         return {"kind": "general_answer", "answer": answer, "sections": [{"title": "Respuesta", "bullets": [answer]}]}
 
@@ -230,6 +276,33 @@ def _news_titles(items: list[dict[str, Any]], limit: int) -> list[str]:
         elif title:
             titles.append(title)
     return titles or ["Sin titular confirmado en la fuente activa."]
+
+
+def _alert_line(item: dict[str, Any]) -> str:
+    ticker = str(item.get("ticker") or "Mercado")
+    title = str(item.get("title") or item.get("summary") or "Alerta")
+    pct = format_signed_percent(item.get("change_pct")) if item.get("change_pct") is not None else "sin cambio directo"
+    rel = item.get("relative_volume")
+    rel_text = f", vol. rel {rel:.1f}x" if isinstance(rel, (int, float)) else ""
+    return f"{ticker}: {title} ({pct}{rel_text})."
+
+
+def _whale_event_line(item: dict[str, Any]) -> str:
+    ticker = str(item.get("ticker") or "Mercado")
+    event_type = str(item.get("event_type") or "")
+    if event_type == "whale_confirmed":
+        amount = format_market_number(item.get("amount_usd"), currency="USD") if item.get("amount_usd") is not None else "monto no confirmado"
+        return f"{ticker}: ballena confirmada por {item.get('entity_name') or 'fuente activa'}, {amount}."
+    volume = format_market_number(item.get("dollar_volume"), currency="USD") if item.get("dollar_volume") is not None else "sin volumen $"
+    return f"{ticker}: smart money estimado; volumen vigilado {volume}, sin entidad confirmada."
+
+
+def _whale_summary_line(summary: dict[str, Any], confirmed: list[dict[str, Any]], estimated: list[dict[str, Any]]) -> str:
+    if confirmed:
+        return f"{len(confirmed)} ballenas confirmadas y {len(estimated)} flujos estimados en vigilancia."
+    if estimated:
+        return f"No hay ballenas confirmadas; Genesis vigila {len(estimated)} flujos estimados por volumen y precio."
+    return "Sin ballenas confirmadas ni flujo tecnico suficiente en la fuente activa."
 
 
 def get_response_composer() -> ResponseComposer:

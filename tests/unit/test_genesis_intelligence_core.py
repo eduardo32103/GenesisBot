@@ -389,6 +389,8 @@ class GenesisToolRouterTests(unittest.TestCase):
             payload = route_message("que alertas tengo", memory=store)
 
         self.assertEqual(payload["intent"], "alerts")
+        self.assertEqual(payload["kind"], "alerts_digest")
+        self.assertEqual(payload["structured"]["kind"], "alerts_digest")
         self.assertEqual(payload["tickers"], [])
         self.assertEqual(payload["alerts"]["items"][0]["ticker"], "NVDA")
         self.assertEqual(payload["alerts"]["items"][0]["source"], "technical")
@@ -472,9 +474,14 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["whales"]["events"][0]["event_type"], "unusual_volume")
         self.assertEqual(payload["whales"]["events"][0]["entity_name"], "")
         self.assertIsNone(payload["whales"]["events"][0]["amount_usd"])
+        self.assertIsNone(payload["whales"]["events"][0]["confirmed_amount_usd"])
         self.assertIsNone(payload["whales"]["events"][0]["estimated_value"])
+        self.assertEqual(payload["whales"]["events"][0]["monitored_dollar_volume"], 1200000)
+        self.assertEqual(payload["whales"]["events"][0]["direction_estimate"], "neutral")
         self.assertEqual(payload["whales"]["events"][0]["dollar_volume"], 1200000)
         self.assertEqual(payload["whales"]["events"][0]["relative_volume"], 2)
+        self.assertEqual(payload["kind"], "whale_flow")
+        self.assertEqual(payload["structured"]["kind"], "whale_flow")
         self.assertIn("no hay ballena institucional confirmada", payload["answer"].casefold())
         self.assertEqual(memory[0]["payload"]["event_type"], "unusual_volume")
 
@@ -503,6 +510,7 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         event = payload["whales"]["events"][0]
         self.assertIsNone(event["amount_usd"])
+        self.assertIsNone(event["confirmed_amount_usd"])
         self.assertIsNone(event["estimated_value"])
         self.assertTrue(event["amount_suspicious"])
         self.assertEqual(event["dollar_volume"], 100000)

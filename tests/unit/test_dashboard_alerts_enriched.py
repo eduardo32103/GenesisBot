@@ -58,6 +58,11 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertEqual(alert["source"], "technical")
         self.assertIn("mini_series", alert)
         self.assertIn("genesis_reading", alert)
+        self.assertEqual(alert["trend"], "alcista intradia")
+        self.assertIn("volumen", alert["momentum"])
+        self.assertIn("what_it_means", alert)
+        self.assertIn("what_to_watch", alert)
+        self.assertEqual(alert["affected_portfolio_assets"], ["NVDA"])
 
     @patch("services.dashboard.get_radar_snapshot.get_radar_snapshot")
     @patch("services.dashboard.get_alerts_snapshot._fetch_alerts_snapshot")
@@ -109,6 +114,9 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertEqual(alert["support"], 115.0)
         self.assertEqual(alert["resistance"], 121.0)
         self.assertIn("genesis_reading", alert)
+        self.assertEqual(alert["trend"], "alcista intradia")
+        self.assertIn("what_it_means", alert)
+        self.assertIn("what_to_watch", alert)
 
 
 if __name__ == "__main__":

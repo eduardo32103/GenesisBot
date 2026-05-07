@@ -100,17 +100,17 @@
   </aside>
 
   <aside class="asset-sheet" id="news-sheet" hidden>
-    <div class="sheet-backdrop" data-news-close></div>
+    <div class="sheet-backdrop" data-news-close onpointerdown="event.stopPropagation(); document.getElementById('news-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('news-sheet').hidden = true"></div>
     <section class="sheet-card news-detail-sheet">
-      <button class="sheet-close" type="button" data-news-close>Cerrar</button>
+      <button class="sheet-close" type="button" data-news-close onpointerdown="event.stopPropagation(); document.getElementById('news-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('news-sheet').hidden = true">Cerrar</button>
       <div id="news-sheet-body"></div>
     </section>
   </aside>
 
   <aside class="asset-sheet" id="event-sheet" hidden>
-    <div class="sheet-backdrop" data-event-close></div>
+    <div class="sheet-backdrop" data-event-close onpointerdown="event.stopPropagation(); document.getElementById('event-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('event-sheet').hidden = true"></div>
     <section class="sheet-card event-detail-sheet">
-      <button class="sheet-close" type="button" data-event-close>Cerrar</button>
+      <button class="sheet-close" type="button" data-event-close onpointerdown="event.stopPropagation(); document.getElementById('event-sheet').hidden = true" onclick="event.stopPropagation(); document.getElementById('event-sheet').hidden = true">Cerrar</button>
       <div id="event-sheet-body"></div>
     </section>
   </aside>
@@ -131,6 +131,6 @@
   </aside>
 
   <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
-  <script src="./app.js?v=genesis-phase75-real-news-alerts-whales"></script>
+  <script src="./app.js?v=genesis-phase76-contracts-news-alerts-whales"></script>
 </body>
 </html>

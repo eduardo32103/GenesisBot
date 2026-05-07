@@ -104,12 +104,30 @@ def route_message(
 
     if route.intent == "whale_activity":
         learned = get_whale_agent().activity(explicit_ticker or None, memory=store)
-        return _payload("whale_activity", learned["answer"], tickers, extra={"whales": learned}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
+        structured = composer.whale_flow(learned)
+        return _payload(
+            "whale_activity",
+            learned["answer"],
+            tickers,
+            extra={"whales": learned, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
 
     if route.intent == "alerts":
         alerts = get_alerts_agent().summary()
         store.save_event("alerts_summary", {"count": len(alerts.get("items", [])), "answer": alerts.get("answer")}, "alerts", "media")
-        return _payload("alerts", alerts["answer"], [], extra={"alerts": alerts}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
+        structured = composer.alerts_digest(alerts)
+        return _payload(
+            "alerts",
+            alerts["answer"],
+            [],
+            extra={"alerts": alerts, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
 
     if route.intent == "comparison":
         quotes = [price_agent.quote(item) for item in tickers[:2]]

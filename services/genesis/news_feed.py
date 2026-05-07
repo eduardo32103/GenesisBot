@@ -23,8 +23,8 @@ _SOURCE_STATUS: dict[str, Any] = {}
 _NEWS_TTL_SECONDS = 15 * 60
 _OG_TTL_SECONDS = 30 * 60
 _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", "BTC-USD", "BZ=F"]
-_RSS_TIMEOUT_SECONDS = 2
-_MAX_OG_IMAGES_PER_BATCH = 3
+_RSS_TIMEOUT_SECONDS = 1.2
+_MAX_OG_IMAGES_PER_BATCH = 4
 _RSS_QUERIES = [
     "market today",
     "stock market today",
@@ -163,8 +163,11 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "source": source,
             "published_at": published_at.isoformat() if published_at else str(raw.get("publishedDate") or raw.get("date") or ""),
             "tickers": tickers,
+            "tickers_affected": tickers,
             "assets": tickers,
             "impact": impact,
+            "sentiment": impact,
+            "tone": impact,
             "confidence": _confidence(raw, tickers, published_at),
             "image_url": image_url,
             "thumbnail": image_url,
@@ -172,6 +175,7 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "category": category,
             "genesis_takeaway": _takeaway(title_es, impact, tickers),
             "why_it_matters": _why_it_matters(impact, tickers),
+            "watch_points": [_watch_for_news(impact, tickers)],
             "language": "es",
             "image_kind": "real" if image_url else "category_placeholder",
         }
@@ -190,13 +194,13 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
 
 def _fetch_public_rss_news(focus_tickers: list[str], *, limit: int) -> list[dict[str, Any]]:
     queries = _rss_queries(focus_tickers)
-    feeds = _rss_urls(queries, focus_tickers)[:12]
+    feeds = _rss_urls(queries, focus_tickers)[:8]
     output: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     try:
         with ThreadPoolExecutor(max_workers=6) as executor:
             futures = [executor.submit(_fetch_rss_feed, feed) for feed in feeds]
-            for future in as_completed(futures, timeout=5):
+            for future in as_completed(futures, timeout=3):
                 if len(output) >= limit:
                     break
                 for item in future.result() or []:
@@ -442,11 +446,46 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
     replacements = (
         (r"\bStock market today\b", "Mercado hoy"),
         (r"\bmarket today\b", "Mercado hoy"),
+        (r"\bMarkets Rally\b", "mercados suben"),
+        (r"\bPrices Plunge\b", "precios caen fuerte"),
+        (r"\bOil futures Rise\b", "futuros del petroleo suben"),
+        (r"\bOil Futures Rise\b", "futuros del petroleo suben"),
+        (r"\bOil prices\b", "precios del petroleo"),
+        (r"\bOil\b", "petroleo"),
+        (r"\bfinancial markets\b", "mercados financieros"),
+        (r"\bpredicted\b", "estimados"),
+        (r"\bRising\b", "aumento de"),
+        (r"\brising\b", "aumento de"),
+        (r"\bDip\b", "ceden"),
+        (r"\bdip\b", "ceden"),
+        (r"\bConcerns\b", "preocupacion"),
+        (r"\bconcerns\b", "preocupacion"),
+        (r"\bRise\b", "suben"),
+        (r"\brise\b", "suben"),
+        (r"\bFires\b", "dispara"),
+        (r"\bfires\b", "dispara"),
+        (r"\bUS\b", "EE.UU."),
+        (r"\bSlip\b", "ceden"),
+        (r"\bslip\b", "ceden"),
+        (r"\bJitters Build\b", "aumenta la inquietud"),
+        (r"\bjitters build\b", "aumenta la inquietud"),
+        (r"\bAnd\b", "y"),
+        (r"\band\b", "y"),
+        (r"\bby\b", "por"),
+        (r"\bApril\b", "abril"),
+        (r"\bMay\b", "mayo"),
+        (r"\bJune\b", "junio"),
+        (r"\bMarkets\b", "mercados"),
+        (r"\bMarket\b", "mercado"),
         (r"\bWhy\b", "Por qué"),
         (r"\bpredicted by financial markets\b", "estimados por los mercados financieros"),
         (r"\bare missing the mark\b", "fallan el objetivo"),
         (r"\bis missing the mark\b", "falla el objetivo"),
         (r"\bwhat to watch\b", "qué vigilar"),
+        (r"\bPlunge\b", "caen fuerte"),
+        (r"\bplunge\b", "caen fuerte"),
+        (r"\bIran Ceasefire\b", "alto el fuego en Irán"),
+        (r"\bCeasefire\b", "alto el fuego"),
         (r"\bstocks\b", "acciones"),
         (r"\bstock\b", "acción"),
         (r"\bfutures\b", "futuros"),
@@ -475,6 +514,10 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
         (r"\bafter\b", "tras"),
         (r"\bas\b", "mientras"),
         (r"\bon\b", "por"),
+        (r"\bamid\b", "en medio de"),
+        (r"\bset to\b", "listo para"),
+        (r"\bhits\b", "toca"),
+        (r"\bslump\b", "caída"),
         (r"\bupdate\b", "actualización"),
         (r"\bwarns\b", "advierte"),
         (r"\bbeats\b", "supera expectativas"),
@@ -667,8 +710,11 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "source": "Genesis",
         "published_at": now,
         "tickers": tickers,
+        "tickers_affected": tickers,
         "assets": tickers,
         "impact": "neutral",
+        "sentiment": "neutral",
+        "tone": "neutral",
         "confidence": "low",
         "image_url": "",
         "thumbnail": "",
@@ -685,6 +731,7 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "image_kind": "category_placeholder",
         "risk": "Riesgo: falta catalizador externo confirmado.",
         "watch": "Vigilar precio, volumen y alertas de tus activos.",
+        "watch_points": ["Vigilar precio, volumen y alertas de tus activos."],
         "elapsed_ms": 0,
         "cache_hit": False,
     }

@@ -27,6 +27,7 @@ from api.routes.dashboard import (
     get_dashboard_reliability,
     get_dashboard_radar_drilldown,
     get_dashboard_radar,
+    get_dashboard_whales,
     remove_dashboard_portfolio_purchase,
     remove_dashboard_portfolio_ticker,
     search_dashboard_market_ticker,
@@ -73,6 +74,7 @@ def create_app() -> dict[str, str]:
         "alerts_endpoint": "/api/dashboard/alerts",
         "alerts_drilldown_endpoint": "/api/dashboard/alerts/drilldown?alert_id={id}",
         "news_endpoint": "/api/dashboard/news",
+        "whales_endpoint": "/api/dashboard/whales",
         "fmp_endpoint": "/api/dashboard/fmp",
         "macro_activity_endpoint": "/api/dashboard/macro-activity",
     }
@@ -371,6 +373,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/news":
             payload = json.dumps(get_dashboard_news()).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/whales":
+            ticker = (parse_qs(parsed.query).get("ticker") or [""])[0]
+            payload = json.dumps(get_dashboard_whales(ticker)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

@@ -867,16 +867,20 @@ input:focus-visible {
   padding-bottom: 2px;
 }
 
-.feed-tabs span {
+.feed-tabs span,
+.feed-tabs button {
   flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 7px 10px;
   color: var(--soft);
   font-size: 0.75rem;
+  font-weight: 800;
+  background: rgba(255, 255, 255, 0.025);
 }
 
-.feed-tabs span.is-active {
+.feed-tabs span.is-active,
+.feed-tabs button.is-active {
   color: var(--text);
   border-color: rgba(123, 224, 173, 0.36);
   background: rgba(123, 224, 173, 0.09);
@@ -2196,11 +2200,13 @@ input:focus-visible {
 .sheet-backdrop {
   position: absolute;
   inset: 0;
+  z-index: 0;
   background: rgba(0, 0, 0, 0.68);
 }
 
 .sheet-card {
   position: relative;
+  z-index: 1;
   width: min(100%, 430px);
   max-height: 88vh;
   overflow: auto;
@@ -2212,6 +2218,8 @@ input:focus-visible {
 }
 
 .sheet-close {
+  position: relative;
+  z-index: 2;
   float: right;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.06);

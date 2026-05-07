@@ -137,7 +137,7 @@ class AlertDrilldownTests(unittest.TestCase):
         mock_snapshot.return_value = {
             "items": [
                 {"alert_id": "technical:MARA:price_change", "ticker": "MARA", "title": "MARA rompe rango", "price": 22.5, "change_pct": 4.1, "source": "technical"},
-                {"alert_id": "technical:BZ=F:oil", "ticker": "BZ=F", "title": "Petroleo en vigilancia", "price": 78.2, "change_pct": -1.0, "source": "technical"},
+                {"alert_id": "technical:BZ=F:oil", "ticker": "BZ=F", "title": "Petroleo en vigilancia", "price": 78.2, "change_pct": -1.0, "source": "technical", "what_it_means": "Oil macro", "what_to_watch": "Brent range"},
             ]
         }
 
@@ -147,6 +147,9 @@ class AlertDrilldownTests(unittest.TestCase):
         self.assertEqual(detail["ticker"], "MARA")
         self.assertEqual(detail["title"], "MARA rompe rango")
         self.assertEqual(detail["price"], 22.5)
+        self.assertEqual(detail["daily_change_pct"], 4.1)
+        self.assertIn("what_it_means", detail)
+        self.assertIn("affected_portfolio_assets", detail)
         self.assertNotIn("Petroleo", detail["title"])
 
 

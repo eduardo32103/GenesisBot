@@ -68,6 +68,9 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertGreaterEqual(items[0]["recency_score"], 1)
         self.assertGreaterEqual(items[0]["relevance_score"], 1)
         self.assertIn("why_it_matters", items[0])
+        self.assertIn("tickers_affected", items[0])
+        self.assertIn("watch_points", items[0])
+        self.assertEqual(items[0]["sentiment"], items[0]["impact"])
         self.assertEqual(get_news_source_status()["fmp_market_news"]["status"], "ok")
 
     @patch("services.genesis.news_feed.FmpClient")

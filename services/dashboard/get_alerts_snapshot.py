@@ -348,6 +348,10 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
     dollar_volume = price * volume if price is not None and volume is not None else None
     day_low = context.get("day_low")
     day_high = context.get("day_high")
+    support = context.get("support") or day_low
+    resistance = context.get("resistance") or day_high
+    trend = _trend_from_change(context.get("change_pct"))
+    momentum = _momentum_from_fields(context.get("change_pct"), context.get("relative_volume"))
     return {
         "alert_id": f"technical:{ticker}:{alert_type}",
         "id": f"technical:{ticker}:{alert_type}",
@@ -372,8 +376,14 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "avg_volume": context.get("avg_volume"),
         "relative_volume": context.get("relative_volume"),
         "dollar_volume": dollar_volume,
-        "support": context.get("support") or day_low,
-        "resistance": context.get("resistance") or day_high,
+        "support": support,
+        "resistance": resistance,
+        "trend": trend,
+        "momentum": momentum,
+        "risk": _risk_from_alert(impact, support, resistance),
+        "what_it_means": _what_alert_means(ticker, impact, context.get("relative_volume")),
+        "what_to_watch": _what_alert_watch(ticker, support, resistance),
+        "affected_portfolio_assets": [ticker],
         "day_range": {"low": day_low, "high": day_high},
         "mini_series": [context.get("change_pct") or 0, strength, context.get("relative_volume") or 0],
         "state_label": "Vigilancia",
@@ -412,6 +422,9 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 impact = "neutral"
         alert_id = str(item.get("alert_id") or item.get("id") or f"alert:{ticker or 'macro'}:{item.get('alert_type') or item.get('title') or item.get('created_at') or len(enriched)}")
+        trend = item.get("trend") or _trend_from_change(change_pct)
+        momentum = item.get("momentum") or _momentum_from_fields(change_pct, relative_volume)
+        risk = item.get("risk") or _risk_from_alert(impact, support, resistance)
         enriched.append(
             {
                 **item,
@@ -432,10 +445,16 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "dollar_volume": dollar_volume,
                 "support": support,
                 "resistance": resistance,
+                "trend": trend,
+                "momentum": momentum,
+                "risk": risk,
                 "mini_series": item.get("mini_series") or [value for value in (change_pct, relative_volume, item.get("signal_strength")) if value is not None],
                 "evidence": item.get("evidence") or {"source": item.get("source") or "database", "market_fields_enriched": bool(market)},
                 "genesis_reading": item.get("genesis_reading")
                 or _alert_reading(ticker, impact, item.get("title") or item.get("summary") or ""),
+                "what_it_means": item.get("what_it_means") or _what_alert_means(ticker or "Mercado", impact, relative_volume),
+                "what_to_watch": item.get("what_to_watch") or _what_alert_watch(ticker or "Mercado", support, resistance),
+                "affected_portfolio_assets": item.get("affected_portfolio_assets") or ([ticker] if ticker else []),
             }
         )
     return enriched
@@ -487,6 +506,55 @@ def _alert_reading(ticker: str, impact: str, title: object) -> str:
     if impact == "bearish":
         return f"{scope}: {label}. Riesgo en vigilancia; revisar soporte, volumen y exposicion en cartera."
     return f"{scope}: {label}. Lectura neutral; vigilar si cambia precio, volumen o contexto macro."
+
+
+def _trend_from_change(change_pct: object) -> str:
+    value = _num(change_pct)
+    if value is None:
+        return "sin tendencia confirmada"
+    if value > 1.5:
+        return "alcista intradia"
+    if value < -1.5:
+        return "bajista intradia"
+    return "lateral / confirmacion pendiente"
+
+
+def _momentum_from_fields(change_pct: object, relative_volume: object) -> str:
+    pct = _num(change_pct) or 0.0
+    rel = _num(relative_volume) or 0.0
+    if abs(pct) >= 3 and rel >= 1.8:
+        return "alto: precio y volumen empujan juntos"
+    if abs(pct) >= 2 or rel >= 1.5:
+        return "medio: senal visible, falta continuidad"
+    return "moderado: vigilancia sin ruptura fuerte"
+
+
+def _risk_from_alert(impact: str, support: object, resistance: object) -> str:
+    if impact == "bearish":
+        return "riesgo de perdida de soporte" if support is not None else "riesgo de presion bajista sin nivel confirmado"
+    if impact == "bullish":
+        return "riesgo de rechazo en resistencia" if resistance is not None else "riesgo de falso rompimiento sin volumen"
+    return "riesgo principal: falta de confirmacion"
+
+
+def _what_alert_means(ticker: str, impact: str, relative_volume: object) -> str:
+    rel = _num(relative_volume)
+    volume_part = f" con volumen relativo {rel:.1f}x" if rel is not None else ""
+    if impact == "bullish":
+        return f"{ticker} muestra sesgo positivo{volume_part}; Genesis lo trata como posible oportunidad si respeta nivel."
+    if impact == "bearish":
+        return f"{ticker} muestra presion{volume_part}; Genesis lo trata como riesgo activo para cartera/watchlist."
+    return f"{ticker} esta en vigilancia{volume_part}; aun no hay direccion suficiente para elevar conviccion."
+
+
+def _what_alert_watch(ticker: str, support: object, resistance: object) -> str:
+    pieces = []
+    if support is not None:
+        pieces.append(f"soporte {support}")
+    if resistance is not None:
+        pieces.append(f"resistencia {resistance}")
+    levels = ", ".join(pieces) if pieces else "precio, volumen y cierre de vela"
+    return f"Vigilar {levels} en {ticker}; confirmar con noticia o volumen antes de actuar."
 
 
 def _num(value: object) -> float | None:
