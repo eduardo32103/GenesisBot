@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from services.dashboard.get_alert_drilldown import _fetch_alert_drilldown
+from services.dashboard.get_alert_drilldown import _snapshot_alert_detail
 
 
 class _FakeCursor:
@@ -130,6 +131,23 @@ class AlertDrilldownTests(unittest.TestCase):
         self.assertFalse(detail["found"])
         self.assertEqual(detail["error"], "database_unavailable")
         self.assertIn("No pude conectarme", detail["reliability_note"])
+
+    @patch("services.dashboard.get_alerts_snapshot.get_alerts_snapshot")
+    def test_snapshot_alert_detail_opens_exact_alert_by_id(self, mock_snapshot):
+        mock_snapshot.return_value = {
+            "items": [
+                {"alert_id": "technical:MARA:price_change", "ticker": "MARA", "title": "MARA rompe rango", "price": 22.5, "change_pct": 4.1, "source": "technical"},
+                {"alert_id": "technical:BZ=F:oil", "ticker": "BZ=F", "title": "Petroleo en vigilancia", "price": 78.2, "change_pct": -1.0, "source": "technical"},
+            ]
+        }
+
+        detail = _snapshot_alert_detail("technical:MARA:price_change")
+
+        self.assertTrue(detail["found"])
+        self.assertEqual(detail["ticker"], "MARA")
+        self.assertEqual(detail["title"], "MARA rompe rango")
+        self.assertEqual(detail["price"], 22.5)
+        self.assertNotIn("Petroleo", detail["title"])
 
 
 if __name__ == "__main__":

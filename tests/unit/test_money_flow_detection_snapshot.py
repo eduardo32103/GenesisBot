@@ -25,6 +25,8 @@ class MoneyFlowDetectionSnapshotTests(unittest.TestCase):
                 {
                     "ticker": "NVDA",
                     "reference_price": 101.0,
+                    "current_price": 101.0,
+                    "volume": 2_000_000,
                     "source": "live",
                     "origin": "database",
                     "updated_at": "2026-04-25T15:00:00+00:00",
@@ -87,6 +89,9 @@ class MoneyFlowDetectionSnapshotTests(unittest.TestCase):
         self.assertTrue(nvda_signals["sector_pressure"]["detected"])
         self.assertTrue(nvda_signals["risk_on_risk_off"]["detected"])
         self.assertTrue(nvda_signals["rotation"]["detected"])
+        self.assertEqual(by_ticker["NVDA"]["current_price"], 101.0)
+        self.assertEqual(by_ticker["NVDA"]["volume"], 2_000_000)
+        self.assertEqual(by_ticker["NVDA"]["dollar_volume"], 202_000_000)
         self.assertTrue(bno_signals["strong_outflow"]["detected"])
         self.assertTrue(iau_signals["price_volume_divergence"]["detected"])
         self.assertFalse(by_ticker["NVDA"]["whale"]["identified"])

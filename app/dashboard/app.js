@@ -1645,7 +1645,8 @@ async function loadNews() {
   appState.newsLoading = true;
   renderNewsScreen();
   try {
-    const [macroResult, briefingResult, alertsResult, whalesResult] = await Promise.allSettled([
+    const [newsResult, macroResult, briefingResult, alertsResult, whalesResult] = await Promise.allSettled([
+      getJson("/api/dashboard/news"),
       getJson("/api/dashboard/macro-activity"),
       postJson("/api/genesis/ask", { message: "dame resumen del dia", context: "news", conversation_id: appState.currentConversationId }),
       getJson("/api/dashboard/alerts"),
@@ -1653,9 +1654,11 @@ async function loadNews() {
     ]);
     if (alertsResult.status === "fulfilled") appState.alertsSnapshot = alertsResult.value;
     appState.newsSnapshot = {
+      news: newsResult.status === "fulfilled" ? newsResult.value : null,
       macro: macroResult.status === "fulfilled" ? macroResult.value : null,
       briefing: briefingResult.status === "fulfilled" ? briefingResult.value : null,
       errors: [
+        newsResult.status === "rejected" ? newsResult.reason?.message : "",
         macroResult.status === "rejected" ? macroResult.reason?.message : "",
         briefingResult.status === "rejected" ? briefingResult.reason?.message : "",
         alertsResult.status === "rejected" ? alertsResult.reason?.message : "",
@@ -1722,14 +1725,22 @@ function renderNewsScreen() {
 }
 
 function newsFeedItems(snapshot = {}) {
+  const newsSnapshot = snapshot.news || {};
   const macro = snapshot.macro?.macro || {};
   const briefingData = snapshot.briefing?.briefing || snapshot.briefing?.overview || {};
+  const directNews = [
+    ...(Array.isArray(newsSnapshot.important) ? newsSnapshot.important : []),
+    ...(Array.isArray(newsSnapshot.latest) ? newsSnapshot.latest : []),
+    ...(Array.isArray(newsSnapshot.items) ? newsSnapshot.items : []),
+  ];
   const headlines = Array.isArray(macro.headlines) ? macro.headlines : [];
   const briefingNews = Array.isArray(briefingData.news) ? briefingData.news : [];
   const items = [
+    ...directNews.map(normalizeNewsItemForUi),
     ...headlines.map((item) => ({
       category: "Macro",
-      title: item.title,
+      title: item.title_es || item.title,
+      originalTitle: item.original_title || item.title,
       source: item.source,
       time: item.published_at,
       impact: item.impact_summary || macro.bias_label || "Neutral",
@@ -1739,11 +1750,12 @@ function newsFeedItems(snapshot = {}) {
     ...briefingNews.map((item) => ({
       id: item.id,
       category: "Mercado",
-      title: item.title || item.headline || "Titular de mercado",
+      title: item.title_es || item.title || item.headline || "Titular de mercado",
+      originalTitle: item.original_title || item.title || item.headline || "",
       source: item.site || item.publisher || item.source || "FMP",
       time: item.published_at || item.publishedDate || item.date,
       impact: item.sentiment || item.impact || "Contexto",
-      summary: item.text || item.summary || item.title || "Titular confirmado por fuente de mercado.",
+      summary: item.summary_es || item.text || item.summary || item.title_es || item.title || "Titular confirmado por fuente de mercado.",
       assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
       imageUrl: item.image_url || item.thumbnail || item.image || "",
       url: item.url || "",
@@ -1782,6 +1794,31 @@ function newsFeedItems(snapshot = {}) {
     return true;
   });
   return filtered.slice(0, 12);
+}
+
+function normalizeNewsItemForUi(item = {}) {
+  return {
+    id: item.id,
+    category: item.category || item.placeholder_key || "Mercado",
+    title: item.title_es || item.title || item.headline || "Titular de mercado",
+    originalTitle: item.original_title || item.headline || item.title || "",
+    source: item.source || item.site || item.publisher || "Fuente activa",
+    time: item.published_at || item.publishedDate || item.date,
+    impact: item.impact || item.sentiment || "Neutral",
+    summary: item.summary_es || item.summary || item.text || item.title_es || item.title || "Titular confirmado.",
+    assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
+    imageUrl: item.image_url || item.thumbnail || item.image || "",
+    url: item.url || item.link || "",
+    genesisTakeaway: item.genesis_takeaway || "",
+    whyItMatters: item.why_it_matters || "",
+    confidence: item.confidence || "media",
+    isImportant: Boolean(item.is_important),
+    isLatest: Boolean(item.is_latest),
+    recencyScore: item.recency_score,
+    relevanceScore: item.relevance_score,
+    risk: item.risk,
+    watch: item.watch,
+  };
 }
 
 function isInternalNewsPlaceholder(item) {
@@ -1875,7 +1912,7 @@ function newsCardMarkup(item) {
         </span>
       <div class="news-card-copy">
         <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))}</span>
-        <strong>${escapeHtml(cleanCopy(item.title || "Noticia"))}</strong>
+        <strong>${escapeHtml(newsDisplayTitle(item))}</strong>
         <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || item.summary || "Sin lectura adicional."))}</p>
       </div>
       </button>
@@ -1927,7 +1964,7 @@ function openNewsDetail(newsId) {
   body.innerHTML = `
     ${image ? `<img class="news-detail-image" src="${escapeHtml(image)}" alt="">` : `<div class="news-detail-image is-placeholder">${newsPlaceholderMarkup(cleanCopy(item.category || "macro").toLowerCase(), item)}</div>`}
     <span class="app-kicker">${escapeHtml(cleanCopy(item.category || "Noticias"))}</span>
-    <h2>${escapeHtml(cleanCopy(item.title || "Noticia"))}</h2>
+    <h2>${escapeHtml(newsDisplayTitle(item))}</h2>
     <div class="news-detail-meta">
       <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
       <span>${escapeHtml(formatDate(item.time))}</span>
@@ -1947,6 +1984,10 @@ function openNewsDetail(newsId) {
     ${item.url ? `<a class="secondary-button full" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Abrir fuente original</a>` : ""}
   `;
   sheet.hidden = false;
+}
+
+function newsDisplayTitle(item = {}) {
+  return cleanCopy(item.title_es || item.title || item.headline || item.originalTitle || "Noticia");
 }
 
 function closeNewsDetail() {
@@ -2229,10 +2270,12 @@ async function loadWhales() {
 }
 
 async function loadWhalesData() {
-  const [causal, detection] = await Promise.all([
+  const [causalResult, detectionResult] = await Promise.allSettled([
     fetch("/api/dashboard/money-flow/causal", { cache: "no-store" }).then((response) => response.json()),
     fetch("/api/dashboard/money-flow/detection", { cache: "no-store" }).then((response) => response.json()),
   ]);
+  const causal = causalResult.status === "fulfilled" ? causalResult.value : {};
+  const detection = detectionResult.status === "fulfilled" ? detectionResult.value : {};
   appState.whalesSnapshot = { causal, detection };
   return appState.whalesSnapshot;
 }
@@ -2625,7 +2668,7 @@ function alertMarkup(item) {
       <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="asset-meta">
         <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact || "Por confirmar"))}</span>
-        <span>Precio: ${escapeHtml(item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica"))}</span>
+        <span>Precio: ${escapeHtml(item.price === null || item.price === undefined ? "No aplica a precio directo" : money(item.price, "No aplica a precio directo"))}</span>
         <span>Cambio: ${escapeHtml(formatPercent(item.change_pct, "Sin dato"))}</span>
         <span>Volumen: ${escapeHtml(item.volume ? compactNumber(item.volume) : "Sin volumen")}</span>
         <span>Vol. rel: ${escapeHtml(item.relative_volume ? `${compactNumber(item.relative_volume)}x` : "Sin dato")}</span>
@@ -2649,8 +2692,7 @@ function currentAlertRows() {
 
 function currentWhaleRows() {
   const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
-  const hasConfirmed = whales.some((row) => row.entity || row.amount);
-  return hasConfirmed ? whales : whaleFallbackRows();
+  return whales.length ? whales : whaleFallbackRows();
 }
 
 function openAlertDetail(alertId) {

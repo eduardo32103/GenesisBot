@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from services.dashboard.get_news_snapshot import get_news_snapshot
 from services.genesis.news_feed import get_news_source_status, get_recent_market_news
 
 
@@ -53,9 +54,13 @@ class GenesisNewsFeedTests(unittest.TestCase):
 
         self.assertEqual(len(items), 1)
         self.assertNotIn("Stock Price", items[0]["title"])
+        self.assertEqual(items[0]["original_title"], "NVIDIA rallies after AI demand update")
+        self.assertIn("sube", items[0]["title"].casefold())
+        self.assertEqual(items[0]["language"], "es")
         self.assertEqual(items[0]["tickers"], ["NVDA"])
         self.assertEqual(items[0]["impact"], "bullish")
         self.assertEqual(items[0]["image_url"], "https://example.com/nvda.jpg")
+        self.assertEqual(items[0]["image_kind"], "real")
         self.assertEqual(items[0]["source"], "Market Source")
         self.assertTrue(items[0]["id"])
         self.assertTrue(items[0]["is_latest"])
@@ -105,9 +110,42 @@ class GenesisNewsFeedTests(unittest.TestCase):
 
         self.assertEqual(items[0]["source"], "Reuters")
         self.assertEqual(items[0]["category"], "commodity")
+        self.assertIn("Brent", items[0]["title"])
         self.assertEqual(items[0]["image_url"], "https://example.com/oil.jpg")
         self.assertIn("BZ=F", items[0]["tickers"])
         self.assertTrue(items[0]["id"])
+
+    @patch("services.dashboard.get_news_snapshot.get_recent_market_news")
+    @patch("services.dashboard.get_news_snapshot.get_news_source_status")
+    @patch("services.dashboard.get_news_snapshot._focus_tickers")
+    def test_dashboard_news_snapshot_separates_important_and_latest(self, mock_focus: Mock, mock_status: Mock, mock_recent: Mock) -> None:
+        mock_focus.return_value = ["NVDA"]
+        mock_status.return_value = {"fmp_market_news": {"status": "ok"}}
+        mock_recent.return_value = [
+            {
+                "id": "n1",
+                "title": "NVDA sube por demanda de IA",
+                "published_at": "2026-05-06T12:00:00+00:00",
+                "tickers": ["NVDA"],
+                "is_important": True,
+            },
+            {
+                "id": "n2",
+                "title": "Mercado mixto",
+                "published_at": "2026-05-05T12:00:00+00:00",
+                "tickers": [],
+                "is_important": False,
+            },
+        ]
+
+        payload = get_news_snapshot(limit=12)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["items"][0]["id"], "n1")
+        self.assertEqual(payload["important"][0]["id"], "n1")
+        self.assertEqual(payload["latest"][0]["id"], "n1")
+        self.assertEqual(payload["sections"]["mine"][0]["id"], "n1")
+        self.assertEqual(payload["source_status"]["fmp_market_news"]["status"], "ok")
 
 
 if __name__ == "__main__":

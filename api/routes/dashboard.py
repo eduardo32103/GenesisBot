@@ -11,6 +11,7 @@ from services.dashboard.get_money_flow_causal_snapshot import get_money_flow_cau
 from services.dashboard.get_money_flow_detection_snapshot import get_money_flow_detection_snapshot
 from services.dashboard.get_money_flow_jarvis_answer import get_money_flow_jarvis_answer
 from services.dashboard.get_money_flow_signal_model import get_money_flow_signal_model
+from services.dashboard.get_news_snapshot import get_news_snapshot
 from services.dashboard.get_operational_reliability_snapshot import get_operational_reliability_snapshot
 from services.dashboard.get_radar_ticker_drilldown import get_dashboard_portfolio, get_dashboard_radar_ticker_drilldown
 from services.dashboard.get_operational_health import get_operational_health
@@ -111,3 +112,7 @@ def get_dashboard_fmp_dependencies() -> dict:
 
 def get_dashboard_macro_activity() -> dict:
     return get_macro_activity_snapshot()
+
+
+def get_dashboard_news() -> dict:
+    return get_news_snapshot()

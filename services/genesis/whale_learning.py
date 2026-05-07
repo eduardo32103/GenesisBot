@@ -206,7 +206,7 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
     date = str(row.get("money_flow_timestamp") or row.get("timestamp") or row.get("date") or "").strip()
     source = str(row.get("source") or "market_flow").strip()
     current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
-    amount_usd = _num(row.get("amount_usd") or row.get("estimated_value") or row.get("value"))
+    raw_unconfirmed_amount = _num(row.get("amount_usd") or row.get("estimated_value") or row.get("value"))
     volume = _num(row.get("volume") or row.get("total_volume") or row.get("session_volume"))
     avg_volume = _num(row.get("avg_volume") or row.get("average_volume") or row.get("avgVolume"))
     relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio") or row.get("intensity"))
@@ -215,9 +215,8 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
     dollar_volume = _num(row.get("dollar_volume") or row.get("dollarVolume"))
     if dollar_volume is None and volume is not None and current_price is not None:
         dollar_volume = volume * current_price
-    if amount_usd is None:
-        amount_usd = dollar_volume
-    amount_usd, amount_suspicious = _sanitize_flow_value(amount_usd, dollar_volume)
+    _, amount_suspicious = _sanitize_flow_value(raw_unconfirmed_amount, dollar_volume)
+    amount_usd = None
     event_type = "unusual_volume" if _has_unusual_volume(row) else "smart_money_estimate"
     direction = "alcista" if action in {"buy", "accumulation"} else "bajista" if action in {"sell", "distribution", "reduction"} else "neutral"
     return {
@@ -235,13 +234,13 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "price": current_price,
         "amount_usd": amount_usd,
         "current_price": current_price,
-        "estimated_value": amount_usd,
+        "estimated_value": None,
         "amount_suspicious": amount_suspicious,
         "volume": volume,
         "avg_volume": avg_volume,
         "relative_volume": relative_volume,
         "dollar_volume": dollar_volume,
-        "net_flow": amount_usd if action in {"buy", "accumulation"} else (-amount_usd if action in {"sell", "distribution", "reduction"} and amount_usd is not None else None),
+        "net_flow": dollar_volume if action in {"buy", "accumulation"} else (-dollar_volume if action in {"sell", "distribution", "reduction"} and dollar_volume is not None else None),
         "date": date,
         "source": source if source not in {"", "runtime"} else "technical",
         "confidence": confidence,
@@ -356,12 +355,16 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     signed_flow = 0.0
     inflow = 0.0
     outflow = 0.0
-    total_estimated = 0.0
+    confirmed_value = 0.0
+    watched_volume = 0.0
     accumulation: list[str] = []
     distribution: list[str] = []
     for event in events:
-        amount = _num(event.get("amount_usd") or event.get("estimated_value")) or 0.0
-        total_estimated += amount
+        confirmed = bool(event.get("entity_name") and _num(event.get("amount_usd")) is not None)
+        amount = _num(event.get("amount_usd")) if confirmed else 0.0
+        watched = _num(event.get("dollar_volume")) if not confirmed else 0.0
+        confirmed_value += amount or 0.0
+        watched_volume += watched or 0.0
         action = event.get("action")
         ticker = normalize_ticker(event.get("ticker"))
         if action in {"buy", "accumulation"}:
@@ -385,7 +388,9 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "net_flow": round(signed_flow, 2) if signed_flow else None,
         "inflow_value": round(inflow, 2) if inflow else None,
         "outflow_value": round(outflow, 2) if outflow else None,
-        "total_estimated_value": round(total_estimated, 2) if total_estimated else None,
+        "confirmed_value": round(confirmed_value, 2) if confirmed_value else None,
+        "watched_volume": round(watched_volume, 2) if watched_volume else None,
+        "total_estimated_value": round(watched_volume, 2) if watched_volume else None,
         "accumulation": accumulation[:8],
         "distribution": distribution[:8],
         "top_assets": top_assets[:8],

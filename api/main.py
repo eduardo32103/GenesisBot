@@ -23,6 +23,7 @@ from api.routes.dashboard import (
     get_dashboard_money_flow_detection,
     get_dashboard_money_flow_jarvis,
     get_dashboard_money_flow_model,
+    get_dashboard_news,
     get_dashboard_reliability,
     get_dashboard_radar_drilldown,
     get_dashboard_radar,
@@ -71,6 +72,7 @@ def create_app() -> dict[str, str]:
         "portfolio_paper_remove_endpoint": "/api/dashboard/portfolio/paper-remove",
         "alerts_endpoint": "/api/dashboard/alerts",
         "alerts_drilldown_endpoint": "/api/dashboard/alerts/drilldown?alert_id={id}",
+        "news_endpoint": "/api/dashboard/news",
         "fmp_endpoint": "/api/dashboard/fmp",
         "macro_activity_endpoint": "/api/dashboard/macro-activity",
     }
@@ -360,6 +362,15 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/dashboard/alerts/drilldown":
             alert_id = (parse_qs(parsed.query).get("alert_id") or [""])[0]
             payload = json.dumps(get_dashboard_alert_drilldown(alert_id)).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/news":
+            payload = json.dumps(get_dashboard_news()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

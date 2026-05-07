@@ -228,4 +228,60 @@ def _fetch_alert_drilldown(database_url: str, alert_id: str) -> dict[str, Any]:
 
 def get_alert_drilldown(alert_id: str) -> dict[str, Any]:
     settings = load_settings()
+    snapshot_detail = _snapshot_alert_detail(alert_id)
+    if snapshot_detail:
+        return snapshot_detail
     return _fetch_alert_drilldown(settings.database_url, alert_id)
+
+
+def _snapshot_alert_detail(alert_id: str) -> dict[str, Any]:
+    normalized = str(alert_id or "").strip()
+    if not normalized:
+        return {}
+    try:
+        from services.dashboard.get_alerts_snapshot import get_alerts_snapshot
+
+        snapshot = get_alerts_snapshot()
+    except Exception:
+        return {}
+    for item in snapshot.get("items") or snapshot.get("recent_alerts") or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("alert_id") or item.get("id") or "").strip()
+        if item_id != normalized:
+            continue
+        direct_price = item.get("price")
+        return {
+            "alert_id": item_id,
+            "found": True,
+            "ticker": item.get("ticker") or "",
+            "asset_name": item.get("asset_name") or item.get("ticker") or "Mercado",
+            "alert_type": item.get("alert_type") or item.get("type") or "",
+            "alert_type_label": item.get("alert_type_label") or _normalize_label(item.get("alert_type") or item.get("type") or ""),
+            "title": item.get("title") or "Alerta Genesis",
+            "summary": item.get("summary") or item.get("description") or "",
+            "status": item.get("status") or "tracking",
+            "status_label": item.get("state_label") or item.get("status_label") or "Vigilancia",
+            "created_at": item.get("created_at") or item.get("timestamp") or "",
+            "source": item.get("source") or "technical",
+            "signal_strength": item.get("signal_strength"),
+            "price": direct_price,
+            "price_label": "No aplica a precio directo" if direct_price is None else str(direct_price),
+            "change": item.get("change"),
+            "change_pct": item.get("change_pct"),
+            "volume": item.get("volume"),
+            "avg_volume": item.get("avg_volume"),
+            "relative_volume": item.get("relative_volume"),
+            "dollar_volume": item.get("dollar_volume"),
+            "support": item.get("support"),
+            "resistance": item.get("resistance"),
+            "severity": item.get("severity"),
+            "confidence": item.get("confidence"),
+            "impact": item.get("impact"),
+            "mini_series": item.get("mini_series") or [],
+            "genesis_reading": item.get("genesis_reading") or "",
+            "evidence": item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
+            "context_note": item.get("summary") or item.get("description") or "",
+            "reliability_note": "Detalle construido desde el snapshot activo por alert_id estable.",
+        }
+    return {}

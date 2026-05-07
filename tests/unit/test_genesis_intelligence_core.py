@@ -471,6 +471,8 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertFalse(payload["whales"]["fallback"])
         self.assertEqual(payload["whales"]["events"][0]["event_type"], "unusual_volume")
         self.assertEqual(payload["whales"]["events"][0]["entity_name"], "")
+        self.assertIsNone(payload["whales"]["events"][0]["amount_usd"])
+        self.assertIsNone(payload["whales"]["events"][0]["estimated_value"])
         self.assertEqual(payload["whales"]["events"][0]["dollar_volume"], 1200000)
         self.assertEqual(payload["whales"]["events"][0]["relative_volume"], 2)
         self.assertIn("no hay ballena institucional confirmada", payload["answer"].casefold())

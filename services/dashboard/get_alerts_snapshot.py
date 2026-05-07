@@ -229,6 +229,8 @@ def get_alerts_snapshot() -> dict[str, Any]:
     settings = load_settings()
     snapshot = _fetch_alerts_snapshot(settings.database_url)
     if isinstance(snapshot.get("items"), list) and snapshot.get("items"):
+        snapshot["items"] = _enrich_alert_items(snapshot["items"])
+        snapshot["recent_alerts"] = snapshot["items"]
         return snapshot
     derived = _derived_technical_alerts()
     if derived:
@@ -260,7 +262,7 @@ def _derived_technical_alerts() -> list[dict[str, Any]]:
         ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
         if not ticker:
             continue
-        price = _num(row.get("current_price") or row.get("price"))
+        price = _price_num(row.get("current_price"), row.get("reference_price"), row.get("price"))
         pct = _num(row.get("daily_change_pct") or row.get("changesPercentage"))
         volume = _num(row.get("volume"))
         avg_volume = _num(row.get("avg_volume") or row.get("average_volume") or row.get("avgVolume"))
@@ -299,6 +301,42 @@ def _derived_technical_alerts() -> list[dict[str, Any]]:
             continue
         seen.add(key)
         unique.append(alert)
+    if not unique:
+        for row in sorted(rows, key=lambda item: abs(_num(item.get("daily_change_pct") or item.get("changesPercentage")) or 0), reverse=True)[:6]:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
+            price = _price_num(row.get("current_price"), row.get("reference_price"), row.get("price"))
+            if not ticker or price is None:
+                continue
+            pct = _num(row.get("daily_change_pct") or row.get("changesPercentage")) or 0.0
+            volume = _num(row.get("volume"))
+            avg_volume = _num(row.get("avg_volume") or row.get("average_volume") or row.get("avgVolume"))
+            day_high = _num(row.get("day_high") or row.get("dayHigh"))
+            day_low = _num(row.get("day_low") or row.get("dayLow"))
+            context = {
+                "price": price,
+                "change": _num(row.get("daily_change") or row.get("change")),
+                "change_pct": pct,
+                "volume": volume,
+                "avg_volume": avg_volume,
+                "relative_volume": (volume / avg_volume if volume and avg_volume else _num(row.get("relative_volume") or row.get("relativeVolume"))),
+                "day_high": day_high,
+                "day_low": day_low,
+                "support": _num(row.get("support") or row.get("support_level")),
+                "resistance": _num(row.get("resistance") or row.get("resistance_level")),
+            }
+            unique.append(
+                _technical_alert(
+                    ticker,
+                    "Vigilancia tecnica",
+                    f"{ticker} no dispara alerta fuerte, pero tiene precio confirmado y contexto de volumen/rango para seguimiento.",
+                    "technical_watch",
+                    pct,
+                    now,
+                    context,
+                )
+            )
     return unique[:8]
 
 
@@ -312,6 +350,7 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
     day_high = context.get("day_high")
     return {
         "alert_id": f"technical:{ticker}:{alert_type}",
+        "id": f"technical:{ticker}:{alert_type}",
         "alert_type": alert_type,
         "alert_type_label": "Tecnica",
         "ticker": ticker,
@@ -341,6 +380,113 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "evidence": {"derived_from": "radar_snapshot", "source": "technical", **{key: value for key, value in context.items() if value is not None}},
         "genesis_reading": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
     }
+
+
+def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    radar_by_ticker = _radar_by_ticker()
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        market = radar_by_ticker.get(ticker, {}) if ticker else {}
+        price = _first_num(item.get("price"), market.get("current_price"), market.get("price"))
+        change = _first_num(item.get("change"), item.get("daily_change"), market.get("daily_change"), market.get("change"))
+        change_pct = _first_num(item.get("change_pct"), item.get("daily_change_pct"), market.get("daily_change_pct"), market.get("changesPercentage"))
+        volume = _first_num(item.get("volume"), market.get("volume"))
+        avg_volume = _first_num(item.get("avg_volume"), item.get("avgVolume"), market.get("avg_volume"), market.get("avgVolume"), market.get("average_volume"))
+        relative_volume = _first_num(item.get("relative_volume"), item.get("relativeVolume"), market.get("relative_volume"), market.get("relativeVolume"))
+        if relative_volume is None and volume is not None and avg_volume:
+            relative_volume = volume / avg_volume
+        dollar_volume = _first_num(item.get("dollar_volume"), item.get("dollarVolume"))
+        if dollar_volume is None and price is not None and volume is not None:
+            dollar_volume = price * volume
+        support = _first_num(item.get("support"), market.get("support"), market.get("support_level"), market.get("day_low"), market.get("dayLow"))
+        resistance = _first_num(item.get("resistance"), market.get("resistance"), market.get("resistance_level"), market.get("day_high"), market.get("dayHigh"))
+        impact = str(item.get("impact") or "").strip()
+        if not impact:
+            if change_pct is not None and change_pct > 0:
+                impact = "bullish"
+            elif change_pct is not None and change_pct < 0:
+                impact = "bearish"
+            else:
+                impact = "neutral"
+        alert_id = str(item.get("alert_id") or item.get("id") or f"alert:{ticker or 'macro'}:{item.get('alert_type') or item.get('title') or item.get('created_at') or len(enriched)}")
+        enriched.append(
+            {
+                **item,
+                "id": alert_id,
+                "alert_id": alert_id,
+                "asset_name": str(market.get("name") or market.get("asset_name") or ticker or "Mercado"),
+                "description": item.get("description") or item.get("summary") or item.get("title") or "",
+                "severity": item.get("severity") or ("high" if change_pct is not None and abs(change_pct) >= 3 else "medium"),
+                "impact": impact,
+                "direction": item.get("direction") or ("bullish" if impact == "bullish" else "bearish" if impact == "bearish" else "neutral"),
+                "confidence": item.get("confidence") or ("medium" if price is not None or item.get("source") else "low"),
+                "price": price,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": volume,
+                "avg_volume": avg_volume,
+                "relative_volume": relative_volume,
+                "dollar_volume": dollar_volume,
+                "support": support,
+                "resistance": resistance,
+                "mini_series": item.get("mini_series") or [value for value in (change_pct, relative_volume, item.get("signal_strength")) if value is not None],
+                "evidence": item.get("evidence") or {"source": item.get("source") or "database", "market_fields_enriched": bool(market)},
+                "genesis_reading": item.get("genesis_reading")
+                or _alert_reading(ticker, impact, item.get("title") or item.get("summary") or ""),
+            }
+        )
+    return enriched
+
+
+def _radar_by_ticker() -> dict[str, dict[str, Any]]:
+    try:
+        from services.dashboard.get_radar_snapshot import get_radar_snapshot
+
+        snapshot = get_radar_snapshot()
+    except Exception:
+        return {}
+    output: dict[str, dict[str, Any]] = {}
+    for row in snapshot.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+        if ticker:
+            output[ticker] = row
+    return output
+
+
+def _first_num(*values: object) -> float | None:
+    for value in values:
+        numeric = _num(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _price_num(*values: object) -> float | None:
+    fallback_zero: float | None = None
+    for value in values:
+        numeric = _num(value)
+        if numeric is None:
+            continue
+        if numeric > 0:
+            return numeric
+        if fallback_zero is None:
+            fallback_zero = numeric
+    return fallback_zero
+
+
+def _alert_reading(ticker: str, impact: str, title: object) -> str:
+    scope = ticker or "esta alerta macro"
+    label = str(title or "evento").strip()
+    if impact == "bullish":
+        return f"{scope}: {label}. Puede ser oportunidad solo si precio y volumen confirman continuidad."
+    if impact == "bearish":
+        return f"{scope}: {label}. Riesgo en vigilancia; revisar soporte, volumen y exposicion en cartera."
+    return f"{scope}: {label}. Lectura neutral; vigilar si cambia precio, volumen o contexto macro."
 
 
 def _num(value: object) -> float | None:

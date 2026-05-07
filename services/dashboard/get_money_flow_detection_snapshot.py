@@ -107,9 +107,19 @@ def _extract_market_metrics(item: dict[str, Any], persisted_metrics: dict[str, d
     if not metrics:
         metrics = item.get("money_flow") if isinstance(item.get("money_flow"), dict) else {}
     reference_price = _safe_float(item.get("reference_price"))
+    current_price = _safe_float(item.get("current_price")) or _safe_float(item.get("price")) or reference_price
+    volume = _safe_float(item.get("volume"))
+    avg_volume = _safe_float(item.get("avg_volume")) or _safe_float(item.get("average_volume")) or _safe_float(item.get("avgVolume"))
     price_change_pct = _safe_float(metrics.get("price_change_pct"))
-    relative_volume = _safe_float(metrics.get("relative_volume"))
-    volume_baseline = _safe_float(metrics.get("volume_baseline"))
+    if price_change_pct is None:
+        price_change_pct = _safe_float(item.get("daily_change_pct")) or _safe_float(item.get("changesPercentage"))
+    relative_volume = _safe_float(metrics.get("relative_volume")) or _safe_float(item.get("relative_volume")) or _safe_float(item.get("relativeVolume"))
+    volume_baseline = _safe_float(metrics.get("volume_baseline")) or avg_volume
+    if relative_volume is None and volume is not None and volume_baseline:
+        relative_volume = volume / volume_baseline
+    dollar_volume = _safe_float(metrics.get("dollar_volume")) or _safe_float(item.get("dollar_volume")) or _safe_float(item.get("dollarVolume"))
+    if dollar_volume is None and current_price is not None and volume is not None:
+        dollar_volume = current_price * volume
     breakout_reference = _safe_float(metrics.get("breakout_reference"))
     sector_move_pct = _safe_float(metrics.get("sector_move_pct"))
     risk_proxy_move_pct = _safe_float(metrics.get("risk_proxy_move_pct"))
@@ -119,9 +129,13 @@ def _extract_market_metrics(item: dict[str, Any], persisted_metrics: dict[str, d
 
     return {
         "reference_price": reference_price,
+        "current_price": current_price,
+        "volume": volume,
+        "avg_volume": avg_volume,
         "price_change_pct": price_change_pct,
         "relative_volume": relative_volume,
         "volume_baseline": volume_baseline,
+        "dollar_volume": dollar_volume,
         "breakout_reference": breakout_reference,
         "sector_move_pct": sector_move_pct,
         "risk_proxy_move_pct": risk_proxy_move_pct,
@@ -279,6 +293,14 @@ def _detect_for_item(item: dict[str, Any], macro: dict[str, Any], persisted_metr
         "flow_detected": primary["type"] != "insufficient_confirmation",
         "detected_signal_count": len(detected),
         "signals": signals,
+        "current_price": metrics.get("current_price"),
+        "price": metrics.get("current_price"),
+        "reference_price": metrics.get("reference_price"),
+        "change_pct": metrics.get("price_change_pct"),
+        "volume": metrics.get("volume"),
+        "avg_volume": metrics.get("avg_volume"),
+        "relative_volume": metrics.get("relative_volume"),
+        "dollar_volume": metrics.get("dollar_volume"),
         "timestamp": metrics.get("timestamp") or "",
         "source": metrics.get("source") or "",
         "origin": metrics.get("origin") or "",

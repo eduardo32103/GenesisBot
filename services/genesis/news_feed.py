@@ -149,10 +149,17 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
         if not image_url and url and og_attempts < _MAX_OG_IMAGES_PER_BATCH:
             og_attempts += 1
             image_url = _fetch_og_image(url)
+        title_es = _spanish_title(title, tickers, _category(raw, tickers))
+        summary_es = _spanish_summary(summary)
+        category = _category(raw, tickers)
         item = {
             "id": _news_id(title, source, published_at.isoformat() if published_at else raw.get("publishedDate") or raw.get("date") or "", url),
-            "title": title,
-            "summary": summary,
+            "title": title_es,
+            "title_es": title_es,
+            "original_title": title,
+            "summary": summary_es,
+            "summary_es": summary_es,
+            "original_summary": summary,
             "source": source,
             "published_at": published_at.isoformat() if published_at else str(raw.get("publishedDate") or raw.get("date") or ""),
             "tickers": tickers,
@@ -162,9 +169,11 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "image_url": image_url,
             "thumbnail": image_url,
             "url": url,
-            "category": _category(raw, tickers),
-            "genesis_takeaway": _takeaway(title, impact, tickers),
+            "category": category,
+            "genesis_takeaway": _takeaway(title_es, impact, tickers),
             "why_it_matters": _why_it_matters(impact, tickers),
+            "language": "es",
+            "image_kind": "real" if image_url else "category_placeholder",
         }
         recency = _recency_score(published_at)
         relevance = _relevance_score(item, focus)
@@ -427,6 +436,84 @@ def _summary(raw: dict[str, Any], title: str) -> str:
     return " ".join(text.split())[:320]
 
 
+def _spanish_title(title: str, tickers: list[str], category: str) -> str:
+    text = _strip_html(title)
+    text = re.sub(r"\s+-\s+(Reuters|CNBC|MarketWatch|Yahoo Finance|CoinDesk|CoinTelegraph|WSJ|Wall Street Journal)\s*$", "", text, flags=re.I)
+    replacements = (
+        (r"\bStock market today\b", "Mercado hoy"),
+        (r"\bmarket today\b", "Mercado hoy"),
+        (r"\bWhy\b", "Por qué"),
+        (r"\bpredicted by financial markets\b", "estimados por los mercados financieros"),
+        (r"\bare missing the mark\b", "fallan el objetivo"),
+        (r"\bis missing the mark\b", "falla el objetivo"),
+        (r"\bwhat to watch\b", "qué vigilar"),
+        (r"\bstocks\b", "acciones"),
+        (r"\bstock\b", "acción"),
+        (r"\bfutures\b", "futuros"),
+        (r"\boil prices\b", "precios del petróleo"),
+        (r"\bcrude oil\b", "petróleo crudo"),
+        (r"\bBrent crude\b", "Brent"),
+        (r"\bBitcoin\b", "Bitcoin"),
+        (r"\bgold\b", "oro"),
+        (r"\binflation\b", "inflación"),
+        (r"\brates\b", "tasas"),
+        (r"\bFed\b", "Fed"),
+        (r"\btariffs\b", "aranceles"),
+        (r"\bearnings\b", "resultados"),
+        (r"\brevenue\b", "ingresos"),
+        (r"\bguidance\b", "guía"),
+        (r"\bdemand\b", "demanda"),
+        (r"\bAI\b", "IA"),
+        (r"\brallies\b", "sube"),
+        (r"\brally\b", "sube"),
+        (r"\brises\b", "sube"),
+        (r"\bgains\b", "gana"),
+        (r"\bsurges\b", "salta"),
+        (r"\bfalls\b", "cae"),
+        (r"\bdrops\b", "retrocede"),
+        (r"\bslips\b", "cede"),
+        (r"\bafter\b", "tras"),
+        (r"\bas\b", "mientras"),
+        (r"\bon\b", "por"),
+        (r"\bupdate\b", "actualización"),
+        (r"\bwarns\b", "advierte"),
+        (r"\bbeats\b", "supera expectativas"),
+        (r"\bmisses\b", "decepciona"),
+        (r"\boutlook\b", "perspectiva"),
+        (r"\bshares\b", "acciones"),
+        (r"\bETF\b", "ETF"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.I)
+    text = " ".join(text.split())
+    if not text:
+        asset = ", ".join(tickers[:2]) or category
+        return f"Noticia relevante para {asset}"
+    return text[:180]
+
+
+def _spanish_summary(summary: str) -> str:
+    text = _strip_html(summary)
+    replacements = (
+        (r"\bmarket\b", "mercado"),
+        (r"\bstocks\b", "acciones"),
+        (r"\binvestors\b", "inversionistas"),
+        (r"\btraders\b", "operadores"),
+        (r"\bdemand\b", "demanda"),
+        (r"\bsupply\b", "oferta"),
+        (r"\brisk\b", "riesgo"),
+        (r"\brates\b", "tasas"),
+        (r"\binflation\b", "inflación"),
+        (r"\boil\b", "petróleo"),
+        (r"\bgold\b", "oro"),
+        (r"\bBitcoin\b", "Bitcoin"),
+        (r"\bAI\b", "IA"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.I)
+    return " ".join(text.split())[:320] or "Resumen no disponible; revisar la fuente original."
+
+
 def _category(raw: dict[str, Any], tickers: list[str]) -> str:
     text = f"{raw.get('category') or ''} {raw.get('title') or ''}".casefold()
     if any(token in text for token in ("oil", "crude", "brent", "commodity", "oro", "gold")):
@@ -572,7 +659,11 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
     return {
         "id": "fallback-market-context",
         "title": "Genesis mantiene vigilancia de mercado",
+        "title_es": "Genesis mantiene vigilancia de mercado",
+        "original_title": "Genesis mantiene vigilancia de mercado",
         "summary": "No hay titulares externos recientes confirmados por la fuente activa; Genesis sigue usando precios, alertas, cartera y seguimiento.",
+        "summary_es": "No hay titulares externos recientes confirmados por la fuente activa; Genesis sigue usando precios, alertas, cartera y seguimiento.",
+        "original_summary": "No hay titulares externos recientes confirmados por la fuente activa; Genesis sigue usando precios, alertas, cartera y seguimiento.",
         "source": "Genesis",
         "published_at": now,
         "tickers": tickers,
@@ -590,6 +681,8 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "recency_score": 1,
         "relevance_score": 1,
         "placeholder_key": "macro",
+        "language": "es",
+        "image_kind": "category_placeholder",
         "risk": "Riesgo: falta catalizador externo confirmado.",
         "watch": "Vigilar precio, volumen y alertas de tus activos.",
         "elapsed_ms": 0,

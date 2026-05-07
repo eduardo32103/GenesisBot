@@ -59,6 +59,57 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertIn("mini_series", alert)
         self.assertIn("genesis_reading", alert)
 
+    @patch("services.dashboard.get_radar_snapshot.get_radar_snapshot")
+    @patch("services.dashboard.get_alerts_snapshot._fetch_alerts_snapshot")
+    @patch("services.dashboard.get_alerts_snapshot.load_settings")
+    def test_persisted_alerts_are_enriched_with_market_fields(
+        self,
+        mock_settings: Mock,
+        mock_fetch_alerts: Mock,
+        mock_radar_snapshot: Mock,
+    ) -> None:
+        mock_settings.return_value = SimpleNamespace(database_url="")
+        mock_fetch_alerts.return_value = {
+            "generated_at": "2026-05-06T12:00:00+00:00",
+            "summary": {"total_recent": 1, "active_alerts": 1},
+            "items": [
+                {
+                    "alert_id": "db-alert-nvda",
+                    "ticker": "NVDA",
+                    "title": "Ruptura en vigilancia",
+                    "summary": "Alerta persistida.",
+                    "source": "database",
+                    "created_at": "2026-05-06T12:00:00+00:00",
+                }
+            ],
+            "recent_alerts": [],
+        }
+        mock_radar_snapshot.return_value = {
+            "items": [
+                {
+                    "ticker": "NVDA",
+                    "current_price": 120.0,
+                    "daily_change": 2.0,
+                    "daily_change_pct": 1.7,
+                    "volume": 5000,
+                    "avg_volume": 2500,
+                    "dayHigh": 121.0,
+                    "dayLow": 115.0,
+                }
+            ]
+        }
+
+        payload = get_alerts_snapshot()
+        alert = payload["items"][0]
+
+        self.assertEqual(alert["id"], "db-alert-nvda")
+        self.assertEqual(alert["price"], 120.0)
+        self.assertEqual(alert["relative_volume"], 2.0)
+        self.assertEqual(alert["dollar_volume"], 600000.0)
+        self.assertEqual(alert["support"], 115.0)
+        self.assertEqual(alert["resistance"], 121.0)
+        self.assertIn("genesis_reading", alert)
+
 
 if __name__ == "__main__":
     unittest.main()
