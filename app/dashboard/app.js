@@ -1,7 +1,7 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
-const GENESIS_LOGO_SRC = "./assets/genesis-logo-green.png?v=genesis-g-clean";
+const GENESIS_LOGO_SRC = "./assets/genesis-logo-green.png?v=genesis-g-balanced";
 
 function initialChatMessage() {
   return {
@@ -70,6 +70,7 @@ const appState = {
   marketRefreshTimer: null,
   refreshInFlight: false,
   refreshPromise: null,
+  screenRefreshLoading: "",
   chatHistoryOpen: false,
   chatMessages: [initialChatMessage()],
   chatConversations: [],
@@ -1500,7 +1501,10 @@ function renderGenesisScreen() {
               <span>Tu copiloto financiero con IA</span>
             </div>
           </div>
-          ${renderConfidenceBar("activa")}
+          <div class="genesis-head-actions">
+            ${renderConfidenceBar("activa")}
+            ${refreshButtonMarkup("genesis", "Actualizar Genesis")}
+          </div>
         </div>
         <div class="chat-toolbar" aria-label="Controles de conversacion">
           <button type="button" data-chat-new aria-label="Nuevo chat" title="Nuevo chat">${iconSvg("new")}</button>
@@ -1785,6 +1789,25 @@ async function correctGenesisIntentPayload(payload = {}, question = "") {
 function setLiveRefreshIndicator(active) {
   const enabled = Boolean(active || appState.refreshInFlight || appState.marketPulseLoading || appState.opportunityQuotesLoading);
   document.body.classList.toggle("is-live-refreshing", enabled);
+}
+
+function screenIsRefreshing(screen = appState.activeScreen) {
+  const normalized = normalizeScreen(screen);
+  if (appState.screenRefreshLoading === normalized) return true;
+  if (normalized === "news") return appState.newsLoading;
+  if (normalized === "tracking" || normalized === "portfolio" || normalized === "asset-detail") {
+    return appState.refreshInFlight || appState.marketPulseLoading;
+  }
+  if (normalized === "alerts") {
+    return appState.refreshInFlight || appState.marketPulseLoading || appState.opportunityQuotesLoading;
+  }
+  return false;
+}
+
+function refreshButtonMarkup(screen = appState.activeScreen, label = "Actualizar") {
+  const normalized = normalizeScreen(screen);
+  const loading = screenIsRefreshing(normalized);
+  return `<button type="button" class="icon-action pulse-action ${loading ? "is-loading" : ""}" data-screen-refresh="${escapeHtml(normalized)}" aria-label="${escapeHtml(loading ? `Actualizando ${label}` : label)}" aria-busy="${loading ? "true" : "false"}">${iconSvg("refresh")}</button>`;
 }
 
 function liveRefreshBadgeMarkup(label = "Actualizando precios") {
@@ -3166,6 +3189,57 @@ async function loadNews(options = {}) {
   return appState.newsSnapshot;
 }
 
+async function refreshScreenData(screen = appState.activeScreen) {
+  const normalized = normalizeScreen(screen);
+  if (appState.screenRefreshLoading) return;
+  appState.screenRefreshLoading = normalized;
+  renderActiveScreen();
+  try {
+    if (normalized === "news") {
+      await loadNews({ force: true });
+      return;
+    }
+    if (normalized === "tracking" || normalized === "portfolio") {
+      await Promise.allSettled([
+        refreshPortfolio({ render: false, force: true }),
+        loadMarketPulse({ force: true }),
+      ]);
+      return;
+    }
+    if (normalized === "alerts") {
+      await Promise.allSettled([
+        refreshPortfolio({ render: false, force: true }),
+        loadMarketPulse({ force: true }),
+        loadOpportunityQuotes({ force: true }),
+        loadAlerts(),
+        loadWhalesData(),
+      ]);
+      return;
+    }
+    if (normalized === "asset-detail") {
+      const ticker = normalizeTicker(appState.selectedAsset);
+      await Promise.allSettled([
+        refreshPortfolio({ render: false, force: true }),
+        ticker ? loadChartSeries(ticker, appState.assetChartRanges[ticker] || "1Y") : Promise.resolve(),
+        loadAlerts(),
+        loadWhalesData(),
+        loadNews({ silent: true }),
+      ]);
+      return;
+    }
+    await Promise.allSettled([
+      refreshPortfolio({ render: false, force: true }),
+      loadMarketPulse({ force: true }),
+      loadNews({ silent: true }),
+      loadAlerts(),
+      loadWhalesData(),
+    ]);
+  } finally {
+    appState.screenRefreshLoading = "";
+    renderActiveScreen();
+  }
+}
+
 function renderNewsScreen() {
   const root = document.getElementById("view-news");
   if (!root) return;
@@ -3179,7 +3253,7 @@ function renderNewsScreen() {
       ${premiumScreenHeader(
         "Noticias",
         "Lo que mueve los mercados, interpretado por IA.",
-        `<button type="button" class="icon-action pulse-action ${appState.newsLoading ? "is-loading" : ""}" data-news-refresh aria-label="${appState.newsLoading ? "Actualizando noticias" : "Actualizar noticias"}" aria-busy="${appState.newsLoading ? "true" : "false"}">${iconSvg("refresh")}</button>`
+        refreshButtonMarkup("news", "Actualizar noticias").replace("<button ", "<button data-news-refresh ")
       )}
       <div class="news-toolbar">
         <section class="feed-tabs investing-tabs" aria-label="Filtros de noticias">
@@ -3773,6 +3847,7 @@ function renderTrackingScreen() {
   root.innerHTML = `
     <section class="screen-stack premium-tracking-screen">
       <div class="compact-actions">
+        ${refreshButtonMarkup("tracking", "Actualizar seguimiento")}
         <button type="button" class="icon-action search-toggle" data-toggle-search="tracking" aria-label="${appState.searchOpen.tracking ? "Cerrar busqueda" : "Buscar activo"}">${iconSvg("search")}</button>
       </div>
       ${marketPulseHeroMarkup("tracking")}
@@ -3901,6 +3976,7 @@ function renderPortfolioScreen() {
   root.innerHTML = `
     <section class="screen-stack premium-portfolio-screen">
       <div class="compact-actions">
+        ${refreshButtonMarkup("portfolio", "Actualizar cartera")}
         <button type="button" class="icon-action search-toggle" data-toggle-search="portfolio" aria-label="${appState.searchOpen.portfolio ? "Cerrar busqueda" : "Buscar activo"}">${iconSvg("search")}</button>
       </div>
       ${portfolioHeroMarkup(totals, distribution)}
@@ -4638,6 +4714,9 @@ function renderAlertsScreen() {
   indexWhaleItems(whaleRows);
   root.innerHTML = `
     <section class="screen-stack alerts-investing-screen">
+      <div class="compact-actions">
+        ${refreshButtonMarkup("alerts", "Actualizar alertas")}
+      </div>
       ${marketPulseHeroMarkup("alerts")}
       <div class="subtabs" aria-label="Eventos">
         <button type="button" class="${appState.alertSubtab === "alerts" ? "is-active" : ""}" data-alert-tab="alerts">Alertas</button>
@@ -5321,6 +5400,7 @@ function renderAssetDetailScreen() {
     <section class="asset-detail">
       <div class="detail-topbar">
         <button class="detail-back" type="button" data-asset-back aria-label="Volver">${iconSvg("back")} Volver</button>
+        ${refreshButtonMarkup("asset-detail", "Actualizar activo")}
         <details class="market-menu detail-menu">
           <summary aria-label="Acciones ${escapeHtml(normalized)}">${iconSvg("menu")}</summary>
           <div class="market-menu-panel">
@@ -5603,6 +5683,19 @@ function bindGlobalEvents() {
     if (event.target.closest("[data-voice-toggle]")) {
       event.preventDefault();
       toggleGenesisVoiceInput();
+      return;
+    }
+
+    const screenRefresh = event.target.closest("[data-screen-refresh]");
+    if (screenRefresh) {
+      event.preventDefault();
+      const screen = screenRefresh.dataset.screenRefresh || appState.activeScreen;
+      try {
+        await refreshScreenData(screen);
+        toast("Vista actualizada.", "success");
+      } catch (error) {
+        toast(networkErrorMessage(error), "error");
+      }
       return;
     }
 

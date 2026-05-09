@@ -48,8 +48,10 @@ class GenesisTickerParserTests(unittest.TestCase):
             "oye como esta el mercado el dia de hoy": [],
             "como estuvo el mercado el viernes pasado": [],
             "que estan haciendo las ballenas": [],
+            "que estan haciendo las ballneas": [],
             "dime que esta pasando con las ballenas": [],
             "que esta pasando con las ballenas": [],
+            "resumen smart money": [],
             "que esta pasando en noticias": [],
             "como estas": [],
             "que tal genesis": [],
@@ -112,6 +114,7 @@ class GenesisMemoryStoreTests(unittest.TestCase):
             store.save_message("default", "user", "analiza NVDA", {"OPENAI_API_KEY": "SECRET"})
             store.save_learned_context("asset_interest:NVDA", {"ticker": "NVDA"}, "test", "alta")
             store.track_entity("NVDA", "asset", {"reason": "test"})
+            store.track_entity("BALLNEAS", "asset", {"reason": "typo"})
             store.save_recent_topic("ticker_analysis", {"ticker": "NVDA"})
             store.save_market_observation("NVDA", "Observacion sin secreto")
             store.save_whale_event("NVDA", entity="Fondo Test", action="Compra", amount=1000, date="2026-01-01", confidence="alta")
@@ -133,6 +136,7 @@ class GenesisMemoryStoreTests(unittest.TestCase):
         self.assertEqual(events[0]["payload"]["ticker"], "NVDA")
         self.assertEqual(messages[0]["content"], "analiza NVDA")
         self.assertEqual(summary["tracked_entities"][0]["ticker"], "NVDA")
+        self.assertNotIn("BALLNEAS", json.dumps(summary["tracked_entities"]))
         self.assertEqual(summary["learned_context"][0]["key"], "asset_interest:NVDA")
         self.assertEqual(summary["market_observations"][0]["ticker"], "NVDA")
         self.assertEqual(summary["whale_events"][0]["payload"]["entity"], "Fondo Test")
@@ -223,6 +227,14 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(whale_route.intent, "whale_activity")
         self.assertEqual(whale_route.primary_ticker, "")
         self.assertEqual(whale_route.tickers, [])
+        whale_typo_route = router.route("que estan haciendo las ballneas")
+        self.assertEqual(whale_typo_route.intent, "whale_activity")
+        self.assertEqual(whale_typo_route.primary_ticker, "")
+        self.assertEqual(whale_typo_route.tickers, [])
+        smart_money_route = router.route("resumen smart money")
+        self.assertEqual(smart_money_route.intent, "whale_activity")
+        self.assertEqual(smart_money_route.primary_ticker, "")
+        self.assertEqual(smart_money_route.tickers, [])
         personal_route = router.route("genesis mi novia esta enojada ayudame")
         self.assertEqual(personal_route.intent, "general_question")
         self.assertEqual(personal_route.tickers, [])
@@ -657,6 +669,25 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["structured"]["kind"], "whale_flow")
         self.assertIn("no hay ballena institucional confirmada", payload["answer"].casefold())
         self.assertEqual(memory[0]["payload"]["event_type"], "unusual_volume")
+
+    @patch("services.genesis.whale_learning.load_settings")
+    @patch("services.genesis.whale_learning.get_money_flow_detection_snapshot")
+    @patch("services.genesis.whale_learning.get_money_flow_causal_snapshot")
+    def test_whale_typo_routes_to_whale_flow_not_fake_asset(self, mock_causal: Mock, mock_detection: Mock, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="", fmp_live_enabled=False)
+        mock_causal.return_value = {"items": [{"ticker": "NVDA", "primary_label": "volumen anormal", "source": "technical", "confidence": "media", "current_price": 100, "volume": 1000, "avg_volume": 500}]}
+        mock_detection.return_value = {"items": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("que estan haciendo las ballneas", memory=store)
+
+        rendered = json.dumps(payload)
+        self.assertEqual(payload["intent"], "whale_activity")
+        self.assertEqual(payload["response_type"], "whale_flow")
+        self.assertEqual(payload["kind"], "whale_flow")
+        self.assertEqual(payload["structured"]["kind"], "whale_flow")
+        self.assertEqual(payload["tickers"], [])
+        self.assertNotIn("BALLNEAS", rendered)
 
     @patch("services.genesis.whale_learning.load_settings")
     @patch("services.genesis.whale_learning.get_money_flow_detection_snapshot")

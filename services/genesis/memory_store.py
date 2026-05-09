@@ -14,6 +14,20 @@ from app.settings import load_settings
 _ROOT_DIR = Path(__file__).resolve().parents[2]
 _DEFAULT_SQLITE_PATH = _ROOT_DIR / ".genesis_memory.sqlite3"
 _SECRET_KEY_PARTS = ("api", "key", "secret", "token", "password", "credential")
+_TRACKED_ENTITY_BLOCKLIST = {
+    "BALLNEA",
+    "BALLNEAS",
+    "BALENA",
+    "BALENAS",
+    "BALLENA",
+    "BALLENAS",
+    "SMART",
+    "MONEY",
+    "FLOW",
+    "FLUJO",
+    "INSTITUCIONAL",
+    "INSTITUCIONALES",
+}
 _LEARNING_TABLES = {
     "asset_memory": "genesis_asset_memory",
     "signal_events": "genesis_signal_events",
@@ -206,7 +220,7 @@ class MemoryStore:
 
     def track_entity(self, ticker: str, entity_type: str = "asset", context: dict[str, Any] | None = None) -> None:
         normalized = str(ticker or "").strip().upper()[:40]
-        if not normalized:
+        if not normalized or _is_tracked_entity_noise(normalized):
             return
         now = datetime.now(timezone.utc).isoformat()
         payload = json.dumps(_sanitize(context or {}))
@@ -243,7 +257,7 @@ class MemoryStore:
                     "SELECT ticker, entity_type, context_json, last_seen_at FROM genesis_tracked_entities ORDER BY last_seen_at DESC LIMIT ?",
                     (safe_limit,),
                 ).fetchall()
-        return [_tracked_row(row) for row in rows]
+        return [item for item in (_tracked_row(row) for row in rows) if not _is_tracked_entity_noise(item.get("ticker"))]
 
     def save_recent_topic(self, topic: str, context: dict[str, Any] | None = None) -> None:
         clean_topic = str(topic or "").strip()[:160]
@@ -1401,6 +1415,10 @@ def _alert_row(row: Any) -> dict[str, Any]:
         "confidence": row[4],
         "created_at": row[5],
     }
+
+
+def _is_tracked_entity_noise(ticker: object) -> bool:
+    return str(ticker or "").strip().upper() in _TRACKED_ENTITY_BLOCKLIST
 
 
 def _loads(value: Any) -> Any:

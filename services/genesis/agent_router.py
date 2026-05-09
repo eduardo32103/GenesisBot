@@ -184,7 +184,23 @@ def _mentions_memory(text: str) -> bool:
 
 
 def _mentions_whales(text: str) -> bool:
-    return any(token in text for token in ("ballena", "ballenas", "dinero grande", "smart money"))
+    return any(
+        token in text
+        for token in (
+            "ballena",
+            "ballenas",
+            "ballnea",
+            "ballneas",
+            "balena",
+            "balenas",
+            "dinero grande",
+            "smart money",
+            "flujo institucional",
+            "flujo de ballenas",
+            "whale",
+            "whales",
+        )
+    )
 
 
 def _mentions_alerts(text: str) -> bool:
