@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://genesisbot-production.up.railway.app/api/:path*"
+    },
+    {
+      "source": "/app.js",
+      "destination": "/app/dashboard/app.js"
+    },
+    {
+      "source": "/styles.css",
+      "destination": "/app/dashboard/styles.css"
+    },
+    {
+      "source": "/",
+      "destination": "/app/dashboard/index.html"
+    },
+    {
+      "source": "/:path*",
+      "destination": "/app/dashboard/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        }
+      ]
+    }
+  ]
+}

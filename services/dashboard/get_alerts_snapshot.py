@@ -326,11 +326,13 @@ def _derived_technical_alerts() -> list[dict[str, Any]]:
                 "support": _num(row.get("support") or row.get("support_level")),
                 "resistance": _num(row.get("resistance") or row.get("resistance_level")),
             }
+            title = _fallback_watch_title(ticker, pct, context.get("relative_volume"), day_low, day_high, price)
+            summary = _fallback_watch_summary(ticker, pct, context.get("relative_volume"), support=context.get("support") or day_low, resistance=context.get("resistance") or day_high)
             unique.append(
                 _technical_alert(
                     ticker,
-                    "Vigilancia tecnica",
-                    f"{ticker} no dispara alerta fuerte, pero tiene precio confirmado y contexto de volumen/rango para seguimiento.",
+                    title,
+                    summary,
                     "technical_watch",
                     pct,
                     now,
@@ -358,6 +360,7 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "alert_type": alert_type,
         "alert_type_label": "Tecnica",
         "ticker": ticker,
+        "asset_name": ticker,
         "title": title,
         "title_es": title,
         "summary": summary,
@@ -397,6 +400,33 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "genesis_reading": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
         "genesis_reading_es": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
     }
+
+
+def _fallback_watch_title(ticker: str, pct: float, relative_volume: float | None, day_low: float | None, day_high: float | None, price: float | None) -> str:
+    if relative_volume is not None and relative_volume >= 1.3:
+        return f"{ticker}: volumen relativo en vigilancia"
+    if pct >= 0.5:
+        return f"{ticker}: sesgo positivo moderado"
+    if pct <= -0.5:
+        return f"{ticker}: presion moderada"
+    if price is not None and day_high is not None and day_low is not None and day_high > day_low:
+        position = (price - day_low) / (day_high - day_low)
+        if position >= 0.75:
+            return f"{ticker}: cerca de zona alta diaria"
+        if position <= 0.25:
+            return f"{ticker}: cerca de zona baja diaria"
+    return f"{ticker}: precio confirmado en radar"
+
+
+def _fallback_watch_summary(ticker: str, pct: float, relative_volume: float | None, *, support: float | None, resistance: float | None) -> str:
+    volume_part = f" volumen relativo {relative_volume:.1f}x," if relative_volume is not None else ""
+    level_bits = []
+    if support is not None:
+        level_bits.append(f"soporte {support}")
+    if resistance is not None:
+        level_bits.append(f"resistencia {resistance}")
+    levels = ", ".join(level_bits) if level_bits else "niveles no confirmados"
+    return f"{ticker}: movimiento {pct:+.2f}%,{volume_part} {levels}. Genesis lo mantiene como vigilancia, no como orden."
 
 
 def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

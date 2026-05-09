@@ -1,5 +1,6 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
+const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
 
 function initialChatMessage() {
   return {
@@ -59,6 +60,7 @@ const appState = {
   chartCache: {},
   assetChartRanges: {},
   refreshTimer: null,
+  marketRefreshTimer: null,
   refreshInFlight: false,
   refreshPromise: null,
   chatHistoryOpen: false,
@@ -68,6 +70,7 @@ const appState = {
 };
 
 const REFRESH_MS = 15000;
+const MARKET_FEED_REFRESH_MS = 60000;
 const CHART_RANGES = ["1D", "1W", "1M", "1Y", "5Y", "MAX"];
 const MONEY_COLORS = ["#7be0ad", "#91a7ff", "#efbd6f", "#ec7f77", "#7fd9df", "#d7c27f", "#b7c5d9"];
 
@@ -181,11 +184,21 @@ function itemValue(item) {
 }
 
 function itemDailyPct(item) {
-  return numberOrNull(item?.daily_change_pct ?? item?.change_pct ?? item?.percent_change ?? item?.changesPercentage);
+  const explicit = numberOrNull(item?.daily_change_pct ?? item?.change_pct ?? item?.percent_change ?? item?.changesPercentage);
+  if (explicit !== null) return explicit;
+  const price = itemPrice(item);
+  const previous = positiveOrNull(item?.previous_close ?? item?.previousClose ?? item?.prev_close);
+  if (price !== null && previous !== null && previous > 0) return ((price - previous) / previous) * 100;
+  return null;
 }
 
 function itemDailyUsd(item) {
-  return numberOrNull(item?.daily_change ?? item?.change ?? item?.change_usd);
+  const explicit = numberOrNull(item?.daily_change ?? item?.change ?? item?.change_usd);
+  if (explicit !== null) return explicit;
+  const price = itemPrice(item);
+  const previous = positiveOrNull(item?.previous_close ?? item?.previousClose ?? item?.prev_close);
+  if (price !== null && previous !== null) return price - previous;
+  return null;
 }
 
 function itemInWatchlist(item) {
@@ -418,26 +431,70 @@ function toast(message, tone = "info") {
 }
 
 async function getJson(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.message || `HTTP ${response.status}`);
-  }
-  return payload;
+  return requestJson(url);
 }
 
 async function postJson(url, body) {
-  const response = await fetch(url, {
+  const payload = await requestJson(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    cache: "no-store",
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) {
-    throw new Error(payload.message || `HTTP ${response.status}`);
-  }
+  if (payload.ok === false) throw new Error(payload.message || "Genesis no confirmo el cambio.");
   return payload;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function networkErrorMessage(error) {
+  const text = String(error?.message || error || "").trim();
+  if (error?.name === "AbortError" || text.toLowerCase().includes("abort")) {
+    return "La API tardo demasiado. Genesis mantiene la pantalla viva y reintenta con datos en cache.";
+  }
+  if (text.toLowerCase().includes("failed to fetch")) {
+    return "No pude conectar con Genesis API. Revisa que el backend local o Railway siga respondiendo.";
+  }
+  return cleanCopy(text || "No pude conectar con la fuente activa.");
+}
+
+async function requestJson(url, options = {}, config = {}) {
+  const candidates = apiUrlCandidates(url);
+  const attempts = config.attempts || 2;
+  const timeoutMs = config.timeoutMs || 14000;
+  let lastError = null;
+  for (const targetUrl of candidates) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(targetUrl, {
+          cache: "no-store",
+          ...options,
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+        return payload;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts) break;
+        await delay(320);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+  throw new Error(networkErrorMessage(lastError));
+}
+
+function apiUrlCandidates(url) {
+  const text = String(url || "");
+  if (!text.startsWith("/api/")) return [text];
+  const local = typeof window !== "undefined" && /^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(window.location.hostname || "");
+  if (!local) return [text];
+  return [text, `${API_FALLBACK_ORIGIN}${text}`];
 }
 
 function priceLabel(item) {
@@ -500,6 +557,8 @@ function iconSvg(name) {
     cart: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h15l-2 8H8L6 3H3"/><path d="M9 20h.01M18 20h.01"/></svg>`,
     remove: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`,
     send: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13"/><path d="M13 6l6 6-6 6"/></svg>`,
+    check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
+    search: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
     upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V5"/><path d="M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>`,
     menu: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12h.01M19 12h.01M5 12h.01"/></svg>`,
     history: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg>`,
@@ -857,6 +916,30 @@ function stopPortfolioAutoRefresh() {
   appState.refreshTimer = null;
 }
 
+function startMarketAutoRefresh() {
+  if (appState.marketRefreshTimer) return;
+  appState.marketRefreshTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (appState.activeScreen === "news") {
+      loadNews({ silent: true }).catch(() => {});
+      return;
+    }
+    if (appState.activeScreen === "alerts") {
+      Promise.allSettled([
+        refreshPortfolio({ render: false, force: true }),
+        loadAlerts(),
+        loadWhalesData(),
+      ]).then(() => renderAlertsScreen()).catch(() => {});
+    }
+  }, MARKET_FEED_REFRESH_MS);
+}
+
+function stopMarketAutoRefresh() {
+  if (!appState.marketRefreshTimer) return;
+  clearInterval(appState.marketRefreshTimer);
+  appState.marketRefreshTimer = null;
+}
+
 function setActiveScreen(screen) {
   appState.activeScreen = screen;
   document.querySelectorAll(".app-screen").forEach((node) => {
@@ -873,10 +956,21 @@ function setActiveScreen(screen) {
   }
 
   if (screen === "news") {
+    startMarketAutoRefresh();
     loadNews().catch((error) => toast(error.message, "error"));
-  }
-  if (screen === "alerts") {
-    Promise.all([loadAlerts(), loadWhalesData()]).then(() => renderAlertsScreen()).catch((error) => toast(error.message, "error"));
+  } else if (screen === "alerts") {
+    startMarketAutoRefresh();
+    Promise.allSettled([
+      refreshPortfolio({ render: false, force: true }),
+      loadAlerts(),
+      loadWhalesData(),
+    ]).then((results) => {
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed) toast(networkErrorMessage(failed.reason), "info");
+      renderAlertsScreen();
+    });
+  } else {
+    stopMarketAutoRefresh();
   }
 }
 
@@ -1113,7 +1207,8 @@ function genesisVisualFromPayload(payload, answer = "") {
     return assetAnalysisVisual(payload, answer);
   }
   if (responseType === "comparison" || intent === "comparison") return comparisonVisual(payload, answer);
-  if (responseType === "market_summary" || responseType === "news_brief" || intent === "daily_briefing" || intent === "market_overview") return briefingVisual(payload, answer);
+  if (responseType === "news_brief" || intent === "macro_news") return newsBriefVisual(payload, answer);
+  if (responseType === "market_summary" || intent === "daily_briefing" || intent === "market_overview") return briefingVisual(payload, answer);
   if (responseType === "weather" || intent === "weather") return weatherVisual(payload, answer);
   if (responseType === "alerts_digest" || intent === "alerts") return alertsDigestVisual(payload, answer);
   if (responseType === "whale_flow" || intent === "whale_activity") {
@@ -1229,6 +1324,50 @@ function briefingVisual(payload, answer = "") {
   };
 }
 
+function newsBriefVisual(payload, answer = "") {
+  const structured = payload?.structured || {};
+  const overview = payload?.overview || payload?.briefing || {};
+  const rows = [
+    ...(Array.isArray(structured.important_news) ? structured.important_news : []),
+    ...(Array.isArray(structured.latest_news) ? structured.latest_news : []),
+    ...(Array.isArray(overview.news) ? overview.news : []),
+  ]
+    .map(normalizeNewsItemForUi)
+    .filter((item) => !isInternalNewsPlaceholder(item));
+  const seen = new Set();
+  const cleanRows = [];
+  rows.forEach((item) => {
+    const id = newsItemId(item);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    cleanRows.push({ ...item, id });
+  });
+  const cachedRows = cleanRows.length ? cleanRows : newsFeedItems(appState.newsSnapshot || {});
+  const thesis = cleanSentenceList(structured.summary || overview.answer || answer, 1)[0] || "";
+  return {
+    kind: "news_brief",
+    title: "Noticias que importan",
+    thesis: isWeakNewsThesis(thesis)
+      ? "Estas son las noticias reales que Genesis esta vigilando por impacto, recencia y relacion con tus activos."
+      : thesis || "Genesis resume titulares reales, impacto, activos afectados y que vigilar.",
+    rows: cachedRows.slice(0, 5),
+    metrics: {
+      important: Array.isArray(structured.important_news) ? structured.important_news.length : cachedRows.length,
+      latest: Array.isArray(structured.latest_news) ? structured.latest_news.length : 0,
+      source: overview.source || "FMP / RSS",
+    },
+  };
+}
+
+function isWeakNewsThesis(value) {
+  const text = cleanCopy(value || "").toLowerCase();
+  return !text
+    || text.includes("mercado sin confirmacion")
+    || text.includes("sin titulares externos")
+    || text.includes("contexto relevante")
+    || text.includes("sin contexto");
+}
+
 function weatherVisual(payload, answer = "") {
   const weather = payload?.weather || {};
   const data = weather.data && typeof weather.data === "object" ? weather.data : {};
@@ -1315,6 +1454,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "briefing") return briefingVisualMarkup(visual);
   if (visual.kind === "weather") return weatherVisualMarkup(visual);
   if (visual.kind === "comparison") return comparisonVisualMarkup(visual);
+  if (visual.kind === "news_brief") return newsBriefVisualMarkup(visual);
   if (visual.kind === "alerts_digest") return alertsDigestVisualMarkup(visual);
   if (visual.kind === "whale_flow") return whaleFlowVisualMarkup(visual);
   if (visual.kind === "feed") return feedVisualMarkup(visual);
@@ -1483,6 +1623,49 @@ function comparisonVisualMarkup(visual) {
         ${visual.quotes.map((quote) => {
           const tone = positiveClass(quoteChangePct(quote) ?? quoteChange(quote));
           return `<span><small>${escapeHtml(quote.ticker || "Activo")}</small><strong class="${tone}">${escapeHtml(money(quotePrice(quote), "Sin precio"))} ${escapeHtml(formatPercent(quoteChangePct(quote), ""))}</strong></span>`;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function newsBriefVisualMarkup(visual) {
+  const rows = Array.isArray(visual.rows) ? visual.rows.slice(0, 5) : [];
+  return `
+    <section class="visual-response feed-visual news-brief-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Noticias</span>
+          <strong>${escapeHtml(visual.title || "Noticias que importan")}</strong>
+        </div>
+        <span class="conviction-pill neutral">${escapeHtml(`${rows.length} notas`)}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-grid briefing-grid">
+        ${visualTextMetricMarkup("Importantes", String(visual.metrics?.important ?? rows.length))}
+        ${visualTextMetricMarkup("Ultimas", String(visual.metrics?.latest ?? 0))}
+        ${visualTextMetricMarkup("Fuente", cleanCopy(visual.metrics?.source || "FMP / RSS"))}
+      </div>
+      <div class="visual-feed-cards news-brief-cards">
+        ${(rows.length ? rows : [{ title: "Sin titular externo confirmado", summary: "Genesis mantiene lectura con precio, volumen y alertas disponibles.", impact: "neutral", category: "macro" }]).map((row) => {
+          const image = newsImageForItem(row);
+          const category = cleanCopy(row.category || row.placeholder_key || "macro").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+          const tone = newsImpactTone(row.impact);
+          return `
+            <article class="chat-news-card">
+              <span class="chat-news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
+                <img src="${escapeHtml(image)}" alt="">
+              </span>
+              <div>
+                <strong>${escapeHtml(newsDisplayTitle(row))}</strong>
+                <p>${escapeHtml(cleanCopy(row.genesisTakeaway || row.genesis_takeaway || row.summary || "Lectura pendiente de confirmacion."))}</p>
+                <div class="news-card-bottom">
+                  <span>${escapeHtml(cleanCopy(row.source || "Fuente activa"))}</span>
+                  <span class="${tone}">${escapeHtml(cleanCopy(row.impact || "Neutral"))}</span>
+                </div>
+              </div>
+            </article>
+          `;
         }).join("")}
       </div>
     </section>
@@ -1703,10 +1886,44 @@ async function submitGenesisQuestion(event) {
       const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
       appState.chatMessages.push(genesisAssistantMessageFromPayload(payload, question));
     } catch (fallbackError) {
-      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude responder ahora: ${cleanCopy(fallbackError.message)}` });
+      appState.chatMessages.push(offlineGenesisFallback(question, fallbackError));
     }
   }
   renderGenesisScreen();
+}
+
+function offlineGenesisFallback(question, error) {
+  const normalized = String(question || "").toLowerCase();
+  if (normalized.includes("noticia")) {
+    const visual = newsBriefVisual({ structured: { summary: "" } }, "");
+    return {
+      id: nextMessageId(),
+      role: "assistant",
+      text: "La API conversacional no respondio, pero te dejo las noticias cargadas en la app mientras reintento la conexion.",
+      visual,
+    };
+  }
+  if (normalized.includes("alert")) {
+    return {
+      id: nextMessageId(),
+      role: "assistant",
+      text: "La API conversacional no respondio, pero el radar local sigue activo con las alertas cargadas.",
+      visual: alertsDigestVisual({ structured: { alerts: currentAlertRows(), summary: "Alertas derivadas desde el estado actual." } }, ""),
+    };
+  }
+  if (normalized.includes("ballena") || normalized.includes("smart money")) {
+    return {
+      id: nextMessageId(),
+      role: "assistant",
+      text: "La API conversacional no respondio; muestro la lectura local de ballenas y flujo estimado.",
+      visual: whaleFlowVisual({ structured: { events: currentWhaleRows(), summary: "Flujos cargados desde el radar local." } }, ""),
+    };
+  }
+  return {
+    id: nextMessageId(),
+    role: "assistant",
+    text: `Genesis no pudo conectar con la API ahora. ${networkErrorMessage(error)} Reintenta en unos segundos; la app sigue mostrando precios y feeds cargados.`,
+  };
 }
 
 async function loadGenesisMemoryHistory() {
@@ -1739,31 +1956,25 @@ async function openGenesisConversation(conversationId) {
     appState.chatHistoryOpen = false;
     if (appState.activeScreen === "genesis") renderGenesisScreen();
   } catch (error) {
-    toast("No pude abrir ese chat.", "error");
+    toast(`No pude abrir ese chat. ${networkErrorMessage(error)}`, "error");
   }
 }
 
-async function loadNews() {
+async function loadNews(options = {}) {
   if (appState.newsLoading) return appState.newsSnapshot;
   appState.newsLoading = true;
-  renderNewsScreen();
+  if (!options.silent) renderNewsScreen();
   try {
-    const [newsResult, macroResult, briefingResult, alertsResult, whalesResult] = await Promise.allSettled([
+    const [newsResult, alertsResult, whalesResult] = await Promise.allSettled([
       getJson("/api/dashboard/news"),
-      getJson("/api/dashboard/macro-activity"),
-      postJson("/api/genesis/ask", { message: "dame resumen del dia", context: "news", conversation_id: appState.currentConversationId }),
       getJson("/api/dashboard/alerts"),
       loadWhalesData(),
     ]);
     if (alertsResult.status === "fulfilled") appState.alertsSnapshot = alertsResult.value;
     appState.newsSnapshot = {
       news: newsResult.status === "fulfilled" ? newsResult.value : null,
-      macro: macroResult.status === "fulfilled" ? macroResult.value : null,
-      briefing: briefingResult.status === "fulfilled" ? briefingResult.value : null,
       errors: [
         newsResult.status === "rejected" ? newsResult.reason?.message : "",
-        macroResult.status === "rejected" ? macroResult.reason?.message : "",
-        briefingResult.status === "rejected" ? briefingResult.reason?.message : "",
         alertsResult.status === "rejected" ? alertsResult.reason?.message : "",
         whalesResult.status === "rejected" ? whalesResult.reason?.message : "",
       ].filter(Boolean),
@@ -1780,54 +1991,58 @@ function renderNewsScreen() {
   const root = document.getElementById("view-news");
   if (!root) return;
   const snapshot = appState.newsSnapshot || {};
-  const macro = snapshot.macro?.macro || {};
-  const briefing = snapshot.briefing || {};
-  const briefingData = briefing.briefing || briefing.overview || {};
   const newsItems = newsFeedItems(snapshot);
   indexNewsItems(newsItems);
   const scopedNewsItems = filteredNewsItems(newsItems);
   const importantItems = importantNewsItems(scopedNewsItems);
   const importantIds = new Set(importantItems.map((item) => newsItemId(item)));
   const latestItems = latestNewsItems(scopedNewsItems).filter((item) => !importantIds.has(newsItemId(item)));
-  const headerSummary = newsHeaderSummary(macro.summary || briefingData.summary);
   root.innerHTML = `
-    <section class="screen-stack news-screen">
-      <section class="app-section-header">
-        <div>
-          <span class="app-kicker">Radar real</span>
-          <h2>Noticias</h2>
-          <p>${escapeHtml(headerSummary)}</p>
-        </div>
-        <button type="button" class="icon-action" data-news-refresh aria-label="Actualizar noticias">${appState.newsLoading ? "..." : iconSvg("refresh") || "Actualizar"}</button>
-      </section>
-      <section class="feed-tabs" aria-label="Filtros de noticias">
-        ${newsFilterButtonMarkup("important", "Importantes")}
-        ${newsFilterButtonMarkup("latest", "Ultimas")}
-        ${newsFilterButtonMarkup("mine", "Mis activos")}
-        ${newsFilterButtonMarkup("global", "Global")}
-      </section>
-      <section class="news-section">
+    <section class="screen-stack news-screen investing-feed-screen news-only-screen">
+      <div class="news-toolbar">
+        <section class="feed-tabs investing-tabs" aria-label="Filtros de noticias">
+          ${newsFilterButtonMarkup("important", "Importantes")}
+          ${newsFilterButtonMarkup("latest", "Ultimas")}
+          ${newsFilterButtonMarkup("mine", "Mis activos")}
+          ${newsFilterButtonMarkup("global", "Global")}
+        </section>
+        <button type="button" class="icon-action pulse-action" data-news-refresh aria-label="Actualizar noticias">${appState.newsLoading ? "..." : iconSvg("refresh")}</button>
+      </div>
+      <section class="news-section investing-section">
         <div class="section-heading">
           <strong>Importantes / influyentes</strong>
-          <small>${importantItems.length} lecturas</small>
+          <small>${importantItems.length} catalizadores</small>
         </div>
-        <div class="news-feed important-news-feed">
-          ${appState.newsLoading ? `<div class="empty-state"><strong>Cargando noticias.</strong><p>Genesis esta armando el resumen del dia.</p></div>` : ""}
-          ${importantItems.length ? importantItems.map(newsCardMarkup).join("") : emptyStateMarkup("Sin noticias influyentes.", "Genesis no encontro catalizadores de alta prioridad; revisa ultimas noticias abajo.")}
+        <div class="news-feed important-news-feed investing-news-list">
+          ${appState.newsLoading ? `<div class="empty-state"><strong>Actualizando noticias.</strong><p>FMP y RSS estan entrando en paralelo.</p></div>` : ""}
+          ${importantItems.length ? importantItems.map(newsCardMarkup).join("") : emptyStateMarkup("Aun no cargo noticia influyente.", "Genesis reintenta FMP/RSS sin mezclar alertas ni placeholders internos.")}
         </div>
       </section>
-      <section class="news-section">
+      <section class="news-section investing-section">
         <div class="section-heading">
           <strong>Ultimas noticias</strong>
           <small>24h / 7d / 30d</small>
         </div>
-      <div class="news-feed latest-news-feed">
-        ${appState.newsLoading ? `<div class="empty-state"><strong>Cargando noticias.</strong><p>Genesis esta armando el resumen del dia.</p></div>` : ""}
-        ${latestItems.length ? latestItems.map(newsCardMarkup).join("") : emptyStateMarkup("Sin noticias activas.", "Cuando exista macro, geopolitica, earnings o catalizadores, Genesis lo mostrara aqui sin inventar impacto.")}
+      <div class="news-feed latest-news-feed investing-news-list">
+        ${appState.newsLoading ? `<div class="empty-state"><strong>Actualizando noticias.</strong><p>Buscando titulares recientes del mercado.</p></div>` : ""}
+        ${latestItems.length ? latestItems.map(newsCardMarkup).join("") : emptyStateMarkup("Sin ultimas noticias cargadas.", "La pantalla queda limpia hasta que FMP/RSS confirme titulares reales.")}
       </div>
       </section>
     </section>
   `;
+}
+
+function sourceStatusChips(status = {}) {
+  const fmp = status.fmp_market_news || status.fmp || {};
+  const rss = status.rss_news || {};
+  const chips = [
+    ["FMP", fmp.status || (fmp.count ? "ok" : "pendiente")],
+    ["RSS", rss.status || (rss.count || rss.last_fetch_count ? "ok" : "pendiente")],
+  ];
+  return chips.map(([label, value]) => {
+    const tone = String(value).toLowerCase().includes("ok") ? "up" : String(value).toLowerCase().includes("empty") ? "flat" : "flat";
+    return `<span class="${tone}">${escapeHtml(label)} ${escapeHtml(cleanCopy(value || "pendiente"))}</span>`;
+  }).join("");
 }
 
 function newsHeaderSummary(value) {
@@ -1843,65 +2058,17 @@ function newsHeaderSummary(value) {
 
 function newsFeedItems(snapshot = {}) {
   const newsSnapshot = snapshot.news || {};
-  const macro = snapshot.macro?.macro || {};
-  const briefingData = snapshot.briefing?.briefing || snapshot.briefing?.overview || {};
   const directNews = [
     ...(Array.isArray(newsSnapshot.important) ? newsSnapshot.important : []),
     ...(Array.isArray(newsSnapshot.latest) ? newsSnapshot.latest : []),
     ...(Array.isArray(newsSnapshot.items) ? newsSnapshot.items : []),
   ];
-  const headlines = Array.isArray(macro.headlines) ? macro.headlines : [];
-  const briefingNews = Array.isArray(briefingData.news) ? briefingData.news : [];
   const items = [
     ...directNews.map(normalizeNewsItemForUi),
-    ...headlines.map((item) => ({
-      category: "Macro",
-      title: item.title_es || item.title,
-      originalTitle: item.original_title || item.title,
-      source: item.source,
-      time: item.published_at,
-      impact: item.impact_summary || macro.bias_label || "Neutral",
-      summary: item.impact_summary || "Catalizador macro en vigilancia.",
-      assets: macro.sensitive_tickers || [],
-    })),
-    ...briefingNews.map((item) => ({
-      id: item.id,
-      category: "Mercado",
-      title: item.title_es || item.title || item.headline || "Titular de mercado",
-      originalTitle: item.original_title || item.title || item.headline || "",
-      source: item.site || item.publisher || item.source || "FMP",
-      time: item.published_at || item.publishedDate || item.date,
-      impact: item.sentiment || item.impact || "Contexto",
-      summary: item.summary_es || item.text || item.summary || item.title_es || item.title || "Titular confirmado por fuente de mercado.",
-      assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
-      imageUrl: item.image_url || item.thumbnail || item.image || "",
-      url: item.url || "",
-      genesisTakeaway: item.genesis_takeaway || "",
-      whyItMatters: item.why_it_matters || "",
-      confidence: item.confidence || "media",
-      isImportant: Boolean(item.is_important),
-      recencyScore: item.recency_score,
-      relevanceScore: item.relevance_score,
-      risk: item.risk,
-      watch: item.watch,
-      watchPoints: item.watch_points || item.watchPoints || [],
-      tickersAffected: item.tickers_affected || item.tickers || item.assets || [],
-    })),
   ].filter((item) => String(item.title || "").trim());
 
   if (!items.length) {
-    return [{
-      category: "Mercado",
-      title: "Briefing Genesis listo",
-      source: "Genesis",
-      time: snapshot.loadedAt || new Date().toISOString(),
-      impact: "Neutral",
-      summary: "Sin titulares externos confirmados ahora; Genesis puede trabajar con precios, alertas, cartera y seguimiento activos.",
-      assets: [],
-      isImportant: true,
-      relevanceScore: 1,
-      recencyScore: 1,
-    }];
+    return [];
   }
 
   const seenTitles = new Set();
@@ -1912,7 +2079,7 @@ function newsFeedItems(snapshot = {}) {
     seenTitles.add(key);
     return true;
   });
-  return filtered.slice(0, 12);
+  return filtered.filter((item) => !isInternalNewsPlaceholder(item)).slice(0, 16);
 }
 
 function newsFilterButtonMarkup(filter, label) {
@@ -1941,6 +2108,7 @@ function normalizeNewsItemForUi(item = {}) {
     originalTitle: item.original_title || item.headline || item.title || "",
     source: item.source || item.site || item.publisher || "Fuente activa",
     time: item.published_at || item.publishedDate || item.date,
+    relative_time: item.relative_time || item.relativeTime || "",
     impact: item.impact || item.sentiment || "Neutral",
     summary: item.summary_es || item.summary || item.text || item.title_es || item.title || "Titular confirmado.",
     assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
@@ -1967,6 +2135,8 @@ function isInternalNewsPlaceholder(item) {
     || title.includes("sin contexto")
     || title.includes("genesis mantiene vigilancia")
     || title.includes("briefing genesis listo")
+    || title.includes("contexto relevante")
+    || title.includes("weekly market commentary")
   );
 }
 
@@ -2011,6 +2181,23 @@ function newsImpactTone(value) {
   return "flat";
 }
 
+function newsCategoryPhotoQuery(item = {}) {
+  const raw = `${item.title || ""} ${item.originalTitle || ""} ${item.category || ""} ${(item.assets || []).join(" ")}`.toLowerCase();
+  if (raw.includes("trump") || raw.includes("iran") || raw.includes("geopolit")) return "politics,world,news";
+  if (raw.includes("bitcoin") || raw.includes("btc") || raw.includes("crypto")) return "bitcoin,crypto,market";
+  if (raw.includes("oil") || raw.includes("brent") || raw.includes("petroleo") || raw.includes("crude")) return "oil,barrel,energy";
+  if (raw.includes("nvidia") || raw.includes("nvda") || raw.includes("ai")) return "semiconductor,chip,technology";
+  if (raw.includes("gold") || raw.includes("oro")) return "gold,market";
+  if (raw.includes("fed") || raw.includes("inflation") || raw.includes("rates")) return "federal-reserve,finance";
+  return "stock-market,trading,finance";
+}
+
+function newsImageForItem(item = {}) {
+  const image = item.imageUrl || item.image_url || item.thumbnail_url || item.thumbnail || item.image || "";
+  if (String(image).trim()) return image;
+  return `https://source.unsplash.com/640x360/?${encodeURIComponent(newsCategoryPhotoQuery(item))}`;
+}
+
 function newsItemId(item) {
   const explicit = cleanCopy(item?.id || item?.news_id || "");
   if (explicit) return explicit;
@@ -2041,23 +2228,30 @@ function newsCardMarkup(item) {
     return display.displayName === normalized ? normalized : `${display.displayName} (${normalized})`;
   });
   const tone = newsImpactTone(item.impact);
-  const image = item.imageUrl || item.image_url || item.thumbnail || "";
+  const image = newsImageForItem(item);
   const category = cleanCopy(item.category || item.placeholder_key || "contexto").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  const published = item.relative_time || formatDate(item.time);
+  const impactLabel = cleanCopy(item.impact || "Neutral");
   return `
-    <article class="news-card" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
+    <article class="news-card investing-news-card" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
       <button class="news-card-main" type="button" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
         <span class="news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
-          ${image ? `<img src="${escapeHtml(image)}" alt="">` : newsPlaceholderMarkup(category, item)}
+          <img src="${escapeHtml(image)}" alt="">
         </span>
       <div class="news-card-copy">
-        <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))}</span>
+        <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))} · ${escapeHtml(cleanCopy(item.source || "Fuente"))}</span>
         <strong>${escapeHtml(newsDisplayTitle(item))}</strong>
         <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || item.summary || "Sin lectura adicional."))}</p>
+        <div class="news-card-bottom">
+          <span>${escapeHtml(cleanCopy(published))}</span>
+          ${assetLabels.slice(0, 3).map((asset) => `<span>${escapeHtml(asset)}</span>`).join("")}
+        </div>
       </div>
+      <span class="impact-badge ${tone}">${escapeHtml(impactLabel)}</span>
       </button>
       <div class="news-meta">
         <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
-        <span>${escapeHtml(formatDate(item.time))}</span>
+        <span>${escapeHtml(cleanCopy(published))}</span>
         <span class="${tone}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
         ${item.confidence ? `<span>${escapeHtml(`Confianza ${cleanCopy(item.confidence)}`)}</span>` : ""}
         ${assetLabels.length ? `<span>${escapeHtml(assetLabels.join(", "))}</span>` : ""}
@@ -2098,21 +2292,25 @@ function openNewsDetail(newsId) {
   const sheet = document.getElementById("news-sheet");
   const body = document.getElementById("news-sheet-body");
   if (!sheet || !body) return;
-  const image = item.imageUrl || item.image_url || item.thumbnail || "";
+  const image = newsImageForItem(item);
   const assets = Array.isArray(item.tickersAffected) ? item.tickersAffected.filter(Boolean).slice(0, 5) : Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 5) : [];
   const watchPoints = Array.isArray(item.watchPoints) ? item.watchPoints.filter(Boolean).slice(0, 4) : [];
   body.innerHTML = `
-    ${image ? `<img class="news-detail-image" src="${escapeHtml(image)}" alt="">` : `<div class="news-detail-image is-placeholder">${newsPlaceholderMarkup(cleanCopy(item.category || "macro").toLowerCase(), item)}</div>`}
-    <span class="app-kicker">${escapeHtml(cleanCopy(item.category || "Noticias"))}</span>
-    <h2>${escapeHtml(newsDisplayTitle(item))}</h2>
+    <section class="sheet-hero news-hero">
+      <img class="news-detail-image" src="${escapeHtml(image)}" alt="">
+      <div>
+        <span class="app-kicker">${escapeHtml(cleanCopy(item.category || "Noticias"))}</span>
+        <h2>${escapeHtml(newsDisplayTitle(item))}</h2>
+      </div>
+    </section>
     <div class="news-detail-meta">
       <span>${escapeHtml(cleanCopy(item.source || "Fuente activa"))}</span>
-      <span>${escapeHtml(formatDate(item.time))}</span>
+      <span>${escapeHtml(cleanCopy(item.relative_time || formatDate(item.time)))}</span>
       <span class="${newsImpactTone(item.impact)}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
       ${item.confidence ? `<span>${escapeHtml(`Confianza ${cleanCopy(item.confidence)}`)}</span>` : ""}
     </div>
-    <p>${escapeHtml(cleanCopy(item.summary || "Sin resumen disponible."))}</p>
-    <section class="genesis-mini">
+    <p class="detail-lead">${escapeHtml(cleanCopy(item.summary || "Sin resumen disponible."))}</p>
+    <section class="genesis-mini investing-detail-block">
       <strong>Lectura Genesis</strong>
       <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como senal aislada."))}</p>
       <p>Por que importa: ${escapeHtml(cleanCopy(item.whyItMatters || item.why_it_matters || "Puede afectar apetito de riesgo, momentum o niveles de los activos relacionados."))}</p>
@@ -2140,23 +2338,17 @@ function renderTrackingScreen() {
   const root = document.getElementById("view-watchlist");
   if (!root) return;
   const items = filteredTrackingItems();
-  const status = `
-    <div class="screen-status inline-status">
-      <span>Datos directos activos</span>
-      <small>${appState.lastUpdated ? `Actualizado ${formatDate(appState.lastUpdated)}` : "Actualizando..."}</small>
-    </div>
-  `;
   root.innerHTML = `
     <section class="screen-stack">
-      ${status}
       <div class="compact-actions">
-        <button type="button" class="secondary-button small" data-toggle-search="tracking">${appState.searchOpen.tracking ? "Cerrar busqueda" : "Buscar activo"}</button>
+        <button type="button" class="icon-action search-toggle" data-toggle-search="tracking" aria-label="${appState.searchOpen.tracking ? "Cerrar busqueda" : "Buscar activo"}">${iconSvg("search")}</button>
       </div>
       ${appState.searchOpen.tracking ? `
         <form class="search-card premium-search" id="tracking-search-form">
           <input id="portfolio-search-input" placeholder="Buscar activos, empresas o ETFs..." autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
-          <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Agregar a seguimiento">${iconSvg("add")}</button>
+          <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Confirmar busqueda">${iconSvg("check")}</button>
         </form>
+        ${searchDiscoveryRail("tracking")}
       ` : ""}
       <div class="market-filters" aria-label="Filtros de seguimiento">
         ${trackingFilterMarkup()}
@@ -2199,6 +2391,53 @@ function trackingFilterMarkup() {
   )).join("");
 }
 
+function searchDiscoveryRail(mode = "tracking") {
+  const assets = [...(appState.trackingItems || []), ...(appState.paperPositions || [])];
+  const seen = new Set();
+  const uniqueAssets = assets.filter((item) => {
+    const ticker = itemTicker(item);
+    if (!ticker || seen.has(ticker)) return false;
+    seen.add(ticker);
+    return true;
+  });
+  const recent = uniqueAssets.slice(0, 5);
+  const favorites = uniqueAssets.filter((item) => ["NVDA", "META", "AAPL", "MSFT", "BTC-USD", "BZ=F", "BNO"].includes(itemTicker(item))).slice(0, 5);
+  const up = uniqueAssets.filter((item) => (itemDailyPct(item) || 0) > 0).sort((a, b) => (itemDailyPct(b) || 0) - (itemDailyPct(a) || 0)).slice(0, 4);
+  const down = uniqueAssets.filter((item) => (itemDailyPct(item) || 0) < 0).sort((a, b) => (itemDailyPct(a) || 0) - (itemDailyPct(b) || 0)).slice(0, 4);
+  const undervalued = uniqueAssets.filter((item) => {
+    const price = itemPrice(item);
+    const previous = positiveOrNull(item?.previous_close ?? item?.previousClose);
+    return price !== null && previous !== null && price < previous;
+  }).slice(0, 4);
+  const groups = [
+    ["Recientes", recent],
+    ["Favoritas", favorites.length ? favorites : recent],
+    ["Alcistas", up],
+    ["Bajistas", down],
+    ["Infravaloradas", undervalued],
+  ].filter(([, rows]) => rows.length);
+  if (!groups.length) {
+    const starter = ["META", "NVDA", "TSLA", "BTC-USD", "SPY", "BZ=F"].map((ticker) => ({ ticker }));
+    groups.push(["Favoritas", starter]);
+  }
+  return `
+    <section class="search-discovery" aria-label="Ideas de busqueda">
+      ${groups.map(([label, rows]) => `
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <div>
+            ${rows.map((item) => {
+              const ticker = itemTicker(item);
+              const tone = marketToneClass(itemDailyPct(item));
+              return `<button type="button" data-search-pick="${escapeHtml(ticker)}" data-search-mode="${escapeHtml(mode)}"><b>${escapeHtml(ticker)}</b><small class="${tone}">${escapeHtml(formatPercent(itemDailyPct(item), ""))}</small></button>`;
+            }).join("")}
+          </div>
+        </div>
+      `).join("")}
+    </section>
+  `;
+}
+
 function filteredTrackingItems() {
   if (appState.trackingFilter === "all") return appState.trackingItems;
   return appState.trackingItems.filter((item) => assetCategory(item) === appState.trackingFilter);
@@ -2223,23 +2462,17 @@ function renderPortfolioScreen() {
   const portfolioPnlPct = totals.totalPnlPct ?? totals.dailyPnlPct;
   const portfolioTone = movementTone(portfolioPnlPct ?? portfolioPnl);
   const concentrationLabel = topRow ? `${itemTicker(topRow.item)} ${compactPercent(topRow.weight)}` : "para calcular pesos";
-  const status = `
-    <div class="screen-status inline-status">
-      <span>Paper trading</span>
-      <small>${appState.lastUpdated ? `Actualizado ${formatDate(appState.lastUpdated)}` : "Actualizando..."}</small>
-    </div>
-  `;
   root.innerHTML = `
     <section class="screen-stack">
-      ${status}
       <div class="compact-actions">
-        <button type="button" class="secondary-button small" data-toggle-search="portfolio">${appState.searchOpen.portfolio ? "Cerrar busqueda" : "Buscar para compra paper"}</button>
+        <button type="button" class="icon-action search-toggle" data-toggle-search="portfolio" aria-label="${appState.searchOpen.portfolio ? "Cerrar busqueda" : "Buscar activo"}">${iconSvg("search")}</button>
       </div>
       ${appState.searchOpen.portfolio ? `
         <form class="search-card premium-search" id="portfolio-buy-search-form">
           <input id="portfolio-buy-search-input" placeholder="Buscar ticker o empresa para simular compra" autocomplete="off" value="${escapeHtml(appState.portfolioSearchQuery)}">
-          <button class="primary-button small" type="button" id="portfolio-sim-buy-button">Buscar</button>
+          <button class="round-button icon-submit" type="button" id="portfolio-sim-buy-button" aria-label="Confirmar busqueda">${iconSvg("check")}</button>
         </form>
+        ${searchDiscoveryRail("portfolio")}
       ` : ""}
       <div class="search-results" id="portfolio-buy-search-result" ${appState.marketSearchResults.portfolio.length ? "" : "hidden"}>
         ${appState.marketSearchResults.portfolio.map((item) => searchResultMarkup(item, "portfolio")).join("")}
@@ -2411,9 +2644,9 @@ async function loadWhales() {
 
 async function loadWhalesData() {
   const [learnedResult, causalResult, detectionResult] = await Promise.allSettled([
-    fetch("/api/dashboard/whales", { cache: "no-store" }).then((response) => response.json()),
-    fetch("/api/dashboard/money-flow/causal", { cache: "no-store" }).then((response) => response.json()),
-    fetch("/api/dashboard/money-flow/detection", { cache: "no-store" }).then((response) => response.json()),
+    getJson("/api/dashboard/whales"),
+    getJson("/api/dashboard/money-flow/causal"),
+    getJson("/api/dashboard/money-flow/detection"),
   ]);
   const learned = learnedResult.status === "fulfilled" ? learnedResult.value : {};
   const causal = causalResult.status === "fulfilled" ? causalResult.value : {};
@@ -2614,19 +2847,32 @@ function whaleRowMarkup(row) {
   const amountLabel = confirmed
     ? money(row.amount || row.amountUsd, "Monto no confirmado")
     : money(row.monitoredDollarVolume || row.dollarVolume, "Volumen no confirmado");
+  const directionTone = String(row.direction || "").includes("out") ? "down" : String(row.direction || "").includes("in") ? "up" : "flat";
+  const rowLabel = confirmed ? (row.entity || "Entidad reportada") : "Smart money estimado";
+  const monitored = numberOrNull(row.monitoredDollarVolume || row.dollarVolume);
+  const relVolume = numberOrNull(row.relativeVolume);
+  const rowRead = confirmed
+    ? row.read
+    : monitored !== null
+      ? `${display.displayName}: ${money(monitored)} de volumen vigilado; direccion ${cleanCopy(row.direction || "neutral")}. No confirma compra directa.`
+      : `${display.displayName}: Genesis espera volumen live de FMP para cuantificar flujo; no invento monto.`;
   return `
-    <article class="whale-row feed-row" data-whale-id="${escapeHtml(whaleId)}">
+    <article class="whale-row feed-row investing-event-card flow-${directionTone}" data-whale-id="${escapeHtml(whaleId)}">
       <button class="event-main" type="button" data-whale-id="${escapeHtml(whaleId)}">
-      <div class="whale-topline">
+      <div class="whale-topline investing-event-topline">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
-          <small>${escapeHtml(confirmed ? (row.entity || "Entidad reportada") : "Sin entidad confirmada")}</small>
+          <small>${escapeHtml(rowLabel)}</small>
         </div>
-        <span class="event-chip ${eventClass}">${escapeHtml(confirmed ? "Confirmada" : "Estimado")}</span>
+        <span class="event-chip ${eventClass} ${directionTone}">${escapeHtml(confirmed ? "Confirmada" : "Estimado")}</span>
       </div>
-      <p>${escapeHtml(row.read)}</p>
-      <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-      <div class="asset-meta">
+      <p>${escapeHtml(cleanCopy(rowRead))}</p>
+      <div class="flow-strip">
+        <span>${escapeHtml(cleanCopy(row.direction || "neutral"))}</span>
+        <div class="mini-spark" aria-hidden="true">${miniSeriesBars([row.netFlow, row.dollarVolume, row.relativeVolume, row.intensity])}</div>
+        <strong>${escapeHtml(row.amountSuspicious ? "No confirmado" : amountLabel)}</strong>
+      </div>
+      <div class="asset-meta investing-meta">
         <span>Movimiento: ${escapeHtml(cleanCopy(row.event || "Flujo"))}</span>
         <span>${confirmed ? "Monto confirmado" : "Volumen vigilado"}: ${escapeHtml(row.amountSuspicious ? "No confirmado" : amountLabel)}</span>
         <span>Cantidad: ${escapeHtml(row.units ? compactNumber(row.units) : "No confirmada")}</span>
@@ -2653,7 +2899,7 @@ function bindMoneyFlowJarvisForm() {
     const answerNode = document.getElementById("money-flow-jarvis-answer");
     answerNode.textContent = "Consultando Ballenas...";
     try {
-      const payload = await fetch(`/api/dashboard/money-flow/jarvis?q=${encodeURIComponent(question)}`, { cache: "no-store" }).then((response) => response.json());
+      const payload = await getJson(`/api/dashboard/money-flow/jarvis?q=${encodeURIComponent(question)}`);
       renderMoneyFlowJarvisAnswer(payload);
     } catch (error) {
       answerNode.textContent = cleanCopy(error.message || "No pude consultar Ballenas.");
@@ -2699,14 +2945,7 @@ function renderAlertsScreen() {
   indexAlertItems(alertRows);
   indexWhaleItems(whaleRows);
   root.innerHTML = `
-    <section class="screen-stack">
-      <section class="feed-intro">
-        <div>
-          <strong>Eventos</strong>
-        <p>${appState.alertSubtab === "alerts" ? (items.length ? "Feed limpio de senales activas." : "Alertas derivadas de tus activos con precio live.") : (hasConfirmedWhales ? "Smart money confirmado por fuente activa." : "Flujo en vigilancia, sin entidad institucional confirmada.")}</p>
-        </div>
-        <span>${appState.alertSubtab === "alerts" ? `${alertRows.length} eventos` : `${whaleRows.length} lecturas`}</span>
-      </section>
+    <section class="screen-stack alerts-investing-screen">
       <div class="subtabs" aria-label="Eventos">
         <button type="button" class="${appState.alertSubtab === "alerts" ? "is-active" : ""}" data-alert-tab="alerts">Alertas</button>
         <button type="button" class="${appState.alertSubtab === "whales" ? "is-active" : ""}" data-alert-tab="whales">Ballenas</button>
@@ -2718,24 +2957,56 @@ function renderAlertsScreen() {
 }
 
 function derivedAlertRows() {
-  return currentFocusAssets()
+  const focusAssets = currentFocusAssets();
+  if (!focusAssets.length) {
+    return [{
+      ticker: "Mercado",
+      title: "Mercado: FMP/RSS en vigilancia",
+      summary: "Genesis esta esperando precio, volumen o noticia confirmada para elevar una alerta accionable.",
+      impact: "neutral",
+      direction: "neutral",
+      severity: "medium",
+      confidence: "medium",
+      source: "FMP / RSS",
+      price: null,
+      change: null,
+      change_pct: null,
+      volume: null,
+      relative_volume: null,
+      dollar_volume: null,
+      trend: "sin direccion confirmada",
+      momentum: "esperando fuente live",
+      risk: "riesgo de operar sin confirmacion",
+      what_it_means: "No hay activo de seguimiento cargado; Genesis no inventa senales.",
+      what_to_watch: "Agregar activos a Seguimiento y confirmar FMP live.",
+      mini_series: [1, 2, 1],
+      genesis_reading: "Alerta de sistema limpia: sin activos no hay senal operable.",
+      created_at: appState.lastUpdated || new Date().toISOString(),
+      context: "Mercado",
+      status: "En vigilancia",
+    }];
+  }
+  return focusAssets
     .map((item) => {
       const ticker = itemTicker(item);
-      const pct = numberOrNull(item.daily_change_pct ?? item.change_pct ?? item.changesPercentage);
-      const change = numberOrNull(item.daily_change ?? item.change);
+      const pct = itemDailyPct(item);
+      const change = itemDailyUsd(item);
       const price = itemPrice(item);
       const volume = numberOrNull(item.volume);
       const avgVolume = numberOrNull(item.avg_volume ?? item.avgVolume ?? item.average_volume);
       const relativeVolume = numberOrNull(item.relative_volume ?? item.relativeVolume) ?? (volume !== null && avgVolume ? volume / avgVolume : null);
       const absPct = Math.abs(pct || 0);
-      if (!ticker || pct === null || absPct < 1) return null;
-      const direction = pct > 0 ? "bullish" : "bearish";
+      if (!ticker || (price === null && pct === null && volume === null)) return null;
+      const direction = (pct || 0) > 0 ? "bullish" : (pct || 0) < 0 ? "bearish" : "neutral";
+      const title = pct === null || absPct < 1
+        ? `${ticker}: precio live en vigilancia`
+        : pct > 0 ? `${ticker}: impulso positivo` : `${ticker}: presion bajista`;
       return {
         ticker,
         daily_change_pct: pct,
-        title: pct > 0 ? `${ticker}: impulso positivo` : `${ticker}: presion bajista`,
-        summary: `Movimiento ${formatChange(change, "sin cambio")} / ${formatPercent(pct, "sin dato")}. Revisar volumen, soporte/resistencia y noticia asociada antes de operar.`,
-        impact: pct > 0 ? "positivo" : "negativo",
+        title,
+        summary: `Precio ${money(price, "sin precio")} con movimiento ${formatChange(change, "sin cambio")} / ${formatPercent(pct, "sin dato")}. Revisar volumen, soporte/resistencia y noticia asociada antes de operar.`,
+        impact: direction === "bullish" ? "positivo" : direction === "bearish" ? "negativo" : "neutral",
         direction,
         severity: absPct >= 3 ? "high" : "medium",
         confidence: "medium",
@@ -2749,14 +3020,14 @@ function derivedAlertRows() {
         dollar_volume: price !== null && volume !== null ? price * volume : null,
         support: numberOrNull(item.support ?? item.support_level ?? item.day_low ?? item.dayLow),
         resistance: numberOrNull(item.resistance ?? item.resistance_level ?? item.day_high ?? item.dayHigh),
-        trend: pct > 1.5 ? "alcista intradia" : pct < -1.5 ? "bajista intradia" : "lateral",
+        trend: (pct || 0) > 1.5 ? "alcista intradia" : (pct || 0) < -1.5 ? "bajista intradia" : "lateral",
         momentum: relativeVolume !== null && relativeVolume >= 1.5 ? "volumen acompana" : "pendiente de volumen",
-        risk: pct < 0 ? "riesgo de continuidad bajista" : "riesgo de falso rompimiento",
-        what_it_means: pct > 0 ? `${ticker} intenta extender momentum; falta confirmar volumen.` : `${ticker} muestra presion; cuidar nivel de soporte.`,
+        risk: (pct || 0) < 0 ? "riesgo de continuidad bajista" : "riesgo de falso rompimiento",
+        what_it_means: (pct || 0) > 0 ? `${ticker} intenta extender momentum; falta confirmar volumen.` : (pct || 0) < 0 ? `${ticker} muestra presion; cuidar nivel de soporte.` : `${ticker} no marca direccion clara; Genesis vigila ruptura de rango y volumen.`,
         what_to_watch: "Precio, volumen relativo y reaccion en soporte/resistencia.",
         affected_portfolio_assets: [ticker],
         mini_series: [pct, relativeVolume, change].filter((value) => value !== null),
-        genesis_reading: "Alerta tecnica derivada de precio y movimiento; confirmar con volumen antes de operar.",
+        genesis_reading: "Alerta tecnica derivada de precio live; confirmar con volumen antes de operar.",
         created_at: item.quote_timestamp || item.updated_at || appState.lastUpdated,
         context: "Precio live",
         status: "En vigilancia",
@@ -2768,9 +3039,21 @@ function derivedAlertRows() {
 }
 
 function alertsPanelMarkup(items) {
+  const rows = items.length ? items : derivedAlertRows();
+  const high = rows.filter((item) => String(item.severity || "").toLowerCase() === "high").length;
+  const withPrice = rows.filter((item) => item.price !== null && item.price !== undefined).length;
+  const withVolume = rows.filter((item) => item.volume || item.relative_volume || item.dollar_volume).length;
   return `
-    <div class="asset-list">
-      ${items.length ? items.slice(0, 14).map(alertMarkup).join("") : emptyStateMarkup("Sin alertas activas.", "Genesis mantiene la pantalla limpia hasta que exista una senal relevante.")}
+    <section class="market-pulse-card alert-pulse">
+      <div>
+        <span>Panel de senales</span>
+        <strong>${escapeHtml(`${rows.length} alertas - ${high} alta prioridad`)}</strong>
+        <p>${escapeHtml(`${withPrice} con precio directo, ${withVolume} con volumen/flujo. Genesis separa alerta tecnica de evento macro.`)}</p>
+      </div>
+      <div class="pulse-meter tone-alert" aria-hidden="true">${miniSeriesBars(rows.map((item) => numberOrNull(item.signal_strength ?? item.change_pct ?? item.relative_volume) || 1))}</div>
+    </section>
+    <div class="asset-list investing-event-list">
+      ${rows.slice(0, 14).map(alertMarkup).join("")}
     </div>
   `;
 }
@@ -2807,12 +3090,14 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
   }, 0);
   const inflows = rows.filter((row) => /compra|acumul|buy|inflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
   const outflows = rows.filter((row) => /venta|reduccion|distrib|sell|outflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
+  const topTicker = rows[0]?.ticker || "mercado";
+  const boardTitle = hasConfirmed ? `${rows.length} movimientos confirmados` : `${rows.length} flujos vigilados`;
   return `
-    <section class="whale-flow-card">
+    <section class="whale-flow-card investing-flow-board">
       <div>
-        <span>Flujo de ballenas</span>
-        <strong>${hasConfirmed ? `${rows.length} eventos relevantes` : "Sin ballena identificada"}</strong>
-        <p>${hasConfirmed ? "Genesis muestra eventos con entidad o evidencia reportada." : "No hay entidad institucional confirmada; muestro vigilancia de flujo sin inventar nombres."}</p>
+        <span>Ballenas</span>
+        <strong>${escapeHtml(boardTitle)}</strong>
+        <p>${hasConfirmed ? "Movimientos con fuente y monto reportado." : `Flujo estimado en ${topTicker}: volumen, precio y direccion; no lo trato como compra confirmada.`}</p>
       </div>
       <div class="whale-flow-bars" aria-hidden="true">
         ${rows.length ? rows.slice(0, 6).map((row, index) => `<i style="height:${Math.max(18, Math.min(74, 28 + (numberOrNull(row.intensity) || index + 1) * 8))}px"></i>`).join("") : `<i></i><i></i><i></i>`}
@@ -2820,12 +3105,12 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
       <div class="whale-flow-summary">
         <span>Entradas ${escapeHtml(String(inflows))}</span>
         <span>Salidas ${escapeHtml(String(outflows))}</span>
-        <span>Valor confirmado ${escapeHtml(confirmedValue ? money(confirmedValue) : "No confirmado")}</span>
-        <span>Volumen vigilado ${escapeHtml(watchedVolume ? money(watchedVolume) : "No confirmado")}</span>
+        <span>Valor confirmado ${escapeHtml(confirmedValue ? money(confirmedValue) : "0")}</span>
+        <span>Volumen vigilado ${escapeHtml(watchedVolume ? money(watchedVolume) : "esperando FMP")}</span>
       </div>
     </section>
     <div class="compact-actions">
-      <button type="button" class="secondary-button small" data-toggle-search="whales">${appState.searchOpen.whales ? "Cerrar consulta" : "Consultar ballenas"}</button>
+      <button type="button" class="icon-action search-toggle" data-toggle-search="whales" aria-label="${appState.searchOpen.whales ? "Cerrar consulta" : "Consultar ballenas"}">${iconSvg("search")}</button>
     </div>
     ${appState.searchOpen.whales ? `
       <form class="search-card whale-search" id="money-flow-jarvis-form">
@@ -2834,7 +3119,7 @@ function whalesPanelMarkup(rows, hasConfirmed = false) {
       </form>
       <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
     ` : ""}
-    <div class="asset-list whales-list" id="whales-list">
+    <div class="asset-list whales-list investing-event-list" id="whales-list">
       ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("Sin ballenas confirmadas.", "Cuando FMP confirme entidad, monto y fecha, Genesis lo mostrara aqui sin inventar instituciones.")}
     </div>
   `;
@@ -2868,22 +3153,31 @@ function alertMarkup(item) {
   const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || priority;
   const tone = newsImpactTone(impact);
   const alertId = alertItemId(item);
+  const priceLabel = item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica");
+  const changeLabel = formatPercent(item.change_pct, "Sin dato");
   return `
-    <article class="whale-row feed-row alert-event tone-${tone}" data-alert-id="${escapeHtml(alertId)}">
+    <article class="whale-row feed-row alert-event investing-event-card tone-${tone}" data-alert-id="${escapeHtml(alertId)}">
       <button class="event-main" type="button" data-alert-id="${escapeHtml(alertId)}">
-      <div class="whale-topline">
+      <div class="whale-topline investing-event-topline">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
           <small>${escapeHtml(cleanCopy(item.title_es || item.title || item.event || item.status || "Alerta"))}</small>
         </div>
-        <span class="event-chip">${escapeHtml(priority)}</span>
+        <span class="quote-stack ${tone}">
+          <b>${escapeHtml(priceLabel)}</b>
+          <small>${escapeHtml(changeLabel)}</small>
+        </span>
       </div>
       <p>${escapeHtml(cleanCopy(item.summary_es || item.summary || item.message || item.note || "Revisar antes de operar."))}</p>
-      <div class="mini-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-      <div class="asset-meta">
+      <div class="signal-strip">
+        <span class="event-chip">${escapeHtml(priority)}</span>
+        <div class="mini-spark" aria-hidden="true">${miniSeriesBars(item.mini_series || [item.change_pct, item.relative_volume, item.signal_strength])}</div>
+        <strong>${escapeHtml(cleanCopy(item.confidence || "media"))}</strong>
+      </div>
+      <div class="asset-meta investing-meta">
         <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact || "Por confirmar"))}</span>
         <span>Precio: ${escapeHtml(item.price === null || item.price === undefined ? "No aplica a precio directo" : money(item.price, "No aplica a precio directo"))}</span>
-        <span>Cambio: ${escapeHtml(formatPercent(item.change_pct, "Sin dato"))}</span>
+        <span>Cambio: ${escapeHtml(changeLabel)}</span>
         <span>Volumen: ${escapeHtml(item.volume ? compactNumber(item.volume) : "Sin volumen")}</span>
         <span>Vol. rel: ${escapeHtml(item.relative_volume ? `${compactNumber(item.relative_volume)}x` : "Sin dato")}</span>
         <span>Volumen $: ${escapeHtml(money(item.dollar_volume, "Sin dato"))}</span>
@@ -3496,6 +3790,21 @@ function bindGlobalEvents() {
       return;
     }
 
+    const searchPick = event.target.closest("[data-search-pick]");
+    if (searchPick) {
+      event.preventDefault();
+      const ticker = normalizeTicker(searchPick.dataset.searchPick);
+      const mode = searchPick.dataset.searchMode || "tracking";
+      if (mode === "portfolio") appState.portfolioSearchQuery = ticker;
+      else appState.trackingSearchQuery = ticker;
+      try {
+        await searchMarket(ticker, mode);
+      } catch (error) {
+        toast(error.message, "error");
+      }
+      return;
+    }
+
     const marketAdd = event.target.closest("[data-market-add]");
     if (marketAdd) {
       event.preventDefault();
@@ -3596,6 +3905,13 @@ function initGenesisAppV3() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && (appState.activeScreen === "tracking" || appState.activeScreen === "portfolio" || appState.activeScreen === "asset-detail")) {
       refreshPortfolio({ render: true }).catch(() => {});
+    }
+    if (!document.hidden && appState.activeScreen === "news") {
+      loadNews({ silent: true }).catch(() => {});
+    }
+    if (!document.hidden && appState.activeScreen === "alerts") {
+      Promise.allSettled([refreshPortfolio({ render: false, force: true }), loadAlerts(), loadWhalesData()])
+        .then(() => renderAlertsScreen());
     }
   });
 }

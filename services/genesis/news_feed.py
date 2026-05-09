@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 from xml.etree import ElementTree
 
 import requests
@@ -23,8 +23,8 @@ _SOURCE_STATUS: dict[str, Any] = {}
 _NEWS_TTL_SECONDS = 15 * 60
 _OG_TTL_SECONDS = 30 * 60
 _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", "BTC-USD", "BZ=F"]
-_RSS_TIMEOUT_SECONDS = 1.2
-_MAX_OG_IMAGES_PER_BATCH = 4
+_RSS_TIMEOUT_SECONDS = 1.5
+_MAX_OG_IMAGES_PER_BATCH = 8
 _RSS_QUERIES = [
     "market today",
     "stock market today",
@@ -149,9 +149,12 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
         if not image_url and url and og_attempts < _MAX_OG_IMAGES_PER_BATCH:
             og_attempts += 1
             image_url = _fetch_og_image(url)
-        title_es = _spanish_title(title, tickers, _category(raw, tickers))
-        summary_es = _spanish_summary(summary)
         category = _category(raw, tickers)
+        title_es = _spanish_title(title, tickers, category)
+        summary_es = _spanish_summary(summary)
+        has_source_image = bool(image_url)
+        if not image_url:
+            image_url = _category_photo_url(title, category, tickers)
         item = {
             "id": _news_id(title, source, published_at.isoformat() if published_at else raw.get("publishedDate") or raw.get("date") or "", url),
             "title": title_es,
@@ -183,7 +186,7 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "what_to_watch_es": _watch_for_news(impact, tickers),
             "watch_points": [_watch_for_news(impact, tickers)],
             "language": "es",
-            "image_kind": "real" if image_url else "category_placeholder",
+            "image_kind": "real" if has_source_image else "related_photo",
             "provider": raw.get("provider") or raw.get("source_type") or ("fmp" if source == "FMP" else "rss"),
         }
         recency = _recency_score(published_at)
@@ -371,6 +374,10 @@ def _fetch_og_image(url: str) -> str:
             if not match:
                 match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']', body, re.I)
             image = html.unescape(match.group(1).strip()) if match else ""
+            if image and image.startswith("//"):
+                image = f"https:{image}"
+            elif image and not image.startswith(("http://", "https://")):
+                image = urljoin(text, image)
     except Exception:
         image = ""
     _OG_CACHE[text] = (now, image)
@@ -449,8 +456,26 @@ def _summary(raw: dict[str, Any], title: str) -> str:
 
 def _spanish_title(title: str, tickers: list[str], category: str) -> str:
     text = _strip_html(title)
-    text = re.sub(r"\s+-\s+(Reuters|CNBC|MarketWatch|Yahoo Finance|CoinDesk|CoinTelegraph|WSJ|Wall Street Journal)\s*$", "", text, flags=re.I)
+    text = re.sub(r"\s+-\s+(Reuters|CNBC|MarketWatch|Yahoo Finance|CoinDesk|CoinTelegraph|WSJ|Wall Street Journal|The Wall Street Journal|Investing News Network|Fortune|AP News|CBS News|LancasterOnline)\s*$", "", text, flags=re.I)
     replacements = (
+        (r"\bToday's Crypto News\b", "Noticias cripto de hoy"),
+        (r"\bCrypto News\b", "Noticias cripto"),
+        (r"\bCoinbase Cuts Jobs\b", "Coinbase recorta empleos"),
+        (r"\bStrategy's Bitcoin Shift\b", "giro de Strategy hacia Bitcoin"),
+        (r"\bending May\b", "cerrando mayo"),
+        (r"\bwould confirm\b", "confirmaria"),
+        (r"\bnew bull market\b", "nuevo mercado alcista"),
+        (r"\bbull market\b", "mercado alcista"),
+        (r"\bTom Lee says\b", "dice Tom Lee"),
+        (r"\bReclaims\b", "recupera"),
+        (r"\bstocks fall from their records\b", "acciones caen desde maximos"),
+        (r"\bfall from their records\b", "caen desde maximos"),
+        (r"\bfrom their records\b", "desde maximos"),
+        (r"\byo-yo\b", "oscilan"),
+        (r"\bremind the market that\b", "recuerdan al mercado que"),
+        (r"\bstill trade\b", "todavia cotizan"),
+        (r"\bFundamentals\b", "fundamentales"),
+        (r"\bbut\b", "pero"),
         (r"\bStock market today\b", "Mercado hoy"),
         (r"\bmarket today\b", "Mercado hoy"),
         (r"\bMarkets Rally\b", "mercados suben"),
@@ -625,13 +650,32 @@ def _asset_name(ticker: str) -> str:
     }.get(str(ticker or "").upper(), str(ticker or "").upper())
 
 
+def _category_photo_url(title: str, category: str, tickers: list[str]) -> str:
+    text = f"{title} {category} {' '.join(tickers)}".casefold()
+    if "trump" in text or "iran" in text or "geopolit" in text:
+        query = "politics,world,news"
+    elif "bitcoin" in text or "btc" in text or "crypto" in text:
+        query = "bitcoin,crypto,market"
+    elif "oil" in text or "brent" in text or "crude" in text or "petroleo" in text:
+        query = "oil,energy,market"
+    elif "nvidia" in text or "nvda" in text or "ai" in text:
+        query = "semiconductor,chip,technology"
+    elif "gold" in text or "oro" in text:
+        query = "gold,market"
+    elif "fed" in text or "inflation" in text or "rates" in text:
+        query = "federal-reserve,finance"
+    else:
+        query = "stock-market,trading,finance"
+    return f"https://source.unsplash.com/640x360/?{quote_plus(query)}"
+
+
 def _takeaway(title: str, impact: str, tickers: list[str]) -> str:
     asset = ", ".join(tickers[:3]) or "mercado"
     if impact == "bullish":
-        return f"Puede apoyar a {asset}, pero Genesis exige confirmacion de precio y volumen."
+        return f"La noticia apunta a presion positiva en {asset}; Genesis busca confirmacion con precio y volumen antes de subir conviccion."
     if impact == "bearish":
-        return f"Puede presionar a {asset}; conviene vigilar soporte y reaccion del volumen."
-    return f"Contexto relevante para {asset}; Genesis lo trata como catalizador neutral hasta confirmar reaccion."
+        return f"La noticia puede presionar a {asset}; vigila soporte, volumen y continuidad de la reaccion."
+    return f"La nota pone en foco a {asset}; Genesis revisa si el mercado confirma impacto con precio, volumen y noticias relacionadas."
 
 
 def _why_it_matters(impact: str, tickers: list[str]) -> str:
@@ -734,6 +778,10 @@ def _is_bad_news_title(title: object) -> bool:
         "quote & history",
         "quote and history",
         "company profile",
+        "weekly market commentary",
+        "market commentary",
+        "weekly mercado commentary",
+        "contexto relevante",
     )
     return any(token in text for token in blocked)
 
