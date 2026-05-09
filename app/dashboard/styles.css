@@ -208,13 +208,13 @@ input:focus-visible {
   height: 100%;
   transform: none;
   filter:
-    drop-shadow(0 0 10px rgba(82, 230, 164, 0.34))
-    drop-shadow(0 0 22px rgba(82, 230, 164, 0.18));
+    drop-shadow(0 0 5px rgba(82, 230, 164, 0.22))
+    drop-shadow(0 0 10px rgba(82, 230, 164, 0.1));
 }
 
 .nav-genesis.is-active {
   border-color: transparent;
-  background: radial-gradient(circle at 50% 32%, rgba(82, 230, 164, 0.15), transparent 58%);
+  background: transparent;
 }
 
 .nav-genesis.is-active .nav-label {
@@ -222,8 +222,7 @@ input:focus-visible {
 }
 
 .nav-genesis.is-active .nav-icon {
-  box-shadow:
-    0 0 26px rgba(82, 230, 164, 0.16);
+  box-shadow: none;
 }
 
 .screen-stack {
@@ -4357,8 +4356,8 @@ input:focus-visible {
   height: 100%;
   transform: none;
   filter:
-    drop-shadow(0 0 10px rgba(82, 230, 164, 0.38))
-    drop-shadow(0 0 24px rgba(82, 230, 164, 0.2));
+    drop-shadow(0 0 5px rgba(82, 230, 164, 0.24))
+    drop-shadow(0 0 10px rgba(82, 230, 164, 0.1));
 }
 
 .genesis-chat-head strong {
