@@ -144,15 +144,18 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("chart-image-visual", styles)
         self.assertIn("image-scan-panel", styles)
 
-    def test_genesis_brand_mark_replaces_plain_center_g(self) -> None:
+    def test_genesis_green_logo_replaces_plain_center_g(self) -> None:
         script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
         styles = Path("app/dashboard/styles.css").read_text(encoding="utf-8")
         markup = Path("app/dashboard/index.html").read_text(encoding="utf-8")
 
-        self.assertIn("function genesisMarkSvg", script)
+        self.assertIn("GENESIS_LOGO_SRC", script)
+        self.assertIn("function genesisLogoMarkup", script)
         self.assertIn("genesis-brand-lockup", script)
         self.assertIn("genesis-header-logo", styles)
-        self.assertIn("genesis-mark-svg", styles)
+        self.assertIn("genesis-logo-img", styles)
+        self.assertIn("genesis-logo-green.jpeg", markup)
+        self.assertIn("apple-touch-icon", markup)
         self.assertIn("genesis-nav-logo", markup)
         self.assertNotIn('class="nav-icon genesis-g" aria-hidden="true">G</span>', markup)
 

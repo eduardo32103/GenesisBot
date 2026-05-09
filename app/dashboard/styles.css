@@ -12,8 +12,10 @@
   --faint: #5f5f5f;
   --green: #62d998;
   --accent: #74deb0;
-  --brand-cream: #efeee7;
-  --brand-ink: #050505;
+  --brand-mint: #52e6a4;
+  --brand-mint-2: #0f6e4c;
+  --brand-glow: rgba(82, 230, 164, 0.34);
+  --brand-ink: #020504;
   --red: #ff6f67;
   --amber: #d6b36d;
   --info: #a8b0bb;
@@ -118,10 +120,10 @@ input:focus-visible {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 5px;
   padding: 10px 10px 14px;
-  border-top: 1px solid rgba(239, 238, 231, 0.12);
+  border-top: 1px solid rgba(82, 230, 164, 0.16);
   background:
-    radial-gradient(circle at 50% -22%, rgba(239, 238, 231, 0.12), transparent 42%),
-    linear-gradient(180deg, rgba(18, 18, 16, 0.96), rgba(0, 0, 0, 0.94));
+    radial-gradient(circle at 50% -22%, rgba(82, 230, 164, 0.13), transparent 42%),
+    linear-gradient(180deg, rgba(8, 18, 14, 0.97), rgba(0, 0, 0, 0.95));
   backdrop-filter: blur(22px);
 }
 
@@ -159,24 +161,13 @@ input:focus-visible {
   stroke-width: 1.8;
 }
 
-.genesis-mark-svg {
+.genesis-logo-img {
   display: block;
-  width: 1em;
-  height: 1em;
-  overflow: visible;
-}
-
-.genesis-mark-svg .genesis-mark-stroke {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 8;
-  stroke-linecap: square;
-  stroke-linejoin: miter;
-}
-
-.genesis-mark-svg .genesis-mark-fill {
-  fill: currentColor;
-  stroke: none;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  pointer-events: none;
 }
 
 .nav-label {
@@ -199,45 +190,45 @@ input:focus-visible {
 .nav-genesis .nav-icon {
   width: 46px;
   height: 46px;
-  border: 1px solid rgba(239, 238, 231, 0.38);
+  overflow: hidden;
+  border: 1px solid rgba(82, 230, 164, 0.46);
   border-radius: 17px;
-  color: var(--brand-ink);
   background:
-    radial-gradient(circle at 34% 20%, rgba(255, 255, 255, 0.74), transparent 28%),
-    linear-gradient(145deg, var(--brand-cream), #cfd7cc);
+    radial-gradient(circle at 36% 24%, rgba(82, 230, 164, 0.18), transparent 28%),
+    #020504;
   box-shadow:
     0 16px 36px rgba(0, 0, 0, 0.48),
-    0 0 0 7px rgba(239, 238, 231, 0.045),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    0 0 28px rgba(82, 230, 164, 0.26),
+    0 0 0 7px rgba(82, 230, 164, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .nav-genesis .genesis-g {
   font-size: 1rem;
 }
 
-.nav-genesis .nav-icon svg {
-  width: 31px;
-  height: 31px;
-  fill: none;
-  stroke: none;
+.nav-genesis .genesis-nav-logo {
+  width: 118%;
+  height: 118%;
+  transform: scale(1.04);
 }
 
 .nav-genesis.is-active {
-  border-color: rgba(239, 238, 231, 0.18);
+  border-color: rgba(82, 230, 164, 0.28);
   background:
-    linear-gradient(180deg, rgba(239, 238, 231, 0.12), rgba(239, 238, 231, 0.035));
+    linear-gradient(180deg, rgba(82, 230, 164, 0.13), rgba(82, 230, 164, 0.035));
 }
 
 .nav-genesis.is-active .nav-label {
-  color: var(--brand-cream);
+  color: #dfffea;
 }
 
 .nav-genesis.is-active .nav-icon {
   box-shadow:
     0 18px 38px rgba(0, 0, 0, 0.5),
-    0 0 26px rgba(116, 222, 176, 0.2),
-    0 0 0 7px rgba(239, 238, 231, 0.055),
-    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+    0 0 34px rgba(82, 230, 164, 0.34),
+    0 0 0 7px rgba(82, 230, 164, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
 .screen-stack {
@@ -895,7 +886,7 @@ input:focus-visible {
   z-index: 4;
   border-top: 0;
   background:
-    radial-gradient(circle at 52% 0%, rgba(239, 238, 231, 0.07), transparent 42%),
+    radial-gradient(circle at 52% 0%, rgba(82, 230, 164, 0.08), transparent 42%),
     linear-gradient(180deg, rgba(9, 9, 9, 0), rgba(9, 9, 9, 0.96) 24%),
     var(--shell);
   padding: 10px 0 8px;
@@ -908,11 +899,11 @@ input:focus-visible {
   gap: 8px;
   width: 100%;
   min-height: 48px;
-  border: 1px solid rgba(239, 238, 231, 0.16);
+  border: 1px solid rgba(82, 230, 164, 0.18);
   border-radius: 999px;
   padding: 5px;
   background:
-    radial-gradient(circle at 9% 0%, rgba(239, 238, 231, 0.1), transparent 44%),
+    radial-gradient(circle at 9% 0%, rgba(82, 230, 164, 0.12), transparent 44%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.035));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -1028,20 +1019,21 @@ input:focus-visible {
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
-  background: rgba(239, 238, 231, 0.1);
+  background: rgba(82, 230, 164, 0.08);
 }
 
 .chat-form .voice-button {
-  color: var(--brand-cream);
-  background: rgba(239, 238, 231, 0.065);
+  color: #dfffea;
+  background: rgba(82, 230, 164, 0.075);
 }
 
 .chat-form button[type="submit"] {
-  color: var(--brand-ink);
-  border-color: rgba(239, 238, 231, 0.34);
+  color: #02100a;
+  border-color: rgba(82, 230, 164, 0.48);
   background:
-    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.72), transparent 26%),
-    linear-gradient(145deg, var(--brand-cream), #cfd7cc);
+    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.42), transparent 26%),
+    linear-gradient(145deg, #72f4b8, #177c55 78%);
+  box-shadow: 0 0 22px rgba(82, 230, 164, 0.2);
 }
 
 .chat-form .voice-button.is-listening,
@@ -4358,21 +4350,23 @@ input:focus-visible {
   height: 42px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(239, 238, 231, 0.34);
+  overflow: hidden;
+  border: 1px solid rgba(82, 230, 164, 0.42);
   border-radius: 16px;
-  color: var(--brand-ink);
   background:
-    radial-gradient(circle at 32% 20%, rgba(255, 255, 255, 0.76), transparent 27%),
-    linear-gradient(145deg, var(--brand-cream), #cdd8cd);
+    radial-gradient(circle at 32% 20%, rgba(82, 230, 164, 0.2), transparent 27%),
+    #020504;
   box-shadow:
     0 14px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 6px rgba(239, 238, 231, 0.035),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    0 0 25px rgba(82, 230, 164, 0.22),
+    0 0 0 6px rgba(82, 230, 164, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
-.genesis-header-logo-svg {
-  width: 29px;
-  height: 29px;
+.genesis-header-logo-img {
+  width: 122%;
+  height: 122%;
+  transform: scale(1.04);
 }
 
 .genesis-chat-head strong {

@@ -1,6 +1,7 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
+const GENESIS_LOGO_SRC = "./assets/genesis-logo-green.jpeg";
 
 function initialChatMessage() {
   return {
@@ -724,15 +725,9 @@ function iconSvg(name) {
   return icons[name] || "";
 }
 
-function genesisMarkSvg(className = "") {
-  const classAttr = className ? ` ${className}` : "";
-  return `
-    <svg class="genesis-mark-svg${classAttr}" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-      <path class="genesis-mark-stroke" d="M47 14v28.5C47 54 39.4 61 28.4 61c-7.2 0-13.1-2.4-17.6-7.1"/>
-      <path class="genesis-mark-stroke" d="M46 31.8a18.6 18.6 0 1 1-5.7-13.4"/>
-      <path class="genesis-mark-fill" d="M21 36h7v12h-7zM31 30h7v18h-7zM41 23h7v25h-7z"/>
-    </svg>
-  `;
+function genesisLogoMarkup(className = "", alt = "") {
+  const classes = ["genesis-logo-img", className].filter(Boolean).join(" ");
+  return `<img class="${escapeHtml(classes)}" src="${GENESIS_LOGO_SRC}" alt="${escapeHtml(alt)}" decoding="async" loading="eager">`;
 }
 
 function chartCacheKey(ticker, range) {
@@ -1499,7 +1494,7 @@ function renderGenesisScreen() {
       <div class="genesis-conversation">
         <div class="genesis-chat-head">
           <div class="genesis-brand-lockup">
-            <span class="genesis-header-logo" aria-hidden="true">${genesisMarkSvg("genesis-header-logo-svg")}</span>
+            <span class="genesis-header-logo" aria-hidden="true">${genesisLogoMarkup("genesis-header-logo-img")}</span>
             <div>
               <strong>Genesis</strong>
               <span>Tu copiloto financiero con IA</span>
