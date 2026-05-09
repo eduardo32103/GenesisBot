@@ -50,6 +50,8 @@ class GenesisTickerParserTests(unittest.TestCase):
             "como estas": [],
             "que tal genesis": [],
             "todo bien": [],
+            "genesis mi novia esta enojada ayudame": [],
+            "que hicimos ayer": [],
             "que noticias afectan a mis activos": [],
             "dame una grafica de bno": ["BNO"],
             "compara meta vs nvda": ["META", "NVDA"],
@@ -161,9 +163,13 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("oye como esta el mercado el dia de hoy").intent, "market_overview")
         self.assertEqual(router.route("como estuvo el mercado el viernes pasado").intent, "market_overview")
         self.assertEqual(router.route("que aprendiste de mis consultas recientes").intent, "memory_query")
+        self.assertEqual(router.route("que hicimos ayer").intent, "memory_query")
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
         self.assertEqual(router.route("dame una grafica de nvda con sma 50").intent, "chart_request")
         self.assertEqual(router.route("que noticias afectan mis activos").intent, "macro_news")
+        personal_route = router.route("genesis mi novia esta enojada ayudame")
+        self.assertEqual(personal_route.intent, "general_question")
+        self.assertEqual(personal_route.tickers, [])
 
     def test_app_config_exposes_genesis_intelligence_endpoints(self) -> None:
         app_config = create_app()
@@ -190,6 +196,22 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(payload["response_type"], "general_assistant")
         self.assertEqual(payload["tickers"], [])
         self.assertNotIn("ESTAS", json.dumps(payload))
+
+    def test_personal_support_question_is_not_ticker_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("genesis mi novia esta enojada ayudame", memory=store)
+            events = store.get_recent_events(5, "personal_support")
+
+        rendered = json.dumps(payload)
+        self.assertEqual(payload["intent"], "general")
+        self.assertEqual(payload["response_type"], "general_assistant")
+        self.assertEqual(payload["kind"], "general_assistant")
+        self.assertEqual(payload["structured"]["kind"], "general_assistant")
+        self.assertEqual(payload["tickers"], [])
+        self.assertTrue(events)
+        self.assertNotIn("NFT Limited", rendered)
+        self.assertNotIn('"MI"', rendered)
 
     def test_market_day_question_is_not_asset_analysis(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

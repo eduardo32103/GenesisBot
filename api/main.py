@@ -214,6 +214,37 @@ def _is_casual_genesis_prompt(message: str) -> bool:
             " estas funcionando ",
             " buenas tardes ",
             " buenas noches ",
+            " mi novia ",
+            " mi novio ",
+            " mi esposa ",
+            " mi esposo ",
+            " mi pareja ",
+            " enojada ",
+            " enojado ",
+            " molesta ",
+            " molesto ",
+            " necesito consejo ",
+            " problema personal ",
+        )
+    )
+
+
+def _is_personal_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " mi novia ",
+            " mi novio ",
+            " mi esposa ",
+            " mi esposo ",
+            " mi pareja ",
+            " enojada ",
+            " enojado ",
+            " molesta ",
+            " molesto ",
+            " necesito consejo ",
+            " problema personal ",
         )
     )
 
@@ -245,6 +276,7 @@ def _is_memory_genesis_prompt(message: str) -> bool:
             " que aprendiste ",
             " aprendiste de ",
             " que recuerdas ",
+            " que hicimos ",
             " historial de ",
             " memoria de ",
             " mis consultas recientes ",
@@ -257,17 +289,33 @@ def _is_memory_genesis_prompt(message: str) -> bool:
 def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     message = _genesis_message_from_body(body)
     if _is_casual_genesis_prompt(message):
+        personal = _is_personal_genesis_prompt(message)
+        answer = (
+            "Te escucho. Esto es una pregunta cotidiana, no un ticker. "
+            "Genesis puede responder como asistente general y solo usa datos financieros cuando realmente pides mercado o activos."
+        ) if personal else (
+            "Estoy activo y listo. Puedo leer mercado, noticias, alertas, ballenas, "
+            "cartera o un activo sin convertir una frase normal en ticker."
+        )
         return {
             "ok": True,
             "status": "genesis_intelligence_ready",
-            "intent": "greeting",
+            "intent": "general" if personal else "greeting",
             "response_type": "general_assistant",
-            "answer": (
-                "Estoy activo y listo. Puedo leer mercado, noticias, alertas, ballenas, "
-                "cartera o un activo sin convertir una frase normal en ticker."
-            ),
+            "answer": answer,
             "tickers": [],
             "kind": "general_assistant",
+            "structured": {
+                "kind": "general_assistant",
+                "title": "Modo humano" if personal else "Genesis",
+                "mode": "Vida diaria" if personal else "Asistente completo",
+                "summary": answer,
+                "confidence": 0.72,
+                "sections": [
+                    {"title": "Lectura rapida", "bullets": [answer]},
+                    {"title": "Siguiente paso", "bullets": ["Cuentame el contexto y te doy una respuesta clara.", "Si es mercado, valido FMP/backend antes de dar cifras."]},
+                ],
+            },
         }
     if _is_market_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
         try:

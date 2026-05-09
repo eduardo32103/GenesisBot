@@ -1455,7 +1455,7 @@ function chatHistoryPanelMarkup() {
         updated_at: "",
       }));
   return `
-    <div class="chat-history-panel">
+    <div class="chat-history-panel" data-chat-history-panel>
       ${history.length ? history.map((conversation) => `
         <button type="button" data-chat-history-pick="${escapeHtml(conversation.conversation_id || appState.currentConversationId)}">
           <small>${escapeHtml(formatDate(conversation.updated_at))}</small>
@@ -1507,6 +1507,7 @@ function genesisVisualFromPayload(payload, answer = "") {
     return whaleFlowVisual(payload, answer);
   }
   if (intent === "memory_query" || payload?.structured?.kind === "memory_digest") return memoryDigestVisual(payload, answer);
+  if (responseType === "general_assistant" && payload?.structured?.kind === "general_assistant") return generalAssistantVisual(payload, answer);
   if (intent === "portfolio_summary") return summaryVisual("Cartera", answer);
   if (intent === "tracking_summary") return summaryVisual("Seguimiento", answer);
   if (intent === "image_chart_analysis") return summaryVisual("Imagen", answer);
@@ -1701,6 +1702,27 @@ function summaryVisual(title, answer = "") {
   };
 }
 
+function generalAssistantVisual(payload, answer = "") {
+  const structured = payload?.structured || {};
+  const sections = Array.isArray(structured.sections) ? structured.sections : [];
+  const lines = cleanSentenceList(structured.summary || answer, 5);
+  return {
+    kind: "general_assistant",
+    title: structured.title || "Genesis",
+    mode: structured.mode || "Asistente completo",
+    thesis: lines[0] || "Genesis razona primero la intencion: vida diaria, memoria, mercado o activo.",
+    confidence: numberOrNull(structured.confidence) ?? 0.72,
+    sections: sections.length
+      ? sections.map((section) => ({
+          title: cleanCopy(section?.title || "Lectura"),
+          bullets: Array.isArray(section?.bullets) ? section.bullets.map(stripMarkdownCopy).filter(Boolean).slice(0, 4) : [],
+        })).filter((section) => section.bullets.length)
+      : [
+          { title: "Siguiente paso", bullets: lines.slice(1, 4) },
+        ],
+  };
+}
+
 function memoryDigestVisual(payload, answer = "") {
   const structured = payload?.structured || {};
   const memory = payload?.memory_summary || {};
@@ -1795,6 +1817,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "alerts_digest") return alertsDigestVisualMarkup(visual);
   if (visual.kind === "whale_flow") return whaleFlowVisualMarkup(visual);
   if (visual.kind === "memory_digest") return memoryDigestVisualMarkup(visual);
+  if (visual.kind === "general_assistant") return generalAssistantVisualMarkup(visual);
   if (visual.kind === "feed") return feedVisualMarkup(visual);
   return summaryVisualMarkup(visual);
 }
@@ -2240,6 +2263,37 @@ function memoryDigestVisualMarkup(visual) {
       <div class="scenario-card">
         <strong>Como se usara</strong>
         <p>La memoria apoya contexto historico; los precios, volumenes y cambios siguen viniendo de FMP/backend antes de cualquier lectura operativa.</p>
+      </div>
+    </section>
+  `;
+}
+
+function generalAssistantVisualMarkup(visual) {
+  const confidencePct = Math.round(Math.max(0, Math.min(1, visual.confidence || 0)) * 100);
+  const sections = Array.isArray(visual.sections) ? visual.sections.slice(0, 3) : [];
+  return `
+    <section class="visual-response general-assistant-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">${escapeHtml(visual.mode || "Genesis")}</span>
+          <strong>${escapeHtml(visual.title || "Genesis")}</strong>
+        </div>
+        <span class="conviction-pill bullish">Humano</span>
+      </div>
+      <div class="assistant-core">
+        <div class="assistant-orb" style="--meter:${confidencePct}%">
+          <span>G</span>
+          <small>${escapeHtml(String(confidencePct))}%</small>
+        </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis || "Te escucho y separo conversacion cotidiana de analisis financiero.")}</p>
+      </div>
+      <div class="assistant-step-grid">
+        ${sections.map((section) => `
+          <article>
+            <strong>${escapeHtml(section.title || "Paso")}</strong>
+            ${(section.bullets || []).slice(0, 4).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+          </article>
+        `).join("")}
       </div>
     </section>
   `;
@@ -4960,6 +5014,18 @@ function bindGlobalEvents() {
     if (historyPick) {
       event.preventDefault();
       openGenesisConversation(historyPick.dataset.chatHistoryPick);
+      return;
+    }
+
+    if (
+      appState.chatHistoryOpen
+      && appState.activeScreen === "genesis"
+      && !event.target.closest("[data-chat-history-panel]")
+      && !event.target.closest("[data-chat-history]")
+    ) {
+      event.preventDefault();
+      appState.chatHistoryOpen = false;
+      renderGenesisScreen();
       return;
     }
 

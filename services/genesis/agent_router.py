@@ -46,6 +46,8 @@ class AgentRouter:
         chart = chart or {}
         if text in {"hola", "buen dia", "buenos dias", "buenas", "hey", "hello"}:
             return "greeting"
+        if _mentions_personal_support(text):
+            return "general_question"
         if _mentions_casual_chat(text):
             return "greeting"
         if detect_time_request(message):
@@ -141,6 +143,32 @@ def _mentions_casual_chat(text: str) -> bool:
     )
 
 
+def _mentions_personal_support(text: str) -> bool:
+    personal_terms = (
+        "mi novia",
+        "mi novio",
+        "mi esposa",
+        "mi esposo",
+        "mi pareja",
+        "relacion",
+        "enojada",
+        "enojado",
+        "molesta",
+        "molesto",
+        "triste",
+        "ansioso",
+        "ansiosa",
+        "necesito consejo",
+        "dame consejo",
+        "problema personal",
+        "que le digo",
+        "como le digo",
+        "disculparme",
+        "pedir perdon",
+    )
+    return any(token in text for token in personal_terms)
+
+
 def _mentions_portfolio(text: str) -> bool:
     return any(token in text for token in ("cartera", "portfolio", "posiciones", "paper"))
 
@@ -150,7 +178,7 @@ def _mentions_tracking(text: str) -> bool:
 
 
 def _mentions_memory(text: str) -> bool:
-    return any(token in text for token in ("recuerdame", "que vimos", "que sabes", "aprendiste", "consultas recientes", "activos reviso"))
+    return any(token in text for token in ("recuerdame", "que vimos", "que hicimos", "que sabes", "aprendiste", "consultas recientes", "activos reviso"))
 
 
 def _mentions_whales(text: str) -> bool:

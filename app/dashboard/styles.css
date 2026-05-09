@@ -585,12 +585,12 @@ input:focus-visible {
 
 .jarvis-asset-core {
   display: grid;
-  grid-template-columns: 94px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: stretch;
   border: 1px solid rgba(123, 224, 173, 0.13);
   border-radius: 16px;
-  padding: 10px;
+  padding: 12px;
   background:
     radial-gradient(circle at 20% 10%, rgba(123, 224, 173, 0.16), transparent 38%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018));
@@ -605,9 +605,10 @@ input:focus-visible {
 
 .jarvis-orb {
   position: relative;
-  width: 82px;
+  width: 72px;
   aspect-ratio: 1;
   display: grid;
+  justify-self: center;
   place-items: center;
   border-radius: 50%;
   background:
@@ -631,12 +632,12 @@ input:focus-visible {
 
 .jarvis-orb b {
   color: var(--text);
-  font-size: 1.08rem;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
 
 .jarvis-orb small {
-  margin-top: 22px;
+  margin-top: 20px;
   color: var(--faint);
   font-size: 0.56rem;
   text-transform: uppercase;
@@ -644,14 +645,20 @@ input:focus-visible {
 
 .holo-metrics {
   display: grid;
-  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .holo-meter {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  align-items: start;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.026);
 }
 
 .holo-meter small {
@@ -665,14 +672,17 @@ input:focus-visible {
   min-width: 0;
   overflow: hidden;
   color: var(--soft);
-  font-size: 0.74rem;
+  font-size: 0.76rem;
+  line-height: 1.16;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .holo-meter i {
-  grid-column: 1 / -1;
-  height: 5px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.075);
@@ -4046,6 +4056,86 @@ input:focus-visible {
   background:
     radial-gradient(circle at 18% 22%, rgba(123, 224, 173, 0.12), transparent 32%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.018));
+}
+
+.general-assistant-visual {
+  background:
+    radial-gradient(circle at 78% 10%, rgba(123, 224, 173, 0.16), transparent 30%),
+    radial-gradient(circle at 12% 24%, rgba(83, 144, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.018));
+}
+
+.assistant-core {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(123, 224, 173, 0.14);
+  border-radius: 16px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.assistant-orb {
+  position: relative;
+  width: 66px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    conic-gradient(from -90deg, rgba(123, 224, 173, 0.92) var(--meter), rgba(255, 255, 255, 0.08) 0),
+    radial-gradient(circle, #050505 54%, rgba(255, 255, 255, 0.09) 56%);
+  box-shadow: 0 0 24px rgba(123, 224, 173, 0.16);
+}
+
+.assistant-orb span {
+  width: 43px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  color: var(--text);
+  background: #050505;
+  font-weight: 950;
+}
+
+.assistant-orb small {
+  position: absolute;
+  bottom: -11px;
+  color: var(--faint);
+  font-size: 0.56rem;
+  font-weight: 850;
+}
+
+.assistant-step-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-step-grid article {
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.026);
+}
+
+.assistant-step-grid strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.assistant-step-grid p {
+  margin: 0 0 5px;
+  color: var(--soft);
+  line-height: 1.42;
+  font-size: 0.78rem;
+}
+
+.assistant-step-grid p:last-child {
+  margin-bottom: 0;
 }
 
 .memory-orbit {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from typing import Any
 
 from services.genesis.agent_router import AgentRouter
@@ -173,9 +174,123 @@ def route_message(
         extra = {"quote": quote, "technical": technical, "structured": structured, "kind": structured["kind"]}
         return _payload(route.intent, _ticker_answer(explicit_ticker, quote, technical), tickers or [explicit_ticker], extra=extra, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
-    answer = composer.general()
-    store.save_event("general_question", {"message": clean}, "genesis", "media")
-    return _payload("general", answer, tickers, memory=store, prompt=clean, conversation_id=clean_conversation_id)
+    answer = _general_assistant_answer(clean, composer)
+    if _is_personal_support_prompt(clean):
+        store.save_learned_context(
+            "user_context:personal_support",
+            {"last_topic": "relationship_support", "last_message": clean[:360]},
+            "conversation",
+            "media",
+        )
+        store.save_event("personal_support", {"message": clean, "mode": "general_assistant"}, "genesis", "media")
+    else:
+        store.save_event("general_question", {"message": clean}, "genesis", "media")
+    structured = _general_assistant_structured(clean, answer)
+    return _payload(
+        "general",
+        answer,
+        [],
+        extra={"structured": structured, "kind": structured["kind"]},
+        memory=store,
+        prompt=clean,
+        conversation_id=clean_conversation_id,
+    )
+
+
+def _general_assistant_answer(message: str, composer: Any) -> str:
+    clean = str(message or "").strip()
+    if _is_personal_support_prompt(clean):
+        return (
+            "Claro. Esto es una pregunta cotidiana, no un ticker. Te ayudo como Genesis humano: primero baja la temperatura, no intentes ganar la discusion.\n"
+            "Mensaje sugerido: 'Oye, me importa como te sientes. Quiero entender que paso y arreglarlo contigo, no pelear. Si hice algo que te dolio, quiero escucharlo bien.'\n"
+            "Hazlo corto, calmado y sin justificarte de entrada. Pregunta que necesita de ti ahora: espacio, disculpa concreta o hablarlo en persona.\n"
+            "Si me cuentas que paso, te ayudo a escribir un mensaje exacto con el tono correcto."
+        )
+    if clean:
+        return (
+            "Te sigo. Puedo razonar esa pregunta como asistente general o convertirla en analisis financiero si me das un activo, noticia, alerta o cartera.\n"
+            "Si es algo personal, te respondo natural. Si es mercado, uso FMP/backend y separo datos confirmados de inferencias.\n"
+            "Dime el contexto y te lo ordeno en lectura clara, siguiente paso y riesgos."
+        )
+    return composer.general()
+
+
+def _general_assistant_structured(message: str, answer: str) -> dict[str, Any]:
+    personal = _is_personal_support_prompt(message)
+    if personal:
+        title = "Modo humano"
+        mode = "Vida diaria"
+        confidence = 0.82
+        steps = [
+            "Bajar tension antes de explicar.",
+            "Validar como se siente la otra persona.",
+            "Hacer una pregunta concreta y escuchar.",
+            "Responder sin defenderte de inmediato.",
+        ]
+        watch = [
+            "No mandar parrafos largos si esta molesta.",
+            "No convertir una disculpa en debate.",
+            "Elegir llamada o persona si el texto escala.",
+        ]
+    else:
+        title = "Genesis"
+        mode = "Asistente completo"
+        confidence = 0.72
+        steps = [
+            "Detectar si la pregunta es vida diaria, memoria, mercado o activo.",
+            "Usar datos verificados solo cuando pidas cifras financieras.",
+            "Guardar contexto util sin secretos.",
+        ]
+        watch = [
+            "Si pides precio, Genesis valida FMP/backend.",
+            "Si pides memoria, usa conversaciones y eventos guardados.",
+        ]
+    return {
+        "kind": "general_assistant",
+        "title": title,
+        "mode": mode,
+        "summary": answer,
+        "confidence": confidence,
+        "sections": [
+            {"title": "Lectura rapida", "bullets": [answer.splitlines()[0] if answer else "Estoy listo."]},
+            {"title": "Siguiente paso", "bullets": steps},
+            {"title": "Que cuidar", "bullets": watch},
+        ],
+    }
+
+
+def _is_personal_support_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " mi novia ",
+            " mi novio ",
+            " mi esposa ",
+            " mi esposo ",
+            " mi pareja ",
+            " relacion ",
+            " enojada ",
+            " enojado ",
+            " molesta ",
+            " molesto ",
+            " triste ",
+            " ansioso ",
+            " ansiosa ",
+            " necesito consejo ",
+            " dame consejo ",
+            " problema personal ",
+            " que le digo ",
+            " como le digo ",
+            " disculparme ",
+            " pedir perdon ",
+        )
+    )
+
+
+def _fold_prompt(value: object) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or "").casefold())
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
 
 
 def _payload(
