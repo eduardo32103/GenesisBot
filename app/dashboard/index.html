@@ -113,20 +113,20 @@
     </section>
   </aside>
 
-  <aside class="asset-sheet" id="portfolio-close-modal" hidden>
-    <div class="sheet-backdrop" data-close-paper-cancel></div>
-    <form class="sheet-card sheet-form" id="portfolio-close-form">
-      <button class="sheet-close" type="button" id="portfolio-close-modal-close" data-close-paper-cancel>Cerrar</button>
-      <span class="app-kicker">Paper</span>
-      <h2 id="portfolio-close-title">Cerrar posicion paper</h2>
-      <input id="portfolio-close-ticker" name="ticker" type="hidden">
-      <p class="sheet-total" id="portfolio-close-summary">Sin posicion seleccionada.</p>
-      <div class="sheet-actions">
-        <button class="secondary-button" type="button" id="portfolio-close-cancel" data-close-paper-cancel>Cancelar</button>
-        <button class="danger-button" type="submit">Cerrar paper</button>
-      </div>
-    </form>
-  </aside>
+    <aside class="asset-sheet" id="portfolio-close-modal" hidden>
+      <div class="sheet-backdrop" data-close-paper-cancel></div>
+      <form class="sheet-card sheet-form" id="portfolio-close-form">
+        <button class="sheet-close icon-only-close" type="button" id="portfolio-close-modal-close" data-close-paper-cancel aria-label="Cancelar">×</button>
+        <span class="app-kicker">Paper</span>
+        <h2 id="portfolio-close-title">Cerrar posicion paper</h2>
+        <input id="portfolio-close-ticker" name="ticker" type="hidden">
+        <p class="sheet-total" id="portfolio-close-summary">Sin posicion seleccionada.</p>
+        <div class="sheet-actions minimal-sheet-actions">
+          <button class="ghost-action" type="button" id="portfolio-close-cancel" data-close-paper-cancel>Cancelar</button>
+          <button class="delete-icon-action" type="submit" aria-label="Cerrar paper">×</button>
+        </div>
+      </form>
+    </aside>
 
   <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
   <script src="./app.js?v=genesis-phase90-render-target"></script>

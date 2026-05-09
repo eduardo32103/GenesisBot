@@ -2654,6 +2654,18 @@ function renderNewsScreen() {
   `;
 }
 
+function scrollNewsScreenToTop() {
+  const root = document.getElementById("view-news");
+  if (!root) return;
+  requestAnimationFrame(() => {
+    if (typeof root.scrollTo === "function") {
+      root.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    root.scrollTop = 0;
+  });
+}
+
 function sourceStatusChips(status = {}) {
   const fmp = status.fmp_market_news || status.fmp || {};
   const rss = status.rss_news || {};
@@ -4881,6 +4893,7 @@ function bindGlobalEvents() {
       event.preventDefault();
       appState.newsFilter = newsFilter.dataset.newsFilter || "important";
       renderNewsScreen();
+      scrollNewsScreenToTop();
       return;
     }
 
