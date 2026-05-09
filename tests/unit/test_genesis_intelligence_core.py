@@ -47,6 +47,7 @@ class GenesisTickerParserTests(unittest.TestCase):
             "oye como esta el mercado el dia de hoy": [],
             "como estuvo el mercado el viernes pasado": [],
             "que estan haciendo las ballenas": [],
+            "dime que esta pasando con las ballenas": [],
             "como estas": [],
             "que tal genesis": [],
             "todo bien": [],
@@ -167,6 +168,8 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
         self.assertEqual(router.route("dame una grafica de nvda con sma 50").intent, "chart_request")
         self.assertEqual(router.route("que noticias afectan mis activos").intent, "macro_news")
+        self.assertEqual(router.route("dime que esta pasando con las ballenas").intent, "whale_activity")
+        self.assertEqual(router.route("dime que esta pasando con las ballenas").tickers, [])
         personal_route = router.route("genesis mi novia esta enojada ayudame")
         self.assertEqual(personal_route.intent, "general_question")
         self.assertEqual(personal_route.tickers, [])

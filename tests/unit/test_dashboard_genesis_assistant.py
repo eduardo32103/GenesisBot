@@ -48,6 +48,35 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["tickers"], [])
         self.assertNotIn("ESTAS", json.dumps(fixed))
 
+    @patch("api.main.ask_genesis")
+    def test_local_proxy_corrects_whale_prompt_before_ui(self, mock_ask) -> None:
+        mock_ask.return_value = {
+            "ok": True,
+            "intent": "whale_activity",
+            "response_type": "whale_flow",
+            "tickers": [],
+            "answer": "Genesis resume flujo institucional sin inventar entidad.",
+            "kind": "whale_flow",
+        }
+        stale_payload = {
+            "intent": "ticker_analysis",
+            "response_type": "asset_analysis",
+            "tickers": ["DIME"],
+            "answer": "DIME tiene precio confirmado.",
+        }
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "dime que esta pasando con las ballenas", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "whale_activity")
+        self.assertEqual(fixed["response_type"], "whale_flow")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertNotIn("DIME", json.dumps(fixed))
+
     def test_genesis_answer_is_local_and_conservative(self) -> None:
         payload = get_genesis_answer("que esta pasando")
 

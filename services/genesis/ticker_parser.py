@@ -49,6 +49,7 @@ _STOPWORDS = {
     "DIARIO",
     "DICE",
     "DICEN",
+    "DIME",
     "DINERO",
     "DONDE",
     "EL",

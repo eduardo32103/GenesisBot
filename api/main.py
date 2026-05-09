@@ -286,6 +286,20 @@ def _is_memory_genesis_prompt(message: str) -> bool:
     )
 
 
+def _is_whale_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " ballena ",
+            " ballenas ",
+            " smart money ",
+            " dinero grande ",
+            " flujo institucional ",
+        )
+    )
+
+
 def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     message = _genesis_message_from_body(body)
     if _is_casual_genesis_prompt(message):
@@ -317,6 +331,19 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 ],
             },
         }
+    if _is_whale_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
+        try:
+            local = ask_genesis(
+                message,
+                context=str(body.get("context") or "general"),
+                ticker="",
+                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                conversation_id=str(body.get("conversation_id") or "default"),
+            )
+            if isinstance(local, dict) and local.get("intent") == "whale_activity":
+                return local
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local whale prompt correction failed", exc_info=True)
     if _is_market_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
         try:
             local = ask_genesis(
@@ -724,6 +751,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             _is_casual_genesis_prompt(_genesis_message_from_body(body))
             or _is_market_genesis_prompt(_genesis_message_from_body(body))
             or _is_memory_genesis_prompt(_genesis_message_from_body(body))
+            or _is_whale_genesis_prompt(_genesis_message_from_body(body))
         ):
             result = ask_genesis(
                 _genesis_message_from_body(body),
