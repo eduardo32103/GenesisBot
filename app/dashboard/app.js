@@ -73,6 +73,16 @@ const REFRESH_MS = 15000;
 const MARKET_FEED_REFRESH_MS = 60000;
 const CHART_RANGES = ["1D", "1W", "1M", "1Y", "5Y", "MAX"];
 const MONEY_COLORS = ["#7be0ad", "#91a7ff", "#efbd6f", "#ec7f77", "#7fd9df", "#d7c27f", "#b7c5d9"];
+const NEWS_FALLBACK_IMAGES = {
+  market: "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=640&q=80",
+  macro: "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?auto=format&fit=crop&w=640&q=80",
+  crypto: "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?auto=format&fit=crop&w=640&q=80",
+  commodity: "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?auto=format&fit=crop&w=640&q=80",
+  geopolitics: "https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?auto=format&fit=crop&w=640&q=80",
+  earnings: "https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=640&q=80",
+  tech: "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=640&q=80",
+  gold: "https://images.unsplash.com/photo-1610375461246-83df859d849d?auto=format&fit=crop&w=640&q=80",
+};
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -185,19 +195,21 @@ function itemValue(item) {
 
 function itemDailyPct(item) {
   const explicit = numberOrNull(item?.daily_change_pct ?? item?.change_pct ?? item?.percent_change ?? item?.changesPercentage);
-  if (explicit !== null) return explicit;
   const price = itemPrice(item);
   const previous = positiveOrNull(item?.previous_close ?? item?.previousClose ?? item?.prev_close);
+  if (explicit !== null && explicit !== 0) return explicit;
   if (price !== null && previous !== null && previous > 0) return ((price - previous) / previous) * 100;
+  if (explicit !== null) return explicit;
   return null;
 }
 
 function itemDailyUsd(item) {
   const explicit = numberOrNull(item?.daily_change ?? item?.change ?? item?.change_usd);
-  if (explicit !== null) return explicit;
   const price = itemPrice(item);
   const previous = positiveOrNull(item?.previous_close ?? item?.previousClose ?? item?.prev_close);
+  if (explicit !== null && explicit !== 0) return explicit;
   if (price !== null && previous !== null) return price - previous;
+  if (explicit !== null) return explicit;
   return null;
 }
 
@@ -1654,7 +1666,7 @@ function newsBriefVisualMarkup(visual) {
           return `
             <article class="chat-news-card">
               <span class="chat-news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
-                <img src="${escapeHtml(image)}" alt="">
+                ${newsImageTag(row)}
               </span>
               <div>
                 <strong>${escapeHtml(newsDisplayTitle(row))}</strong>
@@ -1869,6 +1881,16 @@ async function submitGenesisQuestion(event) {
     message.text = chartReading(payload);
     renderGenesisScreen();
     return;
+  }
+  const normalizedQuestion = question.toLowerCase();
+  if (normalizedQuestion.includes("noticia")) {
+    await loadNews({ silent: true }).catch(() => null);
+  }
+  if (normalizedQuestion.includes("alert")) {
+    await loadAlerts().catch(() => null);
+  }
+  if (normalizedQuestion.includes("ballena") || normalizedQuestion.includes("smart money")) {
+    await loadWhalesData().catch(() => null);
   }
   try {
     const payload = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId });
@@ -2090,7 +2112,8 @@ function filteredNewsItems(items = []) {
   const filter = appState.newsFilter || "important";
   if (filter === "mine") {
     const focus = new Set(currentFocusAssets().map(itemTicker).filter(Boolean));
-    return items.filter((item) => (item.assets || item.tickers || []).some((ticker) => focus.has(normalizeTicker(ticker))));
+    const mine = items.filter((item) => (item.assets || item.tickers || []).some((ticker) => focus.has(normalizeTicker(ticker))));
+    return mine.length ? mine : items;
   }
   if (filter === "global") {
     const focus = new Set(currentFocusAssets().map(itemTicker).filter(Boolean));
@@ -2194,8 +2217,27 @@ function newsCategoryPhotoQuery(item = {}) {
 
 function newsImageForItem(item = {}) {
   const image = item.imageUrl || item.image_url || item.thumbnail_url || item.thumbnail || item.image || "";
-  if (String(image).trim()) return image;
-  return `https://source.unsplash.com/640x360/?${encodeURIComponent(newsCategoryPhotoQuery(item))}`;
+  const cleaned = String(image || "").trim();
+  if (cleaned && !cleaned.includes("source.unsplash.com")) return cleaned;
+  return newsFallbackImageForItem(item);
+}
+
+function newsFallbackImageForItem(item = {}) {
+  const text = `${item.title || ""} ${item.category || ""} ${(item.assets || item.tickers || []).join(" ")}`.toLowerCase();
+  if (text.includes("bitcoin") || text.includes("btc") || text.includes("crypto")) return NEWS_FALLBACK_IMAGES.crypto;
+  if (text.includes("oil") || text.includes("brent") || text.includes("crude") || text.includes("petroleo")) return NEWS_FALLBACK_IMAGES.commodity;
+  if (text.includes("gold") || text.includes("oro")) return NEWS_FALLBACK_IMAGES.gold;
+  if (text.includes("nvidia") || text.includes("nvda") || text.includes("chip") || text.includes("ai")) return NEWS_FALLBACK_IMAGES.tech;
+  if (text.includes("fed") || text.includes("inflation") || text.includes("rates") || text.includes("macro")) return NEWS_FALLBACK_IMAGES.macro;
+  if (text.includes("trump") || text.includes("iran") || text.includes("geopolit")) return NEWS_FALLBACK_IMAGES.geopolitics;
+  return NEWS_FALLBACK_IMAGES.market;
+}
+
+function newsImageTag(item = {}, className = "") {
+  const image = newsImageForItem(item);
+  const fallback = newsFallbackImageForItem(item);
+  const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
+  return `<img${classAttr} src="${escapeHtml(image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${escapeHtml(fallback)}';">`;
 }
 
 function newsItemId(item) {
@@ -2236,7 +2278,7 @@ function newsCardMarkup(item) {
     <article class="news-card investing-news-card" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
       <button class="news-card-main" type="button" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
         <span class="news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
-          <img src="${escapeHtml(image)}" alt="">
+          ${newsImageTag(item)}
         </span>
       <div class="news-card-copy">
         <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))} · ${escapeHtml(cleanCopy(item.source || "Fuente"))}</span>
@@ -2297,7 +2339,7 @@ function openNewsDetail(newsId) {
   const watchPoints = Array.isArray(item.watchPoints) ? item.watchPoints.filter(Boolean).slice(0, 4) : [];
   body.innerHTML = `
     <section class="sheet-hero news-hero">
-      <img class="news-detail-image" src="${escapeHtml(image)}" alt="">
+      ${newsImageTag(item, "news-detail-image")}
       <div>
         <span class="app-kicker">${escapeHtml(cleanCopy(item.category || "Noticias"))}</span>
         <h2>${escapeHtml(newsDisplayTitle(item))}</h2>
@@ -2687,8 +2729,10 @@ function extractWhaleRows(causal, detection, learned = appState.whalesSnapshot?.
     const identified = Boolean(item.whale_identified || whale.identified || whale.entity);
     const relativeVolume = numberOrNull(item.relative_volume ?? item.relativeVolume ?? item.volume_ratio ?? item.intensity);
     const asset = findAsset(ticker) || {};
-    const currentPrice = numberOrNull(item.current_price ?? item.price ?? asset.current_price ?? asset.price);
+    const currentPrice = numberOrNull(item.current_price ?? item.price ?? asset.current_price ?? asset.price ?? asset.reference_price);
     const volume = numberOrNull(item.volume ?? asset.volume);
+    const avgVolume = numberOrNull(item.avg_volume ?? asset.avg_volume ?? asset.average_volume);
+    const computedRelativeVolume = relativeVolume ?? (avgVolume && volume ? volume / avgVolume : null);
     const dollarVolume = numberOrNull(item.dollar_volume ?? item.dollarVolume) ?? (currentPrice !== null && volume !== null ? currentPrice * volume : null);
     const rawAmount = identified ? (whale.movement_value || item.movement_value || item.amount_usd || item.estimated_value || "") : "";
     const amountCheck = saneFlowAmount(rawAmount, dollarVolume);
@@ -2698,10 +2742,10 @@ function extractWhaleRows(causal, detection, learned = appState.whalesSnapshot?.
       || item.money_flow_detected
       || item.primary_label
       || item.direction
-      || (relativeVolume !== null && relativeVolume >= 1.2)
+      || (computedRelativeVolume !== null && computedRelativeVolume >= 1.2)
     );
     if (!identified && !hasFlowSignal) return;
-    const actionText = identified ? classifyWhaleType(whale.movement_type || item.direction || item.primary_label) : flowDirectionLabel(item, relativeVolume);
+    const actionText = identified ? classifyWhaleType(whale.movement_type || item.direction || item.primary_label) : flowDirectionLabel(item, computedRelativeVolume);
     const row = {
       id: `whale-${ticker}-${String(item.money_flow_timestamp || item.timestamp || item.updated_at || Date.now()).replace(/[^a-zA-Z0-9]/g, "")}`,
       ticker,
@@ -2714,14 +2758,15 @@ function extractWhaleRows(causal, detection, learned = appState.whalesSnapshot?.
       price: whale.price || item.price || currentPrice || "",
       currentPrice,
       volume,
-      relativeVolume,
+      avgVolume,
+      relativeVolume: computedRelativeVolume,
       dollarVolume,
       amountSuspicious: amountCheck.suspicious || Boolean(item.amount_suspicious),
       netFlow: /venta|salida|distrib/i.test(actionText) && numberOrNull(dollarVolume) !== null ? -Math.abs(numberOrNull(dollarVolume)) : numberOrNull(dollarVolume),
       date: item.money_flow_timestamp || item.timestamp || item.updated_at || "",
       source: whale.source || item.source || item.origin || "Fuente activa",
       confidence: whale.confidence || item.confidence || item.confidence_label || (identified ? "media" : "baja"),
-      intensity: relativeVolume,
+      intensity: computedRelativeVolume,
       read: identified
         ? "Genesis detecta una entidad reportada y lo trata como evidencia adicional, no como causalidad garantizada."
         : "Flujo institucional en vigilancia: hay actividad o volumen, pero sin entidad ni monto confirmado.",
@@ -2742,10 +2787,17 @@ function normalizeWhaleEventForUi(item = {}) {
   }
   const ticker = itemTicker(item);
   if (!ticker) return null;
-  const confirmed = Boolean(item.confirmed || (item.entity_name && numberOrNull(item.confirmed_amount_usd ?? item.amount_usd) !== null));
+  const asset = findAsset(ticker) || {};
+  const currentPrice = numberOrNull(item.current_price ?? item.price ?? asset.current_price ?? asset.price ?? asset.reference_price);
+  const volume = numberOrNull(item.monitored_volume ?? item.volume ?? asset.volume);
+  const avgVolume = numberOrNull(item.avg_volume ?? asset.avg_volume ?? asset.average_volume);
+  const relativeVolume = numberOrNull(item.relative_volume ?? (avgVolume && volume ? volume / avgVolume : null));
+  const rawMonitoredDollarVolume = numberOrNull(item.monitored_dollar_volume ?? item.dollar_volume);
+  const monitoredDollarVolume = rawMonitoredDollarVolume ?? (currentPrice !== null && volume !== null ? currentPrice * volume : null);
+  const confirmedCheck = saneFlowAmount(item.confirmed_amount_usd ?? item.amount_usd, monitoredDollarVolume);
+  const confirmedAmount = confirmedCheck.value;
+  const confirmed = Boolean(item.confirmed || (item.entity_name && confirmedAmount !== null));
   const direction = item.estimated_flow_direction || item.direction_estimate || item.direction || (["buy", "accumulation"].includes(item.action) ? "inflow" : ["sell", "reduction", "distribution"].includes(item.action) ? "outflow" : "neutral");
-  const confirmedAmount = numberOrNull(item.confirmed_amount_usd ?? item.amount_usd);
-  const monitoredDollarVolume = numberOrNull(item.monitored_dollar_volume ?? item.dollar_volume);
   const display = getAssetDisplayName(ticker).displayName;
   const rawName = cleanCopy(item.asset_name || "");
   return {
@@ -2759,15 +2811,15 @@ function normalizeWhaleEventForUi(item = {}) {
     amountUsd: confirmedAmount,
     estimatedValue: null,
     units: item.amount_asset ?? item.units ?? item.amount ?? "",
-    price: item.price_used || item.price || item.current_price || "",
-    currentPrice: item.current_price || item.price || "",
-    volume: item.monitored_volume ?? item.volume ?? "",
-    avgVolume: item.avg_volume ?? "",
-    relativeVolume: item.relative_volume ?? "",
+    price: item.price_used || item.price || currentPrice || "",
+    currentPrice: currentPrice || "",
+    volume: volume || "",
+    avgVolume: avgVolume || "",
+    relativeVolume: relativeVolume || "",
     dollarVolume: monitoredDollarVolume,
     monitoredDollarVolume,
     estimatedFlow: item.estimated_flow ?? item.net_flow ?? "",
-    amountSuspicious: Boolean(item.amount_suspicious),
+    amountSuspicious: Boolean(item.amount_suspicious || confirmedCheck.suspicious),
     netFlow: item.net_flow ?? item.estimated_flow ?? monitoredDollarVolume,
     date: item.date || item.timestamp || item.created_at || "",
     source: item.source || "market_flow",
@@ -2840,49 +2892,46 @@ function classifyWhaleType(value) {
 }
 
 function whaleRowMarkup(row) {
-  const eventClass = `event-${String(row.event || "no-confirmado").toLowerCase().replace(/\s+/g, "-")}`;
   const display = getAssetDisplayName(row.ticker);
   const whaleId = whaleItemId(row);
   const confirmed = Boolean(row.confirmed || (row.entity && numberOrNull(row.amount || row.amountUsd) !== null && !row.amountSuspicious));
-  const amountLabel = confirmed
-    ? money(row.amount || row.amountUsd, "Monto no confirmado")
-    : money(row.monitoredDollarVolume || row.dollarVolume, "Volumen no confirmado");
   const directionTone = String(row.direction || "").includes("out") ? "down" : String(row.direction || "").includes("in") ? "up" : "flat";
-  const rowLabel = confirmed ? (row.entity || "Entidad reportada") : "Smart money estimado";
   const monitored = numberOrNull(row.monitoredDollarVolume || row.dollarVolume);
   const relVolume = numberOrNull(row.relativeVolume);
+  const amountLabel = confirmed
+    ? money(row.amount || row.amountUsd, "Monto pendiente")
+    : money(monitored, "Esperando volumen FMP");
+  const priceLabel = money(row.price || row.currentPrice, "Precio pendiente");
+  const volumeLabel = row.volume ? compactNumber(row.volume) : "Volumen pendiente";
+  const relLabel = relVolume !== null ? `${compactNumber(relVolume)}x` : "Rel. pendiente";
+  const directionLabel = directionTone === "down" ? "Salida / distribucion" : directionTone === "up" ? "Entrada / acumulacion" : "Flujo vigilado";
   const rowRead = confirmed
-    ? row.read
+    ? cleanCopy(row.read || `${directionLabel}: ${amountLabel} reportados por ${row.entity || "fuente activa"}.`)
     : monitored !== null
-      ? `${display.displayName}: ${money(monitored)} de volumen vigilado; direccion ${cleanCopy(row.direction || "neutral")}. No confirma compra directa.`
-      : `${display.displayName}: Genesis espera volumen live de FMP para cuantificar flujo; no invento monto.`;
+      ? `${directionLabel}: ${amountLabel} de volumen vigilado en ${display.displayName}. No lo trato como compra confirmada.`
+      : `${directionLabel}: FMP aun no entrego volumen suficiente para cuantificar. Genesis no inventa monto.`;
   return `
     <article class="whale-row feed-row investing-event-card flow-${directionTone}" data-whale-id="${escapeHtml(whaleId)}">
       <button class="event-main" type="button" data-whale-id="${escapeHtml(whaleId)}">
       <div class="whale-topline investing-event-topline">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
-          <small>${escapeHtml(rowLabel)}</small>
+          <small>${escapeHtml(directionLabel)}</small>
         </div>
-        <span class="event-chip ${eventClass} ${directionTone}">${escapeHtml(confirmed ? "Confirmada" : "Estimado")}</span>
+        <span class="event-chip ${directionTone}">${escapeHtml(confirmed ? "Confirmada" : "Vigilado")}</span>
       </div>
-      <p>${escapeHtml(cleanCopy(rowRead))}</p>
-      <div class="flow-strip">
-        <span>${escapeHtml(cleanCopy(row.direction || "neutral"))}</span>
-        <div class="mini-spark" aria-hidden="true">${miniSeriesBars([row.netFlow, row.dollarVolume, row.relativeVolume, row.intensity])}</div>
-        <strong>${escapeHtml(row.amountSuspicious ? "No confirmado" : amountLabel)}</strong>
+      <div class="flow-strip whale-signal-strip">
+        <span>${escapeHtml(priceLabel)}</span>
+        <div class="mini-spark" aria-hidden="true">${miniSeriesBars([row.netFlow, monitored, row.relativeVolume, row.intensity])}</div>
+        <strong>${escapeHtml(row.amountSuspicious ? "Monto no validado" : amountLabel)}</strong>
       </div>
-      <div class="asset-meta investing-meta">
-        <span>Movimiento: ${escapeHtml(cleanCopy(row.event || "Flujo"))}</span>
-        <span>${confirmed ? "Monto confirmado" : "Volumen vigilado"}: ${escapeHtml(row.amountSuspicious ? "No confirmado" : amountLabel)}</span>
-        <span>Cantidad: ${escapeHtml(row.units ? compactNumber(row.units) : "No confirmada")}</span>
-        <span>Volumen $: ${escapeHtml(money(row.dollarVolume || row.monitoredDollarVolume, "No confirmado"))}</span>
-        <span>Vol. rel: ${escapeHtml(row.relativeVolume ? `${compactNumber(row.relativeVolume)}x` : "No confirmado")}</span>
-        <span>Fecha: ${escapeHtml(formatDate(row.date))}</span>
-        <span>Fuente: ${escapeHtml(cleanCopy(row.source || "Fuente activa"))}</span>
-        <span>Confianza: ${escapeHtml(cleanCopy(row.confidence))}</span>
+      <div class="whale-metrics-row">
+        <span>${escapeHtml(volumeLabel)}</span>
+        <span>${escapeHtml(relLabel)}</span>
+        <span>${escapeHtml(cleanCopy(row.source || "FMP / market flow"))}</span>
+        <span>${escapeHtml(cleanCopy(row.confidence || "media"))}</span>
       </div>
-      <small>${escapeHtml(row.missing)}</small>
+      <p>${escapeHtml(rowRead)}</p>
       </button>
     </article>
   `;
@@ -2938,7 +2987,7 @@ function renderAlertsScreen() {
     : Array.isArray(appState.alertsSnapshot?.recent_alerts)
       ? appState.alertsSnapshot.recent_alerts
       : [];
-  const alertRows = items.length ? items : derivedAlertRows();
+  const alertRows = (items.length ? items : derivedAlertRows()).map(normalizeAlertRowForUi);
   const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
   const hasConfirmedWhales = whales.some((row) => row.entity && numberOrNull(row.amount) !== null && !row.amountSuspicious);
   const whaleRows = whales.length ? whales : whaleFallbackRows();
@@ -2954,6 +3003,42 @@ function renderAlertsScreen() {
     </section>
   `;
   bindMoneyFlowJarvisForm();
+}
+
+function normalizeAlertRowForUi(item = {}) {
+  const ticker = itemTicker(item);
+  if (!ticker || ticker === "MERCADO") return item;
+  const asset = findAsset(ticker) || {};
+  const price = numberOrNull(item.price ?? asset.current_price ?? asset.price ?? asset.reference_price);
+  const changePct = numberOrNull(item.change_pct ?? item.daily_change_pct ?? asset.daily_change_pct ?? asset.change_pct);
+  const change = numberOrNull(item.change ?? item.daily_change ?? asset.daily_change ?? asset.change);
+  const volume = numberOrNull(item.volume ?? asset.volume);
+  const avgVolume = numberOrNull(item.avg_volume ?? asset.avg_volume ?? asset.average_volume);
+  const relativeVolume = numberOrNull(item.relative_volume ?? (avgVolume && volume ? volume / avgVolume : null));
+  const dollarVolume = numberOrNull(item.dollar_volume) ?? (price !== null && volume !== null ? price * volume : null);
+  const display = getAssetDisplayName(ticker).displayName;
+  const direction = changePct === null ? "vigilancia de precio" : changePct > 0.2 ? "presion compradora" : changePct < -0.2 ? "presion vendedora" : "rango lateral";
+  const title = `${display}: ${direction}`;
+  const summary = `${ticker}: ${price !== null ? money(price) : "precio pendiente"} ${changePct !== null ? formatPercent(changePct) : ""}. ${volume ? `Volumen ${compactNumber(volume)}` : "Volumen live pendiente"}.`;
+  return {
+    ...item,
+    title,
+    title_es: title,
+    summary,
+    summary_es: summary,
+    price,
+    change,
+    change_pct: changePct,
+    volume,
+    avg_volume: avgVolume,
+    relative_volume: relativeVolume,
+    dollar_volume: dollarVolume,
+    source: item.source || priceSourceLabel(asset),
+    mini_series: item.mini_series || [changePct, relativeVolume, change].filter((value) => value !== null),
+    what_it_means: item.what_it_means || `${display} queda en ${direction}; Genesis mira precio, volumen y soporte antes de subir conviccion.`,
+    what_to_watch: item.what_to_watch || "Confirmar volumen relativo, ruptura de rango y reaccion en soporte/resistencia.",
+    genesis_reading: item.genesis_reading || "Señal derivada de mercado live; no es orden, es radar operativo.",
+  };
 }
 
 function derivedAlertRows() {
@@ -3043,14 +3128,20 @@ function alertsPanelMarkup(items) {
   const high = rows.filter((item) => String(item.severity || "").toLowerCase() === "high").length;
   const withPrice = rows.filter((item) => item.price !== null && item.price !== undefined).length;
   const withVolume = rows.filter((item) => item.volume || item.relative_volume || item.dollar_volume).length;
+  const topRows = rows.slice(0, 3);
+  const summary = topRows.map((item) => {
+    const ticker = itemTicker(item) || "Mercado";
+    const move = formatPercent(item.change_pct, "");
+    const volume = item.volume || item.relative_volume || item.dollar_volume ? "con volumen" : "sin volumen live";
+    return `${ticker}${move ? ` ${move}` : ""} ${volume}`;
+  }).join(" · ");
   return `
-    <section class="market-pulse-card alert-pulse">
+    <section class="market-pulse-card alert-pulse alert-summary-card">
       <div>
-        <span>Panel de senales</span>
-        <strong>${escapeHtml(`${rows.length} alertas - ${high} alta prioridad`)}</strong>
-        <p>${escapeHtml(`${withPrice} con precio directo, ${withVolume} con volumen/flujo. Genesis separa alerta tecnica de evento macro.`)}</p>
+        <span>Resumen de alertas</span>
+        <strong>${escapeHtml(`${rows.length} señales · ${high} alta prioridad`)}</strong>
+        <p>${escapeHtml(summary || `${withPrice} con precio directo, ${withVolume} con volumen/flujo. Genesis espera señal real antes de gritar alerta.`)}</p>
       </div>
-      <div class="pulse-meter tone-alert" aria-hidden="true">${miniSeriesBars(rows.map((item) => numberOrNull(item.signal_strength ?? item.change_pct ?? item.relative_volume) || 1))}</div>
     </section>
     <div class="asset-list investing-event-list">
       ${rows.slice(0, 14).map(alertMarkup).join("")}
@@ -3080,36 +3171,8 @@ function indexAlertItems(items) {
 }
 
 function whalesPanelMarkup(rows, hasConfirmed = false) {
-  const confirmedValue = rows.reduce((sum, row) => {
-    if (!row.entity || row.amountSuspicious) return sum;
-    return sum + (numberOrNull(row.amount || row.amountUsd || row.estimatedValue) || 0);
-  }, 0);
-  const watchedVolume = rows.reduce((sum, row) => {
-    if (row.entity) return sum;
-    return sum + (numberOrNull(row.dollarVolume || row.dollar_volume) || 0);
-  }, 0);
-  const inflows = rows.filter((row) => /compra|acumul|buy|inflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
-  const outflows = rows.filter((row) => /venta|reduccion|distrib|sell|outflow/i.test(`${row.event || ""} ${row.read || ""}`)).length;
-  const topTicker = rows[0]?.ticker || "mercado";
-  const boardTitle = hasConfirmed ? `${rows.length} movimientos confirmados` : `${rows.length} flujos vigilados`;
   return `
-    <section class="whale-flow-card investing-flow-board">
-      <div>
-        <span>Ballenas</span>
-        <strong>${escapeHtml(boardTitle)}</strong>
-        <p>${hasConfirmed ? "Movimientos con fuente y monto reportado." : `Flujo estimado en ${topTicker}: volumen, precio y direccion; no lo trato como compra confirmada.`}</p>
-      </div>
-      <div class="whale-flow-bars" aria-hidden="true">
-        ${rows.length ? rows.slice(0, 6).map((row, index) => `<i style="height:${Math.max(18, Math.min(74, 28 + (numberOrNull(row.intensity) || index + 1) * 8))}px"></i>`).join("") : `<i></i><i></i><i></i>`}
-      </div>
-      <div class="whale-flow-summary">
-        <span>Entradas ${escapeHtml(String(inflows))}</span>
-        <span>Salidas ${escapeHtml(String(outflows))}</span>
-        <span>Valor confirmado ${escapeHtml(confirmedValue ? money(confirmedValue) : "0")}</span>
-        <span>Volumen vigilado ${escapeHtml(watchedVolume ? money(watchedVolume) : "esperando FMP")}</span>
-      </div>
-    </section>
-    <div class="compact-actions">
+    <div class="compact-actions whale-actions">
       <button type="button" class="icon-action search-toggle" data-toggle-search="whales" aria-label="${appState.searchOpen.whales ? "Cerrar consulta" : "Consultar ballenas"}">${iconSvg("search")}</button>
     </div>
     ${appState.searchOpen.whales ? `
@@ -3198,7 +3261,7 @@ function currentAlertRows() {
     : Array.isArray(appState.alertsSnapshot?.recent_alerts)
       ? appState.alertsSnapshot.recent_alerts
       : [];
-  return items.length ? items : derivedAlertRows();
+  return (items.length ? items : derivedAlertRows()).map(normalizeAlertRowForUi);
 }
 
 function currentWhaleRows() {

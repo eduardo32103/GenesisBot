@@ -25,6 +25,16 @@ _OG_TTL_SECONDS = 30 * 60
 _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", "BTC-USD", "BZ=F"]
 _RSS_TIMEOUT_SECONDS = 1.5
 _MAX_OG_IMAGES_PER_BATCH = 8
+_CATEGORY_PHOTOS = {
+    "market": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=640&q=80",
+    "macro": "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?auto=format&fit=crop&w=640&q=80",
+    "crypto": "https://images.unsplash.com/photo-1518546305927-5a555bb7020d?auto=format&fit=crop&w=640&q=80",
+    "commodity": "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?auto=format&fit=crop&w=640&q=80",
+    "geopolitics": "https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?auto=format&fit=crop&w=640&q=80",
+    "earnings": "https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=640&q=80",
+    "tech": "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=640&q=80",
+    "gold": "https://images.unsplash.com/photo-1610375461246-83df859d849d?auto=format&fit=crop&w=640&q=80",
+}
 _RSS_QUERIES = [
     "market today",
     "stock market today",
@@ -93,15 +103,18 @@ def get_recent_market_news(tickers: list[str] | None = None, *, limit: int = 12,
             )
 
     normalized = _normalize_news(raw_news, safe_tickers, max_age_days=max_age_days)
+    fallback_only = False
     if not normalized:
         normalized = [_fallback_news_item(safe_tickers)]
+        fallback_only = True
     output = normalized[: max(1, int(limit or 12))]
     elapsed_ms = int((time.monotonic() - started) * 1000)
     for item in output:
         item["elapsed_ms"] = elapsed_ms
         item["cache_hit"] = False
         item["source_status"] = status
-    _CACHE[cache_key] = (now, output)
+    if not fallback_only:
+        _CACHE[cache_key] = (now, output)
     _set_source_status("fmp_market_news", status, elapsed_ms=elapsed_ms, cache_hit=False, count=len(output), last_error_safe=safe_error)
     return output
 
@@ -653,20 +666,18 @@ def _asset_name(ticker: str) -> str:
 def _category_photo_url(title: str, category: str, tickers: list[str]) -> str:
     text = f"{title} {category} {' '.join(tickers)}".casefold()
     if "trump" in text or "iran" in text or "geopolit" in text:
-        query = "politics,world,news"
+        return _CATEGORY_PHOTOS["geopolitics"]
     elif "bitcoin" in text or "btc" in text or "crypto" in text:
-        query = "bitcoin,crypto,market"
+        return _CATEGORY_PHOTOS["crypto"]
     elif "oil" in text or "brent" in text or "crude" in text or "petroleo" in text:
-        query = "oil,energy,market"
+        return _CATEGORY_PHOTOS["commodity"]
     elif "nvidia" in text or "nvda" in text or "ai" in text:
-        query = "semiconductor,chip,technology"
+        return _CATEGORY_PHOTOS["tech"]
     elif "gold" in text or "oro" in text:
-        query = "gold,market"
+        return _CATEGORY_PHOTOS["gold"]
     elif "fed" in text or "inflation" in text or "rates" in text:
-        query = "federal-reserve,finance"
-    else:
-        query = "stock-market,trading,finance"
-    return f"https://source.unsplash.com/640x360/?{quote_plus(query)}"
+        return _CATEGORY_PHOTOS["macro"]
+    return _CATEGORY_PHOTOS.get(str(category or "").casefold(), _CATEGORY_PHOTOS["market"])
 
 
 def _takeaway(title: str, impact: str, tickers: list[str]) -> str:
@@ -789,6 +800,7 @@ def _is_bad_news_title(title: object) -> bool:
 def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     tickers = focus_tickers[:5]
+    image = _CATEGORY_PHOTOS["macro"]
     return {
         "id": "fallback-market-context",
         "title": "Genesis mantiene vigilancia de mercado",
@@ -808,9 +820,9 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "sentiment": "neutral",
         "tone": "neutral",
         "confidence": "low",
-        "image_url": "",
-        "thumbnail_url": "",
-        "thumbnail": "",
+        "image_url": image,
+        "thumbnail_url": image,
+        "thumbnail": image,
         "url": "",
         "category": "macro",
         "genesis_takeaway": "Sin noticia externa confirmada; operar solo con precio, volumen y niveles.",

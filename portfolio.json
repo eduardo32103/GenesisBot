@@ -1,5 +1,32 @@
 {
-  "IXC": 927.55,
-  "IAU": 107.38,
-  "BNO": 61.39
+  "owner_id": "dashboard_web",
+  "updated_at": "2026-05-09T06:03:08.174399+00:00",
+  "positions": [
+    {
+      "ticker": "BNO",
+      "display_name": "BNO",
+      "reference_price": 61.39,
+      "watchlist": true
+    },
+    {
+      "ticker": "IAU",
+      "display_name": "IAU",
+      "reference_price": 107.38,
+      "watchlist": true
+    },
+    {
+      "ticker": "IXC",
+      "display_name": "IXC",
+      "reference_price": 927.55,
+      "watchlist": true
+    },
+    {
+      "ticker": "MARA",
+      "display_name": "MARA",
+      "units": 12.0,
+      "entry_price": 1212.0,
+      "mode": "paper",
+      "opened_at": "2026-05-09T06:03:08.174288+00:00"
+    }
+  ]
 }

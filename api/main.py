@@ -8,6 +8,8 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from api.routes.dashboard import (
     add_dashboard_portfolio_ticker,
@@ -41,6 +43,67 @@ from services.genesis.memory_store import MemoryStore
 
 _ROOT_DIR = Path(__file__).resolve().parents[1]
 _DASHBOARD_DIR = _ROOT_DIR / "app" / "dashboard"
+_PRODUCTION_API_ORIGIN = os.getenv(
+    "GENESIS_PRODUCTION_API_ORIGIN",
+    "https://genesisbot-production.up.railway.app",
+).rstrip("/")
+_PROXY_GET_PATHS = {
+    "/api/dashboard/alerts",
+    "/api/dashboard/alerts/drilldown",
+    "/api/dashboard/asset/chart",
+    "/api/dashboard/chart",
+    "/api/dashboard/fmp",
+    "/api/dashboard/genesis",
+    "/api/dashboard/macro-activity",
+    "/api/dashboard/market/search",
+    "/api/dashboard/money-flow/causal",
+    "/api/dashboard/money-flow/detection",
+    "/api/dashboard/money-flow/jarvis",
+    "/api/dashboard/money-flow/model",
+    "/api/dashboard/portfolio",
+    "/api/dashboard/portfolio/drilldown",
+    "/api/dashboard/radar",
+    "/api/dashboard/radar/drilldown",
+    "/api/dashboard/source-health",
+    "/api/dashboard/whales",
+    "/api/genesis/briefing",
+    "/api/genesis/memory/recent",
+}
+_PROXY_GET_PREFIXES = ("/api/genesis/memory/ticker/",)
+_PROXY_POST_PATHS = {
+    "/api/dashboard/portfolio/paper",
+    "/api/dashboard/portfolio/paper-buy",
+    "/api/dashboard/portfolio/paper-remove",
+    "/api/dashboard/portfolio/watchlist",
+    "/api/dashboard/portfolio/watchlist/add",
+    "/api/dashboard/portfolio/watchlist/remove",
+    "/api/genesis/analyze-image",
+    "/api/genesis/ask",
+    "/api/genesis/memory/event",
+}
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _local_live_sources_missing() -> bool:
+    if os.getenv("PORT"):
+        return False
+    if _truthy(os.getenv("GENESIS_DISABLE_PROD_PROXY")):
+        return False
+    fmp_ready = bool(os.getenv("FMP_API_KEY", "").strip()) and _truthy(os.getenv("FMP_LIVE_ENABLED"))
+    llm_needed = _truthy(os.getenv("GENESIS_LLM_ENABLED"))
+    llm_ready = bool(os.getenv("OPENAI_API_KEY", "").strip())
+    return not fmp_ready or (llm_needed and not llm_ready)
+
+
+def _is_proxy_path(path: str, method: str) -> bool:
+    if method == "GET":
+        return path in _PROXY_GET_PATHS or any(path.startswith(prefix) for prefix in _PROXY_GET_PREFIXES)
+    if method == "POST":
+        return path in _PROXY_POST_PATHS
+    return False
 
 
 def create_app() -> dict[str, str]:
@@ -108,9 +171,46 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _try_proxy_to_production(self, parsed, *, method: str, body: dict | None = None) -> bool:
+        if not _local_live_sources_missing() or not _is_proxy_path(parsed.path, method):
+            return False
+        target = f"{_PRODUCTION_API_ORIGIN}{parsed.path}"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+        payload_bytes = b""
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "GenesisLocalProxy/1.0",
+        }
+        if method == "POST":
+            payload_bytes = json.dumps(body or {}).encode("utf-8")
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        request = Request(target, data=payload_bytes if method == "POST" else None, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=28) as response:
+                data = response.read()
+                status = int(getattr(response, "status", 200) or 200)
+                content_type = response.headers.get("Content-Type", "application/json; charset=utf-8")
+        except HTTPError as exc:
+            data = exc.read() or json.dumps({"ok": False, "message": "Railway devolvio error seguro."}).encode("utf-8")
+            status = int(exc.code or 502)
+            content_type = exc.headers.get("Content-Type", "application/json; charset=utf-8")
+        except (TimeoutError, URLError, OSError):
+            logging.getLogger("genesis.dashboard").warning("Production proxy unavailable for %s %s", method, parsed.path)
+            return False
+        self.send_response(status)
+        self.send_header("Content-Type", content_type if "json" in content_type else "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         body = self._read_json_body()
+        if self._try_proxy_to_production(parsed, method="POST", body=body):
+            return
 
         if parsed.path == "/api/genesis/ask":
             result = ask_genesis(
@@ -170,6 +270,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/dashboard/news":
+            payload = json.dumps(get_dashboard_news()).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if self._try_proxy_to_production(parsed, method="GET"):
+            return
+
         if parsed.path == "/api/dashboard/health":
             payload = json.dumps(get_dashboard_health()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -366,15 +478,6 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/dashboard/alerts/drilldown":
             alert_id = (parse_qs(parsed.query).get("alert_id") or [""])[0]
             payload = json.dumps(get_dashboard_alert_drilldown(alert_id)).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-
-        if parsed.path == "/api/dashboard/news":
-            payload = json.dumps(get_dashboard_news()).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
