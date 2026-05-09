@@ -61,21 +61,52 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         stale_payload = {
             "intent": "ticker_analysis",
             "response_type": "asset_analysis",
-            "tickers": ["DIME"],
-            "answer": "DIME tiene precio confirmado.",
+            "tickers": ["ESTA"],
+            "answer": "ESTA tiene precio confirmado.",
+            "quote": {"ticker": "ESTA", "current_price": 71.77},
         }
         fixed = json.loads(
             _massage_proxy_payload(
                 "/api/genesis/ask",
                 json.dumps(stale_payload).encode("utf-8"),
-                body={"message": "dime que esta pasando con las ballenas", "context": "genesis"},
+                body={"message": "que esta pasando con las ballenas", "context": "genesis"},
             ).decode("utf-8")
         )
 
         self.assertEqual(fixed["intent"], "whale_activity")
         self.assertEqual(fixed["response_type"], "whale_flow")
         self.assertEqual(fixed["tickers"], [])
-        self.assertNotIn("DIME", json.dumps(fixed))
+        self.assertNotIn("ESTA", json.dumps(fixed))
+
+    @patch("api.main.ask_genesis")
+    def test_local_proxy_corrects_news_prompt_before_ui(self, mock_ask) -> None:
+        mock_ask.return_value = {
+            "ok": True,
+            "intent": "macro_news",
+            "response_type": "news_brief",
+            "tickers": [],
+            "answer": "Genesis resume titulares reales sin convertir noticias en ticker.",
+            "kind": "news_brief",
+        }
+        stale_payload = {
+            "intent": "ticker_analysis",
+            "response_type": "asset_analysis",
+            "tickers": ["ENH"],
+            "answer": "ENH tiene precio confirmado.",
+            "quote": {"ticker": "ENH", "current_price": 92.98},
+        }
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "que esta pasando en noticias?", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "macro_news")
+        self.assertEqual(fixed["response_type"], "news_brief")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertNotIn("ENH", json.dumps(fixed))
 
     def test_genesis_answer_is_local_and_conservative(self) -> None:
         payload = get_genesis_answer("que esta pasando")

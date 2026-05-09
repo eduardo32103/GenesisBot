@@ -29,6 +29,7 @@ from services.genesis.technical_agent import TechnicalAgent
 from services.genesis.ticker_parser import extract_tickers_from_prompt
 from services.genesis.tool_router import route_message
 from services.genesis.weather_tool import get_weather_answer
+from services.genesis.whale_learning import learn_whale_events
 
 
 class GenesisTickerParserTests(unittest.TestCase):
@@ -48,6 +49,8 @@ class GenesisTickerParserTests(unittest.TestCase):
             "como estuvo el mercado el viernes pasado": [],
             "que estan haciendo las ballenas": [],
             "dime que esta pasando con las ballenas": [],
+            "que esta pasando con las ballenas": [],
+            "que esta pasando en noticias": [],
             "como estas": [],
             "que tal genesis": [],
             "todo bien": [],
@@ -152,6 +155,48 @@ class GenesisMemoryStoreTests(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(asset_summary))
 
 
+class GenesisWhaleLearningTests(unittest.TestCase):
+    @patch("services.genesis.whale_learning.get_money_flow_detection_snapshot", return_value={})
+    @patch("services.genesis.whale_learning.get_money_flow_causal_snapshot", return_value={})
+    @patch("services.genesis.whale_learning.load_settings")
+    @patch("services.genesis.whale_learning.FmpClient")
+    def test_fmp_entity_quantity_and_price_becomes_confirmed_whale(self, mock_client_cls, mock_settings, _causal, _detection) -> None:
+        class FakeFmpClient:
+            def __init__(self, _api_key: str) -> None:
+                pass
+
+            def get_quote(self, ticker: str) -> dict:
+                return {"price": 120.0, "name": "NVIDIA Corporation"}
+
+            def get_smart_money_activity(self, ticker: str, limit: int = 5) -> list[dict]:
+                return [
+                    {
+                        "entity": "Fondo Confirmado",
+                        "type": "Buy",
+                        "shares": 1000,
+                        "price": 120.0,
+                        "date": "2026-05-08",
+                        "source": "Insider",
+                    }
+                ]
+
+        mock_client_cls.side_effect = FakeFmpClient
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="configured", fmp_live_enabled=True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = learn_whale_events("NVDA", memory=MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3"))
+
+        self.assertEqual(payload["confirmed"], 1)
+        self.assertEqual(payload["summary"]["confirmed_count"], 1)
+        event = payload["events"][0]
+        self.assertEqual(event["event_type"], "whale_confirmed")
+        self.assertEqual(event["entity_name"], "Fondo Confirmado")
+        self.assertEqual(event["amount_asset"], 1000)
+        self.assertEqual(event["price_used"], 120.0)
+        self.assertEqual(event["confirmed_amount_usd"], 120000.0)
+        self.assertTrue(event["source"].startswith("fmp/"))
+
+
 class GenesisToolRouterTests(unittest.TestCase):
     def test_agent_router_classifies_general_intents_without_fake_tickers(self) -> None:
         router = AgentRouter()
@@ -168,8 +213,16 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
         self.assertEqual(router.route("dame una grafica de nvda con sma 50").intent, "chart_request")
         self.assertEqual(router.route("que noticias afectan mis activos").intent, "macro_news")
+        news_route = router.route("que esta pasando en noticias", ticker="ENH")
+        self.assertEqual(news_route.intent, "macro_news")
+        self.assertEqual(news_route.tickers, [])
+        self.assertEqual(news_route.primary_ticker, "")
         self.assertEqual(router.route("dime que esta pasando con las ballenas").intent, "whale_activity")
         self.assertEqual(router.route("dime que esta pasando con las ballenas").tickers, [])
+        whale_route = router.route("que esta pasando con las ballenas", ticker="ESTA")
+        self.assertEqual(whale_route.intent, "whale_activity")
+        self.assertEqual(whale_route.primary_ticker, "")
+        self.assertEqual(whale_route.tickers, [])
         personal_route = router.route("genesis mi novia esta enojada ayudame")
         self.assertEqual(personal_route.intent, "general_question")
         self.assertEqual(personal_route.tickers, [])

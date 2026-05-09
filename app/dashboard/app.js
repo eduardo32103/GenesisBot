@@ -73,6 +73,11 @@ const appState = {
   chatMessages: [initialChatMessage()],
   chatConversations: [],
   currentConversationId: `chat-${Date.now()}`,
+  voiceMode: false,
+  voiceListening: false,
+  voiceSpeaking: false,
+  voiceStatus: "",
+  voiceRecognition: null,
 };
 
 const REFRESH_MS = 15000;
@@ -172,6 +177,21 @@ function getAssetDisplayName(itemOrTicker) {
 
 function assetDisplayName(itemOrTicker) {
   return getAssetDisplayName(itemOrTicker).displayName;
+}
+
+function displayAssetLabel(itemOrTicker) {
+  const display = getAssetDisplayName(itemOrTicker);
+  return display.displayName || display.ticker || "";
+}
+
+function humanizeInternalTickerText(value) {
+  let text = String(value || "");
+  Object.entries(FRIENDLY_ASSET_NAMES).forEach(([ticker, friendly]) => {
+    const label = friendly?.displayName || ticker;
+    const escapedTicker = ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`\\b${escapedTicker}\\b`, "gi"), label);
+  });
+  return text;
 }
 
 function assetSubtitle(itemOrTicker) {
@@ -691,6 +711,7 @@ function iconSvg(name) {
     check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
     search: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
     upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17V5"/><path d="M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>`,
+    mic: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/><path d="M8 22h8"/></svg>`,
     menu: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12h.01M19 12h.01M5 12h.01"/></svg>`,
     history: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg>`,
     new: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
@@ -737,13 +758,45 @@ function isMarketOverviewQuestion(text) {
   ].some((needle) => normalized.includes(needle));
 }
 
+function isWhaleQuestion(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  return [
+    " ballena ",
+    " ballenas ",
+    " smart money ",
+    " dinero grande ",
+    " flujo institucional ",
+    " flujos institucionales ",
+  ].some((needle) => normalized.includes(needle));
+}
+
+function isNewsQuestion(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  return [
+    " noticia ",
+    " noticias ",
+    " titulares ",
+    " catalizador ",
+    " catalizadores ",
+    " que esta pasando en noticias ",
+    " que paso en noticias ",
+    " noticias importantes ",
+    " ultimas noticias ",
+  ].some((needle) => normalized.includes(needle));
+}
+
 function tickerFromText(text) {
   const normalized = String(text || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   if (isMarketOverviewQuestion(normalized)) return "";
-  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTAS", "ESTOY", "ESTAMOS", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS"]);
+  if (isNewsQuestion(normalized)) return "";
+  if (isWhaleQuestion(normalized)) {
+    const whaleTicker = normalized.match(/\b(BTC|BITCOIN|ETH|SOL|NVDA|MSFT|META|NFLX|TSLA|SPY|QQQ|BNO|BZ=F|IAU|SLV|MARA)\b/);
+    if (!whaleTicker) return "";
+  }
+  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "EN", "LA", "EL", "LAS", "LOS", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "NOTICIA", "NOTICIAS", "TITULAR", "TITULARES", "CATALIZADOR", "CATALIZADORES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTA", "ESTAN", "ESTAS", "ESTOY", "ESTAMOS", "PASANDO", "PASA", "PASO", "DIME", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS", "BALLENA", "BALLENAS", "SMART", "MONEY", "DINERO", "GRANDE", "FLUJO", "FLUJOS", "INSTITUCIONAL", "INSTITUCIONALES"]);
   const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F", PETROLEO: "BZ=F", ORO: "IAU", PLATA: "SLV" };
   const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
   const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
@@ -1087,6 +1140,8 @@ async function refreshPortfolio(options = {}) {
     await appState.refreshPromise.catch(() => null);
   }
   appState.refreshInFlight = true;
+  setLiveRefreshIndicator(true);
+  if (shouldRender) renderActiveScreen();
   appState.refreshPromise = (async () => {
     const snapshot = await getJson(PORTFOLIO_ENDPOINT);
     appState.portfolioSnapshot = snapshot;
@@ -1101,6 +1156,8 @@ async function refreshPortfolio(options = {}) {
   } finally {
     appState.refreshInFlight = false;
     appState.refreshPromise = null;
+    setLiveRefreshIndicator(false);
+    if (shouldRender) renderActiveScreen();
   }
 }
 
@@ -1163,6 +1220,7 @@ async function loadMarketPulse(options = {}) {
     return appState.marketPulse;
   }
   appState.marketPulseLoading = true;
+  setLiveRefreshIndicator(true);
   try {
     const results = await Promise.allSettled(MARKET_PULSE_TICKERS.map(async (ticker) => {
       const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
@@ -1177,6 +1235,7 @@ async function loadMarketPulse(options = {}) {
     appState.marketPulseLoadedAt = Date.now();
   } finally {
     appState.marketPulseLoading = false;
+    setLiveRefreshIndicator(false);
   }
   return appState.marketPulse;
 }
@@ -1188,6 +1247,7 @@ async function loadOpportunityQuotes(options = {}) {
     return appState.opportunityQuotes;
   }
   appState.opportunityQuotesLoading = true;
+  setLiveRefreshIndicator(true);
   try {
     const results = await Promise.allSettled(OPPORTUNITY_TICKERS.map(async (ticker) => {
       const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
@@ -1202,6 +1262,7 @@ async function loadOpportunityQuotes(options = {}) {
     appState.opportunityQuotesLoadedAt = Date.now();
   } finally {
     appState.opportunityQuotesLoading = false;
+    setLiveRefreshIndicator(false);
   }
   return appState.opportunityQuotes;
 }
@@ -1222,13 +1283,16 @@ function ensureMarketPulse() {
   }).catch(() => {});
 }
 
-function setActiveScreen(screen) {
+function setActiveScreen(screen, options = {}) {
   appState.activeScreen = screen;
   document.querySelectorAll(".app-screen").forEach((node) => {
     node.classList.toggle("is-active", node.id === screenId(screen));
   });
   updateNav();
   renderActiveScreen();
+  if (options.scrollTop !== false) {
+    scrollActiveScreenToTop(screen);
+  }
 
   if (screen === "tracking" || screen === "portfolio" || screen === "asset-detail") {
     startPortfolioAutoRefresh();
@@ -1419,9 +1483,11 @@ function renderGenesisScreen() {
               <input id="genesis-image-input" type="file" accept="image/*">
             </label>
             <input id="genesis-chat-input" placeholder="Pregunta a Genesis..." autocomplete="off">
+            <button type="button" class="voice-button ${appState.voiceListening ? "is-listening" : ""} ${appState.voiceSpeaking ? "is-speaking" : ""}" data-voice-toggle aria-label="${appState.voiceListening ? "Detener voz" : "Hablar con Genesis"}" title="${appState.voiceListening ? "Escuchando..." : "Hablar con Genesis"}">${iconSvg("mic")}</button>
             <button type="submit" aria-label="Mandar mensaje">${iconSvg("send")}</button>
           </div>
         </form>
+        <div class="chat-voice-status" id="genesis-voice-status" ${appState.voiceStatus ? "" : "hidden"}>${escapeHtml(appState.voiceStatus)}</div>
       </div>
     </section>
   `;
@@ -1513,6 +1579,185 @@ function genesisVisualFromPayload(payload, answer = "") {
   if (intent === "image_chart_analysis") return summaryVisual("Imagen", answer);
   if (responseType === "general_assistant" && answer) return summaryVisual("Genesis", answer);
   return null;
+}
+
+function isWhalePayload(payload = {}) {
+  const intent = String(payload?.intent || "");
+  const responseType = String(payload?.response_type || "");
+  const kind = String(payload?.kind || payload?.structured?.kind || "");
+  return responseType === "whale_flow" || intent === "whale_activity" || intent === "money_flow" || kind === "whale_flow";
+}
+
+function isNewsPayload(payload = {}) {
+  const intent = String(payload?.intent || "");
+  const responseType = String(payload?.response_type || "");
+  const kind = String(payload?.kind || payload?.structured?.kind || "");
+  return responseType === "news_brief" || intent === "macro_news" || kind === "news_brief";
+}
+
+function isTickerLikeGenesisPayload(payload = {}) {
+  const intent = String(payload?.intent || "");
+  const responseType = String(payload?.response_type || "");
+  return ["asset_analysis", "chart_analysis"].includes(responseType)
+    || ["ticker_analysis", "technical_indicators", "chart_request"].includes(intent)
+    || Boolean(payload?.quote?.ticker || payload?.chart?.ticker || payload?.technical?.ticker);
+}
+
+function forcedWhalePayloadFromState(question = "", sourcePayload = {}) {
+  const requestedTicker = tickerFromText(question);
+  const rows = currentWhaleRows();
+  const filteredRows = requestedTicker ? rows.filter((row) => itemTicker(row) === requestedTicker) : rows;
+  const selectedRows = (filteredRows.length ? filteredRows : rows).slice(0, 5);
+  const watchedVolume = selectedRows.reduce((sum, row) => {
+    const value = numberOrNull(row?.monitoredDollarVolume ?? row?.monitored_dollar_volume ?? row?.dollarVolume ?? row?.dollar_volume);
+    return sum + (value || 0);
+  }, 0);
+  const confirmedValue = selectedRows.reduce((sum, row) => {
+    const confirmed = Boolean(row?.confirmed || row?.event_type === "whale_confirmed" || row?.type === "whale_confirmed");
+    const value = confirmed ? numberOrNull(row?.amountUsd ?? row?.amount_usd ?? row?.confirmedAmountUsd ?? row?.confirmed_amount_usd) : null;
+    return sum + (value || 0);
+  }, 0);
+  const focusNames = selectedRows
+    .map((row) => getAssetDisplayName(row?.ticker || row?.symbol).displayName)
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(", ");
+  const answer = selectedRows.length
+    ? `En claro: esta es una lectura de ballenas y smart money, no un ticker. Genesis ve ${selectedRows.length} flujos vigilados${focusNames ? ` en ${focusNames}` : ""}; separo volumen vigilado de ballena confirmada y no invento comprador.`
+    : "En claro: no hay ballena confirmada con entidad y monto en la lectura actual; Genesis vigila volumen, precio y flujo institucional sin convertirlo en compra confirmada.";
+  return {
+    ...sourcePayload,
+    ok: true,
+    status: "genesis_intelligence_ready",
+    intent: "whale_activity",
+    response_type: "whale_flow",
+    kind: "whale_flow",
+    answer,
+    assistant_narrative: answer,
+    tickers: requestedTicker ? [requestedTicker] : [],
+    whales: {
+      answer,
+      events: selectedRows,
+      items: selectedRows,
+      summary: {
+        estimated_count: selectedRows.length,
+        watched_volume: watchedVolume || null,
+        confirmed_value: confirmedValue || null,
+      },
+    },
+    structured: {
+      kind: "whale_flow",
+      title: "Ballenas / Smart money",
+      summary: answer,
+      events: selectedRows,
+      metrics: {
+        estimated_count: selectedRows.length,
+        watched_volume: watchedVolume || null,
+        confirmed_value: confirmedValue || null,
+      },
+      sections: [
+        { title: "Que significa", bullets: ["Volumen vigilado no es compra confirmada.", "Solo sube a ballena confirmada cuando hay entidad, monto y fuente."] },
+        { title: "Que vigilar", bullets: ["Direccion del precio despues del flujo.", "Volumen relativo, soporte/resistencia y noticias relacionadas."] },
+      ],
+    },
+  };
+}
+
+function forcedNewsPayloadFromState(question = "", sourcePayload = {}) {
+  const items = newsFeedItems(appState.newsSnapshot || {});
+  const filtered = filteredNewsItems(items);
+  const important = importantNewsItems(filtered);
+  const latest = latestNewsItems(filtered);
+  const selected = [...important, ...latest.filter((item) => !important.some((candidate) => newsItemId(candidate) === newsItemId(item)))].slice(0, 5);
+  const focus = selected
+    .flatMap((item) => item?.assets || item?.tickers || item?.tickersAffected || [])
+    .map(normalizeTicker)
+    .filter(Boolean)
+    .slice(0, 4);
+  const uniqueFocus = Array.from(new Set(focus));
+  const answer = selected.length
+    ? `En noticias: Genesis esta leyendo ${selected.length} titulares reales del feed cargado. Lo importante ahora es impacto, recencia y si toca ${uniqueFocus.length ? uniqueFocus.join(", ") : "mercado general"}.`
+    : "En noticias: no tengo titulares confirmados en el snapshot local todavia. Genesis debe mostrar feed real FMP/RSS cuando llegue la fuente, sin convertir esta pregunta en ticker.";
+  return {
+    ...sourcePayload,
+    ok: true,
+    status: "genesis_intelligence_ready",
+    intent: "macro_news",
+    response_type: "news_brief",
+    kind: "news_brief",
+    answer,
+    assistant_narrative: answer,
+    tickers: [],
+    quote: null,
+    chart: null,
+    technical: null,
+    overview: {
+      answer,
+      summary: answer,
+      news: selected,
+      important_news: important,
+      latest_news: latest,
+      source_status: appState.newsSnapshot?.source_status || {},
+    },
+    structured: {
+      kind: "news_brief",
+      title: "Noticias",
+      summary: answer,
+      important_news: important,
+      latest_news: latest,
+      news: selected,
+      metrics: {
+        important: important.length,
+        latest: latest.length,
+        total: items.length,
+      },
+      sections: [
+        { title: "Lectura rapida", bullets: [answer] },
+        { title: "Que vigilar", bullets: ["Titulares que mueven precio.", "Volumen despues de la noticia.", "Impacto en tus activos y cartera."] },
+      ],
+    },
+  };
+}
+
+async function correctGenesisIntentPayload(payload = {}, question = "") {
+  if (isWhaleQuestion(question)) {
+    if (isWhalePayload(payload)) {
+      return {
+        ...payload,
+        tickers: Array.isArray(payload.tickers) ? payload.tickers.filter((item) => item !== "ESTA" && item !== "ESTAS" && item !== "DIME") : [],
+      };
+    }
+    if (isTickerLikeGenesisPayload(payload)) return forcedWhalePayloadFromState(question, payload);
+    return forcedWhalePayloadFromState(question, payload);
+  }
+  if (isNewsQuestion(question)) {
+    if (isNewsPayload(payload)) {
+      return {
+        ...payload,
+        tickers: [],
+        quote: null,
+        chart: null,
+        technical: null,
+      };
+    }
+    if (isTickerLikeGenesisPayload(payload)) return forcedNewsPayloadFromState(question, payload);
+    return forcedNewsPayloadFromState(question, payload);
+  }
+  return payload;
+}
+
+function setLiveRefreshIndicator(active) {
+  const enabled = Boolean(active || appState.refreshInFlight || appState.marketPulseLoading || appState.newsLoading || appState.opportunityQuotesLoading);
+  document.body.classList.toggle("is-live-refreshing", enabled);
+}
+
+function liveRefreshBadgeMarkup(label = "Actualizando precios") {
+  return `
+    <span class="live-refresh-badge" data-live-refresh-indicator>
+      ${iconSvg("refresh")}
+      <em>${escapeHtml(label)}</em>
+    </span>
+  `;
 }
 
 function assetAnalysisVisual(payload, answer = "") {
@@ -2335,6 +2580,147 @@ function fileToDataUrl(file) {
   });
 }
 
+function speechRecognitionConstructor() {
+  if (typeof window === "undefined") return null;
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function isVoiceInputSupported() {
+  return Boolean(speechRecognitionConstructor());
+}
+
+function isVoiceOutputSupported() {
+  return typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+}
+
+function setGenesisVoiceStatus(status = "") {
+  appState.voiceStatus = status;
+  const node = document.getElementById("genesis-voice-status");
+  if (node) {
+    node.hidden = !status;
+    node.textContent = status;
+  }
+}
+
+function ensureGenesisSpeechRecognition() {
+  const Recognition = speechRecognitionConstructor();
+  if (!Recognition) return null;
+  if (appState.voiceRecognition) return appState.voiceRecognition;
+  const recognition = new Recognition();
+  recognition.lang = "es-MX";
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  recognition.maxAlternatives = 1;
+  recognition.onstart = () => {
+    appState.voiceListening = true;
+    setGenesisVoiceStatus("Genesis te escucha...");
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
+  };
+  recognition.onresult = (event) => {
+    const transcript = Array.from(event.results || [])
+      .map((result) => result?.[0]?.transcript || "")
+      .join(" ")
+      .trim();
+    const input = document.getElementById("genesis-chat-input");
+    if (input && transcript) input.value = transcript;
+    if (transcript) setGenesisVoiceStatus(`Escuchando: ${transcript}`);
+    const lastResult = event.results?.[event.results.length - 1];
+    if (lastResult?.isFinal && transcript) {
+      appState.voiceListening = false;
+      setGenesisVoiceStatus("Enviando voz a Genesis...");
+      document.getElementById("genesis-chat-form")?.requestSubmit();
+    }
+  };
+  recognition.onerror = (event) => {
+    appState.voiceListening = false;
+    setGenesisVoiceStatus("");
+    const error = cleanCopy(event?.error || "voz no disponible");
+    toast(`No pude escuchar bien: ${error}`, "error");
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
+  };
+  recognition.onend = () => {
+    appState.voiceListening = false;
+    if (appState.voiceStatus === "Genesis te escucha...") setGenesisVoiceStatus("");
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
+  };
+  appState.voiceRecognition = recognition;
+  return recognition;
+}
+
+function stopGenesisSpeech() {
+  if (!isVoiceOutputSupported()) return;
+  window.speechSynthesis.cancel();
+  appState.voiceSpeaking = false;
+  if (appState.voiceStatus === "Genesis respondiendo por voz...") setGenesisVoiceStatus("");
+}
+
+function readableVoiceText(message = {}) {
+  const text = stripMarkdownCopy(message.text || "");
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\$([0-9,.]+)/g, "$1 dolares")
+    .slice(0, 780)
+    .trim();
+}
+
+function speakGenesisReply(message = {}) {
+  if (!appState.voiceMode || !isVoiceOutputSupported()) return;
+  const text = readableVoiceText(message);
+  if (!text) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "es-MX";
+  utterance.rate = 1;
+  utterance.pitch = 0.94;
+  utterance.volume = 1;
+  utterance.onstart = () => {
+    appState.voiceSpeaking = true;
+    setGenesisVoiceStatus("Genesis respondiendo por voz...");
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
+  };
+  utterance.onend = () => {
+    appState.voiceSpeaking = false;
+    if (appState.voiceStatus === "Genesis respondiendo por voz...") setGenesisVoiceStatus("");
+    if (appState.activeScreen === "genesis") renderGenesisScreen();
+  };
+  utterance.onerror = () => {
+    appState.voiceSpeaking = false;
+    setGenesisVoiceStatus("");
+  };
+  window.speechSynthesis.speak(utterance);
+}
+
+function pushGenesisAssistantMessage(message, options = {}) {
+  appState.chatMessages.push(message);
+  const shouldSpeak = options.speak ?? appState.voiceMode;
+  if (shouldSpeak) speakGenesisReply(message);
+  return message;
+}
+
+function toggleGenesisVoiceInput() {
+  if (!isVoiceInputSupported()) {
+    toast("Tu navegador no permite dictado por voz aqui. Puedes seguir escribiendo a Genesis.", "error");
+    return;
+  }
+  appState.voiceMode = true;
+  if (appState.voiceListening) {
+    appState.voiceRecognition?.stop();
+    appState.voiceListening = false;
+    setGenesisVoiceStatus("");
+    renderGenesisScreen();
+    return;
+  }
+  stopGenesisSpeech();
+  const recognition = ensureGenesisSpeechRecognition();
+  try {
+    recognition.start();
+  } catch (error) {
+    appState.voiceListening = false;
+    setGenesisVoiceStatus("");
+    toast("Genesis ya estaba escuchando. Intenta de nuevo en un segundo.", "info");
+  }
+}
+
 async function submitGenesisQuestion(event) {
   event.preventDefault();
   const input = document.getElementById("genesis-chat-input");
@@ -2364,12 +2750,12 @@ async function submitGenesisQuestion(event) {
           data_url: dataUrl,
         },
       });
-      appState.chatMessages.push(genesisAssistantMessageFromPayload(
+      pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(
         { ...payload, intent: payload.intent || "image_chart_analysis" },
         payload.answer || "Recibi la imagen."
       ));
     } catch (error) {
-      appState.chatMessages.push({ id: nextMessageId(), role: "assistant", text: `No pude analizar la imagen: ${cleanCopy(error.message)}` });
+      pushGenesisAssistantMessage({ id: nextMessageId(), role: "assistant", text: `No pude analizar la imagen: ${cleanCopy(error.message)}` });
     }
     renderGenesisScreen();
     return;
@@ -2394,6 +2780,7 @@ async function submitGenesisQuestion(event) {
     renderGenesisScreen();
     const payload = await loadChartSeries(chartIntent.ticker, chartIntent.range);
     message.text = chartReading(payload);
+    speakGenesisReply(message);
     renderGenesisScreen();
     return;
   }
@@ -2413,9 +2800,10 @@ async function submitGenesisQuestion(event) {
       { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId },
       { timeoutMs: 9000, attempts: 1, localOnly: true }
     );
-    const enrichedPayload = await enrichGenesisPayloadWithLocalQuote(payload, question);
+    const correctedPayload = await correctGenesisIntentPayload(payload, question);
+    const enrichedPayload = await enrichGenesisPayloadWithLocalQuote(correctedPayload, question);
     const message = genesisAssistantMessageFromPayload(enrichedPayload, question);
-    appState.chatMessages.push(message);
+    pushGenesisAssistantMessage(message);
     renderGenesisScreen();
     if (message.chart) {
       loadChartSeries(message.chart.ticker, message.chart.range).then(() => {
@@ -2426,15 +2814,16 @@ async function submitGenesisQuestion(event) {
   } catch (error) {
     const localAsset = await localAssetFallbackMessage(question, error);
     if (localAsset) {
-      appState.chatMessages.push(localAsset);
+      pushGenesisAssistantMessage(localAsset);
       renderGenesisScreen();
       return;
     }
     try {
       const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
-      appState.chatMessages.push(genesisAssistantMessageFromPayload(await enrichGenesisPayloadWithLocalQuote(payload, question), question));
+      const correctedPayload = await correctGenesisIntentPayload(payload, question);
+      pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(await enrichGenesisPayloadWithLocalQuote(correctedPayload, question), question));
     } catch (fallbackError) {
-      appState.chatMessages.push(offlineGenesisFallback(question, fallbackError));
+      pushGenesisAssistantMessage(offlineGenesisFallback(question, fallbackError));
     }
   }
   renderGenesisScreen();
@@ -2442,6 +2831,8 @@ async function submitGenesisQuestion(event) {
 
 async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
   if (isMarketOverviewQuestion(question)) return payload;
+  if (isNewsQuestion(question) || isNewsPayload(payload)) return payload;
+  if (isWhaleQuestion(question) || isWhalePayload(payload)) return payload;
   const responseType = String(payload?.response_type || "");
   const intent = String(payload?.intent || "");
   if (!(["asset_analysis", "chart_analysis"].includes(responseType) || ["ticker_analysis", "technical_indicators", "chart_request"].includes(intent))) {
@@ -2484,6 +2875,12 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
 
 async function localAssetFallbackMessage(question, error) {
   if (isMarketOverviewQuestion(question)) return null;
+  if (isNewsQuestion(question)) {
+    return genesisAssistantMessageFromPayload(forcedNewsPayloadFromState(question), question);
+  }
+  if (isWhaleQuestion(question)) {
+    return genesisAssistantMessageFromPayload(forcedWhalePayloadFromState(question), question);
+  }
   const ticker = tickerFromText(question);
   if (!ticker) return null;
   let asset = findAsset(ticker);
@@ -2634,6 +3031,7 @@ async function openGenesisConversation(conversationId) {
 async function loadNews(options = {}) {
   if (appState.newsLoading) return appState.newsSnapshot;
   appState.newsLoading = true;
+  setLiveRefreshIndicator(true);
   if (!options.silent) renderNewsScreen();
   try {
     const newsUrl = options.force ? `/api/dashboard/news?refresh=${Date.now()}` : "/api/dashboard/news";
@@ -2654,6 +3052,7 @@ async function loadNews(options = {}) {
     };
   } finally {
     appState.newsLoading = false;
+    setLiveRefreshIndicator(false);
     renderNewsScreen();
   }
   return appState.newsSnapshot;
@@ -2709,14 +3108,25 @@ function renderNewsScreen() {
 }
 
 function scrollNewsScreenToTop() {
-  const root = document.getElementById("view-news");
+  scrollScreenElementToTop(document.getElementById("view-news"));
+}
+
+function scrollScreenElementToTop(root, behavior = "smooth") {
   if (!root) return;
+  if (typeof root.scrollTo === "function") {
+    root.scrollTo({ top: 0, behavior });
+    return;
+  }
+  root.scrollTop = 0;
+}
+
+function scrollActiveScreenToTop(screen = appState.activeScreen) {
   requestAnimationFrame(() => {
-    if (typeof root.scrollTo === "function") {
-      root.scrollTo({ top: 0, behavior: "smooth" });
-      return;
+    const root = document.getElementById(screenId(screen));
+    scrollScreenElementToTop(root);
+    if (screen === "genesis") {
+      scrollScreenElementToTop(document.getElementById("genesis-thread"));
     }
-    root.scrollTop = 0;
   });
 }
 
@@ -2827,7 +3237,7 @@ function normalizeNewsItemForUi(item = {}) {
 }
 
 function spanishUiCopy(value) {
-  let text = cleanCopy(value || "");
+  let text = humanizeInternalTickerText(cleanCopy(value || ""));
   if (!text) return "";
   const replacements = [
     [/The Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell - Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
@@ -2976,12 +3386,7 @@ function indexNewsItems(items) {
 function newsCardMarkup(item) {
   const id = newsItemId(item);
   const assets = Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 4) : [];
-  const assetLabels = assets.map((asset) => {
-    const normalized = normalizeTicker(asset);
-    if (!normalized) return cleanCopy(asset);
-    const display = getAssetDisplayName(normalized);
-    return display.displayName === normalized ? normalized : `${display.displayName} (${normalized})`;
-  });
+  const assetLabels = assets.map((asset) => displayAssetLabel(asset) || cleanCopy(asset));
   const tone = newsImpactTone(item.impact);
   const category = cleanCopy(item.category || item.placeholder_key || "contexto").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
   const published = item.relative_time || formatDate(item.time);
@@ -2995,7 +3400,7 @@ function newsCardMarkup(item) {
       <div class="news-card-copy">
         <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))} · ${escapeHtml(cleanCopy(item.source || "Fuente"))}</span>
         <strong>${escapeHtml(newsDisplayTitle(item))}</strong>
-        <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || item.summary || "Sin lectura adicional."))}</p>
+        <p>${escapeHtml(spanishUiCopy(item.genesisTakeaway || item.genesis_takeaway || item.summary || "Sin lectura adicional."))}</p>
         <div class="news-card-bottom">
           <span>${escapeHtml(cleanCopy(published))}</span>
           ${assetLabels.slice(0, 3).map((asset) => `<span>${escapeHtml(asset)}</span>`).join("")}
@@ -3073,7 +3478,7 @@ function openNewsDetail(newsId) {
       <p>Qué vigilar: ${escapeHtml(watchPoints.length ? watchPoints.map(spanishUiCopy).join(" | ") : "reacción de precio, volumen y confirmación en la siguiente vela relevante.")}</p>
       ${item.watch ? `<p>${escapeHtml(spanishUiCopy(item.watch))}</p>` : ""}
     </section>
-    ${assets.length ? `<div class="news-meta">${assets.map((asset) => `<span>${escapeHtml(asset)}</span>`).join("")}</div>` : ""}
+    ${assets.length ? `<div class="news-meta">${assets.map((asset) => `<span>${escapeHtml(displayAssetLabel(asset))}</span>`).join("")}</div>` : ""}
     ${item.url ? `<a class="secondary-button full" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Abrir fuente original</a>` : ""}
   `;
   sheet.hidden = false;
@@ -3114,12 +3519,14 @@ function marketPulseHeroMarkup(context = "tracking") {
   const subtitle = context === "alerts"
     ? "Precio, volumen y riesgo conectados a tus activos."
     : "";
+  const refreshing = appState.refreshInFlight || appState.marketPulseLoading || appState.opportunityQuotesLoading;
   return `
-    <section class="market-pulse-render tone-${tone}">
+    <section class="market-pulse-render tone-${tone} ${refreshing ? "is-refreshing" : ""}">
       <div class="pulse-copy">
         <span>Pulso del mercado</span>
         <strong>${escapeHtml(title)}</strong>
         ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
+        ${refreshing ? liveRefreshBadgeMarkup("Actualizando precios") : ""}
       </div>
       <div class="pulse-confidence">
         ${renderConfidenceBar(confidence)}
@@ -4928,6 +5335,12 @@ function bindGlobalEvents() {
   document.body.addEventListener("click", async (event) => {
     if (event.target.closest("[data-toast-close]")) {
       hideToast();
+      return;
+    }
+
+    if (event.target.closest("[data-voice-toggle]")) {
+      event.preventDefault();
+      toggleGenesisVoiceInput();
       return;
     }
 

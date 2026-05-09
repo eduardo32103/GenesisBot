@@ -480,6 +480,12 @@ class FmpClient:
                     )
                     transaction_type = row.get("transactionType") or row.get("type") or row.get("change") or source_label
                     shares = row.get("securitiesTransacted") or row.get("shares") or row.get("share") or row.get("reportedHolding")
+                    price = (
+                        row.get("transactionPrice")
+                        or row.get("price")
+                        or row.get("securityPrice")
+                        or row.get("avgPrice")
+                    )
                     value = row.get("transactionValue") or row.get("marketValue") or row.get("value")
                     date = row.get("transactionDate") or row.get("date") or row.get("filingDate") or row.get("acceptedDate")
                     activity.append(
@@ -488,6 +494,7 @@ class FmpClient:
                             "entity": str(entity or "").strip(),
                             "type": str(transaction_type or source_label).strip(),
                             "shares": shares,
+                            "price": price,
                             "value": value,
                             "date": str(date or "").strip(),
                         }

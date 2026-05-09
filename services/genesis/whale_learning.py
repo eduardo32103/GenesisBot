@@ -134,19 +134,30 @@ def _fmp_rows(normalized: str, existing_rows: list[dict[str, Any]]) -> list[dict
     client = FmpClient(settings.fmp_api_key)
     rows: list[dict[str, Any]] = []
     for ticker in tickers[:8]:
+        quote = client.get_quote(ticker) or {}
+        current_price = _num(quote.get("price"))
         for item in client.get_smart_money_activity(ticker, limit=5) or []:
             entity = str(item.get("entity") or "").strip()
             if not entity:
                 continue
+            units = _num(item.get("shares"))
+            price_used = _num(item.get("price")) or current_price
+            value = _num(item.get("value"))
+            if value is None and units is not None and price_used is not None:
+                value = units * price_used
             rows.append(
                 {
                     "ticker": ticker,
+                    "name": quote.get("name") or ticker,
                     "whale_entity": entity,
                     "direction": item.get("type") or "unknown",
-                    "amount_usd": item.get("value"),
-                    "amount": item.get("shares"),
+                    "amount_usd": value,
+                    "amount": units if units is not None else item.get("shares"),
+                    "shares": units if units is not None else item.get("shares"),
+                    "price": price_used,
+                    "current_price": current_price,
                     "timestamp": item.get("date"),
-                    "source": item.get("source") or "fmp",
+                    "source": f"fmp/{item.get('source') or 'smart_money'}",
                     "confidence": "medium",
                 }
             )
@@ -161,6 +172,8 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
     units = _num(amount)
     price = _num(row.get("price") or row.get("transaction_price") or whale.get("price"))
     current_price = _num(row.get("current_price") or row.get("reference_price") or row.get("price"))
+    if amount_usd is None and units is not None and (price or current_price):
+        amount_usd = units * (price or current_price)
     volume = _num(row.get("volume") or row.get("session_volume"))
     relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio"))
     dollar_volume = volume * current_price if volume is not None and current_price is not None else _num(row.get("dollar_volume") or row.get("dollarVolume"))

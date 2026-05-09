@@ -671,6 +671,15 @@ def _asset_name(ticker: str) -> str:
     }.get(str(ticker or "").upper(), str(ticker or "").upper())
 
 
+def _asset_names_for_copy(tickers: list[str]) -> str:
+    names: list[str] = []
+    for ticker in tickers[:3]:
+        name = _asset_name(ticker)
+        if name and name not in names:
+            names.append(name)
+    return ", ".join(names)
+
+
 def _category_photo_url(title: str, category: str, tickers: list[str]) -> str:
     text = f"{title} {category} {' '.join(tickers)}".casefold()
     if "trump" in text or "iran" in text or "geopolit" in text:
@@ -689,7 +698,7 @@ def _category_photo_url(title: str, category: str, tickers: list[str]) -> str:
 
 
 def _takeaway(title: str, impact: str, tickers: list[str]) -> str:
-    asset = ", ".join(tickers[:3]) or "mercado"
+    asset = _asset_names_for_copy(tickers) or "mercado"
     if impact == "bullish":
         return f"La noticia apunta a presion positiva en {asset}; Genesis busca confirmacion con precio y volumen antes de subir conviccion."
     if impact == "bearish":
@@ -698,7 +707,7 @@ def _takeaway(title: str, impact: str, tickers: list[str]) -> str:
 
 
 def _why_it_matters(impact: str, tickers: list[str]) -> str:
-    asset = ", ".join(tickers[:3]) or "tus activos"
+    asset = _asset_names_for_copy(tickers) or "tus activos"
     if impact == "bullish":
         return f"Puede mejorar apetito por {asset} si el mercado confirma continuidad."
     if impact == "bearish":
@@ -750,7 +759,7 @@ def _risk_for_impact(impact: str) -> str:
 
 
 def _watch_for_news(impact: str, tickers: list[str]) -> str:
-    asset = ", ".join(tickers[:3]) or "activos relacionados"
+    asset = _asset_names_for_copy(tickers) or "activos relacionados"
     if impact == "bullish":
         return f"Vigilar si {asset} confirma ruptura con volumen."
     if impact == "bearish":

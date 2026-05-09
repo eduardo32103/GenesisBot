@@ -67,6 +67,63 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertNotIn("senal de actividad", script)
         self.assertNotIn("Que significa:", script)
 
+    def test_genesis_whale_questions_cannot_render_as_fake_tickers(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function isWhaleQuestion", script)
+        self.assertIn("function isNewsQuestion", script)
+        self.assertIn("function correctGenesisIntentPayload", script)
+        self.assertIn("function forcedWhalePayloadFromState", script)
+        self.assertIn("function forcedNewsPayloadFromState", script)
+        self.assertIn("correctGenesisIntentPayload(payload, question)", script)
+        self.assertIn("isWhaleQuestion(question) || isWhalePayload(payload)", script)
+        self.assertIn("isNewsQuestion(question) || isNewsPayload(payload)", script)
+        self.assertIn('"ESTA"', script)
+        self.assertIn('"BALLENAS"', script)
+        self.assertIn('"NOTICIAS"', script)
+
+    def test_live_refresh_indicator_contract_exists(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+        styles = Path("app/dashboard/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function setLiveRefreshIndicator", script)
+        self.assertIn("function liveRefreshBadgeMarkup", script)
+        self.assertIn("is-live-refreshing", styles)
+        self.assertIn("market-pulse-render.is-refreshing", styles)
+
+    def test_brent_internal_ticker_is_humanized_in_news_ui(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function humanizeInternalTickerText", script)
+        self.assertIn("function displayAssetLabel", script)
+        self.assertIn("Brent Crude Oil", script)
+        self.assertIn("humanizeInternalTickerText(cleanCopy", script)
+        self.assertIn("displayAssetLabel(asset)", script)
+
+    def test_bottom_nav_scrolls_active_screen_to_top(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function scrollActiveScreenToTop", script)
+        self.assertIn("function scrollScreenElementToTop", script)
+        self.assertIn("scrollActiveScreenToTop(screen)", script)
+        self.assertIn('document.getElementById("genesis-thread")', script)
+        self.assertIn('button.addEventListener("click", () => setActiveScreen', script)
+
+    def test_genesis_voice_chat_contract_exists(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+        styles = Path("app/dashboard/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("data-voice-toggle", script)
+        self.assertIn("function toggleGenesisVoiceInput", script)
+        self.assertIn("SpeechRecognition", script)
+        self.assertIn("webkitSpeechRecognition", script)
+        self.assertIn("speechSynthesis", script)
+        self.assertIn("SpeechSynthesisUtterance", script)
+        self.assertIn("function speakGenesisReply", script)
+        self.assertIn("function pushGenesisAssistantMessage", script)
+        self.assertIn("chat-voice-status", styles)
+        self.assertIn("voice-pulse", styles)
+
 
 if __name__ == "__main__":
     unittest.main()

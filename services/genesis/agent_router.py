@@ -32,6 +32,8 @@ class AgentRouter:
         if intent in {"greeting", "time", "date", "weather", "daily_briefing", "market_overview", "general_question"}:
             tickers = []
             primary_ticker = ""
+        if intent in {"whale_activity", "alerts", "macro_news"} and not tickers:
+            primary_ticker = ""
         return AgentRoute(
             intent=intent,
             agent=_AGENT_BY_INTENT.get(intent, "response_composer"),

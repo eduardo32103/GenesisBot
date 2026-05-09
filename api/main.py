@@ -157,6 +157,14 @@ def _safe_num(value: object) -> float | None:
         return None
 
 
+def _first_safe_num(*values: object) -> float | None:
+    for value in values:
+        number = _safe_num(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _money_short(value: object) -> str:
     number = _safe_num(value)
     if number is None:
@@ -197,7 +205,8 @@ def _genesis_message_from_body(body: dict | None) -> str:
 
 def _fold_prompt(value: object) -> str:
     normalized = unicodedata.normalize("NFD", str(value or "").casefold())
-    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    folded = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return "".join(char if char.isalnum() else " " for char in folded)
 
 
 def _is_casual_genesis_prompt(message: str) -> bool:
@@ -268,6 +277,24 @@ def _is_market_genesis_prompt(message: str) -> bool:
     )
 
 
+def _is_news_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " noticia ",
+            " noticias ",
+            " titulares ",
+            " catalizador ",
+            " catalizadores ",
+            " que esta pasando en noticias ",
+            " que paso en noticias ",
+            " noticias importantes ",
+            " ultimas noticias ",
+        )
+    )
+
+
 def _is_memory_genesis_prompt(message: str) -> bool:
     text = f" {_fold_prompt(message)} "
     return any(
@@ -298,6 +325,83 @@ def _is_whale_genesis_prompt(message: str) -> bool:
             " flujo institucional ",
         )
     )
+
+
+def _whale_prompt_fallback_payload(message: str) -> dict:
+    answer = (
+        "En claro: esta es una pregunta sobre ballenas y smart money, no un ticker. "
+        "Genesis debe separar flujo vigilado de ballena confirmada: solo llamo ballena confirmada "
+        "a un evento con entidad, monto y fuente; si falta eso, lo trato como vigilancia de volumen/precio."
+    )
+    return {
+        "ok": True,
+        "status": "genesis_intelligence_ready",
+        "intent": "whale_activity",
+        "response_type": "whale_flow",
+        "answer": answer,
+        "tickers": [],
+        "kind": "whale_flow",
+        "whales": {
+            "answer": answer,
+            "items": [],
+            "events": [],
+            "summary": {"estimated_count": 0, "confirmed_value": None, "watched_volume": None},
+        },
+        "structured": {
+            "kind": "whale_flow",
+            "title": "Ballenas / Smart money",
+            "summary": answer,
+            "events": [],
+            "metrics": {"estimated_count": 0, "confirmed_value": None, "watched_volume": None},
+            "sections": [
+                {
+                    "title": "Lectura rapida",
+                    "bullets": [
+                        "No convierto palabras como esta, dime o ballenas en ticker.",
+                        "Si no hay entidad y monto confirmados, lo presento como flujo vigilado.",
+                    ],
+                },
+                {
+                    "title": "Que vigilar",
+                    "bullets": ["Volumen relativo, direccion de precio y fuente del flujo."],
+                },
+            ],
+        },
+    }
+
+
+def _news_prompt_fallback_payload(message: str) -> dict:
+    answer = (
+        "En noticias: esta pregunta pide contexto de titulares, no un ticker. "
+        "Genesis debe usar FMP/RSS, separar importantes y ultimas, y explicar impacto en tus activos sin inventar precios."
+    )
+    return {
+        "ok": True,
+        "status": "genesis_intelligence_ready",
+        "intent": "macro_news",
+        "response_type": "news_brief",
+        "answer": answer,
+        "tickers": [],
+        "kind": "news_brief",
+        "overview": {
+            "answer": answer,
+            "summary": answer,
+            "news": [],
+            "source_status": {"fallback": True},
+        },
+        "structured": {
+            "kind": "news_brief",
+            "title": "Noticias",
+            "summary": answer,
+            "important_news": [],
+            "latest_news": [],
+            "news": [],
+            "sections": [
+                {"title": "Lectura rapida", "bullets": [answer]},
+                {"title": "Que vigilar", "bullets": ["Impacto en precio.", "Volumen posterior al titular.", "Activos afectados de cartera/watchlist."]},
+            ],
+        },
+    }
 
 
 def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
@@ -331,7 +435,9 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 ],
             },
         }
-    if _is_whale_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
+    if _is_whale_genesis_prompt(message) and not (
+        payload.get("intent") in {"whale_activity", "money_flow"} or payload.get("response_type") == "whale_flow"
+    ):
         try:
             local = ask_genesis(
                 message,
@@ -344,6 +450,27 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 return local
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local whale prompt correction failed", exc_info=True)
+        return _whale_prompt_fallback_payload(message)
+    if _is_news_genesis_prompt(message):
+        if payload.get("intent") == "macro_news" or payload.get("response_type") == "news_brief":
+            payload["tickers"] = []
+            payload.pop("quote", None)
+            payload.pop("chart", None)
+            payload.pop("technical", None)
+            return payload
+        try:
+            local = ask_genesis(
+                message,
+                context=str(body.get("context") or "general"),
+                ticker="",
+                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                conversation_id=str(body.get("conversation_id") or "default"),
+            )
+            if isinstance(local, dict) and local.get("intent") == "macro_news":
+                return local
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local news prompt correction failed", exc_info=True)
+        return _news_prompt_fallback_payload(message)
     if _is_market_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
         try:
             local = ask_genesis(
@@ -680,6 +807,142 @@ def _market_search_for_proxy(ticker: str) -> dict:
         return {}
 
 
+def _search_market_with_live_fallback(query: str) -> dict:
+    fallback = search_dashboard_market_ticker(query)
+    live = _market_search_for_proxy(query)
+    rows = live.get("results") if isinstance(live, dict) else []
+    if isinstance(rows, list) and any(_safe_num(row.get("current_price")) is not None for row in rows if isinstance(row, dict)):
+        live["provider_used"] = live.get("provider_used") or "railway_fmp_proxy"
+        live["cache_hit"] = bool(live.get("cache_hit", False))
+        return live
+    return fallback
+
+
+def _quote_rows_from_payload(payload: dict) -> list[dict]:
+    rows = payload.get("results") if isinstance(payload, dict) else []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _live_quote_for_snapshot_ticker(ticker: str) -> dict | None:
+    normalized = str(ticker or "").strip().upper()
+    if not normalized:
+        return None
+    rows = _quote_rows_from_payload(_market_search_for_proxy(normalized))
+    return next((row for row in rows if str(row.get("ticker") or "").strip().upper() == normalized), rows[0] if rows else None)
+
+
+def _merge_live_quote_into_snapshot_item(item: dict, quote_row: dict) -> bool:
+    price = _first_safe_num(quote_row.get("current_price"), quote_row.get("price"))
+    if price is None or price <= 0:
+        return False
+    daily_change = _first_safe_num(quote_row.get("daily_change"), quote_row.get("change"))
+    daily_change_pct = _first_safe_num(quote_row.get("daily_change_pct"), quote_row.get("change_pct"), quote_row.get("percent_change"))
+    units = _safe_num(item.get("units")) or 0.0
+    entry_price = _safe_num(item.get("entry_price")) or _safe_num(item.get("reference_price")) or 0.0
+    cost_basis = _safe_num(item.get("cost_basis"))
+    if cost_basis is None and units > 0 and entry_price > 0:
+        cost_basis = units * entry_price
+
+    item["name"] = quote_row.get("name") or item.get("name") or item.get("ticker")
+    item["display_name"] = quote_row.get("display_name") or quote_row.get("name") or item.get("display_name") or item.get("name")
+    item["current_price"] = price
+    item["reference_price"] = price
+    item["daily_change"] = daily_change
+    item["daily_change_pct"] = daily_change_pct
+    item["change_pct"] = daily_change_pct
+    item["percent_change"] = daily_change_pct
+    item["previous_close"] = quote_row.get("previous_close")
+    item["day_high"] = quote_row.get("day_high")
+    item["day_low"] = quote_row.get("day_low")
+    item["extended_hours_price"] = quote_row.get("extended_hours_price")
+    item["extended_hours_change"] = quote_row.get("extended_hours_change")
+    item["extended_hours_change_pct"] = quote_row.get("extended_hours_change_pct")
+    item["market_session"] = quote_row.get("market_session") or item.get("market_session") or ""
+    item["volume"] = quote_row.get("volume")
+    item["quote_timestamp"] = quote_row.get("quote_timestamp") or item.get("quote_timestamp") or item.get("updated_at")
+    item["source"] = quote_row.get("source") or "datos_directos"
+    item["source_label"] = "FMP / Railway"
+    item["source_note"] = "Cotizacion live tomada por proxy seguro; no toca cartera paper."
+    item["status"] = "precio_live"
+
+    if units > 0:
+        market_value = units * price
+        item["market_value"] = market_value
+        item["current_value"] = market_value
+        if cost_basis is not None:
+            item["cost_basis"] = cost_basis
+            item["unrealized_pnl"] = market_value - cost_basis
+            item["unrealized_pnl_pct"] = ((market_value - cost_basis) / cost_basis * 100) if cost_basis else None
+        item["daily_pnl"] = units * daily_change if daily_change is not None else None
+    return True
+
+
+def _recalculate_live_portfolio_summary(snapshot: dict) -> None:
+    items = snapshot.get("items") if isinstance(snapshot.get("items"), list) else []
+    investment_items = [item for item in items if isinstance(item, dict) and (_safe_num(item.get("units")) or 0) > 0]
+    tracked_items = [item for item in items if isinstance(item, dict)]
+    total_value = sum((_safe_num(item.get("market_value") or item.get("current_value")) or 0.0) for item in investment_items)
+    total_cost = sum((_safe_num(item.get("cost_basis")) or 0.0) for item in investment_items)
+    daily_pnl_values = [(_safe_num(item.get("daily_pnl")) or 0.0) for item in investment_items if _safe_num(item.get("daily_pnl")) is not None]
+    daily_pnl = sum(daily_pnl_values) if daily_pnl_values else None
+    total_unrealized = total_value - total_cost if total_cost or total_value else None
+    total_unrealized_pct = (total_unrealized / total_cost * 100) if total_cost and total_unrealized is not None else None
+
+    for item in investment_items:
+        market_value = _safe_num(item.get("market_value") or item.get("current_value")) or 0.0
+        item["weight_pct"] = (market_value / total_value * 100) if total_value else None
+
+    top = max(investment_items, key=lambda item: _safe_num(item.get("market_value") or item.get("current_value")) or 0.0, default=None)
+    summary = snapshot.setdefault("summary", {})
+    portfolio = summary.setdefault("portfolio", {})
+    patch = {
+        "tracked_count": len(tracked_items),
+        "investment_count": len(investment_items),
+        "reference_count": sum(1 for item in tracked_items if _safe_num(item.get("current_price") or item.get("reference_price")) is not None),
+        "unavailable_count": sum(1 for item in tracked_items if _safe_num(item.get("current_price") or item.get("reference_price")) is None),
+        "total_value": total_value,
+        "total_cost_basis": total_cost,
+        "total_unrealized_pnl": total_unrealized,
+        "total_unrealized_pnl_pct": total_unrealized_pct,
+        "daily_pnl": daily_pnl,
+        "daily_pnl_pct": (daily_pnl / total_value * 100) if daily_pnl is not None and total_value else None,
+        "number_of_positions": len(investment_items),
+        "watchlist_count": sum(1 for item in tracked_items if item.get("watchlist")),
+        "top_concentration": {
+            "ticker": top.get("ticker"),
+            "weight_pct": top.get("weight_pct"),
+        } if top else {},
+    }
+    summary.update(patch)
+    portfolio.update(patch)
+    summary["data_origin"] = f"{summary.get('data_origin') or 'local'}+live_proxy"
+    summary["note"] = "Cartera local preservada; precios enriquecidos desde FMP/Railway cuando local no tiene keys."
+
+
+def _enrich_portfolio_snapshot_with_live_quotes(snapshot: dict) -> dict:
+    items = snapshot.get("items") if isinstance(snapshot.get("items"), list) else []
+    touched = 0
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        needs_quote = _safe_num(item.get("current_price")) is None or (_safe_num(item.get("current_price")) or 0) <= 0 or str(item.get("source") or "").lower() in {"contingency", "sin_precio"}
+        if not needs_quote:
+            continue
+        quote_row = _live_quote_for_snapshot_ticker(ticker)
+        if quote_row and _merge_live_quote_into_snapshot_item(item, quote_row):
+            touched += 1
+    if touched:
+        snapshot["live_proxy_enriched"] = True
+        snapshot["live_proxy_enriched_count"] = touched
+        _recalculate_live_portfolio_summary(snapshot)
+    return snapshot
+
+
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, directory: str | None = None, **kwargs):
         super().__init__(*args, directory=directory or str(_DASHBOARD_DIR), **kwargs)
@@ -750,6 +1013,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/ask" and (
             _is_casual_genesis_prompt(_genesis_message_from_body(body))
             or _is_market_genesis_prompt(_genesis_message_from_body(body))
+            or _is_news_genesis_prompt(_genesis_message_from_body(body))
             or _is_memory_genesis_prompt(_genesis_message_from_body(body))
             or _is_whale_genesis_prompt(_genesis_message_from_body(body))
         ):
@@ -926,7 +1190,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path in {"/api/dashboard/radar", "/api/dashboard/portfolio"}:
-            payload = json.dumps(get_dashboard_radar()).encode("utf-8")
+            payload = json.dumps(_enrich_portfolio_snapshot_with_live_quotes(get_dashboard_radar())).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -1020,7 +1284,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/market/search":
             query = (parse_qs(parsed.query).get("q") or [""])[0]
-            payload = json.dumps(search_dashboard_market_ticker(query)).encode("utf-8")
+            payload = json.dumps(_search_market_with_live_fallback(query)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

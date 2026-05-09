@@ -122,6 +122,10 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertIn("Brent", items[0]["title"])
         self.assertEqual(items[0]["image_url"], "https://example.com/oil.jpg")
         self.assertIn("BZ=F", items[0]["tickers"])
+        self.assertIn("Brent Crude Oil", items[0]["genesis_takeaway_es"])
+        self.assertIn("Brent Crude Oil", items[0]["what_to_watch_es"])
+        self.assertNotIn("BZ=F", items[0]["genesis_takeaway_es"])
+        self.assertNotIn("BZ=F", items[0]["what_to_watch_es"])
         self.assertTrue(items[0]["id"])
 
     @patch("services.dashboard.get_news_snapshot.get_recent_market_news")
