@@ -154,7 +154,7 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("genesis-brand-lockup", script)
         self.assertIn("genesis-header-logo", styles)
         self.assertIn("genesis-logo-img", styles)
-        self.assertIn("genesis-logo-green.jpeg", markup)
+        self.assertIn("genesis-logo-green.png", markup)
         self.assertIn("apple-touch-icon", markup)
         self.assertIn("genesis-nav-logo", markup)
         self.assertNotIn('class="nav-icon genesis-g" aria-hidden="true">G</span>', markup)
