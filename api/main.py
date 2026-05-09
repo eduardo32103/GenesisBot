@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import unicodedata
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -40,6 +41,7 @@ from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
 from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.intelligence_core import ask_genesis
 from services.genesis.memory_store import MemoryStore
+from services.genesis.trading_strategy import build_signal_strategy
 
 _ROOT_DIR = Path(__file__).resolve().parents[1]
 _DASHBOARD_DIR = _ROOT_DIR / "app" / "dashboard"
@@ -70,6 +72,7 @@ _PROXY_GET_PATHS = {
     "/api/genesis/memory/recent",
 }
 _PROXY_GET_PREFIXES = ("/api/genesis/memory/ticker/",)
+_PROXY_OPPORTUNITY_TICKERS = ("NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQQ", "BTC-USD")
 _PROXY_POST_PATHS = {
     "/api/dashboard/portfolio/paper",
     "/api/dashboard/portfolio/paper-buy",
@@ -145,6 +148,463 @@ def create_app() -> dict[str, str]:
     }
 
 
+def _safe_num(value: object) -> float | None:
+    try:
+        if value in (None, "", "None"):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _money_short(value: object) -> str:
+    number = _safe_num(value)
+    if number is None:
+        return "volumen pendiente"
+    sign = "-" if number < 0 else ""
+    absolute = abs(number)
+    if absolute >= 1_000_000_000:
+        return f"{sign}${absolute / 1_000_000_000:.1f}B"
+    if absolute >= 1_000_000:
+        return f"{sign}${absolute / 1_000_000:.1f}M"
+    if absolute >= 1_000:
+        return f"{sign}${absolute / 1_000:.0f}K"
+    return f"{sign}${absolute:.0f}"
+
+
+def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> bytes:
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except Exception:
+        return data
+    if not isinstance(payload, dict):
+        return data
+    if path == "/api/dashboard/alerts":
+        _massage_alerts_payload(payload)
+    elif path == "/api/dashboard/whales":
+        _massage_whales_payload(payload)
+    elif path == "/api/genesis/ask":
+        payload = _correct_genesis_proxy_payload(payload, body or {})
+        payload = _enrich_genesis_asset_quote(payload)
+    return json.dumps(payload).encode("utf-8")
+
+
+def _genesis_message_from_body(body: dict | None) -> str:
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("message") or body.get("question") or "").strip()
+
+
+def _fold_prompt(value: object) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or "").casefold())
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+
+
+def _is_casual_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " como estas ",
+            " como vas ",
+            " que tal ",
+            " todo bien ",
+            " estas listo ",
+            " estas activa ",
+            " estas funcionando ",
+            " buenas tardes ",
+            " buenas noches ",
+        )
+    )
+
+
+def _is_market_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    if " mercado libre " in text:
+        return False
+    if " mercado " in text and not any(token in text for token in (" seguimiento ", " cartera ", " watchlist ", " portfolio ", " paper ")):
+        return True
+    return any(
+        token in text
+        for token in (
+            " como esta el mercado ",
+            " como va el mercado ",
+            " mercado el dia de hoy ",
+            " mercado hoy ",
+            " que esta pasando hoy ",
+            " viernes pasado ",
+        )
+    )
+
+
+def _is_memory_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " que aprendiste ",
+            " aprendiste de ",
+            " que recuerdas ",
+            " historial de ",
+            " memoria de ",
+            " mis consultas recientes ",
+            " alertas funcionaron ",
+            " noticias movieron ",
+        )
+    )
+
+
+def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
+    message = _genesis_message_from_body(body)
+    if _is_casual_genesis_prompt(message):
+        return {
+            "ok": True,
+            "status": "genesis_intelligence_ready",
+            "intent": "greeting",
+            "response_type": "general_assistant",
+            "answer": (
+                "Estoy activo y listo. Puedo leer mercado, noticias, alertas, ballenas, "
+                "cartera o un activo sin convertir una frase normal en ticker."
+            ),
+            "tickers": [],
+            "kind": "general_assistant",
+        }
+    if _is_market_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
+        try:
+            local = ask_genesis(
+                message,
+                context=str(body.get("context") or "general"),
+                ticker="",
+                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                conversation_id=str(body.get("conversation_id") or "default"),
+            )
+            if isinstance(local, dict) and local.get("intent") == "market_overview":
+                return local
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local market prompt correction failed", exc_info=True)
+        return {
+            "ok": True,
+            "status": "genesis_intelligence_ready",
+            "intent": "market_overview",
+            "response_type": "market_summary",
+            "answer": "Lectura de mercado: Genesis revisa índices, BTC, Brent, alertas y noticias; no detectó un ticker específico en tu pregunta.",
+            "tickers": [],
+            "kind": "market_briefing",
+        }
+    return payload
+
+
+def _massage_alerts_payload(payload: dict) -> None:
+    existing_tickers: set[str] = set()
+    for key in ("items", "recent_alerts"):
+        rows = payload.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or "Mercado").upper()
+            if ticker and ticker != "MERCADO":
+                existing_tickers.add(ticker)
+            price = _safe_num(row.get("price"))
+            volume = _safe_num(row.get("volume"))
+            dollar_volume = _safe_num(row.get("dollar_volume") or row.get("dollarVolume"))
+            if dollar_volume is None and price is not None and volume is not None:
+                dollar_volume = price * volume
+                row["dollar_volume"] = dollar_volume
+            title = str(row.get("title_es") or row.get("title") or "")
+            summary = str(row.get("summary_es") or row.get("summary") or "")
+            bland = "precio confirmado" in title.casefold() or "genesis lo mantiene" in summary.casefold()
+            macro_repeated = bool(ticker != "MERCADO" and any(token in title.casefold() for token in ("petr", "oil", "geopolit", "cnbc daily open")))
+            if bland:
+                flow = _money_short(dollar_volume) if dollar_volume is not None else (f"{volume:,.0f} unidades" if volume is not None else "volumen pendiente")
+                pct = _safe_num(row.get("change_pct"))
+                support = row.get("support")
+                resistance = row.get("resistance")
+                row["title_es"] = f"{ticker}: {flow} negociados"
+                row["summary_es"] = (
+                    f"{ticker}: {(pct or 0):+.2f}% con {flow} observado; "
+                    f"soporte {support or 'pendiente'}, resistencia {resistance or 'pendiente'}. "
+                    "Genesis vigila ruptura, rechazo y volumen antes de actuar."
+                )
+                row["genesis_reading_es"] = (
+                    f"{ticker}: alerta tecnica con precio y flujo visibles. No es orden; sirve para priorizar vigilancia."
+                )
+            elif macro_repeated:
+                flow = _money_short(dollar_volume) if dollar_volume is not None else "volumen pendiente"
+                row["title_es"] = f"{ticker}: catalizador macro afectando vigilancia"
+                row["summary_es"] = (
+                    f"{ticker} queda expuesto a este titular macro; precio {price if price is not None else 'no directo'} "
+                    f"y flujo {flow}. Genesis revisa si la noticia se confirma en volumen y rango."
+                )
+                row["genesis_reading_es"] = (
+                    f"{ticker}: la noticia no es señal aislada; pesa si mueve precio, volumen o rompe soporte/resistencia."
+                )
+    opportunities = _proxy_opportunity_rows(existing_tickers)
+    if opportunities:
+        payload["opportunities"] = opportunities
+        for key in ("items", "recent_alerts"):
+            rows = payload.get(key)
+            if not isinstance(rows, list):
+                rows = []
+            seen = {str(row.get("id") or row.get("alert_id") or "") for row in rows if isinstance(row, dict)}
+            merged = []
+            for row in opportunities:
+                row_id = str(row.get("id") or row.get("alert_id") or "")
+                if row_id not in seen:
+                    merged.append(row)
+                    seen.add(row_id)
+            payload[key] = [*merged, *rows][:14]
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        summary["opportunities"] = len(opportunities)
+        summary["engine_summary"] = "Genesis agregó oportunidades externas importantes con FMP/proxy; son radar paper, no órdenes reales."
+        payload["summary"] = summary
+
+
+def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
+    rows: list[dict] = []
+    for ticker in _PROXY_OPPORTUNITY_TICKERS:
+        if ticker in existing_tickers:
+            continue
+        search = _market_search_for_proxy(ticker)
+        candidates = search.get("results") if isinstance(search, dict) else []
+        asset = candidates[0] if isinstance(candidates, list) and candidates else None
+        if not isinstance(asset, dict):
+            continue
+        price = _safe_num(asset.get("current_price") or asset.get("price"))
+        volume = _safe_num(asset.get("volume"))
+        change_pct = _safe_num(asset.get("daily_change_pct") or asset.get("change_pct")) or 0.0
+        if price is None:
+            continue
+        dollar_volume = price * volume if volume is not None else None
+        if not _proxy_opportunity_is_important(change_pct, dollar_volume, volume):
+            continue
+        support = _safe_num(asset.get("day_low") or asset.get("dayLow"))
+        resistance = _safe_num(asset.get("day_high") or asset.get("dayHigh"))
+        strategy = build_signal_strategy(
+            ticker,
+            {
+                "price": price,
+                "change_pct": change_pct,
+                "volume": volume,
+                "dollar_volume": dollar_volume,
+                "support": support,
+                "resistance": resistance,
+            },
+        )
+        row_id = f"opportunity:{ticker}"
+        flow = _money_short(dollar_volume)
+        rows.append(
+            {
+                "id": row_id,
+                "alert_id": row_id,
+                "ticker": ticker,
+                "asset_name": asset.get("name") or ticker,
+                "title_es": f"{ticker}: oportunidad externa detectada",
+                "summary_es": f"{ticker}: {change_pct:+.2f}% con {flow} de flujo observado. {strategy['summary']}",
+                "alert_type": "opportunity_scan",
+                "source": "FMP oportunidad",
+                "status": "opportunity",
+                "is_opportunity": True,
+                "price": price,
+                "change": _safe_num(asset.get("daily_change") or asset.get("change")),
+                "change_pct": change_pct,
+                "volume": volume,
+                "dollar_volume": dollar_volume,
+                "support": support,
+                "resistance": resistance,
+                "impact": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
+                "direction": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
+                "severity": "high" if strategy["score"] >= 72 else "medium",
+                "confidence": "medium" if strategy["score"] >= 60 else "low",
+                "strategy": strategy,
+                "genesis_reading_es": strategy["summary"],
+                "what_it_means": strategy["summary"],
+                "what_to_watch_es": "; ".join(strategy["validation"]),
+                "affected_portfolio_assets": [],
+                "affected_watchlist_assets": [],
+                "mini_series": [change_pct, strategy["score"], volume or 0],
+            }
+        )
+    rows.sort(key=lambda row: (float(row.get("strategy", {}).get("score") or 0), abs(float(row.get("dollar_volume") or 0))), reverse=True)
+    return rows[:4]
+
+
+def _proxy_opportunity_is_important(change_pct: float, dollar_volume: float | None, volume: float | None) -> bool:
+    if dollar_volume is not None and dollar_volume >= 1_000_000_000:
+        return True
+    if volume is not None and volume >= 10_000_000:
+        return True
+    return abs(change_pct) >= 1.0
+
+
+def _massage_whales_payload(payload: dict) -> None:
+    events = payload.get("events")
+    if not isinstance(events, list):
+        return
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        confirmed = bool(row.get("confirmed") or row.get("confirmed_amount_usd"))
+        ticker = str(row.get("ticker") or "").upper()
+        if ticker and (
+            _safe_num(row.get("price") or row.get("current_price")) is None
+            or _safe_num(row.get("volume") or row.get("monitored_volume")) is None
+        ):
+            _enrich_whale_event_with_quote(row, ticker)
+        monitored = _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume"))
+        if not confirmed and monitored is not None and monitored > 1_000_000_000_000:
+            row["amount_suspicious"] = True
+            row["monitored_dollar_volume"] = None
+            row["dollar_volume"] = None
+            row["estimated_flow"] = None
+            row["genesis_reading_es"] = (
+                f"{ticker}: volumen bruto demasiado grande para tratarlo como flujo institucional. "
+                "Genesis lo oculta como monto y espera confirmacion de fuente."
+            )
+    events.sort(key=lambda item: (_safe_num(item.get("monitored_dollar_volume") or item.get("dollar_volume")) or 0), reverse=True)
+
+
+def _enrich_whale_event_with_quote(row: dict, ticker: str) -> None:
+    search = _market_search_for_proxy(ticker)
+    rows = search.get("results") if isinstance(search, dict) and isinstance(search.get("results"), list) else []
+    asset = next((item for item in rows if str(item.get("ticker") or "").upper() == ticker), rows[0] if rows else None)
+    if not isinstance(asset, dict):
+        return
+    price = _safe_num(asset.get("current_price"))
+    volume = _safe_num(asset.get("volume"))
+    if price is not None:
+        row["price"] = price
+        row["price_used"] = price
+        row["current_price"] = price
+    if volume is not None:
+        row["volume"] = volume
+        row["monitored_volume"] = volume
+    if price is not None and volume is not None:
+        dollar_volume = price * volume
+        row["dollar_volume"] = dollar_volume
+        row["monitored_dollar_volume"] = dollar_volume
+        row["source"] = asset.get("source") or row.get("source") or "datos_directos"
+        row["genesis_reading_es"] = (
+            f"{ticker}: {_money_short(dollar_volume)} de volumen vigilado con precio {price}. "
+            "No es ballena confirmada; es radar de actividad para priorizar seguimiento."
+        )
+
+
+def _enrich_genesis_asset_quote(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return result
+    response_type = str(result.get("response_type") or result.get("kind") or "")
+    if response_type not in {"asset_analysis", "chart_analysis"} and result.get("intent") not in {"ticker_analysis", "technical_indicators", "chart_request"}:
+        return result
+    quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
+    existing_price = _safe_num(quote.get("current_price") or quote.get("price"))
+    if existing_price is not None:
+        quote["current_price"] = existing_price
+        quote["price"] = existing_price
+        quote["formatted_price"] = quote.get("formatted_price") or _money_short(existing_price)
+        quote["source_label"] = quote.get("source_label") or "FMP / datos directos"
+        quote["is_live"] = True
+        quote["is_stale"] = False
+        quote["sanity"] = {"ok": True, "suspicious": False, "reason": "Precio confirmado por fuente activa."}
+        quote.pop("message", None)
+        result["quote"] = quote
+        if isinstance(result.get("structured"), dict):
+            result["structured"].setdefault("price", {})
+            if isinstance(result["structured"]["price"], dict):
+                result["structured"]["price"].update(
+                    {
+                        "price": existing_price,
+                        "current_price": existing_price,
+                        "formatted_price": quote["formatted_price"],
+                        "source": quote.get("source"),
+                        "is_live": True,
+                        "sanity": quote["sanity"],
+                    }
+                )
+            ticker_label = str(quote.get("ticker") or result["structured"].get("ticker") or "").upper()
+            if "no tiene precio confirmado" in str(result["structured"].get("thesis") or "").casefold():
+                result["structured"]["thesis"] = (
+                    f"{ticker_label}: precio confirmado por FMP en {quote['formatted_price']}. "
+                    "Genesis usa este dato como base y mantiene cautela operativa hasta confirmar volumen, niveles y noticia."
+                )
+        if "no tengo precio confirmado" in str(result.get("answer") or "").casefold() or "no tiene precio confirmado" in str(result.get("answer") or "").casefold():
+            ticker_label = str(quote.get("ticker") or "").upper()
+            result["answer"] = (
+                f"{ticker_label}: precio confirmado por FMP en {quote['formatted_price']}. "
+                "Genesis usa este dato como base y mantiene cautela operativa hasta confirmar volumen, niveles y noticia."
+            )
+        return result
+    tickers = result.get("tickers") if isinstance(result.get("tickers"), list) else []
+    ticker = str(quote.get("ticker") or (tickers[0] if tickers else "") or "").strip().upper()
+    if not ticker:
+        return result
+    search = _market_search_for_proxy(ticker)
+    rows = search.get("results") if isinstance(search, dict) and isinstance(search.get("results"), list) else []
+    asset = next((item for item in rows if str(item.get("ticker") or "").upper() == ticker), rows[0] if rows else None)
+    if not isinstance(asset, dict) or _safe_num(asset.get("current_price")) is None:
+        return result
+    merged_quote = {
+        **quote,
+        "ticker": asset.get("ticker") or ticker,
+        "name": asset.get("name") or quote.get("name") or ticker,
+        "current_price": asset.get("current_price"),
+        "price": asset.get("current_price"),
+        "formatted_price": _money_short(asset.get("current_price")),
+        "daily_change": asset.get("daily_change"),
+        "daily_change_pct": asset.get("daily_change_pct"),
+        "previous_close": asset.get("previous_close"),
+        "day_low": asset.get("day_low"),
+        "day_high": asset.get("day_high"),
+        "volume": asset.get("volume"),
+        "source": asset.get("source") or "datos_directos",
+        "source_label": "FMP / datos directos",
+        "is_live": True,
+        "is_stale": False,
+        "sanity": {"ok": True, "suspicious": False, "reason": "Precio confirmado por FMP."},
+    }
+    result["quote"] = merged_quote
+    if isinstance(result.get("structured"), dict):
+        result["structured"].setdefault("price", {})
+        if isinstance(result["structured"]["price"], dict):
+            result["structured"]["price"].update(
+                {
+                    "current_price": merged_quote["current_price"],
+                    "price": merged_quote["current_price"],
+                    "formatted_price": merged_quote["formatted_price"],
+                    "daily_change": merged_quote.get("daily_change"),
+                    "daily_change_pct": merged_quote.get("daily_change_pct"),
+                    "source": merged_quote.get("source"),
+                    "is_live": True,
+                    "sanity": merged_quote["sanity"],
+                }
+            )
+    if "no tengo precio confirmado" in str(result.get("answer") or "").casefold():
+        result["answer"] = (
+            f"{ticker}: precio confirmado por FMP en {_money_short(asset.get('current_price'))}. "
+            "Genesis usa este dato como base y mantiene cautela operativa hasta confirmar volumen, niveles y noticia."
+        )
+    return result
+
+
+def _market_search_for_proxy(ticker: str) -> dict:
+    try:
+        local = search_dashboard_market_ticker(ticker)
+        rows = local.get("results") if isinstance(local, dict) else []
+        if isinstance(rows, list) and rows and _safe_num(rows[0].get("current_price")) is not None:
+            return local
+    except Exception:
+        pass
+    try:
+        target = f"{_PRODUCTION_API_ORIGIN}/api/dashboard/market/search?q={quote(ticker)}"
+        request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
+        with urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, directory: str | None = None, **kwargs):
         super().__init__(*args, directory=directory or str(_DASHBOARD_DIR), **kwargs)
@@ -187,10 +647,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             headers["Content-Type"] = "application/json; charset=utf-8"
         request = Request(target, data=payload_bytes if method == "POST" else None, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=28) as response:
+            proxy_timeout = 10 if parsed.path in {"/api/genesis/ask", "/api/dashboard/genesis", "/api/dashboard/source-health"} else 18
+            with urlopen(request, timeout=proxy_timeout) as response:
                 data = response.read()
                 status = int(getattr(response, "status", 200) or 200)
                 content_type = response.headers.get("Content-Type", "application/json; charset=utf-8")
+                if "json" in content_type:
+                    data = _massage_proxy_payload(parsed.path, data, body=body)
         except HTTPError as exc:
             data = exc.read() or json.dumps({"ok": False, "message": "Railway devolvio error seguro."}).encode("utf-8")
             status = int(exc.code or 502)
@@ -209,6 +672,20 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         body = self._read_json_body()
+        if parsed.path == "/api/genesis/ask" and (
+            _is_casual_genesis_prompt(_genesis_message_from_body(body))
+            or _is_market_genesis_prompt(_genesis_message_from_body(body))
+            or _is_memory_genesis_prompt(_genesis_message_from_body(body))
+        ):
+            result = ask_genesis(
+                _genesis_message_from_body(body),
+                context=str(body.get("context") or "general"),
+                ticker="",
+                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                conversation_id=str(body.get("conversation_id") or "default"),
+            )
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
         if self._try_proxy_to_production(parsed, method="POST", body=body):
             return
 
@@ -220,6 +697,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
+            result = _enrich_genesis_asset_quote(result)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -427,6 +905,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                     "learned_context": store.get_learned_context(limit),
                     "tracked_entities": store.get_tracked_entities(limit),
                     "recent_topics": store.get_recent_topics(min(limit, 20)),
+                    "asset_memory": store.get_asset_memory(limit=limit),
+                    "signal_events": store.get_signal_events(limit=limit),
+                    "news_events": store.get_news_events(limit=limit),
+                    "decision_notes": store.get_decision_notes(limit=limit),
+                    "hypothesis_log": store.get_hypotheses(limit=limit),
+                    "outcome_tracking": store.get_outcome_tracking(limit=limit),
                     "durable_on_railway": store.backend == "postgres",
                 }
             ).encode("utf-8")
@@ -447,6 +931,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                     "ticker": ticker.upper(),
                     "market": store.get_market_memory(ticker),
                     "whales": store.get_whale_memory(ticker),
+                    "alerts": store.get_alert_memory(ticker),
+                    "learning": store.get_asset_learning_summary(ticker),
                 }
             ).encode("utf-8")
             self.send_response(HTTPStatus.OK)

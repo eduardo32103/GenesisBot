@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.settings import load_settings
 from services.dashboard.get_operational_health import _connect_database, _safe_iso
+from services.genesis.trading_strategy import build_signal_strategy
 
 _DEFAULT_ALERT_WINDOW_DAYS = 45
 _DEFAULT_RECENT_LIMIT = 6
+_OPPORTUNITY_TTL_SECONDS = 55
+_OPPORTUNITY_UNIVERSE = ("NVDA", "MSFT", "AAPL", "META", "AMZN", "TSLA", "NFLX", "AMD", "AVGO", "SPY", "QQQ", "BTC-USD")
+_OPPORTUNITY_CACHE: dict[str, Any] = {"expires_at": 0.0, "items": []}
 
 _ALERT_TYPE_LABELS = {
     "geo_macro": "Geo / Macro",
@@ -228,22 +233,152 @@ def _fetch_alerts_snapshot(database_url: str, *, window_days: int = _DEFAULT_ALE
 def get_alerts_snapshot() -> dict[str, Any]:
     settings = load_settings()
     snapshot = _fetch_alerts_snapshot(settings.database_url)
+    opportunity_items = _market_opportunity_alerts()
     if isinstance(snapshot.get("items"), list) and snapshot.get("items"):
-        snapshot["items"] = _enrich_alert_items(snapshot["items"])
+        snapshot["items"] = _merge_alert_rows(_enrich_alert_items(snapshot["items"]), opportunity_items)
         snapshot["recent_alerts"] = snapshot["items"]
+        snapshot["opportunities"] = [item for item in snapshot["items"] if item.get("is_opportunity")]
         return snapshot
     derived = _derived_technical_alerts()
     if derived:
-        items = [*derived, *[item for item in snapshot.get("items", []) if isinstance(item, dict)]]
+        items = _enrich_alert_items([*derived, *opportunity_items, *[item for item in snapshot.get("items", []) if isinstance(item, dict)]])
         snapshot["items"] = items[:12]
         snapshot["recent_alerts"] = snapshot["items"]
+        snapshot["opportunities"] = [item for item in snapshot["items"] if item.get("is_opportunity")]
         summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
         summary["total_recent"] = max(int(summary.get("total_recent") or 0), len(snapshot["items"]))
         summary["active_alerts"] = max(int(summary.get("active_alerts") or 0), len(derived))
         if not summary.get("engine_summary") or "Todavia no hay" in str(summary.get("engine_summary")):
-            summary["engine_summary"] = "Genesis genero alertas tecnicas con precio, cambio, volumen y rango disponible."
+            summary["engine_summary"] = "Genesis generó alertas técnicas con precio, cambio, volumen y rango disponible."
+        snapshot["summary"] = summary
+    elif opportunity_items:
+        snapshot["items"] = _enrich_alert_items(opportunity_items)[:8]
+        snapshot["recent_alerts"] = snapshot["items"]
+        snapshot["opportunities"] = [item for item in snapshot["items"] if item.get("is_opportunity")]
+        summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+        summary["total_recent"] = len(snapshot["items"])
+        summary["active_alerts"] = len(snapshot["items"])
+        summary["engine_summary"] = "Genesis encontró oportunidades externas importantes con FMP; ninguna es orden real."
         snapshot["summary"] = summary
     return snapshot
+
+
+def _merge_alert_rows(primary: list[dict[str, Any]], opportunities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = {str(item.get("id") or item.get("alert_id") or "") for item in primary}
+    merged: list[dict[str, Any]] = []
+    for item in opportunities:
+        key = str(item.get("id") or item.get("alert_id") or "")
+        if key and key in seen:
+            continue
+        merged.append(item)
+        if key:
+            seen.add(key)
+    merged.extend(primary)
+    return merged[:14]
+
+
+def _market_opportunity_alerts() -> list[dict[str, Any]]:
+    settings = load_settings()
+    if not (getattr(settings, "fmp_api_key", "") and getattr(settings, "fmp_live_enabled", False)):
+        _OPPORTUNITY_CACHE["expires_at"] = 0.0
+        _OPPORTUNITY_CACHE["items"] = []
+        return []
+    now_ts = time.time()
+    if _OPPORTUNITY_CACHE["expires_at"] > now_ts:
+        return [dict(item) for item in _OPPORTUNITY_CACHE.get("items", [])]
+    try:
+        from integrations.fmp.client import FmpClient
+    except Exception:
+        return []
+    client = FmpClient(settings.fmp_api_key)
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows: list[dict[str, Any]] = []
+    for ticker in _OPPORTUNITY_UNIVERSE:
+        try:
+            quote = client.get_quote(ticker)
+        except Exception:
+            continue
+        if not isinstance(quote, dict):
+            continue
+        price = _price_num(quote.get("current_price"), quote.get("price"))
+        volume = _num(quote.get("volume"))
+        change_pct = _num(quote.get("daily_change_pct") or quote.get("changesPercentage")) or 0.0
+        if price is None:
+            continue
+        dollar_volume = price * volume if volume is not None else None
+        if not _is_important_opportunity(change_pct, dollar_volume, volume):
+            continue
+        direction = "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral"
+        context = {
+            "price": price,
+            "change": _num(quote.get("daily_change") or quote.get("change")),
+            "change_pct": change_pct,
+            "volume": volume,
+            "avg_volume": _num(quote.get("avg_volume") or quote.get("avgVolume")),
+            "relative_volume": _num(quote.get("relative_volume") or quote.get("relativeVolume")),
+            "dollar_volume": dollar_volume,
+            "support": _num(quote.get("day_low") or quote.get("dayLow")),
+            "resistance": _num(quote.get("day_high") or quote.get("dayHigh")),
+        }
+        strategy = build_signal_strategy(ticker, context)
+        flow = _format_money_short(dollar_volume) if dollar_volume is not None else "volumen pendiente"
+        rows.append(
+            {
+                "alert_id": f"opportunity:{ticker}",
+                "id": f"opportunity:{ticker}",
+                "alert_type": "opportunity_scan",
+                "alert_type_label": "Oportunidad",
+                "ticker": ticker,
+                "asset_name": str(quote.get("name") or ticker),
+                "title": f"{ticker}: oportunidad externa detectada",
+                "title_es": f"{ticker}: oportunidad externa detectada",
+                "summary": f"{ticker}: {change_pct:+.2f}% con {flow} de flujo observado. {strategy['summary']}",
+                "summary_es": f"{ticker}: {change_pct:+.2f}% con {flow} de flujo observado. {strategy['summary']}",
+                "source": "fmp_opportunity_scan",
+                "signal_strength": strategy["score"],
+                "status": "opportunity",
+                "is_opportunity": True,
+                "created_at": now,
+                "timestamp": now,
+                "severity": "high" if strategy["score"] >= 72 else "medium",
+                "impact": direction,
+                "confidence": "medium" if strategy["score"] >= 60 else "low",
+                "direction": direction,
+                **context,
+                "trend": _trend_from_change(change_pct),
+                "momentum": _momentum_from_fields(change_pct, context.get("relative_volume")),
+                "risk": strategy["invalidation"],
+                "strategy": strategy,
+                "what_it_means": strategy["summary"],
+                "what_happened_es": f"Genesis detectó un activo importante fuera de tu cartera/watchlist con precio y flujo FMP activos.",
+                "why_it_matters_es": "Puede convertirse en oportunidad solo si valida precio, volumen y catalizador; no es compra real.",
+                "what_to_watch": "; ".join(strategy["validation"]),
+                "what_to_watch_es": "; ".join(strategy["validation"]),
+                "affected_portfolio_assets": [],
+                "affected_watchlist_assets": [],
+                "day_range": {"low": context.get("support"), "high": context.get("resistance")},
+                "mini_series": [change_pct, context.get("relative_volume") or 0, strategy["score"]],
+                "genesis_reading": strategy["summary"],
+                "genesis_reading_es": strategy["summary"],
+                "evidence": {"derived_from": "fmp_opportunity_scan", "source": "FMP", **{key: value for key, value in context.items() if value is not None}},
+            }
+        )
+    rows.sort(key=lambda item: (float(item.get("signal_strength") or 0), abs(float(item.get("dollar_volume") or 0))), reverse=True)
+    output = rows[:5]
+    _OPPORTUNITY_CACHE["expires_at"] = now_ts + _OPPORTUNITY_TTL_SECONDS
+    _OPPORTUNITY_CACHE["items"] = output
+    return [dict(item) for item in output]
+
+
+def _is_important_opportunity(change_pct: float, dollar_volume: float | None, volume: float | None) -> bool:
+    if dollar_volume is not None and dollar_volume >= 1_000_000_000:
+        return True
+    if abs(change_pct) >= 0.8 and volume is not None and volume >= 2_000_000:
+        return True
+    if abs(change_pct) >= 1.5:
+        return True
+    return False
 
 
 def _derived_technical_alerts() -> list[dict[str, Any]]:
@@ -326,8 +461,17 @@ def _derived_technical_alerts() -> list[dict[str, Any]]:
                 "support": _num(row.get("support") or row.get("support_level")),
                 "resistance": _num(row.get("resistance") or row.get("resistance_level")),
             }
-            title = _fallback_watch_title(ticker, pct, context.get("relative_volume"), day_low, day_high, price)
-            summary = _fallback_watch_summary(ticker, pct, context.get("relative_volume"), support=context.get("support") or day_low, resistance=context.get("resistance") or day_high)
+            dollar_volume = price * volume if price is not None and volume is not None else None
+            title = _fallback_watch_title(ticker, pct, context.get("relative_volume"), day_low, day_high, price, volume=volume, dollar_volume=dollar_volume)
+            summary = _fallback_watch_summary(
+                ticker,
+                pct,
+                context.get("relative_volume"),
+                support=context.get("support") or day_low,
+                resistance=context.get("resistance") or day_high,
+                volume=volume,
+                dollar_volume=dollar_volume,
+            )
             unique.append(
                 _technical_alert(
                     ticker,
@@ -354,6 +498,19 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
     resistance = context.get("resistance") or day_high
     trend = _trend_from_change(context.get("change_pct"))
     momentum = _momentum_from_fields(context.get("change_pct"), context.get("relative_volume"))
+    strategy = build_signal_strategy(
+        ticker,
+        {
+            "price": price,
+            "change_pct": context.get("change_pct"),
+            "volume": volume,
+            "avg_volume": context.get("avg_volume"),
+            "relative_volume": context.get("relative_volume"),
+            "dollar_volume": dollar_volume,
+            "support": support,
+            "resistance": resistance,
+        },
+    )
     return {
         "alert_id": f"technical:{ticker}:{alert_type}",
         "id": f"technical:{ticker}:{alert_type}",
@@ -386,6 +543,7 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "trend": trend,
         "momentum": momentum,
         "risk": _risk_from_alert(impact, support, resistance),
+        "strategy": strategy,
         "what_it_means": _what_alert_means(ticker, impact, context.get("relative_volume")),
         "what_happened_es": summary,
         "why_it_matters_es": _what_alert_means(ticker, impact, context.get("relative_volume")),
@@ -397,14 +555,28 @@ def _technical_alert(ticker: str, title: str, summary: str, alert_type: str, str
         "mini_series": [context.get("change_pct") or 0, strength, context.get("relative_volume") or 0],
         "state_label": "Vigilancia",
         "evidence": {"derived_from": "radar_snapshot", "source": "technical", **{key: value for key, value in context.items() if value is not None}},
-        "genesis_reading": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
-        "genesis_reading_es": f"{title}: no es orden; sirve para decidir si esperar confirmacion o reducir riesgo.",
+        "genesis_reading": f"{title}: no es orden; {strategy['summary']}",
+        "genesis_reading_es": f"{title}: no es orden; {strategy['summary']}",
     }
 
 
-def _fallback_watch_title(ticker: str, pct: float, relative_volume: float | None, day_low: float | None, day_high: float | None, price: float | None) -> str:
+def _fallback_watch_title(
+    ticker: str,
+    pct: float,
+    relative_volume: float | None,
+    day_low: float | None,
+    day_high: float | None,
+    price: float | None,
+    *,
+    volume: float | None = None,
+    dollar_volume: float | None = None,
+) -> str:
     if relative_volume is not None and relative_volume >= 1.3:
         return f"{ticker}: volumen relativo en vigilancia"
+    if dollar_volume is not None and dollar_volume >= 100_000_000:
+        return f"{ticker}: {_format_money_short(dollar_volume)} negociados en sesion"
+    if volume is not None and volume >= 1_000_000:
+        return f"{ticker}: volumen visible en mercado"
     if pct >= 0.5:
         return f"{ticker}: sesgo positivo moderado"
     if pct <= -0.5:
@@ -418,15 +590,42 @@ def _fallback_watch_title(ticker: str, pct: float, relative_volume: float | None
     return f"{ticker}: precio confirmado en radar"
 
 
-def _fallback_watch_summary(ticker: str, pct: float, relative_volume: float | None, *, support: float | None, resistance: float | None) -> str:
+def _fallback_watch_summary(
+    ticker: str,
+    pct: float,
+    relative_volume: float | None,
+    *,
+    support: float | None,
+    resistance: float | None,
+    volume: float | None = None,
+    dollar_volume: float | None = None,
+) -> str:
     volume_part = f" volumen relativo {relative_volume:.1f}x," if relative_volume is not None else ""
+    if not volume_part and dollar_volume is not None:
+        volume_part = f" volumen negociado {_format_money_short(dollar_volume)},"
+    elif not volume_part and volume is not None:
+        volume_part = f" volumen {volume:,.0f},"
     level_bits = []
     if support is not None:
         level_bits.append(f"soporte {support}")
     if resistance is not None:
         level_bits.append(f"resistencia {resistance}")
     levels = ", ".join(level_bits) if level_bits else "niveles no confirmados"
-    return f"{ticker}: movimiento {pct:+.2f}%,{volume_part} {levels}. Genesis lo mantiene como vigilancia, no como orden."
+    return f"{ticker}: movimiento {pct:+.2f}%,{volume_part} zona {levels}. Lectura: vigilar ruptura o rechazo con volumen antes de actuar."
+
+
+def _format_money_short(value: float | None) -> str:
+    if value is None:
+        return "monto pendiente"
+    abs_value = abs(float(value))
+    sign = "-" if value < 0 else ""
+    if abs_value >= 1_000_000_000:
+        return f"{sign}${abs_value / 1_000_000_000:.1f}B"
+    if abs_value >= 1_000_000:
+        return f"{sign}${abs_value / 1_000_000:.1f}M"
+    if abs_value >= 1_000:
+        return f"{sign}${abs_value / 1_000:.0f}K"
+    return f"{sign}${abs_value:.0f}"
 
 
 def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -462,14 +661,32 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         trend = item.get("trend") or _trend_from_change(change_pct)
         momentum = item.get("momentum") or _momentum_from_fields(change_pct, relative_volume)
         risk = item.get("risk") or _risk_from_alert(impact, support, resistance)
+        strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else build_signal_strategy(
+            ticker or "MERCADO",
+            {
+                "price": price,
+                "change_pct": change_pct,
+                "volume": volume,
+                "avg_volume": avg_volume,
+                "relative_volume": relative_volume,
+                "dollar_volume": dollar_volume,
+                "support": support,
+                "resistance": resistance,
+            },
+        )
+        title_es = item.get("title_es") or item.get("title") or "Alerta Genesis"
+        summary_es = item.get("summary_es") or item.get("summary") or item.get("description") or ""
+        if ticker and ("precio confirmado" in str(title_es).casefold() or not summary_es):
+            title_es = _enriched_watch_title(ticker, change_pct, relative_volume, dollar_volume, volume)
+            summary_es = _enriched_watch_summary(ticker, change_pct, dollar_volume, volume, support, resistance)
         enriched.append(
             {
                 **item,
                 "id": alert_id,
                 "alert_id": alert_id,
                 "asset_name": str(market.get("name") or market.get("asset_name") or ticker or "Mercado"),
-                "title_es": item.get("title_es") or item.get("title") or "Alerta Genesis",
-                "summary_es": item.get("summary_es") or item.get("summary") or item.get("description") or "",
+                "title_es": title_es,
+                "summary_es": summary_es,
                 "description": item.get("description") or item.get("summary") or item.get("title") or "",
                 "severity": item.get("severity") or ("high" if change_pct is not None and abs(change_pct) >= 3 else "medium"),
                 "impact": impact,
@@ -487,6 +704,7 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "trend": trend,
                 "momentum": momentum,
                 "risk": risk,
+                "strategy": strategy,
                 "mini_series": item.get("mini_series") or [value for value in (change_pct, relative_volume, item.get("signal_strength")) if value is not None],
                 "evidence": item.get("evidence") or {"source": item.get("source") or "database", "market_fields_enriched": bool(market)},
                 "genesis_reading": item.get("genesis_reading")
@@ -504,6 +722,46 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return enriched
+
+
+def _enriched_watch_title(
+    ticker: str,
+    change_pct: float | None,
+    relative_volume: float | None,
+    dollar_volume: float | None,
+    volume: float | None,
+) -> str:
+    if relative_volume is not None and relative_volume >= 1.3:
+        return f"{ticker}: volumen relativo {relative_volume:.1f}x"
+    if dollar_volume is not None and dollar_volume >= 100_000_000:
+        return f"{ticker}: {_format_money_short(dollar_volume)} negociados"
+    if volume is not None and volume >= 1_000_000:
+        return f"{ticker}: {volume:,.0f} unidades negociadas"
+    pct = change_pct or 0.0
+    if pct > 0:
+        return f"{ticker}: sesgo positivo en vigilancia"
+    if pct < 0:
+        return f"{ticker}: presion bajista en vigilancia"
+    return f"{ticker}: rango lateral en vigilancia"
+
+
+def _enriched_watch_summary(
+    ticker: str,
+    change_pct: float | None,
+    dollar_volume: float | None,
+    volume: float | None,
+    support: float | None,
+    resistance: float | None,
+) -> str:
+    flow = _format_money_short(dollar_volume) if dollar_volume is not None else (f"{volume:,.0f} unidades" if volume is not None else "volumen pendiente")
+    pct = change_pct or 0.0
+    levels = []
+    if support is not None:
+        levels.append(f"soporte {support}")
+    if resistance is not None:
+        levels.append(f"resistencia {resistance}")
+    level_text = ", ".join(levels) if levels else "niveles por confirmar"
+    return f"{ticker}: {pct:+.2f}% con {flow} de flujo observado; {level_text}. Genesis vigila ruptura/rechazo antes de actuar."
 
 
 def _radar_by_ticker() -> dict[str, dict[str, Any]]:
@@ -571,7 +829,7 @@ def _momentum_from_fields(change_pct: object, relative_volume: object) -> str:
     if abs(pct) >= 3 and rel >= 1.8:
         return "alto: precio y volumen empujan juntos"
     if abs(pct) >= 2 or rel >= 1.5:
-        return "medio: senal visible, falta continuidad"
+        return "medio: señal visible, falta continuidad"
     return "moderado: vigilancia sin ruptura fuerte"
 
 

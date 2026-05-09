@@ -60,6 +60,8 @@ class DashboardSourceHealthTests(unittest.TestCase):
         self.assertTrue(payload["openai"]["key_configured"])
         self.assertEqual(payload["openai"]["model"], "gpt-5.5")
         self.assertTrue(payload["database"]["portfolio_store"]["durable"])
+        self.assertIn("memory_collections", payload["database"])
+        self.assertIn("asset_memory", payload["database"]["memory_collections"])
         self.assertTrue(payload["weather"]["open_meteo_ok"])
         self.assertTrue(payload["rss_news"]["enabled"])
         self.assertNotIn("super-secret-fmp", serialized)

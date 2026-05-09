@@ -471,6 +471,10 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
     text = _strip_html(title)
     text = re.sub(r"\s+-\s+(Reuters|CNBC|MarketWatch|Yahoo Finance|CoinDesk|CoinTelegraph|WSJ|Wall Street Journal|The Wall Street Journal|Investing News Network|Fortune|AP News|CBS News|LancasterOnline)\s*$", "", text, flags=re.I)
     replacements = (
+        (r"\bThe Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell\b", "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"),
+        (r"\bStock Market Closing Bell\b", "campana de cierre del mercado accionario"),
+        (r"\bClosing Bell\b", "campana de cierre"),
+        (r"\bStock Market\b", "mercado accionario"),
         (r"\bToday's Crypto News\b", "Noticias cripto de hoy"),
         (r"\bCrypto News\b", "Noticias cripto"),
         (r"\bCoinbase Cuts Jobs\b", "Coinbase recorta empleos"),
@@ -596,6 +600,10 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
 def _spanish_summary(summary: str) -> str:
     text = _strip_html(summary)
     replacements = (
+        (r"\bThe Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell\b", "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"),
+        (r"\bStock Market Closing Bell\b", "campana de cierre del mercado accionario"),
+        (r"\bClosing Bell\b", "campana de cierre"),
+        (r"\bstock market\b", "mercado accionario"),
         (r"\bmarket\b", "mercado"),
         (r"\bstocks\b", "acciones"),
         (r"\binvestors\b", "inversionistas"),

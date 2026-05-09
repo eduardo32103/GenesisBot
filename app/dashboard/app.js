@@ -50,6 +50,12 @@ const appState = {
   alertItemsById: {},
   selectedWhaleId: "",
   whaleItemsById: {},
+  marketPulse: {},
+  marketPulseLoadedAt: 0,
+  marketPulseLoading: false,
+  opportunityQuotes: {},
+  opportunityQuotesLoadedAt: 0,
+  opportunityQuotesLoading: false,
   searchOpen: {
     tracking: false,
     portfolio: false,
@@ -71,6 +77,8 @@ const appState = {
 
 const REFRESH_MS = 15000;
 const MARKET_FEED_REFRESH_MS = 60000;
+const MARKET_PULSE_TICKERS = ["SPY", "QQQ", "BTC-USD", "NVDA", "BZ=F"];
+const OPPORTUNITY_TICKERS = ["NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQQ", "BTC-USD"];
 const CHART_RANGES = ["1D", "1W", "1M", "1Y", "5Y", "MAX"];
 const MONEY_COLORS = ["#7be0ad", "#91a7ff", "#efbd6f", "#ec7f77", "#7fd9df", "#d7c27f", "#b7c5d9"];
 const NEWS_FALLBACK_IMAGES = {
@@ -312,6 +320,27 @@ function formatDate(value) {
 
 function cleanCopy(value) {
   return String(value ?? "")
+    .replace(/\bsenales\b/gi, "señales")
+    .replace(/\bsenal\b/gi, "señal")
+    .replace(/\bdireccion\b/gi, "dirección")
+    .replace(/\bdistribucion\b/gi, "distribución")
+    .replace(/\bacumulacion\b/gi, "acumulación")
+    .replace(/\bconfirmacion\b/gi, "confirmación")
+    .replace(/\bpresion\b/gi, "presión")
+    .replace(/\batencion\b/gi, "atención")
+    .replace(/\bsesion\b/gi, "sesión")
+    .replace(/\binstitucion\b/gi, "institución")
+    .replace(/\bperdida\b/gi, "pérdida")
+    .replace(/\bminimo\b/gi, "mínimo")
+    .replace(/\bintradia\b/gi, "intradía")
+    .replace(/\bcaida\b/gi, "caída")
+    .replace(/\brecuperacion\b/gi, "recuperación")
+    .replace(/\bautomatica\b/gi, "automática")
+    .replace(/\bautomatico\b/gi, "automático")
+    .replace(/\bcontinua\b/gi, "continúa")
+    .replace(/\btecnicas\b/gi, "técnicas")
+    .replace(/\bhistorico\b/gi, "histórico")
+    .replace(/\baun\b/gi, "aún")
     .replace(/\bFMP_API_KEY\b/gi, "fuente privada")
     .replace(/\bapikey\b/gi, "credencial")
     .replace(/\bendpoint\b/gi, "consulta")
@@ -325,7 +354,9 @@ function cleanCopy(value) {
     .replace(/money\s*flow\s*ready/gi, "flujo en vigilancia")
     .replace(/detection\s+ready/gi, "deteccion en vigilancia")
     .replace(/\bTelegram\b/gi, "Genesis")
-    .replace(/\blegacy\b/gi, "local");
+    .replace(/\blegacy\b/gi, "local")
+    .replace(/\bdatos_directos\b/gi, "datos directos")
+    .replace(/\bfmp_opportunity_scan\b/gi, "FMP oportunidad");
 }
 
 function stripMarkdownCopy(value) {
@@ -402,6 +433,93 @@ function compactNumber(value, empty = "Sin dato") {
     : numeric.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
+function compactSuffixNumber(value, empty = "Sin dato", decimals = 1) {
+  const numeric = numberOrNull(value);
+  if (numeric === null) return empty;
+  const sign = numeric < 0 ? "-" : "";
+  const abs = Math.abs(numeric);
+  if (abs >= 1_000_000_000_000) return `${sign}${(abs / 1_000_000_000_000).toFixed(decimals)}T`;
+  if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(decimals)}B`;
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(decimals)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(decimals)}K`;
+  return `${sign}${abs.toLocaleString("en-US", { maximumFractionDigits: abs < 10 ? 2 : 0 })}`;
+}
+
+function formatMoneyCompact(value, empty = "Pendiente") {
+  const numeric = numberOrNull(value);
+  if (numeric === null) return empty;
+  return `${numeric < 0 ? "-" : ""}$${compactSuffixNumber(Math.abs(numeric), empty)}`;
+}
+
+function formatVolumeCompact(value, empty = "Volumen pendiente") {
+  return compactSuffixNumber(value, empty);
+}
+
+function formatPercentSigned(value, empty = "0.00%") {
+  return formatPercent(value, empty);
+}
+
+function confidenceTone(value) {
+  const text = String(value ?? "").toLowerCase();
+  const numeric = numberOrNull(value);
+  if (numeric !== null) {
+    if (numeric >= 0.7 || numeric >= 70) return "up";
+    if (numeric <= 0.35 || numeric <= 35) return "down";
+    return "flat";
+  }
+  if (text.includes("alta") || text.includes("high") || text.includes("fuerte")) return "up";
+  if (text.includes("baja") || text.includes("low") || text.includes("debil")) return "down";
+  return "flat";
+}
+
+function assetMoveValues(item = {}) {
+  return [
+    itemDailyPct(item),
+    itemDailyUsd(item),
+    numberOrNull(item?.relative_volume ?? item?.relativeVolume),
+    numberOrNull(item?.volume),
+  ].filter((value) => value !== null);
+}
+
+function renderSparkline(values = [], tone = "flat") {
+  return `<span class="render-sparkline ${escapeHtml(tone)}" aria-hidden="true">${miniSeriesBars(values, 24)}</span>`;
+}
+
+function renderMiniBars(values = [], maxHeight = 30) {
+  return `<span class="render-mini-bars" aria-hidden="true">${miniSeriesBars(values, maxHeight)}</span>`;
+}
+
+function renderMetricCard(label, value, tone = "flat") {
+  return `
+    <span class="metric-card ${escapeHtml(tone)}">
+      <small>${escapeHtml(label)}</small>
+      <strong>${escapeHtml(value)}</strong>
+    </span>
+  `;
+}
+
+function renderImpactBadge(label, tone = "flat") {
+  return `<span class="impact-badge ${escapeHtml(tone)}">${escapeHtml(cleanCopy(label || "Neutral"))}</span>`;
+}
+
+function renderConfidenceBar(confidence) {
+  const numeric = numberOrNull(confidence);
+  const pct = numeric === null
+    ? (confidenceTone(confidence) === "up" ? 78 : confidenceTone(confidence) === "down" ? 34 : 56)
+    : Math.max(8, Math.min(100, numeric <= 1 ? numeric * 100 : numeric));
+  return `<span class="confidence-bar ${confidenceTone(confidence)}"><i><b style="width:${pct}%"></b></i><small>${escapeHtml(cleanCopy(confidence || `${Math.round(pct)}%`))}</small></span>`;
+}
+
+function renderAssetIcon(itemOrTicker) {
+  const display = getAssetDisplayName(itemOrTicker);
+  const ticker = display.ticker || "";
+  const initials = ticker.includes("-USD")
+    ? ticker.split("-")[0].slice(0, 2)
+    : (display.displayName || ticker || "G").split(/\s+/).map((word) => word[0]).join("").slice(0, 2);
+  const category = assetCategory({ ticker });
+  return `<span class="asset-icon asset-icon-${escapeHtml(category)}" aria-hidden="true">${escapeHtml(initials || "G")}</span>`;
+}
+
 function firstKnownValue(...values) {
   for (const value of values) {
     if (value !== null && value !== undefined && value !== "") return value;
@@ -446,12 +564,12 @@ async function getJson(url) {
   return requestJson(url);
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, config = {}) {
   const payload = await requestJson(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }, config);
   if (payload.ok === false) throw new Error(payload.message || "Genesis no confirmo el cambio.");
   return payload;
 }
@@ -473,10 +591,11 @@ function networkErrorMessage(error) {
 
 async function requestJson(url, options = {}, config = {}) {
   const candidates = apiUrlCandidates(url);
+  const targets = config.localOnly ? candidates.slice(0, 1) : candidates;
   const attempts = config.attempts || 2;
   const timeoutMs = config.timeoutMs || 14000;
   let lastError = null;
-  for (const targetUrl of candidates) {
+  for (const targetUrl of targets) {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -593,12 +712,42 @@ function chartIntentFromText(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   if (!/(GRAFICA|GRAFICO|CHART)/.test(normalized)) return null;
-  const stop = new Set(["ANALIZA", "ANALIZAR", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO"]);
-  const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F" };
+  const ticker = tickerFromText(normalized);
+  return ticker ? { ticker: normalizeTicker(ticker), range: "1Y" } : null;
+}
+
+function plainQuestionText(text) {
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isMarketOverviewQuestion(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  if (normalized.includes(" mercado libre ")) return false;
+  if (normalized.includes(" mercado ") && !/( seguimiento | cartera | watchlist | portfolio | paper )/.test(normalized)) return true;
+  return [
+    " como esta el mercado ",
+    " como va el mercado ",
+    " mercado el dia de hoy ",
+    " mercado hoy ",
+    " que esta pasando hoy ",
+    " viernes pasado ",
+  ].some((needle) => normalized.includes(needle));
+}
+
+function tickerFromText(text) {
+  const normalized = String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+  if (isMarketOverviewQuestion(normalized)) return "";
+  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "LA", "EL", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTAS", "ESTOY", "ESTAMOS", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS"]);
+  const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F", PETROLEO: "BZ=F", ORO: "IAU", PLATA: "SLV" };
   const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
   const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
-  const ticker = aliases[rawTicker] || rawTicker;
-  return ticker ? { ticker: normalizeTicker(ticker), range: "1Y" } : null;
+  return aliases[rawTicker] || rawTicker || "";
 }
 
 async function loadChartSeries(ticker, range = "1Y") {
@@ -812,6 +961,48 @@ function findAsset(ticker) {
     || null;
 }
 
+function chartQuoteAsset(ticker, range = "1Y") {
+  const normalized = normalizeTicker(ticker);
+  const payload = appState.chartCache[chartCacheKey(normalized, range)]?.payload
+    || appState.chartCache[chartCacheKey(normalized, "1Y")]?.payload
+    || appState.chartCache[chartCacheKey(normalized, "1D")]?.payload;
+  if (!payload || payload.ok === false) return null;
+  const candles = Array.isArray(payload.ohlc) ? payload.ohlc : Array.isArray(payload.points) ? payload.points : [];
+  const lastCandle = candles.length ? candles[candles.length - 1] : {};
+  const quote = payload.quote || {};
+  const summary = payload.summary || {};
+  const indicators = payload.indicators || {};
+  const price = positiveOrNull(quote.price ?? quote.current_price ?? summary.end_price ?? lastCandle.close);
+  if (price === null) return null;
+  return {
+    ticker: normalized,
+    name: payload.name || normalized,
+    current_price: price,
+    price,
+    daily_change: numberOrNull(quote.change ?? summary.change),
+    daily_change_pct: numberOrNull(quote.changesPercentage ?? quote.change_pct ?? summary.change_pct),
+    previous_close: positiveOrNull(quote.previousClose ?? quote.previous_close),
+    day_high: positiveOrNull(quote.dayHigh ?? quote.day_high ?? lastCandle.high),
+    day_low: positiveOrNull(quote.dayLow ?? quote.day_low ?? lastCandle.low),
+    volume: positiveOrNull(quote.volume ?? lastCandle.volume ?? indicators.volume),
+    relative_volume: numberOrNull(indicators.relative_volume),
+    support: numberOrNull(indicators.support),
+    resistance: numberOrNull(indicators.resistance),
+    quote_timestamp: quote.timestamp || lastCandle.time || lastCandle.date || payload.last_date,
+    source: "FMP / chart live",
+  };
+}
+
+function assetDetailItem(ticker, range = "1Y") {
+  const normalized = normalizeTicker(ticker);
+  return {
+    ticker: normalized,
+    ...(chartQuoteAsset(normalized, range) || {}),
+    ...(findAsset(normalized) || {}),
+    ...(chartQuoteAsset(normalized, range) || {}),
+  };
+}
+
 function normalizeScreen(view) {
   if (view === "watchlist") return "tracking";
   if (view === "radar") return "portfolio";
@@ -939,9 +1130,18 @@ function startMarketAutoRefresh() {
     if (appState.activeScreen === "alerts") {
       Promise.allSettled([
         refreshPortfolio({ render: false, force: true }),
+        loadMarketPulse({ force: true }),
+        loadOpportunityQuotes({ force: true }),
         loadAlerts(),
         loadWhalesData(),
       ]).then(() => renderAlertsScreen()).catch(() => {});
+      return;
+    }
+    if (appState.activeScreen === "tracking" || appState.activeScreen === "portfolio") {
+      Promise.allSettled([
+        refreshPortfolio({ render: false, force: true }),
+        loadMarketPulse({ force: true }),
+      ]).then(() => renderActiveScreen()).catch(() => {});
     }
   }, MARKET_FEED_REFRESH_MS);
 }
@@ -950,6 +1150,76 @@ function stopMarketAutoRefresh() {
   if (!appState.marketRefreshTimer) return;
   clearInterval(appState.marketRefreshTimer);
   appState.marketRefreshTimer = null;
+}
+
+function marketPulseRows() {
+  return MARKET_PULSE_TICKERS.map((ticker) => findAsset(ticker) || appState.marketPulse[ticker] || { ticker });
+}
+
+async function loadMarketPulse(options = {}) {
+  const now = Date.now();
+  if (appState.marketPulseLoading) return appState.marketPulse;
+  if (!options.force && appState.marketPulseLoadedAt && now - appState.marketPulseLoadedAt < MARKET_FEED_REFRESH_MS) {
+    return appState.marketPulse;
+  }
+  appState.marketPulseLoading = true;
+  try {
+    const results = await Promise.allSettled(MARKET_PULSE_TICKERS.map(async (ticker) => {
+      const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const rows = Array.isArray(payload?.results) ? payload.results : Array.isArray(payload?.items) ? payload.items : [];
+      const first = rows.find((row) => itemTicker(row) === ticker) || rows[0] || payload;
+      return { ticker, item: { ...first, ticker: itemTicker(first) || ticker } };
+    }));
+    results.forEach((result) => {
+      if (result.status !== "fulfilled" || !result.value?.ticker) return;
+      appState.marketPulse[result.value.ticker] = result.value.item;
+    });
+    appState.marketPulseLoadedAt = Date.now();
+  } finally {
+    appState.marketPulseLoading = false;
+  }
+  return appState.marketPulse;
+}
+
+async function loadOpportunityQuotes(options = {}) {
+  const now = Date.now();
+  if (appState.opportunityQuotesLoading) return appState.opportunityQuotes;
+  if (!options.force && appState.opportunityQuotesLoadedAt && now - appState.opportunityQuotesLoadedAt < MARKET_FEED_REFRESH_MS) {
+    return appState.opportunityQuotes;
+  }
+  appState.opportunityQuotesLoading = true;
+  try {
+    const results = await Promise.allSettled(OPPORTUNITY_TICKERS.map(async (ticker) => {
+      const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const rows = Array.isArray(payload?.results) ? payload.results : [];
+      const first = rows.find((row) => itemTicker(row) === ticker) || rows[0];
+      return first ? { ticker, item: { ...first, ticker: itemTicker(first) || ticker } } : null;
+    }));
+    results.forEach((result) => {
+      if (result.status !== "fulfilled" || !result.value?.ticker) return;
+      appState.opportunityQuotes[result.value.ticker] = result.value.item;
+    });
+    appState.opportunityQuotesLoadedAt = Date.now();
+  } finally {
+    appState.opportunityQuotesLoading = false;
+  }
+  return appState.opportunityQuotes;
+}
+
+function ensureOpportunityQuotes() {
+  const stale = !appState.opportunityQuotesLoadedAt || Date.now() - appState.opportunityQuotesLoadedAt > MARKET_FEED_REFRESH_MS;
+  if (!stale || appState.opportunityQuotesLoading) return;
+  loadOpportunityQuotes().then(() => {
+    if (appState.activeScreen === "alerts") renderAlertsScreen();
+  }).catch(() => {});
+}
+
+function ensureMarketPulse() {
+  const stale = !appState.marketPulseLoadedAt || Date.now() - appState.marketPulseLoadedAt > MARKET_FEED_REFRESH_MS;
+  if (!stale || appState.marketPulseLoading) return;
+  loadMarketPulse().then(() => {
+    if (["tracking", "portfolio", "alerts"].includes(appState.activeScreen)) renderActiveScreen();
+  }).catch(() => {});
 }
 
 function setActiveScreen(screen) {
@@ -974,6 +1244,7 @@ function setActiveScreen(screen) {
     startMarketAutoRefresh();
     Promise.allSettled([
       refreshPortfolio({ render: false, force: true }),
+      loadOpportunityQuotes(),
       loadAlerts(),
       loadWhalesData(),
     ]).then((results) => {
@@ -1124,6 +1395,13 @@ function renderGenesisScreen() {
   root.innerHTML = `
     <section class="genesis-stage">
       <div class="genesis-conversation">
+        <div class="genesis-chat-head">
+          <div>
+            <strong>Genesis</strong>
+            <span>Tu copiloto financiero con IA</span>
+          </div>
+          ${renderConfidenceBar("activa")}
+        </div>
         <div class="chat-toolbar" aria-label="Controles de conversacion">
           <button type="button" data-chat-new aria-label="Nuevo chat" title="Nuevo chat">${iconSvg("new")}</button>
           <button type="button" data-chat-history aria-label="Historial" title="Historial">${iconSvg("history")}</button>
@@ -1135,12 +1413,14 @@ function renderGenesisScreen() {
         </div>
         <div class="chat-attachment-name" id="genesis-attachment-name" hidden></div>
         <form class="chat-form" id="genesis-chat-form">
-          <label class="chat-attach" title="Adjuntar grafica" aria-label="Adjuntar imagen de grafica">
-            ${iconSvg("upload")}
-            <input id="genesis-image-input" type="file" accept="image/*">
-          </label>
-          <input id="genesis-chat-input" placeholder="Pregunta a Genesis..." autocomplete="off">
-          <button type="submit" aria-label="Mandar mensaje">${iconSvg("send")}</button>
+          <div class="chat-composer-pill">
+            <label class="chat-attach" title="Adjuntar grafica" aria-label="Adjuntar imagen de grafica">
+              ${iconSvg("upload")}
+              <input id="genesis-image-input" type="file" accept="image/*">
+            </label>
+            <input id="genesis-chat-input" placeholder="Pregunta a Genesis..." autocomplete="off">
+            <button type="submit" aria-label="Mandar mensaje">${iconSvg("send")}</button>
+          </div>
         </form>
       </div>
     </section>
@@ -1223,9 +1503,10 @@ function genesisVisualFromPayload(payload, answer = "") {
   if (responseType === "market_summary" || intent === "daily_briefing" || intent === "market_overview") return briefingVisual(payload, answer);
   if (responseType === "weather" || intent === "weather") return weatherVisual(payload, answer);
   if (responseType === "alerts_digest" || intent === "alerts") return alertsDigestVisual(payload, answer);
-  if (responseType === "whale_flow" || intent === "whale_activity") {
+  if (responseType === "whale_flow" || intent === "whale_activity" || intent === "money_flow") {
     return whaleFlowVisual(payload, answer);
   }
+  if (intent === "memory_query" || payload?.structured?.kind === "memory_digest") return memoryDigestVisual(payload, answer);
   if (intent === "portfolio_summary") return summaryVisual("Cartera", answer);
   if (intent === "tracking_summary") return summaryVisual("Seguimiento", answer);
   if (intent === "image_chart_analysis") return summaryVisual("Imagen", answer);
@@ -1420,6 +1701,29 @@ function summaryVisual(title, answer = "") {
   };
 }
 
+function memoryDigestVisual(payload, answer = "") {
+  const structured = payload?.structured || {};
+  const memory = payload?.memory_summary || {};
+  const counts = memory.counts || structured.metrics || {};
+  const sections = Array.isArray(structured.sections) ? structured.sections : [];
+  const bullets = sections.flatMap((section) => Array.isArray(section?.bullets) ? section.bullets : []);
+  const summaryLines = Array.isArray(memory.summary_lines) ? memory.summary_lines : [];
+  return {
+    kind: "memory_digest",
+    title: structured.title || (memory.ticker ? `Memoria de ${memory.ticker}` : "Memoria Genesis"),
+    ticker: memory.ticker || structured.ticker || "",
+    thesis: cleanSentenceList(structured.summary || answer, 1)[0] || "Genesis guarda contexto util sin exponer secretos.",
+    metrics: {
+      decisions: numberOrNull(counts.decisions) || 0,
+      signals: numberOrNull(counts.signals) || 0,
+      news: numberOrNull(counts.news) || 0,
+      whales: numberOrNull(counts.whales) || 0,
+      outcomes: numberOrNull(counts.outcomes) || 0,
+    },
+    lines: (summaryLines.length ? summaryLines : bullets).map(stripMarkdownCopy).filter(Boolean).slice(0, 6),
+  };
+}
+
 function feedVisual(title, rows, answer = "") {
   return {
     kind: "feed",
@@ -1445,17 +1749,38 @@ function alertsDigestVisual(payload, answer = "") {
 function whaleFlowVisual(payload, answer = "") {
   const structured = payload?.structured || {};
   const whales = payload?.whales || {};
-  const rows = structured.events || whales.events || whales.items || (whales.unconfirmed_watch || []).map((ticker) => ({
+  const directRows = structured.events || whales.events || whales.items || (whales.unconfirmed_watch || []).map((ticker) => ({
     ticker,
     event_type: "smart_money_estimate",
     genesis_reading: "Flujo en vigilancia sin entidad ni monto confirmado.",
   }));
+  const localRows = currentWhaleRows();
+  const rows = Array.isArray(directRows) && directRows.length ? directRows : localRows;
+  const watchedVolume = (Array.isArray(rows) ? rows : []).reduce((sum, row) => {
+    const value = numberOrNull(row?.monitored_dollar_volume ?? row?.monitoredDollarVolume ?? row?.dollar_volume ?? row?.dollarVolume);
+    return sum + (value || 0);
+  }, 0);
+  const confirmedValue = (Array.isArray(rows) ? rows : []).reduce((sum, row) => {
+    const confirmed = row?.event_type === "whale_confirmed" || row?.type === "whale_confirmed" || row?.confirmed;
+    const value = confirmed ? numberOrNull(row?.confirmed_amount_usd ?? row?.confirmedAmountUsd ?? row?.amount_usd ?? row?.amountUsd) : null;
+    return sum + (value || 0);
+  }, 0);
+  const metrics = {
+    ...(whales.summary || {}),
+    ...(structured.metrics || {}),
+  };
+  if (!numberOrNull(metrics.watched_volume) && watchedVolume) metrics.watched_volume = watchedVolume;
+  if (!numberOrNull(metrics.confirmed_value) && confirmedValue) metrics.confirmed_value = confirmedValue;
+  if (!numberOrNull(metrics.estimated_count) && rows.length) metrics.estimated_count = rows.length;
   return {
     kind: "whale_flow",
     title: structured.title || "Ballenas / Smart money",
-    thesis: cleanSentenceList(structured.summary || whales.answer || answer, 1)[0] || "Genesis separa ballena confirmada de flujo tecnico estimado.",
+    thesis: cleanSentenceList(structured.summary || whales.answer || answer, 1)[0]
+      || (rows.length
+        ? "Genesis detecta flujo vigilado: muestra volumen y dirección, sin venderlo como compra confirmada."
+        : "No hay ballena confirmada con entidad y monto; Genesis vigila volumen y precio sin inventar comprador."),
     rows: Array.isArray(rows) ? rows.slice(0, 5) : [],
-    metrics: structured.metrics || whales.summary || {},
+    metrics,
     sections: structured.sections || [],
   };
 }
@@ -1469,6 +1794,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "news_brief") return newsBriefVisualMarkup(visual);
   if (visual.kind === "alerts_digest") return alertsDigestVisualMarkup(visual);
   if (visual.kind === "whale_flow") return whaleFlowVisualMarkup(visual);
+  if (visual.kind === "memory_digest") return memoryDigestVisualMarkup(visual);
   if (visual.kind === "feed") return feedVisualMarkup(visual);
   return summaryVisualMarkup(visual);
 }
@@ -1476,6 +1802,12 @@ function visualResponseMarkup(visual) {
 function assetAnalysisVisualMarkup(visual) {
   const confidencePct = Math.round(Math.max(0, Math.min(1, visual.confidence || 0)) * 100);
   const changeTone = positiveClass(visual.price?.changePct ?? visual.price?.change);
+  const rsi = numberOrNull(visual.indicators?.rsi);
+  const rsiPct = rsi === null ? 50 : Math.max(0, Math.min(100, rsi));
+  const relVol = numberOrNull(visual.indicators?.relativeVolume);
+  const volumePressure = relVol !== null ? Math.max(8, Math.min(100, relVol * 42)) : (visual.indicators?.volume ? 42 : 18);
+  const momentumScore = Math.max(12, Math.min(100, Math.abs(numberOrNull(visual.price?.changePct) || 0) * 18 + (relVol || 0) * 18 + 18));
+  const directionLabel = changeTone === "up" ? "Presion compradora" : changeTone === "down" ? "Presion vendedora" : "Rango / espera";
   return `
     <section class="visual-response asset-visual tone-${visual.bias}">
       <div class="visual-hero">
@@ -1500,6 +1832,20 @@ function assetAnalysisVisualMarkup(visual) {
           <strong>${escapeHtml(visual.price?.source || "FMP")}</strong>
         </span>
       </div>
+      <div class="jarvis-asset-core ${changeTone}">
+        <div class="jarvis-orb" aria-hidden="true">
+          <span style="--meter:${confidencePct}%"></span>
+          <b>${escapeHtml(String(confidencePct))}</b>
+          <small>score</small>
+        </div>
+        <div class="holo-metrics">
+          ${holoMeterMarkup("Dirección", directionLabel, Math.max(12, Math.min(100, Math.abs(numberOrNull(visual.price?.changePct) || 0) * 20 + 18)), changeTone)}
+          ${holoMeterMarkup("Volumen", visual.indicators?.volume ? compactNumber(visual.indicators.volume) : "Sin volumen", volumePressure, relVol !== null && relVol >= 1.2 ? "up" : "flat")}
+          ${holoMeterMarkup("RSI", rsi === null ? "Sin dato" : compactNumber(rsi), rsiPct, rsiPct >= 70 ? "down" : rsiPct <= 35 ? "up" : "flat")}
+          ${holoMeterMarkup("Momentum", cleanCopy(visual.indicators?.momentum || "Confirmacion pendiente"), momentumScore, changeTone)}
+        </div>
+      </div>
+      ${supportResistanceRailMarkup(visual)}
       <div class="confidence-row">
         <span>Confianza ${confidencePct}%</span>
         <i><b style="width:${confidencePct}%"></b></i>
@@ -1531,7 +1877,79 @@ function assetAnalysisVisualMarkup(visual) {
       <div class="visual-sections">
         ${(visual.sections?.length ? visual.sections : ["Vigilar confirmacion de precio, volumen y riesgo antes de subir conviccion."]).slice(0, 4).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
       </div>
+      ${assetVisualRelatedMarkup(visual.ticker)}
     </section>
+  `;
+}
+
+function assetVisualRelatedMarkup(ticker) {
+  const normalized = normalizeTicker(ticker);
+  if (!normalized) return "";
+  const news = assetRelatedNews(normalized).slice(0, 2);
+  const alerts = assetRelatedAlerts(normalized).map(normalizeAlertRowForUi).slice(0, 2);
+  const whales = assetRelatedWhales(normalized).slice(0, 2);
+  if (!news.length && !alerts.length && !whales.length) return "";
+  return `
+    <div class="asset-jarvis-panels">
+      ${news.length ? `
+        <section>
+          <strong>Noticias relevantes</strong>
+          ${news.map((item) => `
+            <button type="button" data-news-open="${escapeHtml(newsItemId(item))}">
+              ${newsImageTag(item, "mini-news-image")}
+              <span>${escapeHtml(newsDisplayTitle(item))}</span>
+            </button>
+          `).join("")}
+        </section>
+      ` : ""}
+      ${alerts.length ? `
+        <section>
+          <strong>Alertas clave</strong>
+          ${alerts.map((item) => `
+            <button type="button" data-alert-id="${escapeHtml(alertItemId(item))}">
+              <span>${escapeHtml(itemTicker(item) || normalized)}</span>
+              <b>${escapeHtml(alertVisualDigest(item))}</b>
+            </button>
+          `).join("")}
+        </section>
+      ` : ""}
+      ${whales.length ? `
+        <section>
+          <strong>Flujo smart money</strong>
+          ${whales.map((item) => `
+            <button type="button" data-whale-id="${escapeHtml(whaleItemId(item))}">
+              <span>${escapeHtml(itemTicker(item) || normalized)}</span>
+              <b>${escapeHtml(item.dollarVolume ? formatMoneyCompact(item.dollarVolume) : cleanCopy(item.event || "Flujo vigilado"))}</b>
+            </button>
+          `).join("")}
+        </section>
+      ` : ""}
+    </div>
+  `;
+}
+
+function holoMeterMarkup(label, value, width, tone = "flat") {
+  return `
+    <span class="holo-meter ${tone}">
+      <small>${escapeHtml(label)}</small>
+      <strong>${escapeHtml(value || "Sin dato")}</strong>
+      <i><b style="width:${Math.max(6, Math.min(100, numberOrNull(width) || 12))}%"></b></i>
+    </span>
+  `;
+}
+
+function supportResistanceRailMarkup(visual) {
+  const price = numberOrNull(visual.price?.value);
+  const support = numberOrNull(visual.levels?.support);
+  const resistance = numberOrNull(visual.levels?.resistance);
+  if (price === null || support === null || resistance === null || resistance <= support) return "";
+  const pct = Math.max(3, Math.min(97, ((price - support) / (resistance - support)) * 100));
+  return `
+    <div class="price-rail">
+      <span>${escapeHtml(money(support, "Soporte"))}</span>
+      <i><b style="left:${pct}%"></b></i>
+      <span>${escapeHtml(money(resistance, "Resistencia"))}</span>
+    </div>
   `;
 }
 
@@ -1738,18 +2156,24 @@ function whaleFlowVisualMarkup(visual) {
       </div>
       <div class="visual-feed-cards">
         ${(rows.length ? rows : [{ ticker: "Mercado", genesis_reading: "Sin ballena confirmada; Genesis mantiene vigilancia de flujo." }]).map((row) => {
-          const confirmed = row.event_type === "whale_confirmed" && row.entity_name;
-          const amount = confirmed ? row.amount_usd : row.dollar_volume;
+          const confirmed = Boolean((row.event_type === "whale_confirmed" || row.type === "whale_confirmed" || row.confirmed) && (row.entity_name || row.entity || row.confirmed_amount_usd || row.confirmedAmountUsd || row.amount_usd));
+          const amount = confirmed
+            ? (row.confirmed_amount_usd ?? row.confirmedAmountUsd ?? row.amount_usd ?? row.amountUsd)
+            : (row.monitored_dollar_volume ?? row.monitoredDollarVolume ?? row.dollar_volume ?? row.dollarVolume);
+          const relative = row.relative_volume ?? row.relativeVolume;
+          const flow = row.net_flow ?? row.netFlow ?? amount;
+          const reading = row.genesis_reading || row.genesis_reading_es || row.read || row.summary || row.answer;
+          const source = row.source || row.provider || "market_flow";
           return `
             <article>
               <strong>${escapeHtml(cleanCopy(row.ticker || "Mercado"))} ${escapeHtml(confirmed ? "confirmado" : "estimado")}</strong>
-              <p>${escapeHtml(stripMarkdownCopy(cleanCopy(row.genesis_reading || "Flujo en vigilancia sin entidad confirmada.")))}</p>
+              <p>${escapeHtml(stripMarkdownCopy(cleanCopy(reading || "Flujo en vigilancia: volumen y precio activos, sin entidad confirmada.")))}</p>
               <div class="visual-market-strip compact">
                 <span><small>${confirmed ? "Monto" : "Volumen $"}</small><strong>${escapeHtml(money(amount, "No confirmado"))}</strong></span>
-                <span><small>Vol. rel</small><strong>${escapeHtml(row.relative_volume ? `${compactNumber(row.relative_volume)}x` : "Sin dato")}</strong></span>
-                <span><small>Fuente</small><strong>${escapeHtml(cleanCopy(row.source || "market_flow"))}</strong></span>
+                <span><small>Vol. rel</small><strong>${escapeHtml(relative ? `${compactNumber(relative)}x` : "Pendiente")}</strong></span>
+                <span><small>Fuente</small><strong>${escapeHtml(cleanCopy(source))}</strong></span>
               </div>
-              <div class="mini-flow-bar"><i style="width:${Math.max(12, Math.min(100, Math.abs(numberOrNull(row.net_flow || row.dollar_volume || 0) || 12) / 1000000))}%"></i></div>
+              <div class="mini-flow-bar"><i style="width:${Math.max(12, Math.min(100, Math.abs(numberOrNull(flow || 0) || 12) / 1000000))}%"></i></div>
             </article>
           `;
         }).join("")}
@@ -1779,6 +2203,43 @@ function feedVisualMarkup(visual) {
             <small>${escapeHtml(cleanCopy(row.source || "Fuente activa"))} | ${escapeHtml(cleanCopy(row.confidence || "confianza baja"))}</small>
           </article>
         `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function memoryDigestVisualMarkup(visual) {
+  const metrics = visual.metrics || {};
+  const lines = Array.isArray(visual.lines) ? visual.lines.slice(0, 5) : [];
+  return `
+    <section class="visual-response memory-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Memoria Genesis</span>
+          <strong>${escapeHtml(visual.title || "Aprendizaje")}</strong>
+        </div>
+        <span class="conviction-pill neutral">${escapeHtml(visual.ticker || "contexto")}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis || "Genesis guarda tesis, eventos y resultados para comparar con el tiempo.")}</p>
+      <div class="memory-orbit">
+        <div class="jarvis-orb memory-orb" aria-hidden="true">
+          <span style="--meter:${Math.min(100, 22 + (metrics.signals || 0) * 10 + (metrics.news || 0) * 8)}%"></span>
+          <b>${escapeHtml(String((metrics.decisions || 0) + (metrics.signals || 0) + (metrics.news || 0) + (metrics.whales || 0)))}</b>
+          <small>eventos</small>
+        </div>
+        <div class="holo-metrics">
+          ${holoMeterMarkup("Decisiones", String(metrics.decisions || 0), Math.max(8, (metrics.decisions || 0) * 24), "flat")}
+          ${holoMeterMarkup("Senales", String(metrics.signals || 0), Math.max(8, (metrics.signals || 0) * 18), "up")}
+          ${holoMeterMarkup("Noticias", String(metrics.news || 0), Math.max(8, (metrics.news || 0) * 18), "flat")}
+          ${holoMeterMarkup("Ballenas", String(metrics.whales || 0), Math.max(8, (metrics.whales || 0) * 22), "flat")}
+        </div>
+      </div>
+      <div class="visual-sections memory-lines">
+        ${(lines.length ? lines : ["Aun no hay patron suficiente; Genesis empezara a guardar tesis, alertas, noticias y resultados para este activo."]).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+      </div>
+      <div class="scenario-card">
+        <strong>Como se usara</strong>
+        <p>La memoria apoya contexto historico; los precios, volumenes y cambios siguen viniendo de FMP/backend antes de cualquier lectura operativa.</p>
       </div>
     </section>
   `;
@@ -1893,8 +2354,13 @@ async function submitGenesisQuestion(event) {
     await loadWhalesData().catch(() => null);
   }
   try {
-    const payload = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId });
-    const message = genesisAssistantMessageFromPayload(payload, question);
+    const payload = await postJson(
+      "/api/genesis/ask",
+      { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId },
+      { timeoutMs: 9000, attempts: 1, localOnly: true }
+    );
+    const enrichedPayload = await enrichGenesisPayloadWithLocalQuote(payload, question);
+    const message = genesisAssistantMessageFromPayload(enrichedPayload, question);
     appState.chatMessages.push(message);
     renderGenesisScreen();
     if (message.chart) {
@@ -1904,9 +2370,15 @@ async function submitGenesisQuestion(event) {
     }
     return;
   } catch (error) {
+    const localAsset = await localAssetFallbackMessage(question, error);
+    if (localAsset) {
+      appState.chatMessages.push(localAsset);
+      renderGenesisScreen();
+      return;
+    }
     try {
       const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
-      appState.chatMessages.push(genesisAssistantMessageFromPayload(payload, question));
+      appState.chatMessages.push(genesisAssistantMessageFromPayload(await enrichGenesisPayloadWithLocalQuote(payload, question), question));
     } catch (fallbackError) {
       appState.chatMessages.push(offlineGenesisFallback(question, fallbackError));
     }
@@ -1914,8 +2386,131 @@ async function submitGenesisQuestion(event) {
   renderGenesisScreen();
 }
 
+async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
+  if (isMarketOverviewQuestion(question)) return payload;
+  const responseType = String(payload?.response_type || "");
+  const intent = String(payload?.intent || "");
+  if (!(["asset_analysis", "chart_analysis"].includes(responseType) || ["ticker_analysis", "technical_indicators", "chart_request"].includes(intent))) {
+    return payload;
+  }
+  const ticker = normalizeTicker(payload?.quote?.ticker || payload?.tickers?.[0] || payload?.chart?.ticker || tickerFromText(question));
+  if (!ticker || quotePrice(payload?.quote || {}) !== null) return payload;
+  let asset = findAsset(ticker);
+  if (!asset) {
+    try {
+      const search = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const results = Array.isArray(search.results) ? search.results : [];
+      asset = results.find((item) => itemTicker(item) === ticker) || results[0] || null;
+      if (asset) {
+        appState.marketSearchResults.tracking = [asset, ...appState.marketSearchResults.tracking.filter((item) => itemTicker(item) !== itemTicker(asset))].slice(0, 8);
+      }
+    } catch (_) {
+      asset = null;
+    }
+  }
+  if (!asset || itemPrice(asset) === null) return payload;
+  const chartPayload = await loadChartSeries(itemTicker(asset) || ticker, "1Y").catch(() => null);
+  return {
+    ...payload,
+    quote: {
+      ...(payload.quote || {}),
+      ...quoteFromAsset(asset),
+    },
+    technical: {
+      ...(payload.technical || {}),
+      ticker: itemTicker(asset) || ticker,
+      indicators: {
+        ...((payload.technical || {}).indicators || {}),
+        ...(chartPayload?.indicators || {}),
+      },
+    },
+    chart: payload.chart || { ticker: itemTicker(asset) || ticker, range: "1Y" },
+  };
+}
+
+async function localAssetFallbackMessage(question, error) {
+  if (isMarketOverviewQuestion(question)) return null;
+  const ticker = tickerFromText(question);
+  if (!ticker) return null;
+  let asset = findAsset(ticker);
+  if (!asset) {
+    try {
+      const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const results = Array.isArray(payload.results) ? payload.results : [];
+      asset = results.find((item) => itemTicker(item) === ticker) || results[0] || null;
+      if (asset) {
+        appState.marketSearchResults.tracking = [asset, ...appState.marketSearchResults.tracking.filter((item) => itemTicker(item) !== itemTicker(asset))].slice(0, 8);
+      }
+    } catch (_) {
+      asset = null;
+    }
+  }
+  if (!asset) return null;
+  const normalized = itemTicker(asset) || ticker;
+  const chartPayload = await loadChartSeries(normalized, "1Y").catch(() => null);
+  const quote = quoteFromAsset(asset);
+  const display = getAssetDisplayName(asset);
+  const move = `${formatChange(quote.change, "Sin cambio")} ${formatPercent(quote.changesPercentage, "")}`.trim();
+  const text = `${display.displayName}: ${money(quote.current_price, "precio pendiente")} ${move}. Lectura rapida con fuente live/cache; ${networkErrorMessage(error).toLowerCase()}`;
+  return {
+    id: nextMessageId(),
+    role: "assistant",
+    text,
+    visual: assetAnalysisVisual({
+      intent: "ticker_analysis",
+      response_type: "asset_analysis",
+      quote,
+      technical: { ticker: normalized, indicators: chartPayload?.indicators || {} },
+      chart: { ticker: normalized, range: "1Y" },
+    }, text),
+    chart: { ticker: normalized, range: "1Y" },
+  };
+}
+
+function quoteFromAsset(asset = {}) {
+  const ticker = itemTicker(asset);
+  return {
+    ticker,
+    name: asset.name || asset.companyName || asset.display_name || assetDisplayName(asset),
+    current_price: itemPrice(asset),
+    formatted_price: money(itemPrice(asset), ""),
+    change: itemDailyUsd(asset),
+    changesPercentage: itemDailyPct(asset),
+    previous_close: asset.previous_close ?? asset.previousClose,
+    day_low: asset.day_low ?? asset.dayLow,
+    day_high: asset.day_high ?? asset.dayHigh,
+    volume: asset.volume,
+    source_label: priceSourceLabel(asset),
+  };
+}
+
 function offlineGenesisFallback(question, error) {
   const normalized = String(question || "").toLowerCase();
+  if (isMarketOverviewQuestion(question)) {
+    const movers = marketPulseRows().slice(0, 6);
+    const alerts = currentAlertRows().slice(0, 6);
+    const news = newsFeedItems(appState.newsSnapshot || {}).slice(0, 5);
+    const answer = "Te doy lectura de mercado con lo que ya esta cargado: indices, activos vigilados, alertas y noticias. La API no debe convertir esta pregunta en un ticker.";
+    return {
+      id: nextMessageId(),
+      role: "assistant",
+      text: answer,
+      visual: briefingVisual({
+        intent: "market_overview",
+        response_type: "market_summary",
+        overview: {
+          answer,
+          tone: "vigilancia",
+          movers,
+          alerts,
+          news,
+          risks: alerts.slice(0, 3),
+          watch: movers,
+          source_status: { fallback: true },
+        },
+      }, answer),
+    };
+  }
   if (normalized.includes("noticia")) {
     const visual = newsBriefVisual({ structured: { summary: "" } }, "");
     return {
@@ -1987,8 +2582,9 @@ async function loadNews(options = {}) {
   appState.newsLoading = true;
   if (!options.silent) renderNewsScreen();
   try {
+    const newsUrl = options.force ? `/api/dashboard/news?refresh=${Date.now()}` : "/api/dashboard/news";
     const [newsResult, alertsResult, whalesResult] = await Promise.allSettled([
-      getJson("/api/dashboard/news"),
+      getJson(newsUrl),
       getJson("/api/dashboard/alerts"),
       loadWhalesData(),
     ]);
@@ -2021,6 +2617,11 @@ function renderNewsScreen() {
   const latestItems = latestNewsItems(scopedNewsItems).filter((item) => !importantIds.has(newsItemId(item)));
   root.innerHTML = `
     <section class="screen-stack news-screen investing-feed-screen news-only-screen">
+      ${premiumScreenHeader(
+        "Noticias",
+        "Lo que mueve los mercados, interpretado por IA.",
+        `<button type="button" class="icon-action pulse-action ${appState.newsLoading ? "is-loading" : ""}" data-news-refresh aria-label="${appState.newsLoading ? "Actualizando noticias" : "Actualizar noticias"}" aria-busy="${appState.newsLoading ? "true" : "false"}">${iconSvg("refresh")}</button>`
+      )}
       <div class="news-toolbar">
         <section class="feed-tabs investing-tabs" aria-label="Filtros de noticias">
           ${newsFilterButtonMarkup("important", "Importantes")}
@@ -2028,7 +2629,6 @@ function renderNewsScreen() {
           ${newsFilterButtonMarkup("mine", "Mis activos")}
           ${newsFilterButtonMarkup("global", "Global")}
         </section>
-        <button type="button" class="icon-action pulse-action" data-news-refresh aria-label="Actualizar noticias">${appState.newsLoading ? "..." : iconSvg("refresh")}</button>
       </div>
       <section class="news-section investing-section">
         <div class="section-heading">
@@ -2036,7 +2636,7 @@ function renderNewsScreen() {
           <small>${importantItems.length} catalizadores</small>
         </div>
         <div class="news-feed important-news-feed investing-news-list">
-          ${appState.newsLoading ? `<div class="empty-state"><strong>Actualizando noticias.</strong><p>FMP y RSS estan entrando en paralelo.</p></div>` : ""}
+          ${appState.newsLoading ? newsLoadingMarkup("Actualizando noticias") : ""}
           ${importantItems.length ? importantItems.map(newsCardMarkup).join("") : emptyStateMarkup("Aun no cargo noticia influyente.", "Genesis reintenta FMP/RSS sin mezclar alertas ni placeholders internos.")}
         </div>
       </section>
@@ -2046,7 +2646,7 @@ function renderNewsScreen() {
           <small>24h / 7d / 30d</small>
         </div>
       <div class="news-feed latest-news-feed investing-news-list">
-        ${appState.newsLoading ? `<div class="empty-state"><strong>Actualizando noticias.</strong><p>Buscando titulares recientes del mercado.</p></div>` : ""}
+        ${appState.newsLoading ? newsLoadingMarkup("Actualizando noticias") : ""}
         ${latestItems.length ? latestItems.map(newsCardMarkup).join("") : emptyStateMarkup("Sin ultimas noticias cargadas.", "La pantalla queda limpia hasta que FMP/RSS confirme titulares reales.")}
       </div>
       </section>
@@ -2104,6 +2704,15 @@ function newsFeedItems(snapshot = {}) {
   return filtered.filter((item) => !isInternalNewsPlaceholder(item)).slice(0, 16);
 }
 
+function newsLoadingMarkup(label = "Actualizando") {
+  return `
+    <div class="news-refresh-state" aria-live="polite">
+      <span class="refresh-spinner">${iconSvg("refresh")}</span>
+      <small>${escapeHtml(label)}</small>
+    </div>
+  `;
+}
+
 function newsFilterButtonMarkup(filter, label) {
   return `<button type="button" class="${appState.newsFilter === filter ? "is-active" : ""}" data-news-filter="${escapeHtml(filter)}">${escapeHtml(label)}</button>`;
 }
@@ -2127,28 +2736,64 @@ function normalizeNewsItemForUi(item = {}) {
   return {
     id: item.id,
     category: item.category || item.placeholder_key || "Mercado",
-    title: item.title_es || item.title || item.headline || "Titular de mercado",
+    title: spanishUiCopy(item.title_es || item.title || item.headline || "Titular de mercado"),
     originalTitle: item.original_title || item.headline || item.title || "",
     source: item.source || item.site || item.publisher || "Fuente activa",
     time: item.published_at || item.publishedDate || item.date,
     relative_time: item.relative_time || item.relativeTime || "",
     impact: item.impact || item.sentiment || "Neutral",
-    summary: item.summary_es || item.summary || item.text || item.title_es || item.title || "Titular confirmado.",
+    summary: spanishUiCopy(item.summary_es || item.summary || item.text || item.title_es || item.title || "Titular confirmado."),
     assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
     imageUrl: item.image_url || item.thumbnail_url || item.thumbnail || item.image || "",
     url: item.url || item.link || "",
-    genesisTakeaway: item.genesis_takeaway_es || item.genesis_takeaway || "",
-    whyItMatters: item.why_it_matters_es || item.why_it_matters || "",
+    genesisTakeaway: spanishUiCopy(item.genesis_takeaway_es || item.genesis_takeaway || ""),
+    whyItMatters: spanishUiCopy(item.why_it_matters_es || item.why_it_matters || ""),
     confidence: item.confidence || "media",
     isImportant: Boolean(item.is_important),
     isLatest: Boolean(item.is_latest),
     recencyScore: item.recency_score,
     relevanceScore: item.relevance_score,
     risk: item.risk,
-    watch: item.what_to_watch_es || item.watch,
-    watchPoints: item.watch_points || item.watchPoints || (item.what_to_watch_es ? [item.what_to_watch_es] : []),
+    watch: spanishUiCopy(item.what_to_watch_es || item.watch || ""),
+    watchPoints: (item.watch_points || item.watchPoints || (item.what_to_watch_es ? [item.what_to_watch_es] : [])).map(spanishUiCopy),
     tickersAffected: item.tickers_affected || item.tickers || item.assets || [],
   };
+}
+
+function spanishUiCopy(value) {
+  let text = cleanCopy(value || "");
+  if (!text) return "";
+  const replacements = [
+    [/The Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell - Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
+    [/The Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock mercado Closing Bell Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
+    [/The Minister of Finance of Chile Jorge Quiroz.*Closing Bell.*Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
+    [/\bWhy Is\b/gi, "Por que"],
+    [/\bWhy\b/gi, "Por que"],
+    [/\bToday\b/gi, "hoy"],
+    [/\bFutures\b/gi, "futuros"],
+    [/\bHits? Records?\b/gi, "marca maximos"],
+    [/\bOil Prices?\b/gi, "precios del petroleo"],
+    [/\bCrude Oil\b/gi, "petroleo crudo"],
+    [/\bBitcoin\b/gi, "Bitcoin"],
+    [/\bNasdaq\b/gi, "Nasdaq"],
+    [/\bStock Market Closing Bell\b/gi, "campana de cierre del mercado accionario"],
+    [/\bClosing Bell\b/gi, "campana de cierre"],
+    [/\bStock market today\b/gi, "Mercado accionario hoy"],
+    [/\bstock market\b/gi, "mercado accionario"],
+    [/\bmarket\b/gi, "mercado"],
+    [/\bstocks\b/gi, "acciones"],
+    [/\bstock\b/gi, "accion"],
+    [/\binvestors\b/gi, "inversionistas"],
+    [/\btraders\b/gi, "operadores"],
+    [/\brisk\b/gi, "riesgo"],
+    [/\bwhy it matters\b/gi, "por que importa"],
+    [/\bwhat to watch\b/gi, "que vigilar"],
+    [/\bclosing\b/gi, "cierre"],
+  ];
+  replacements.forEach(([pattern, replacement]) => {
+    text = text.replace(pattern, replacement);
+  });
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function isInternalNewsPlaceholder(item) {
@@ -2236,8 +2881,10 @@ function newsFallbackImageForItem(item = {}) {
 function newsImageTag(item = {}, className = "") {
   const image = newsImageForItem(item);
   const fallback = newsFallbackImageForItem(item);
-  const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
-  return `<img${classAttr} src="${escapeHtml(image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${escapeHtml(fallback)}';">`;
+  const classes = ["news-photo-frame", className].filter(Boolean).join(" ");
+  const classAttr = classes ? ` class="${escapeHtml(classes)}"` : "";
+  const styleAttr = ` style="background-image:url(${escapeHtml(fallback)})"`;
+  return `<span${classAttr}${styleAttr}><img src="${escapeHtml(image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove();"></span>`;
 }
 
 function newsItemId(item) {
@@ -2270,14 +2917,13 @@ function newsCardMarkup(item) {
     return display.displayName === normalized ? normalized : `${display.displayName} (${normalized})`;
   });
   const tone = newsImpactTone(item.impact);
-  const image = newsImageForItem(item);
   const category = cleanCopy(item.category || item.placeholder_key || "contexto").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
   const published = item.relative_time || formatDate(item.time);
   const impactLabel = cleanCopy(item.impact || "Neutral");
   return `
     <article class="news-card investing-news-card" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
       <button class="news-card-main" type="button" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
-        <span class="news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
+        <span class="news-thumb placeholder-${escapeHtml(category)}">
           ${newsImageTag(item)}
         </span>
       <div class="news-card-copy">
@@ -2287,6 +2933,7 @@ function newsCardMarkup(item) {
         <div class="news-card-bottom">
           <span>${escapeHtml(cleanCopy(published))}</span>
           ${assetLabels.slice(0, 3).map((asset) => `<span>${escapeHtml(asset)}</span>`).join("")}
+          <span>${escapeHtml(`Conf. ${cleanCopy(item.confidence || "media")}`)}</span>
         </div>
       </div>
       <span class="impact-badge ${tone}">${escapeHtml(impactLabel)}</span>
@@ -2351,14 +2998,14 @@ function openNewsDetail(newsId) {
       <span class="${newsImpactTone(item.impact)}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
       ${item.confidence ? `<span>${escapeHtml(`Confianza ${cleanCopy(item.confidence)}`)}</span>` : ""}
     </div>
-    <p class="detail-lead">${escapeHtml(cleanCopy(item.summary || "Sin resumen disponible."))}</p>
+    <p class="detail-lead">${escapeHtml(spanishUiCopy(item.summary || "Sin resumen disponible."))}</p>
     <section class="genesis-mini investing-detail-block">
       <strong>Lectura Genesis</strong>
-      <p>${escapeHtml(cleanCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como senal aislada."))}</p>
-      <p>Por que importa: ${escapeHtml(cleanCopy(item.whyItMatters || item.why_it_matters || "Puede afectar apetito de riesgo, momentum o niveles de los activos relacionados."))}</p>
-      <p>Riesgo: ${escapeHtml(cleanCopy(item.risk || "Impacto aun depende de confirmacion por precio y volumen."))}</p>
-      <p>Que vigilar: ${escapeHtml(watchPoints.length ? watchPoints.join(" | ") : "reaccion de precio, volumen y confirmacion en la siguiente vela relevante.")}</p>
-      ${item.watch ? `<p>${escapeHtml(cleanCopy(item.watch))}</p>` : ""}
+      <p>${escapeHtml(spanishUiCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como señal aislada."))}</p>
+      <p>Por que importa: ${escapeHtml(spanishUiCopy(item.whyItMatters || item.why_it_matters || "Puede afectar apetito de riesgo, momentum o niveles de los activos relacionados."))}</p>
+      <p>Riesgo: ${escapeHtml(spanishUiCopy(item.risk || "Impacto aun depende de confirmacion por precio y volumen."))}</p>
+      <p>Qué vigilar: ${escapeHtml(watchPoints.length ? watchPoints.map(spanishUiCopy).join(" | ") : "reacción de precio, volumen y confirmación en la siguiente vela relevante.")}</p>
+      ${item.watch ? `<p>${escapeHtml(spanishUiCopy(item.watch))}</p>` : ""}
     </section>
     ${assets.length ? `<div class="news-meta">${assets.map((asset) => `<span>${escapeHtml(asset)}</span>`).join("")}</div>` : ""}
     ${item.url ? `<a class="secondary-button full" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Abrir fuente original</a>` : ""}
@@ -2367,7 +3014,7 @@ function openNewsDetail(newsId) {
 }
 
 function newsDisplayTitle(item = {}) {
-  return cleanCopy(item.title_es || item.title || item.headline || item.originalTitle || "Noticia");
+  return spanishUiCopy(item.title_es || item.title || item.headline || item.originalTitle || "Noticia");
 }
 
 function closeNewsDetail() {
@@ -2376,15 +3023,108 @@ function closeNewsDetail() {
   appState.selectedNewsId = "";
 }
 
+function premiumScreenHeader(title, subtitle, actionMarkup = "") {
+  return `
+    <section class="premium-screen-head">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(subtitle)}</p>
+      </div>
+      ${actionMarkup}
+    </section>
+  `;
+}
+
+function marketPulseHeroMarkup(context = "tracking") {
+  ensureMarketPulse();
+  const rows = marketPulseRows();
+  const priced = rows.filter((item) => itemPrice(item) !== null);
+  const avgMove = priced.length
+    ? priced.reduce((sum, item) => sum + (itemDailyPct(item) || 0), 0) / priced.length
+    : null;
+  const tone = positiveClass(avgMove);
+  const confidence = priced.length >= 4 ? "alta" : priced.length >= 2 ? "media" : "pendiente";
+  const title = tone === "up" ? "Mercado con sesgo comprador" : tone === "down" ? "Mercado bajo presión" : "Mercado en vigilancia";
+  const subtitle = context === "alerts"
+    ? "Precio, volumen y riesgo conectados a tus activos."
+    : "";
+  return `
+    <section class="market-pulse-render tone-${tone}">
+      <div class="pulse-copy">
+        <span>Pulso del mercado</span>
+        <strong>${escapeHtml(title)}</strong>
+        ${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ""}
+      </div>
+      <div class="pulse-confidence">
+        ${renderConfidenceBar(confidence)}
+      </div>
+      <div class="pulse-strip">
+        ${rows.map((item) => {
+          const ticker = itemTicker(item);
+          const display = getAssetDisplayName(item);
+          const rowTone = movementTone(item);
+          return `
+            <button type="button" data-open-asset="${escapeHtml(ticker)}" class="pulse-chip ${rowTone}">
+              <span>${renderAssetIcon(item)}</span>
+              <b>${escapeHtml(ticker === "BZ=F" ? "Brent" : ticker)}</b>
+              <small>${escapeHtml(priceLabel(item))}</small>
+              ${renderSparkline(assetMoveValues(item), rowTone)}
+              <em>${escapeHtml(display.subtitle || display.displayName)}</em>
+            </button>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function sectionTitleMarkup(title, meta = "") {
+  return `
+    <div class="section-heading premium-section-title">
+      <strong>${escapeHtml(title)}</strong>
+      ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    </div>
+  `;
+}
+
+function assetStatusLabel(item) {
+  const pct = itemDailyPct(item);
+  const vol = numberOrNull(item?.relative_volume ?? item?.relativeVolume);
+  if (pct !== null && pct >= 1.25 && (vol === null || vol >= 0.9)) return "Alcista";
+  if (pct !== null && pct <= -1.25) return "Bajista";
+  if (pct !== null && pct < 0) return "Presionado";
+  if (vol !== null && vol >= 1.5) return "Volumen";
+  return "Neutral";
+}
+
+function watchTodayMarkup(items = []) {
+  const rows = (items.length ? items : marketPulseRows()).slice(0, 5);
+  const unusual = rows.find((item) => numberOrNull(item?.relative_volume ?? item?.relativeVolume) >= 1.5 || Math.abs(itemDailyPct(item) || 0) >= 2);
+  const pressure = rows.find((item) => (itemDailyPct(item) || 0) < 0);
+  const leader = [...rows].sort((a, b) => (itemDailyPct(b) || 0) - (itemDailyPct(a) || 0))[0];
+  return `
+    <section class="watch-today-card">
+      <strong>Que vigilar hoy</strong>
+      <div>
+        ${renderMetricCard("Nivel clave", leader ? `${itemTicker(leader)} ${formatPercent(itemDailyPct(leader), "0.00%")}` : "Sin liderazgo", movementTone(leader))}
+        ${renderMetricCard("Volumen inusual", unusual ? `${itemTicker(unusual)} ${formatVolumeCompact(unusual.volume)}` : "Sin ruptura", unusual ? "up" : "flat")}
+        ${renderMetricCard("Riesgo macro", pressure ? `${itemTicker(pressure)} presionado` : "Neutral", pressure ? "down" : "flat")}
+      </div>
+    </section>
+  `;
+}
+
 function renderTrackingScreen() {
   const root = document.getElementById("view-watchlist");
   if (!root) return;
   const items = filteredTrackingItems();
+  ensureMarketPulse();
   root.innerHTML = `
-    <section class="screen-stack">
+    <section class="screen-stack premium-tracking-screen">
       <div class="compact-actions">
         <button type="button" class="icon-action search-toggle" data-toggle-search="tracking" aria-label="${appState.searchOpen.tracking ? "Cerrar busqueda" : "Buscar activo"}">${iconSvg("search")}</button>
       </div>
+      ${marketPulseHeroMarkup("tracking")}
       ${appState.searchOpen.tracking ? `
         <form class="search-card premium-search" id="tracking-search-form">
           <input id="portfolio-search-input" placeholder="Buscar activos, empresas o ETFs..." autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
@@ -2398,9 +3138,11 @@ function renderTrackingScreen() {
       <div class="search-results" id="portfolio-search-result" ${appState.marketSearchResults.tracking.length ? "" : "hidden"}>
         ${appState.marketSearchResults.tracking.map((item) => searchResultMarkup(item, "tracking")).join("")}
       </div>
+      ${sectionTitleMarkup("Tus activos vigilados", `${items.length} activos`)}
       <div class="asset-list" id="watchlist-screen-body">
         ${items.length ? items.map((item) => assetRowMarkup(item, "tracking")).join("") : emptyStateMarkup("Sin activos en seguimiento.", "Busca un ticker y agregalo para ver precio, sesion y movimiento.")}
       </div>
+      ${watchTodayMarkup(items)}
     </section>
   `;
   const searchButton = document.getElementById("portfolio-search-button");
@@ -2497,6 +3239,7 @@ function assetCategory(item) {
 function renderPortfolioScreen() {
   const root = document.getElementById("view-radar");
   if (!root) return;
+  ensureMarketPulse();
   const totals = appState.portfolioTotals;
   const distribution = buildDistribution();
   const topRow = distribution.reduce((best, row) => (!best || row.weight > best.weight ? row : best), null);
@@ -2505,20 +3248,22 @@ function renderPortfolioScreen() {
   const portfolioTone = movementTone(portfolioPnlPct ?? portfolioPnl);
   const concentrationLabel = topRow ? `${itemTicker(topRow.item)} ${compactPercent(topRow.weight)}` : "para calcular pesos";
   root.innerHTML = `
-    <section class="screen-stack">
+    <section class="screen-stack premium-portfolio-screen">
       <div class="compact-actions">
         <button type="button" class="icon-action search-toggle" data-toggle-search="portfolio" aria-label="${appState.searchOpen.portfolio ? "Cerrar busqueda" : "Buscar activo"}">${iconSvg("search")}</button>
       </div>
+      ${portfolioHeroMarkup(totals, distribution)}
       ${appState.searchOpen.portfolio ? `
         <form class="search-card premium-search" id="portfolio-buy-search-form">
           <input id="portfolio-buy-search-input" placeholder="Buscar ticker o empresa para simular compra" autocomplete="off" value="${escapeHtml(appState.portfolioSearchQuery)}">
           <button class="round-button icon-submit" type="button" id="portfolio-sim-buy-button" aria-label="Confirmar busqueda">${iconSvg("check")}</button>
         </form>
-        ${searchDiscoveryRail("portfolio")}
+        ${appState.portfolioSearchQuery.trim() ? searchDiscoveryRail("portfolio") : ""}
       ` : ""}
-      <div class="search-results" id="portfolio-buy-search-result" ${appState.marketSearchResults.portfolio.length ? "" : "hidden"}>
-        ${appState.marketSearchResults.portfolio.map((item) => searchResultMarkup(item, "portfolio")).join("")}
+      <div class="search-results" id="portfolio-buy-search-result" ${appState.searchOpen.portfolio && appState.marketSearchResults.portfolio.length ? "" : "hidden"}>
+        ${appState.searchOpen.portfolio ? appState.marketSearchResults.portfolio.map((item) => searchResultMarkup(item, "portfolio")).join("") : ""}
       </div>
+      ${sectionTitleMarkup("Asignacion paper", distribution.length ? `${distribution.length} posiciones` : "sin compras")}
       <section class="donut-panel">
         <div class="portfolio-donut ${distribution.length ? "" : "empty"}" id="portfolio-donut" style="background:${donutGradient(distribution)}">
           <div class="donut-center">
@@ -2532,6 +3277,7 @@ function renderPortfolioScreen() {
       <div class="asset-list" id="portfolio-positions-body">
         ${appState.paperPositions.length ? appState.paperPositions.map((item) => assetRowMarkup(item, "paper", totals.totalValue)).join("") : emptyStateMarkup("Sin compras simuladas.", "Compra paper para ver peso, valor y P/L.")}
       </div>
+      ${portfolioInsightCards(totals, distribution)}
       <div id="portfolio-watchlist-body" hidden></div>
       <span id="portfolio-data-state" hidden>Datos directos activos</span>
       <span id="portfolio-last-update" hidden>${escapeHtml(appState.lastUpdated)}</span>
@@ -2550,6 +3296,20 @@ function renderPortfolioScreen() {
   if (buyInput) {
     buyInput.addEventListener("input", (event) => {
       appState.portfolioSearchQuery = event.target.value;
+      if (!appState.portfolioSearchQuery.trim()) {
+        appState.marketSearchResults.portfolio = [];
+        renderPortfolioScreen();
+      }
+    });
+    buyInput.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        const active = document.activeElement;
+        if (active?.closest?.("#portfolio-buy-search-form, .search-discovery, #portfolio-buy-search-result")) return;
+        if (!appState.portfolioSearchQuery.trim() && !appState.marketSearchResults.portfolio.length) {
+          appState.searchOpen.portfolio = false;
+          renderPortfolioScreen();
+        }
+      }, 120);
     });
   }
   const buyForm = document.getElementById("portfolio-buy-search-form");
@@ -2559,6 +3319,43 @@ function renderPortfolioScreen() {
       searchPortfolioBuyTicker();
     });
   }
+}
+
+function portfolioHeroMarkup(totals, distribution) {
+  const totalValue = numberOrNull(totals.totalValue) || 0;
+  const pnl = totals.totalPnl ?? totals.dailyPnl;
+  const pnlPct = totals.totalPnlPct ?? totals.dailyPnlPct;
+  const tone = positiveClass(pnlPct ?? pnl);
+  const values = distribution.map((row) => row.value || row.weight);
+  return `
+    <section class="portfolio-hero-card tone-${tone}">
+      <span>Cartera paper</span>
+      <strong>${escapeHtml(totalValue > 0 ? money(totalValue) : "Sin compras")}</strong>
+      <p>${escapeHtml(distribution.length ? `P/L ${signedMoney(pnl, "sin calcular")} / ${formatPercent(pnlPct, "0.00%")}` : "Simula una compra para calcular pesos reales.")}</p>
+      <div class="portfolio-performance">
+        ${renderMiniBars(values.length ? values : [1, 2, 1], 42)}
+      </div>
+      <div class="portfolio-range-tabs" aria-hidden="true"><span>1D</span><span>1W</span><span>1M</span></div>
+    </section>
+  `;
+}
+
+function portfolioInsightCards(totals, distribution) {
+  const top = distribution.reduce((best, row) => (!best || row.weight > best.weight ? row : best), null);
+  const risks = appState.paperPositions
+    .filter((item) => (itemDailyPct(item) || 0) < 0 || (positionPnl(item) || 0) < 0)
+    .slice(0, 2);
+  const winners = appState.paperPositions
+    .filter((item) => (positionPnl(item) || itemDailyPct(item) || 0) > 0)
+    .slice(0, 2);
+  return `
+    <section class="portfolio-insight-grid">
+      ${renderMetricCard("Exposicion", top ? `${itemTicker(top.item)} ${compactPercent(top.weight)}` : "Sin concentracion", top ? "up" : "flat")}
+      ${renderMetricCard("Genesis lectura", distribution.length ? "Riesgo medido" : "Esperando compra", distribution.length ? "up" : "flat")}
+      ${renderMetricCard("Ganadores", winners.length ? winners.map(itemTicker).join(", ") : "Sin ganadores", winners.length ? "up" : "flat")}
+      ${renderMetricCard("Riesgos", risks.length ? risks.map(itemTicker).join(", ") : "Sin presion", risks.length ? "down" : "flat")}
+    </section>
+  `;
 }
 
 function emptyStateMarkup(title, text) {
@@ -2615,16 +3412,28 @@ function assetRowMarkup(item, mode, totalValue = 0) {
   const pnl = positionPnl(item);
   const subline = compactAssetSubline(item, mode, totalValue);
   const display = getAssetDisplayName(item);
+  const volume = numberOrNull(item.volume);
+  const relativeVolume = numberOrNull(item.relative_volume ?? item.relativeVolume);
+  const status = assetStatusLabel(item);
   return `
     <article class="asset-row compact-market-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
       <button class="asset-main" type="button" data-open-asset="${escapeHtml(ticker)}">
-        <span class="asset-title">
-          <strong>${escapeHtml(display.displayName)}</strong>
-          <small>${escapeHtml(subline || display.subtitle || ticker)}</small>
+        <span class="asset-row-leading">
+          ${renderAssetIcon(item)}
+          <span class="asset-title">
+            <strong>${escapeHtml(display.displayName)}</strong>
+            <small>${escapeHtml(subline || display.subtitle || ticker)}</small>
+          </span>
+        </span>
+        <span class="asset-row-vitals" aria-hidden="true">
+          ${renderSparkline(assetMoveValues(item), tone)}
+          <em>${escapeHtml(volume ? formatVolumeCompact(volume) : "Vol. pendiente")}</em>
+          <em>${escapeHtml(relativeVolume !== null ? `${compactNumber(relativeVolume)}x` : "Rel. pendiente")}</em>
         </span>
         <span class="price-stack">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
           <span class="change-stack ${tone}">${dailyMoveMarkup(item)}</span>
+          <span class="asset-state-badge ${tone}">${escapeHtml(status)}</span>
           ${mode === "paper" ? `<span class="${marketToneClass(pnl)}">${escapeHtml(formatChange(pnl, "P/L sin dato"))}</span>` : ""}
         </span>
       </button>
@@ -2830,7 +3639,7 @@ function normalizeWhaleEventForUi(item = {}) {
       : "Flujo estimado por volumen/precio; no confirma entidad ni compra directa."),
     missing: confirmed
       ? "Vigilar continuidad de precio, volumen y catalizador."
-      : "No confirma compra directa ni entidad; sirve como senal secundaria.",
+      : "No confirma compra directa ni entidad; sirve como señal secundaria.",
     eventType,
     confirmed,
     raw: item,
@@ -2979,15 +3788,131 @@ async function loadAlerts() {
   return appState.alertsSnapshot;
 }
 
+function mergeAlertRowsWithOpportunities(rows = []) {
+  const seen = new Set(rows.map((item) => alertItemId(item)));
+  const opportunities = marketOpportunityRowsForUi(rows);
+  const merged = [];
+  opportunities.forEach((item) => {
+    const id = alertItemId(item);
+    if (seen.has(id)) return;
+    seen.add(id);
+    merged.push(item);
+  });
+  rows.forEach((item) => {
+    const id = alertItemId(item);
+    if (id && merged.some((existing) => alertItemId(existing) === id)) return;
+    merged.push(item);
+  });
+  return merged.slice(0, 14);
+}
+
+function marketOpportunityRowsForUi(existingRows = []) {
+  const existingTickers = new Set((existingRows || []).map(itemTicker).filter(Boolean));
+  const rows = Object.entries(appState.opportunityQuotes || {})
+    .map(([ticker, item]) => ({ ticker, item }))
+    .filter(({ item }) => item && itemPrice(item) !== null)
+    .map(({ ticker, item }) => {
+      const price = itemPrice(item);
+      const volume = numberOrNull(item.volume);
+      const dollarVolume = price !== null && volume !== null ? price * volume : null;
+      const changePct = itemDailyPct(item) || 0;
+      const support = numberOrNull(item.day_low || item.dayLow);
+      const resistance = numberOrNull(item.day_high || item.dayHigh);
+      const strategy = localStrategyForOpportunity(ticker, { price, volume, dollarVolume, changePct, support, resistance });
+      return { ticker, item, price, volume, dollarVolume, changePct, support, resistance, strategy };
+    })
+    .filter((row) => {
+      if (existingTickers.has(row.ticker) && !row.strategy.isStrong) return false;
+      return row.strategy.isImportant;
+    })
+    .sort((a, b) => (b.strategy.score - a.strategy.score) || ((b.dollarVolume || 0) - (a.dollarVolume || 0)))
+    .slice(0, 5);
+  return rows.map(({ ticker, item, price, volume, dollarVolume, changePct, support, resistance, strategy }) => ({
+    id: `opportunity:${ticker}`,
+    alert_id: `opportunity:${ticker}`,
+    ticker,
+    asset_name: getAssetDisplayName(item).displayName,
+    title: `${ticker}: oportunidad externa detectada`,
+    title_es: `${ticker}: oportunidad externa detectada`,
+    summary: `${ticker}: ${formatPercent(changePct)} con ${formatMoneyCompact(dollarVolume, "volumen pendiente")} de flujo FMP. ${strategy.summary}`,
+    summary_es: `${ticker}: ${formatPercent(changePct)} con ${formatMoneyCompact(dollarVolume, "volumen pendiente")} de flujo FMP. ${strategy.summary}`,
+    alert_type: "opportunity_scan",
+    source: "FMP oportunidad",
+    status: "opportunity",
+    is_opportunity: true,
+    price,
+    current_price: price,
+    change: itemDailyUsd(item),
+    change_pct: changePct,
+    volume,
+    dollar_volume: dollarVolume,
+    support,
+    resistance,
+    severity: strategy.score >= 72 ? "high" : "medium",
+    confidence: strategy.score >= 65 ? "medium" : "low",
+    impact: changePct > 0 ? "bullish" : changePct < 0 ? "bearish" : "neutral",
+    direction: changePct > 0 ? "bullish" : changePct < 0 ? "bearish" : "neutral",
+    trend: changePct > 0 ? "alcista en validación" : changePct < 0 ? "bajista en vigilancia" : "rango en validación",
+    momentum: strategy.label,
+    risk: strategy.invalidation,
+    strategy,
+    what_it_means: strategy.summary,
+    what_to_watch: strategy.validation.join("; "),
+    genesis_reading: strategy.summary,
+    genesis_reading_es: strategy.summary,
+    mini_series: [changePct, dollarVolume ? Math.log10(Math.abs(dollarVolume)) : 0, strategy.score],
+    created_at: new Date().toISOString(),
+    affected_portfolio_assets: [],
+    affected_watchlist_assets: [],
+  }));
+}
+
+function localStrategyForOpportunity(ticker, fields = {}) {
+  const changePct = numberOrNull(fields.changePct) || 0;
+  const dollarVolume = numberOrNull(fields.dollarVolume);
+  const volume = numberOrNull(fields.volume);
+  const score = Math.max(0, Math.min(100,
+    44
+    + Math.min(18, Math.abs(changePct) * 4)
+    + (dollarVolume ? Math.min(24, Math.log10(Math.abs(dollarVolume) + 1) * 2.2) : 0)
+    + (volume && volume > 10_000_000 ? 8 : 0)
+  ));
+  const grade = score >= 72 ? "A" : score >= 60 ? "B" : score >= 50 ? "C" : "D";
+  const label = grade === "A" ? "oportunidad fuerte en validación" : grade === "B" ? "oportunidad importante" : "radar activo";
+  const validation = [
+    fields.resistance ? `cierre arriba de ${money(fields.resistance)}` : "ruptura de rango con vela firme",
+    "volumen sosteniéndose",
+    "catalizador/noticia alineado",
+  ];
+  const invalidation = fields.support ? `pierde ${money(fields.support)}` : "pierde estructura intradía";
+  return {
+    name: "Genesis 10% mensual - validación por precio, volumen y catalizador",
+    grade,
+    score: Math.round(score),
+    label,
+    isImportant: score >= 58 || (dollarVolume !== null && dollarVolume >= 1_000_000_000),
+    isStrong: score >= 70,
+    bias: changePct > 0 ? "bullish" : changePct < 0 ? "bearish" : "neutral",
+    validation,
+    entry_condition: "paper solo si confirma ruptura/retest con volumen; no perseguir vela extendida.",
+    invalidation,
+    risk_note: "No broker, no compra real: solo radar y paper.",
+    summary: `${ticker}: ${label} (${grade}, ${Math.round(score)}/100). Validar ${validation[0]} y ${validation[1]}; invalidar si ${invalidation}.`,
+  };
+}
+
 function renderAlertsScreen() {
   const root = document.getElementById("view-alerts");
   if (!root) return;
+  ensureMarketPulse();
+  ensureOpportunityQuotes();
   const items = Array.isArray(appState.alertsSnapshot?.items)
     ? appState.alertsSnapshot.items
     : Array.isArray(appState.alertsSnapshot?.recent_alerts)
       ? appState.alertsSnapshot.recent_alerts
       : [];
-  const alertRows = (items.length ? items : derivedAlertRows()).map(normalizeAlertRowForUi);
+  const baseAlertRows = (items.length ? items : derivedAlertRows()).map(normalizeAlertRowForUi);
+  const alertRows = mergeAlertRowsWithOpportunities(baseAlertRows);
   const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
   const hasConfirmedWhales = whales.some((row) => row.entity && numberOrNull(row.amount) !== null && !row.amountSuspicious);
   const whaleRows = whales.length ? whales : whaleFallbackRows();
@@ -2995,11 +3920,12 @@ function renderAlertsScreen() {
   indexWhaleItems(whaleRows);
   root.innerHTML = `
     <section class="screen-stack alerts-investing-screen">
+      ${marketPulseHeroMarkup("alerts")}
       <div class="subtabs" aria-label="Eventos">
         <button type="button" class="${appState.alertSubtab === "alerts" ? "is-active" : ""}" data-alert-tab="alerts">Alertas</button>
         <button type="button" class="${appState.alertSubtab === "whales" ? "is-active" : ""}" data-alert-tab="whales">Ballenas</button>
       </div>
-      ${appState.alertSubtab === "alerts" ? alertsPanelMarkup(alertRows) : whalesPanelMarkup(whaleRows, hasConfirmedWhales)}
+      ${appState.alertSubtab === "alerts" ? alertsPanelMarkupV2(alertRows) : whalesPanelMarkup(whaleRows, hasConfirmedWhales)}
     </section>
   `;
   bindMoneyFlowJarvisForm();
@@ -3017,9 +3943,11 @@ function normalizeAlertRowForUi(item = {}) {
   const relativeVolume = numberOrNull(item.relative_volume ?? (avgVolume && volume ? volume / avgVolume : null));
   const dollarVolume = numberOrNull(item.dollar_volume) ?? (price !== null && volume !== null ? price * volume : null);
   const display = getAssetDisplayName(ticker).displayName;
-  const direction = changePct === null ? "vigilancia de precio" : changePct > 0.2 ? "presion compradora" : changePct < -0.2 ? "presion vendedora" : "rango lateral";
-  const title = `${display}: ${direction}`;
-  const summary = `${ticker}: ${price !== null ? money(price) : "precio pendiente"} ${changePct !== null ? formatPercent(changePct) : ""}. ${volume ? `Volumen ${compactNumber(volume)}` : "Volumen live pendiente"}.`;
+  const direction = changePct === null ? "vigilancia de precio" : changePct > 0.2 ? "presión compradora" : changePct < -0.2 ? "presión vendedora" : "rango lateral";
+  const generatedTitle = `${display}: ${direction}`;
+  const generatedSummary = `${ticker}: ${price !== null ? money(price) : "precio pendiente"} ${changePct !== null ? formatPercent(changePct) : ""}. ${volume ? `Volumen ${compactNumber(volume)}` : "Volumen live pendiente"}.`;
+  const title = cleanCopy(item.title_es || item.title || generatedTitle);
+  const summary = cleanCopy(item.summary_es || item.summary || generatedSummary);
   return {
     ...item,
     title,
@@ -3035,8 +3963,9 @@ function normalizeAlertRowForUi(item = {}) {
     dollar_volume: dollarVolume,
     source: item.source || priceSourceLabel(asset),
     mini_series: item.mini_series || [changePct, relativeVolume, change].filter((value) => value !== null),
-    what_it_means: item.what_it_means || `${display} queda en ${direction}; Genesis mira precio, volumen y soporte antes de subir conviccion.`,
-    what_to_watch: item.what_to_watch || "Confirmar volumen relativo, ruptura de rango y reaccion en soporte/resistencia.",
+    strategy: item.strategy || localStrategyForOpportunity(ticker, { price, volume, dollarVolume, changePct, support: item.support, resistance: item.resistance }),
+    what_it_means: item.what_it_means || `${display} queda en ${direction}; Genesis mira precio, volumen y soporte antes de subir convicción.`,
+    what_to_watch: item.what_to_watch || "Confirmar volumen relativo, ruptura de rango y reacción en soporte/resistencia.",
     genesis_reading: item.genesis_reading || "Señal derivada de mercado live; no es orden, es radar operativo.",
   };
 }
@@ -3059,13 +3988,13 @@ function derivedAlertRows() {
       volume: null,
       relative_volume: null,
       dollar_volume: null,
-      trend: "sin direccion confirmada",
+      trend: "sin dirección confirmada",
       momentum: "esperando fuente live",
-      risk: "riesgo de operar sin confirmacion",
-      what_it_means: "No hay activo de seguimiento cargado; Genesis no inventa senales.",
+      risk: "riesgo de operar sin confirmación",
+      what_it_means: "No hay activo de seguimiento cargado; Genesis no inventa señales.",
       what_to_watch: "Agregar activos a Seguimiento y confirmar FMP live.",
       mini_series: [1, 2, 1],
-      genesis_reading: "Alerta de sistema limpia: sin activos no hay senal operable.",
+      genesis_reading: "Alerta de sistema limpia: sin activos no hay señal operable.",
       created_at: appState.lastUpdated || new Date().toISOString(),
       context: "Mercado",
       status: "En vigilancia",
@@ -3170,20 +4099,46 @@ function indexAlertItems(items) {
   });
 }
 
+function whaleFlowBoardMarkup(rows = []) {
+  const confirmed = rows.filter((row) => row.confirmed || (row.entity && numberOrNull(row.amount || row.amountUsd) !== null && !row.amountSuspicious));
+  const estimated = rows.filter((row) => !confirmed.includes(row));
+  const confirmedValue = confirmed.reduce((sum, row) => sum + (numberOrNull(row.amount || row.amountUsd) || 0), 0);
+  const monitoredValue = estimated.reduce((sum, row) => sum + (numberOrNull(row.monitoredDollarVolume || row.dollarVolume) || 0), 0);
+  const inflow = rows.filter((row) => String(row.direction || "").includes("in")).length;
+  const outflow = rows.filter((row) => String(row.direction || "").includes("out")).length;
+  return `
+    <section class="whale-flow-card investing-flow-board whale-render-board">
+      <div>
+        <span>Ballenas</span>
+        <strong>${escapeHtml(`${confirmed.length} confirmadas / ${estimated.length} estimadas`)}</strong>
+        <p>${escapeHtml(rows.length ? "Genesis separa monto confirmado de volumen vigilado. Nada se presenta como compra real sin fuente." : "Esperando flujo confirmado desde fuentes activas.")}</p>
+      </div>
+      <div class="whale-board-bars" aria-hidden="true">${miniSeriesBars(rows.map((row) => row.amount || row.amountUsd || row.monitoredDollarVolume || row.dollarVolume || row.volume), 52)}</div>
+      <div class="whale-board-metrics">
+        <span>Entradas ${escapeHtml(String(inflow))}</span>
+        <span>Salidas ${escapeHtml(String(outflow))}</span>
+        <span>Flujo confirmado ${escapeHtml(formatMoneyCompact(confirmedValue, "$0"))}</span>
+        <span>Volumen vigilado ${escapeHtml(formatMoneyCompact(monitoredValue, "Pendiente"))}</span>
+      </div>
+    </section>
+  `;
+}
+
 function whalesPanelMarkup(rows, hasConfirmed = false) {
   return `
+    ${whaleFlowBoardMarkup(rows)}
     <div class="compact-actions whale-actions">
       <button type="button" class="icon-action search-toggle" data-toggle-search="whales" aria-label="${appState.searchOpen.whales ? "Cerrar consulta" : "Consultar ballenas"}">${iconSvg("search")}</button>
     </div>
     ${appState.searchOpen.whales ? `
-      <form class="search-card whale-search" id="money-flow-jarvis-form">
+      <form class="search-card whale-search premium-search inline-search" id="money-flow-jarvis-form">
         <input id="money-flow-jarvis-input" placeholder="Consultar ticker o flujo smart money" autocomplete="off">
         <button type="submit">${iconSvg("send")}</button>
       </form>
       <div class="whale-answer" id="money-flow-jarvis-answer">Lectura Genesis lista para consultar.</div>
     ` : ""}
     <div class="asset-list whales-list investing-event-list" id="whales-list">
-      ${rows.length ? rows.map(whaleRowMarkup).join("") : emptyStateMarkup("Sin ballenas confirmadas.", "Cuando FMP confirme entidad, monto y fecha, Genesis lo mostrara aqui sin inventar instituciones.")}
+      ${rows.length ? rows.map(whaleRowMarkupV2).join("") : emptyStateMarkup("Sin ballenas confirmadas.", "Cuando FMP confirme entidad, monto y fecha, Genesis lo mostrara aqui sin inventar instituciones.")}
     </div>
   `;
 }
@@ -3255,6 +4210,200 @@ function alertMarkup(item) {
   `;
 }
 
+function alertsPanelMarkupV2(items) {
+  const rows = items.length ? items : derivedAlertRows();
+  const high = rows.filter((item) => String(item.severity || "").toLowerCase() === "high").length;
+  const opportunities = rows.filter((item) => item.is_opportunity || String(item.alert_type || "").includes("opportunity")).length;
+  const summary = rows.slice(0, 3).map((item) => {
+    const ticker = itemTicker(item) || "Mercado";
+    const move = formatPercent(item.change_pct, "0.00%");
+    const flow = item.dollar_volume ? formatMoneyCompact(item.dollar_volume) : item.volume ? formatVolumeCompact(item.volume) : "volumen pendiente";
+    return `${ticker} ${move}: ${flow}`;
+  }).join("  /  ");
+  return `
+    <section class="market-pulse-card alert-pulse alert-summary-card">
+      <div>
+        <span>Resumen de alertas</span>
+        <strong>${escapeHtml(`${rows.length} señales vivas / ${high} alta prioridad / ${opportunities} oportunidades`)}</strong>
+        <p>${escapeHtml(summary || "Genesis espera ruptura, volumen inusual o noticia confirmada para elevar urgencia.")}</p>
+      </div>
+      <div class="alert-summary-bars" aria-hidden="true">${miniSeriesBars(rows.map((item) => item.dollar_volume || item.volume || item.change_pct), 34)}</div>
+    </section>
+    <div class="asset-list investing-event-list">
+      ${rows.slice(0, 14).map(alertMarkupV2).join("")}
+    </div>
+  `;
+}
+
+function alertMarkupV2(item) {
+  const ticker = itemTicker(item) || "Mercado";
+  const display = ticker === "Mercado" ? { displayName: "Mercado", subtitle: "" } : getAssetDisplayName(ticker);
+  const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || item.severity || "Vigilancia";
+  const tone = newsImpactTone(impact);
+  const alertId = alertItemId(item);
+  const priceText = item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica");
+  const changeText = formatPercent(item.change_pct, "Sin dato");
+  const flowText = item.dollar_volume ? formatMoneyCompact(item.dollar_volume) : item.volume ? formatVolumeCompact(item.volume) : "Pendiente";
+  const strategy = item.strategy || {};
+  const opportunity = item.is_opportunity || String(item.alert_type || "").includes("opportunity");
+  const read = alertVisualDigest(item);
+  return `
+    <article class="whale-row feed-row alert-event investing-event-card tone-${tone}" data-alert-id="${escapeHtml(alertId)}">
+      <button class="event-main" type="button" data-alert-id="${escapeHtml(alertId)}">
+        <div class="whale-topline investing-event-topline">
+          <div>
+            <strong>${escapeHtml(display.displayName)}</strong>
+            <small>${escapeHtml(cleanCopy(opportunity ? `Oportunidad · ${item.title_es || item.title || "scan activo"}` : item.title_es || item.title || "Alerta Genesis"))}</small>
+          </div>
+          <span class="quote-stack ${tone}">
+            <b>${escapeHtml(priceText)}</b>
+            <small>${escapeHtml(changeText)}</small>
+          </span>
+        </div>
+        <p>${escapeHtml(read)}</p>
+        <div class="alert-signal-panel">
+          <div class="mini-spark alert-spark" aria-hidden="true">${miniSeriesBars(item.mini_series || [item.change_pct, item.relative_volume, item.signal_strength, item.dollar_volume], 30)}</div>
+          <span><small>Flujo</small><strong>${escapeHtml(flowText)}</strong></span>
+          <span><small>Vol.</small><strong>${escapeHtml(item.volume ? compactNumber(item.volume) : "Pendiente")}</strong></span>
+          <span><small>Score</small><strong>${escapeHtml(strategy.score ? `${strategy.score}/100` : cleanCopy(item.confidence || "media"))}</strong></span>
+        </div>
+        <div class="asset-meta investing-meta">
+          <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact))}</span>
+          ${strategy.grade ? `<span>Estrategia: ${escapeHtml(cleanCopy(`${strategy.grade} · ${strategy.label || "Validación"}`))}</span>` : ""}
+          <span>Soporte: ${escapeHtml(money(item.support, "Pendiente"))}</span>
+          <span>Resistencia: ${escapeHtml(money(item.resistance, "Pendiente"))}</span>
+          <span>Tendencia: ${escapeHtml(cleanCopy(item.trend || "Vigilancia"))}</span>
+          <span>Momentum: ${escapeHtml(cleanCopy(item.momentum || "Confirmacion pendiente"))}</span>
+        </div>
+      </button>
+    </article>
+  `;
+}
+
+function alertVisualDigest(item = {}) {
+  const ticker = itemTicker(item) || "Mercado";
+  const price = item.price === null || item.price === undefined ? "precio directo no aplica" : money(item.price);
+  const pct = formatPercent(item.change_pct, "0.00%");
+  const flow = item.dollar_volume ? formatMoneyCompact(item.dollar_volume) : item.volume ? formatVolumeCompact(item.volume) : "volumen pendiente";
+  const support = money(item.support, "soporte pendiente");
+  const resistance = money(item.resistance, "resistencia pendiente");
+  const strategy = item.strategy?.summary ? ` Estrategia: ${cleanCopy(item.strategy.summary)}` : "";
+  if (item.price === null || item.price === undefined) {
+    return `${ticker}: alerta macro/mercado. No aplica a precio directo; vigilar impacto en activos relacionados, noticias y volatilidad.`;
+  }
+  return `${ticker}: ${price} (${pct}). Flujo visible ${flow}; zona ${support} - ${resistance}. Genesis lo usa como vigilancia operativa, no como orden.${strategy}`;
+}
+
+function whaleRowMarkupV2(row) {
+  const display = getAssetDisplayName(row.ticker);
+  const whaleId = whaleItemId(row);
+  const confirmed = Boolean(row.confirmed || (row.entity && numberOrNull(row.amount || row.amountUsd) !== null && !row.amountSuspicious));
+  const directionTone = String(row.direction || "").includes("out") ? "down" : String(row.direction || "").includes("in") ? "up" : "flat";
+  const monitored = numberOrNull(row.monitoredDollarVolume || row.dollarVolume);
+  const relVolume = numberOrNull(row.relativeVolume);
+  const amountLabel = confirmed ? formatMoneyCompact(row.amount || row.amountUsd, "Monto pendiente") : formatMoneyCompact(monitored, "Esperando volumen FMP");
+  const priceLabel = money(row.price || row.currentPrice, "Precio pendiente");
+  const volumeLabel = row.volume ? compactNumber(row.volume) : "Volumen pendiente";
+  const directionLabel = directionTone === "down" ? "Salida / distribución" : directionTone === "up" ? "Entrada / acumulación" : "Flujo vigilado";
+  const gaugeLabel = confirmed ? "monto reportado" : "volumen vigilado";
+  const rowRead = confirmed
+    ? cleanCopy(row.read || `${directionLabel}: ${amountLabel} reportados por ${row.entity || "fuente activa"}.`)
+    : monitored !== null
+      ? `${directionLabel}: ${amountLabel} de volumen vigilado en ${display.displayName}. Es señal de actividad, no compra confirmada.`
+      : `${directionLabel}: FMP aún no entregó volumen suficiente para cuantificar. Genesis no inventa monto.`;
+  return `
+    <article class="whale-row feed-row investing-event-card flow-${directionTone}" data-whale-id="${escapeHtml(whaleId)}">
+      <button class="event-main" type="button" data-whale-id="${escapeHtml(whaleId)}">
+        <div class="whale-topline investing-event-topline">
+          <div>
+            <strong>${escapeHtml(display.displayName)}</strong>
+            <small>${escapeHtml(confirmed ? "Ballena confirmada" : "Flujo vigilado")}</small>
+          </div>
+          <span class="event-chip ${directionTone}">${escapeHtml(confirmed ? "Confirmada" : "Vigilado")}</span>
+        </div>
+        <div class="whale-signal-strip ${directionTone}">
+          <span>${escapeHtml(priceLabel)}</span>
+          ${flowGaugeMarkup(row.amountSuspicious ? null : monitored, directionTone, gaugeLabel)}
+          <strong>${escapeHtml(row.amountSuspicious ? "Monto no validado" : amountLabel)}</strong>
+        </div>
+        <div class="whale-metrics-row">
+          <span>Volumen ${escapeHtml(volumeLabel)}</span>
+          ${relVolume !== null ? `<span>Rel. ${escapeHtml(`${compactNumber(relVolume)}x`)}</span>` : ""}
+          <span>${escapeHtml(cleanCopy(row.source || "FMP"))}</span>
+          <span>Conf. ${escapeHtml(cleanCopy(row.confidence || "media"))}</span>
+        </div>
+        <p>${escapeHtml(cleanCopy(rowRead))}</p>
+      </button>
+    </article>
+  `;
+}
+
+function flowGaugeMarkup(value, tone = "flat", label = "flujo") {
+  const numeric = Math.abs(numberOrNull(value) || 0);
+  const width = numeric ? Math.max(18, Math.min(96, 18 + Math.log10(numeric + 1) * 11)) : 18;
+  return `
+    <span class="flow-gauge ${tone}" aria-hidden="true">
+      <i><b style="width:${width}%"></b></i>
+      <small>${escapeHtml(label)}</small>
+    </span>
+  `;
+}
+
+function flowVolumeVisualMarkup(row = {}, confirmed = false) {
+  const tone = row.direction === "outflow" ? "down" : row.direction === "inflow" ? "up" : movementTone(row.dollarVolume || row.monitoredDollarVolume || row.amountUsd);
+  const price = row.price || row.currentPrice || row.current_price;
+  const volume = row.volume || row.monitoredVolume || row.monitored_volume;
+  const dollarVolume = row.dollarVolume || row.dollar_volume || row.monitoredDollarVolume || row.monitored_dollar_volume || row.amountUsd || row.amount_usd;
+  const rel = row.relativeVolume || row.relative_volume;
+  const score = numberOrNull(row.strategy?.score ?? row.intensity ?? row.signal_strength) || (dollarVolume ? Math.min(92, Math.log10(Math.abs(dollarVolume) + 1) * 8) : 36);
+  const pressure = Math.max(8, Math.min(100, score));
+  const pieces = [
+    { label: "Precio", value: money(price, "pendiente"), level: price ? 64 : 18 },
+    { label: "Volumen", value: formatVolumeCompact(volume, "pendiente"), level: volume ? Math.min(100, Math.log10(Math.abs(volume) + 1) * 10) : 16 },
+    { label: confirmed ? "Monto" : "Vol. $", value: formatMoneyCompact(dollarVolume, "pendiente"), level: pressure },
+    { label: "Relativo", value: rel ? `${compactNumber(rel)}x` : "pendiente", level: rel ? Math.min(100, rel * 34) : 20 },
+  ];
+  return `
+    <div class="flow-volume-visual tone-${tone}">
+      <div class="flow-volume-main">
+        <span>${escapeHtml(confirmed ? "Flujo confirmado" : "Volumen vigilado")}</span>
+        <strong>${escapeHtml(formatMoneyCompact(dollarVolume, "Pendiente"))}</strong>
+      </div>
+      <div class="flow-volume-radar" style="--flow:${pressure}%">
+        <i></i><b></b>
+      </div>
+      <div class="flow-volume-grid">
+        ${pieces.map((item) => `
+          <span style="--level:${Math.max(6, Math.min(100, item.level))}%">
+            <small>${escapeHtml(item.label)}</small>
+            <strong>${escapeHtml(item.value)}</strong>
+            <i></i>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function strategyChecklistMarkup(strategy = {}) {
+  if (!strategy || typeof strategy !== "object") return "";
+  const validation = Array.isArray(strategy.validation) ? strategy.validation : [];
+  return `
+    <section class="strategy-card">
+      <div>
+        <span>Estrategia Genesis</span>
+        <strong>${escapeHtml(cleanCopy(strategy.label || strategy.name || "Validación activa"))}</strong>
+        <em>${escapeHtml(`Score ${strategy.score ?? "pendiente"} · ${strategy.grade || "radar"}`)}</em>
+      </div>
+      <ul>
+        ${validation.slice(0, 3).map((item) => `<li>${escapeHtml(cleanCopy(item))}</li>`).join("")}
+      </ul>
+      <p>Entrada paper: ${escapeHtml(cleanCopy(strategy.entry_condition || "esperar confirmación de precio y volumen."))}</p>
+      <p>Invalidación: ${escapeHtml(cleanCopy(strategy.invalidation || "si pierde estructura o falla el volumen."))}</p>
+    </section>
+  `;
+}
+
 function currentAlertRows() {
   const items = Array.isArray(appState.alertsSnapshot?.items)
     ? appState.alertsSnapshot.items
@@ -3300,14 +4449,15 @@ function openAlertDetail(alertId) {
       ["Confianza", cleanCopy(item.confidence || "media")],
       ["Fuente", cleanCopy(item.source || "technical")],
     ])}
-    <div class="detail-flow-chart" aria-hidden="true">${miniSeriesBars(item.mini_series || [item.change_pct, item.relative_volume, item.signal_strength])}</div>
+    ${flowVolumeVisualMarkup(item, false)}
     <section class="genesis-mini">
       <strong>Lectura Genesis</strong>
-      <p>${escapeHtml(cleanCopy(item.genesis_reading_es || item.genesis_reading || "No es orden; sirve para decidir si esperar confirmacion o reducir riesgo."))}</p>
-      <p>Que significa: ${escapeHtml(cleanCopy(item.why_it_matters_es || item.what_it_means || "Combina precio, volumen y rango para detectar urgencia operativa."))}</p>
-      <p>Que vigilar: ${escapeHtml(cleanCopy(item.what_to_watch_es || item.what_to_watch || "Confirmacion en volumen, soporte/resistencia y noticias relacionadas."))}</p>
+      <p>${escapeHtml(cleanCopy(item.genesis_reading_es || item.genesis_reading || "No es orden; sirve para decidir si esperar confirmación o reducir riesgo."))}</p>
+      <p>Qué significa: ${escapeHtml(cleanCopy(item.why_it_matters_es || item.what_it_means || alertVisualDigest(item)))}</p>
+      <p>Qué vigilar: ${escapeHtml(cleanCopy(item.what_to_watch_es || item.what_to_watch || "Confirmación en volumen, soporte/resistencia y noticias relacionadas."))}</p>
       ${(item.affected_portfolio_assets || []).length ? `<p>Afecta vigilancia/cartera: ${escapeHtml((item.affected_portfolio_assets || []).join(", "))}</p>` : ""}
     </section>
+    ${strategyChecklistMarkup(item.strategy)}
     ${ticker !== "Mercado" ? `<button class="secondary-button full" type="button" data-open-asset="${escapeHtml(ticker)}">Ver activo</button>` : ""}
   `;
   sheet.hidden = false;
@@ -3327,7 +4477,17 @@ function openWhaleDetail(whaleId) {
   const confirmed = Boolean(row.confirmed || (row.entity && numberOrNull(row.amount || row.amountUsd) !== null && !row.amountSuspicious));
   const movementLabel = confirmed ? "Ballena confirmada" : "Smart money estimado";
   const confirmedAmount = confirmed ? money(row.amount || row.amountUsd, "No confirmado") : "No confirmado";
-  const watchedVolume = money(row.monitoredDollarVolume || row.dollarVolume, "No confirmado");
+  const watchedVolume = formatMoneyCompact(row.monitoredDollarVolume || row.dollarVolume, "No confirmado");
+  const flowAmount = confirmed ? confirmedAmount : watchedVolume;
+  const directionText = row.direction === "outflow" ? "salida / distribución" : row.direction === "inflow" ? "entrada / acumulación" : "flujo bajo vigilancia";
+  const meaningText = confirmed
+    ? `${flowAmount} reportados por fuente activa. Genesis lo trata como evidencia de flujo, no como orden automática.`
+    : `${flowAmount} de volumen vigilado a ${money(row.price || row.currentPrice, "precio pendiente")}. No confirma comprador, wallet ni institución; sirve para medir atención y presión del mercado.`;
+  const impactText = row.direction === "outflow"
+    ? "Si el precio no recupera nivel, puede actuar como presión de distribución."
+    : row.direction === "inflow"
+      ? "Si el precio sostiene soporte y el volumen continúa, puede apoyar acumulación."
+      : "Sin dirección clara: solo sube a prioridad si rompe rango con volumen relativo.";
   body.innerHTML = `
     <span class="app-kicker">Ballenas / smart money</span>
     <h2>${escapeHtml(row.assetName || getAssetDisplayName(row.ticker).displayName)}</h2>
@@ -3335,26 +4495,28 @@ function openWhaleDetail(whaleId) {
     ${eventMetricGridMarkup([
       ["Tipo", movementLabel],
       ["Movimiento", cleanCopy(row.event || "Flujo")],
-      ["Direccion", cleanCopy(row.direction || "neutral")],
+      ["Dirección", cleanCopy(row.direction || "neutral")],
       ["Entidad", cleanCopy(row.entity || "Sin entidad confirmada")],
       ["Cantidad", row.units ? compactNumber(row.units) : "No confirmada"],
       ["Monto confirmado", row.amountSuspicious ? "No confirmado" : confirmedAmount],
       ["Volumen vigilado", watchedVolume],
       ["Precio usado", money(row.price || row.currentPrice, "Sin precio")],
       ["Volumen", row.volume ? compactNumber(row.volume) : "Sin volumen"],
-      ["Dollar volume", money(row.dollarVolume, "No confirmado")],
+      ["Dollar volume", formatMoneyCompact(row.dollarVolume, "No confirmado")],
       ["Vol. rel", row.relativeVolume ? `${compactNumber(row.relativeVolume)}x` : "No confirmado"],
       ["Fuente", cleanCopy(row.source || "market_flow")],
       ["Confianza", cleanCopy(row.confidence || "baja")],
     ])}
-    <div class="detail-flow-chart" aria-hidden="true">${miniSeriesBars([row.netFlow, row.dollarVolume, row.relativeVolume, row.intensity])}</div>
+    ${flowVolumeVisualMarkup(row, confirmed)}
     <section class="genesis-mini">
-      <strong>Que significa</strong>
-      <p>${escapeHtml(cleanCopy(confirmed ? "Hay entidad y monto reportados por fuente activa; Genesis lo usa como evidencia de flujo, no como orden." : "No hay entidad confirmada; esta lectura usa volumen, precio y flujo como senal secundaria."))}</p>
-      <p>Que NO significa: ${escapeHtml(confirmed ? "no garantiza que el movimiento siga ni que sea entrada operable inmediata." : "no confirma compra directa, wallet, institucion ni monto de ballena.")}</p>
-      <p>Impacto probable: ${escapeHtml(row.direction === "outflow" ? "puede elevar presion o distribucion si el precio no recupera nivel." : row.direction === "inflow" ? "puede apoyar acumulacion si precio y volumen continuan." : "sirve como vigilancia hasta que la direccion mejore.")}</p>
-      <p>Que vigilar: continuidad de volumen, reaccion del precio, noticias relacionadas y si tu cartera/watchlist tiene exposicion a ${escapeHtml(row.ticker || "este activo")}.</p>
+      <strong>Lectura Genesis</strong>
+      <p>Movimiento: ${escapeHtml(cleanCopy(directionText))}.</p>
+      <p>Qué significa: ${escapeHtml(cleanCopy(meaningText))}</p>
+      <p>Qué NO significa: ${escapeHtml(confirmed ? "no garantiza continuidad ni entrada inmediata." : "no es compra confirmada ni monto institucional confirmado.")}</p>
+      <p>Impacto probable: ${escapeHtml(cleanCopy(impactText))}</p>
+      <p>Qué vigilar: volumen relativo, ruptura de rango, reacción de precio y exposición de tu cartera/watchlist a ${escapeHtml(row.ticker || "este activo")}.</p>
     </section>
+    ${strategyChecklistMarkup(row.strategy)}
     ${row.ticker && row.ticker !== "MERCADO" ? `<button class="secondary-button full" type="button" data-open-asset="${escapeHtml(row.ticker)}">Ver activo</button>` : ""}
   `;
   sheet.hidden = false;
@@ -3373,11 +4535,12 @@ function eventMetricGridMarkup(rows) {
   `).join("")}</div>`;
 }
 
-function miniSeriesBars(values = []) {
+function miniSeriesBars(values = [], maxHeight = 28) {
   const nums = values.map(numberOrNull).filter((value) => value !== null);
   const max = Math.max(1, ...nums.map((value) => Math.abs(value)));
   const safe = nums.length ? nums : [1, 2, 1.4, 2.6, 1.8];
-  return safe.slice(0, 8).map((value) => `<i style="height:${Math.max(12, Math.min(88, 18 + (Math.abs(value) / max) * 70))}px"></i>`).join("");
+  const cap = Math.max(18, Math.min(96, numberOrNull(maxHeight) || 28));
+  return safe.slice(0, 8).map((value) => `<i style="height:${Math.max(8, Math.min(cap, 8 + (Math.abs(value) / max) * (cap - 8)))}px"></i>`).join("");
 }
 
 function openAssetDetail(ticker) {
@@ -3408,10 +4571,10 @@ function renderAssetDetailScreen() {
     root.innerHTML = emptyStateMarkup("Sin activo seleccionado.", "Toca una fila de Seguimiento o Cartera para abrir su detalle.");
     return;
   }
-  const item = findAsset(normalized) || { ticker: normalized };
+  const chartRange = appState.assetChartRanges[normalized] || "1Y";
+  const item = assetDetailItem(normalized, chartRange);
   const isPaper = appState.paperPositions.some((row) => itemTicker(row) === normalized);
   const isTracked = appState.trackingItems.some((row) => itemTicker(row) === normalized && itemInWatchlist(row));
-  const chartRange = appState.assetChartRanges[normalized] || "1Y";
   const relatedAlerts = assetRelatedAlerts(normalized);
   const relatedWhales = assetRelatedWhales(normalized);
   const relatedNews = assetRelatedNews(normalized);
@@ -3704,7 +4867,12 @@ function bindGlobalEvents() {
 
     if (event.target.closest("[data-news-refresh]")) {
       event.preventDefault();
-      loadNews().catch((error) => toast(error.message, "error"));
+      try {
+        await loadNews({ force: true });
+        toast("Noticias actualizadas con FMP/RSS.", "success");
+      } catch (error) {
+        toast(networkErrorMessage(error), "error");
+      }
       return;
     }
 

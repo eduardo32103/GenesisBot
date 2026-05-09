@@ -27,6 +27,9 @@ class MemoryAgent:
     def summary(self, query: str = "") -> dict[str, Any]:
         return self.store.get_memory_summary(query)
 
+    def asset_summary(self, ticker: str) -> dict[str, Any]:
+        return self.store.get_asset_learning_summary(ticker)
+
 
 def get_memory_agent(store: MemoryStore | None = None) -> MemoryAgent:
     return MemoryAgent(store)

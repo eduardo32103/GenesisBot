@@ -38,6 +38,9 @@ _TICKER_STOPWORDS = {
     "DONDE",
     "ESTA",
     "ESTAN",
+    "ESTAS",
+    "ESTOY",
+    "ESTAMOS",
     "PASA",
     "PASANDO",
     "LEE",
@@ -98,6 +101,14 @@ _TICKER_STOPWORDS = {
     "DEBO",
     "PUEDO",
     "PUEDES",
+    "BIEN",
+    "TAL",
+    "TODO",
+    "LISTO",
+    "GRACIAS",
+    "VA",
+    "VAS",
+    "VOY",
     "SERIA",
     "MEJOR",
     "PEOR",
@@ -138,14 +149,15 @@ def get_genesis_answer(
 ) -> dict[str, Any]:
     clean_question = str(question or "").strip()
     clean_panel_context = _normalize_panel_context(panel_context)
-    detected_tickers = _detect_tickers_from_question(clean_question)
+    is_market_question = _is_market_overview_question(clean_question)
+    detected_tickers = [] if is_market_question else _detect_tickers_from_question(clean_question)
     detected_ticker = detected_tickers[0] if detected_tickers else ""
     requested_context = _normalize_context(context or "general")
     panel_scope = _normalize_context(clean_panel_context.get("scope") or "general")
     clean_context = panel_scope if requested_context == "general" and panel_scope != "general" else requested_context
     if detected_ticker and clean_context == "general":
         clean_context = "ticker"
-    clean_ticker = str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
+    clean_ticker = "" if is_market_question else str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
     intent = _resolve_intent(clean_question, clean_context)
     is_comparison = intent == "asset_priority" and _is_comparison_question(clean_question) and len(detected_tickers) >= 2
 
@@ -237,14 +249,15 @@ def get_genesis_fallback_answer(
 ) -> dict[str, Any]:
     clean_question = str(question or "").strip()
     clean_panel_context = _normalize_panel_context(panel_context)
-    detected_tickers = _detect_tickers_from_question(clean_question)
+    is_market_question = _is_market_overview_question(clean_question)
+    detected_tickers = [] if is_market_question else _detect_tickers_from_question(clean_question)
     detected_ticker = detected_tickers[0] if detected_tickers else ""
     requested_context = _normalize_context(context or "general")
     panel_scope = _normalize_context(clean_panel_context.get("scope") or "general")
     clean_context = panel_scope if requested_context == "general" and panel_scope != "general" else requested_context
     if detected_ticker and clean_context == "general":
         clean_context = "ticker"
-    clean_ticker = str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
+    clean_ticker = "" if is_market_question else str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
     intent = _resolve_intent(clean_question, clean_context)
     answer = _fallback_answer_for_reason(reason, clean_ticker)
     evidence = _compact_evidence(
@@ -314,6 +327,25 @@ def _is_comparison_question(question: str) -> bool:
     return any(token in text for token in (" compara ", " comparar ", " contra ", " versus ", " vs "))
 
 
+def _is_market_overview_question(question: str) -> bool:
+    text = f" {_normalize(question)} "
+    if " mercado libre " in text:
+        return False
+    if " mercado " in text and not any(token in text for token in (" seguimiento ", " cartera ", " watchlist ", " portfolio ", " paper ")):
+        return True
+    return any(
+        token in text
+        for token in (
+            " como esta el mercado ",
+            " como va el mercado ",
+            " mercado el dia de hoy ",
+            " mercado hoy ",
+            " que esta pasando hoy ",
+            " viernes pasado ",
+        )
+    )
+
+
 def _normalize(value: str) -> str:
     normalized = unicodedata.normalize("NFD", str(value or "").casefold())
     return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
@@ -338,6 +370,8 @@ def _normalize_context(value: str) -> str:
 
 def _resolve_intent(question: str, context: str = "general") -> str:
     text = _normalize(question)
+    if _is_market_overview_question(question):
+        return "market_overview"
     if any(token in text for token in ("flujo", "capital", "money flow", "senal money", "dinero grande", "ballena", "ballenas")):
         return "money_flow"
     if any(token in text for token in ("alerta", "alertas", "evento", "eventos")):
@@ -495,7 +529,7 @@ def _resolve_main_signals(
             signals.append(signal)
     signals.extend(evidence)
     compacted = _compact_evidence(signals)
-    return compacted or ["Sin senal suficiente en lecturas guardadas actuales."]
+    return compacted or ["Sin señal suficiente en lecturas guardadas actuales."]
 
 
 def _resolve_risks(evidence: list[str], source_status: dict[str, str], reliability: str) -> list[str]:
@@ -518,7 +552,10 @@ def _money_flow_block(
 ) -> str:
     if intent == "money_flow":
         clean = _compact_evidence(evidence)
-        return clean[0] if clean else "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa."
+        return clean[0] if clean else (
+            "No hay ballena confirmada con entidad y monto ahora. "
+            "Genesis sigue volumen, dollar volume y dirección como flujo vigilado; no lo trata como compra directa."
+        )
     section = panel_context.get("money_flow") or {}
     summary = _humanize_text(section.get("summary", ""))
     detected = _humanize_text(section.get("detected", ""))
@@ -773,7 +810,7 @@ def _build_asset_packet_blocks(packet: dict[str, Any]) -> dict[str, Any]:
             if part
         )
         if source_status.get("money_flow_available") or source_status.get("whale_identified")
-        else "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa."
+            else "No hay ballena confirmada con entidad y monto; cualquier flujo queda como vigilancia hasta que precio, volumen y fuente lo confirmen."
     )
     news_macro = str(packet.get("news_read") or "Sin catalizador macro/noticias confirmado en esta lectura.")
     if "sin noticias relevantes" in _normalize(news_macro):
@@ -830,7 +867,7 @@ def _build_asset_compact_payload(packet: dict[str, Any], blocks: dict[str, Any])
         support_bullets = ["Evidencia de apoyo limitada."]
     if not risk_bullets:
         risk_bullets = ["Faltan confirmaciones para elevar la lectura."]
-    money_flow_summary = str(blocks.get("money_flow") or "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa.").strip()
+    money_flow_summary = str(blocks.get("money_flow") or "No hay ballena confirmada con entidad y monto; Genesis vigila volumen y precio sin inventar comprador.").strip()
     macro_news_summary = str(blocks.get("macro_news") or "Sin catalizador macro/noticias confirmado en esta lectura.").strip()
     opening = (
         f"No entraria todavia con tamano fuerte. {ticker} tiene {price_text.lower()} "
@@ -1033,12 +1070,17 @@ def _answer_money_flow(question: str, ticker: str = "") -> tuple[str, list[str],
         _LOGGER.warning("Genesis money flow source unavailable", exc_info=True)
         payload = {}
     if not isinstance(payload, dict) or not payload:
-        return "Sin senal confiable de Dinero Grande. Sin ballena identificada con la fuente activa.", ["Dinero Grande no devolvio contexto suficiente."], {
+        return (
+            "No hay ballena confirmada con entidad y monto ahora. "
+            "Genesis mantiene vigilancia de volumen, dollar volume y dirección; si no hay fuente directa no lo llama compra.",
+            ["Dinero Grande no devolvió contexto suficiente; la lectura queda como vigilancia, no señal operativa."],
+            {
             "detection": "no concluyente",
             "causal": "no concluyente",
             "reliability": "no concluyente",
             "snapshots": "datos parciales",
-        }
+            },
+        )
     source = payload.get("source_status") or {}
     items = [item for item in (payload.get("items") or []) if isinstance(item, dict)]
     useful_items = [
@@ -1049,11 +1091,16 @@ def _answer_money_flow(question: str, ticker: str = "") -> tuple[str, list[str],
     answer = _humanize_text(payload.get("answer") or "Dinero Grande no concluyente.")
     if not useful_items:
         answer = (
-            "Sin senal confiable de Dinero Grande. "
-            "Sin ballena identificada con la fuente activa. "
-            "No hay entidad, monto ni causalidad confirmada."
+            "No hay ballena confirmada con entidad y monto en la fuente activa. "
+            "Lo que sí hace Genesis: vigila volumen, dollar volume, dirección de precio y acumulación/distribución estimada. "
+            "Eso sirve para priorizar vigilancia, no para afirmar compra directa."
         )
-    evidence = [str(payload.get("honesty_note") or ""), *(str((item or {}).get("context") or "") for item in useful_items[:3])]
+    evidence = [
+        str(payload.get("honesty_note") or ""),
+        *(str((item or {}).get("context") or (item or {}).get("summary") or "") for item in useful_items[:3]),
+    ]
+    if not useful_items:
+        evidence.append("Sin entidad ni monto confirmado: Genesis separa smart money estimado de ballena real.")
     return answer, _compact_evidence(evidence), {
         "detection": str(source.get("detection_status") or "unknown"),
         "causal": str(source.get("causal_status") or "unknown"),

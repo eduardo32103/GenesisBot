@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from unittest.mock import patch
 
-from api.main import _resolve_dashboard_host, _resolve_dashboard_port, create_app
+from api.main import _massage_proxy_payload, _resolve_dashboard_host, _resolve_dashboard_port, create_app
 from services.dashboard.get_genesis_answer import get_genesis_answer, get_genesis_fallback_answer
 
 
@@ -26,6 +27,26 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(_resolve_dashboard_host(), "127.0.0.1")
             self.assertEqual(_resolve_dashboard_port(), 8000)
+
+    def test_local_proxy_corrects_casual_prompt_before_ui(self) -> None:
+        stale_payload = {
+            "intent": "ticker_analysis",
+            "response_type": "asset_analysis",
+            "tickers": ["ESTAS"],
+            "answer": "ESTAS no tiene precio confirmado.",
+        }
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "como estas", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "greeting")
+        self.assertEqual(fixed["response_type"], "general_assistant")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertNotIn("ESTAS", json.dumps(fixed))
 
     def test_genesis_answer_is_local_and_conservative(self) -> None:
         payload = get_genesis_answer("que esta pasando")
@@ -230,7 +251,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertTrue(payload["blocks"]["main_signals"])
         self.assertTrue(payload["blocks"]["risks"])
         self.assertIn("Genesis ahora", payload["blocks"]["next_step"])
-        self.assertIn("Sin ballena identificada", payload["blocks"]["money_flow"])
+        self.assertIn("No hay ballena confirmada", payload["blocks"]["money_flow"])
         self.assertNotIn("compra segura", rendered_text.lower())
         self.assertNotIn("garantiza", rendered_text.lower())
         for forbidden in ("probability ready", "probability disabled", "causalidad probabilidad", "insufficient_confirmation"):
@@ -283,9 +304,25 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         payload = get_genesis_answer("que esta viendo Dinero Grande ahora", context="general")
 
         self.assertEqual(payload["intent"], "money_flow")
-        self.assertIn("Sin senal confiable de Dinero Grande", payload["answer"])
+        self.assertIn("No hay ballena confirmada", payload["answer"])
+        self.assertIn("Genesis", payload["answer"])
         self.assertNotIn("Money Flow", payload["answer"])
         self.assertNotIn("probability disabled", payload["answer"])
+
+    def test_genesis_does_not_treat_casual_chat_as_ticker(self) -> None:
+        payload = get_genesis_answer("como estas", context="general")
+
+        self.assertNotEqual(payload["context"]["ticker"], "ESTAS")
+        self.assertEqual(payload["context"]["tickers"], [])
+        self.assertNotIn("ESTAS", payload["answer"])
+
+    def test_genesis_does_not_treat_market_question_as_acomo_ticker(self) -> None:
+        payload = get_genesis_answer("oye como esta el mercado el dia de hoy", context="general")
+
+        self.assertEqual(payload["intent"], "market_overview")
+        self.assertEqual(payload["context"]["ticker"], "")
+        self.assertEqual(payload["context"]["tickers"], [])
+        self.assertNotIn("ACOMO", str(payload))
 
     def test_genesis_blocks_do_not_expose_internal_keys(self) -> None:
         payload = get_genesis_answer("que esta pasando con BNO", context="general")

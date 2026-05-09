@@ -7,10 +7,16 @@ from services.genesis.market_format import format_market_number, format_signed_m
 
 class ResponseComposer:
     def general(self) -> str:
-        return "Te sigo. Puedo revisar mercado, cartera, seguimiento, ballenas, alertas, clima o una grafica. Si falta una fuente, te lo digo sin inventar datos."
+        return (
+            "Estoy activo. Puedo leer mercado, cartera, noticias, alertas, ballenas, clima o una gráfica; "
+            "cuando falte una fuente te lo digo claro y cuando haya datos los convierto en lectura útil."
+        )
 
     def greeting(self) -> str:
-        return "Hola. Que quieres revisar hoy?"
+        return (
+            "Hola, estoy aquí. Tengo el radar financiero listo: precios, noticias, alertas y flujo institucional "
+            "separados de lo no confirmado. Dime un activo o una pregunta y lo convierto en lectura Genesis."
+        )
 
     def no_confirmed_price(self, ticker: str) -> str:
         return f"{ticker}: no tengo precio confirmado para ese activo."
@@ -145,7 +151,7 @@ class ResponseComposer:
         return {
             "kind": "alerts_digest",
             "title": "Alertas Genesis",
-            "summary": summary or "Genesis vigila precio, volumen, soporte/resistencia y contexto sin inventar senales.",
+            "summary": summary or "Genesis vigila precio, volumen, soporte/resistencia y contexto sin inventar señales.",
             "alerts": alerts[:8],
             "metrics": {
                 "total": len(alerts),
@@ -178,9 +184,9 @@ class ResponseComposer:
                 "confidence": summary.get("confidence") or "low",
             },
             "sections": [
-                {"title": "Lectura rapida", "bullets": [_whale_event_line(item) for item in events[:3]] or ["Sin ballena confirmada; vigilancia de flujo tecnico activa."]},
-                {"title": "Que NO significa", "bullets": ["El dollar volume tecnico no es monto confirmado de ballena.", "Sin entidad confirmada no se afirma compra directa."]},
-                {"title": "Que vigilar", "bullets": ["Continuidad de volumen relativo, precio contra niveles y noticias relacionadas."]},
+                {"title": "Lectura rápida", "bullets": [_whale_event_line(item) for item in events[:3]] or ["No hay ballena confirmada con entidad y monto; Genesis sigue el volumen vigilado y lo separa de una compra real."]},
+                {"title": "Qué NO significa", "bullets": ["El dollar volume técnico no es monto confirmado de ballena.", "Sin entidad confirmada no se afirma compra directa."]},
+                {"title": "Qué vigilar", "bullets": ["Volumen relativo, ruptura o rechazo de niveles, reacción de precio y noticias relacionadas."]},
             ],
         }
 
@@ -293,16 +299,18 @@ def _whale_event_line(item: dict[str, Any]) -> str:
     if event_type == "whale_confirmed":
         amount = format_market_number(item.get("amount_usd"), currency="USD") if item.get("amount_usd") is not None else "monto no confirmado"
         return f"{ticker}: ballena confirmada por {item.get('entity_name') or 'fuente activa'}, {amount}."
-    volume = format_market_number(item.get("dollar_volume"), currency="USD") if item.get("dollar_volume") is not None else "sin volumen $"
-    return f"{ticker}: smart money estimado; volumen vigilado {volume}, sin entidad confirmada."
+    volume_value = item.get("monitored_dollar_volume") if item.get("monitored_dollar_volume") is not None else item.get("dollar_volume")
+    volume = format_market_number(volume_value, currency="USD") if volume_value is not None else "sin volumen confirmado"
+    direction = item.get("estimated_flow_direction") or item.get("direction_estimate") or "neutral"
+    return f"{ticker}: smart money estimado; {volume} vigilado, dirección {direction}; no es compra confirmada."
 
 
 def _whale_summary_line(summary: dict[str, Any], confirmed: list[dict[str, Any]], estimated: list[dict[str, Any]]) -> str:
     if confirmed:
         return f"{len(confirmed)} ballenas confirmadas y {len(estimated)} flujos estimados en vigilancia."
     if estimated:
-        return f"No hay ballenas confirmadas; Genesis vigila {len(estimated)} flujos estimados por volumen y precio."
-    return "Sin ballenas confirmadas ni flujo tecnico suficiente en la fuente activa."
+        return f"No hay ballenas confirmadas; Genesis vigila {len(estimated)} flujos estimados por volumen, precio y dirección."
+    return "No hay ballena confirmada con entidad y monto; Genesis mantiene vigilancia de volumen y precio sin inventar comprador."
 
 
 def get_response_composer() -> ResponseComposer:

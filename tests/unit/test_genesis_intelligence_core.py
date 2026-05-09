@@ -44,8 +44,12 @@ class GenesisTickerParserTests(unittest.TestCase):
             "dame un resumen del dia": [],
             "que esta pasando hoy": [],
             "oye genesis como se ve el mercado": [],
+            "oye como esta el mercado el dia de hoy": [],
             "como estuvo el mercado el viernes pasado": [],
             "que estan haciendo las ballenas": [],
+            "como estas": [],
+            "que tal genesis": [],
+            "todo bien": [],
             "que noticias afectan a mis activos": [],
             "dame una grafica de bno": ["BNO"],
             "compara meta vs nvda": ["META", "NVDA"],
@@ -106,11 +110,18 @@ class GenesisMemoryStoreTests(unittest.TestCase):
             store.save_market_observation("NVDA", "Observacion sin secreto")
             store.save_whale_event("NVDA", entity="Fondo Test", action="Compra", amount=1000, date="2026-01-01", confidence="alta")
             store.save_alert_event("NVDA", "cambio_fuerte_diario", {"summary": "Movimiento relevante"}, confidence="media")
+            store.save_asset_memory("NVDA", {"summary": "Tesis guardada", "FMP_API_KEY": "SECRET"}, "test", "alta")
+            store.save_signal_event("NVDA", {"summary": "Senal con volumen", "expected_direction": "bullish"}, "test", "media")
+            store.save_news_event("NVDA", {"title_es": "Catalizador de IA", "impact": "bullish"}, "test", "media")
+            store.save_decision_note("NVDA", "vigilar continuacion", {"price_at_decision": 100, "reason": "rompe resistencia"}, "test", "alta")
+            store.save_hypothesis("NVDA", {"hypothesis": "continuacion si confirma volumen"}, "test", "media")
+            store.save_outcome_tracking("NVDA", {"status": "watching", "actual_outcome_24h": None}, "test", "media")
 
             fresh = MemoryStore(database_url="", sqlite_path=path)
             events = fresh.get_recent_events(10, "ticker_analysis")
             messages = fresh.get_recent_messages("default", 10)
             summary = fresh.get_memory_summary("NVDA")
+            asset_summary = fresh.get_asset_learning_summary("NVDA")
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["payload"]["ticker"], "NVDA")
@@ -122,10 +133,20 @@ class GenesisMemoryStoreTests(unittest.TestCase):
         self.assertEqual(summary["whale_events"][0]["payload"]["event_type"], "whale_confirmed")
         self.assertEqual(summary["whale_events"][0]["payload"]["estimated_value"], 1000)
         self.assertEqual(summary["alert_events"][0]["payload"]["alert_type"], "cambio_fuerte_diario")
+        self.assertEqual(summary["asset_memory"][0]["ticker"], "NVDA")
+        self.assertEqual(summary["signal_events"][0]["ticker"], "NVDA")
+        self.assertEqual(summary["news_events"][0]["payload"]["title_es"], "Catalizador de IA")
+        self.assertEqual(summary["decision_notes"][0]["payload"]["verdict"], "vigilar continuacion")
+        self.assertEqual(summary["hypothesis_log"][0]["payload"]["hypothesis"], "continuacion si confirma volumen")
+        self.assertEqual(summary["outcome_tracking"][0]["payload"]["status"], "watching")
+        self.assertEqual(asset_summary["ticker"], "NVDA")
+        self.assertEqual(asset_summary["counts"]["decisions"], 1)
+        self.assertTrue(asset_summary["summary_lines"])
         rendered = json.dumps(events)
         self.assertNotIn("SECRET", rendered)
         self.assertNotIn("FMP_API_KEY", rendered)
         self.assertNotIn("OPENAI_API_KEY", json.dumps(messages))
+        self.assertNotIn("SECRET", json.dumps(asset_summary))
 
 
 class GenesisToolRouterTests(unittest.TestCase):
@@ -137,6 +158,7 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("dame un resumen del dia").intent, "daily_briefing")
         self.assertEqual(router.route("que esta pasando hoy").intent, "market_overview")
         self.assertEqual(router.route("oye genesis como se ve el mercado").intent, "market_overview")
+        self.assertEqual(router.route("oye como esta el mercado el dia de hoy").intent, "market_overview")
         self.assertEqual(router.route("como estuvo el mercado el viernes pasado").intent, "market_overview")
         self.assertEqual(router.route("que aprendiste de mis consultas recientes").intent, "memory_query")
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
@@ -158,6 +180,79 @@ class GenesisToolRouterTests(unittest.TestCase):
 
         self.assertEqual(payload["intent"], "greeting")
         self.assertIn("Hola", payload["answer"])
+
+    def test_casual_question_is_not_ticker_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("como estas", memory=store)
+
+        self.assertEqual(payload["intent"], "greeting")
+        self.assertEqual(payload["response_type"], "general_assistant")
+        self.assertEqual(payload["tickers"], [])
+        self.assertNotIn("ESTAS", json.dumps(payload))
+
+    def test_market_day_question_is_not_asset_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("oye como esta el mercado el dia de hoy", memory=store)
+
+        self.assertEqual(payload["intent"], "market_overview")
+        self.assertEqual(payload["response_type"], "market_summary")
+        self.assertEqual(payload["tickers"], [])
+        self.assertNotIn("ACOMO", json.dumps(payload))
+
+    def test_memory_query_for_ticker_returns_learning_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            store.save_decision_note("NVDA", "vigilar continuacion", {"price_at_decision": 215.2, "reason": "IA y volumen"}, "test", "alta")
+            store.save_signal_event("NVDA", {"summary": "Volumen fuerte", "expected_direction": "bullish"}, "test", "media")
+            payload = route_message("que aprendiste de NVDA", memory=store)
+
+        self.assertEqual(payload["intent"], "memory_query")
+        self.assertEqual(payload["kind"], "memory_digest")
+        self.assertEqual(payload["structured"]["kind"], "memory_digest")
+        self.assertEqual(payload["memory_summary"]["ticker"], "NVDA")
+        self.assertGreaterEqual(payload["memory_summary"]["counts"]["decisions"], 1)
+        self.assertIn("NVDA", json.dumps(payload))
+
+    @patch("services.genesis.tool_router.get_technical_agent")
+    @patch("services.genesis.price_agent.get_verified_market_quote")
+    def test_asset_analysis_writes_decision_memory(self, mock_quote: Mock, mock_technical_agent: Mock) -> None:
+        mock_quote.return_value = {
+            "ticker": "NVDA",
+            "name": "NVIDIA Corporation",
+            "current_price": 215.2,
+            "formatted_price": "$215.20",
+            "daily_change": 3.7,
+            "daily_change_pct": 1.75,
+            "source_label": "Precio confirmado",
+            "is_live": True,
+            "source": "datos_directos",
+            "previous_close": 211.5,
+            "volume": 134_128_204,
+            "sanity": {"ok": True},
+        }
+        mock_technical_agent.return_value.for_ticker.return_value = {
+            "ok": True,
+            "indicators": {
+                "support": 211.0,
+                "resistance": 218.0,
+                "rsi": 58.0,
+                "trend": "alcista intradia",
+                "volume": 134_128_204,
+                "relative_volume": 1.4,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("analiza nvda", memory=store)
+            summary = store.get_asset_learning_summary("NVDA")
+
+        self.assertEqual(payload["intent"], "ticker_analysis")
+        self.assertEqual(summary["ticker"], "NVDA")
+        self.assertEqual(summary["counts"]["decisions"], 1)
+        self.assertEqual(summary["counts"]["hypotheses"], 1)
+        self.assertEqual(summary["decisions"][0]["payload"]["price_at_decision"], 215.2)
 
     @patch("services.genesis.tool_router.get_news_macro_agent")
     def test_news_question_uses_news_brief_visual_payload(self, mock_news_agent: Mock) -> None:

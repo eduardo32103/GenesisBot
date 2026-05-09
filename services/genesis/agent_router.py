@@ -26,6 +26,9 @@ class AgentRouter:
         primary_ticker = normalize_ticker(tickers[0] if tickers else ticker)
         chart = detect_chart_intent(clean, context=context)
         intent = self.detect_intent(clean, tickers=tickers, chart=chart)
+        if intent == "memory_query":
+            tickers = [item for item in tickers if item not in {"CONSULTAS", "RECIENTES", "ACTIVOS", "MEMORIA", "APRENDISTE"}]
+            primary_ticker = normalize_ticker(tickers[0] if tickers else ticker)
         if intent in {"greeting", "time", "date", "weather", "daily_briefing", "market_overview", "general_question"}:
             tickers = []
             primary_ticker = ""
@@ -42,6 +45,8 @@ class AgentRouter:
         tickers = tickers or []
         chart = chart or {}
         if text in {"hola", "buen dia", "buenos dias", "buenas", "hey", "hello"}:
+            return "greeting"
+        if _mentions_casual_chat(text):
             return "greeting"
         if detect_time_request(message):
             return "time"
@@ -105,11 +110,34 @@ def _mentions_daily_briefing(text: str) -> bool:
 
 
 def _mentions_market_overview(text: str) -> bool:
+    if "mercado libre" in text:
+        return False
     return (
         ("mercado" in text and not any(token in text for token in ("seguimiento", "cartera")))
+        or "como esta el mercado" in text
+        or "como va el mercado" in text
+        or "mercado el dia de hoy" in text
+        or "mercado hoy" in text
         or "que esta pasando hoy" in text
-        or "que esta pasando" in text
         or "viernes pasado" in text
+    )
+
+
+def _mentions_casual_chat(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "como estas",
+            "como vas",
+            "que tal",
+            "todo bien",
+            "estas listo",
+            "estas activa",
+            "estas funcionando",
+            "como te sientes",
+            "buenas tardes",
+            "buenas noches",
+        )
     )
 
 

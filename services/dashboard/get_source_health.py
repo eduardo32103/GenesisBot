@@ -88,9 +88,19 @@ def _database_health(settings: Any) -> dict[str, Any]:
     try:
         memory = MemoryStore()
         memory_backend = memory.backend
-        memory_ok = bool(memory.get_memory_summary())
+        memory_summary = memory.get_memory_summary()
+        memory_ok = bool(memory_summary)
+        memory_collections = {
+            "asset_memory": len(memory_summary.get("asset_memory") or []),
+            "signal_events": len(memory_summary.get("signal_events") or []),
+            "news_events": len(memory_summary.get("news_events") or []),
+            "decision_notes": len(memory_summary.get("decision_notes") or []),
+            "hypothesis_log": len(memory_summary.get("hypothesis_log") or []),
+            "outcome_tracking": len(memory_summary.get("outcome_tracking") or []),
+        }
     except Exception:
         memory_ok = False
+        memory_collections = {}
     store = PortfolioStore()
     try:
         portfolio_store = store.status()
@@ -100,6 +110,7 @@ def _database_health(settings: Any) -> dict[str, Any]:
         "database_url_configured": bool(settings.database_url),
         "memory_ok": memory_ok,
         "memory_backend": memory_backend,
+        "memory_collections": memory_collections,
         "portfolio_store": portfolio_store,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }

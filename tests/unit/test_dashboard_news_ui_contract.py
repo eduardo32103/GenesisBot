@@ -20,7 +20,9 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("function openNewsDetail", script)
         self.assertIn("function openAlertDetail", script)
         self.assertIn("function openWhaleDetail", script)
-        self.assertIn('getJson("/api/dashboard/news")', script)
+        self.assertIn("const newsUrl = options.force", script)
+        self.assertIn("data-news-refresh", script)
+        self.assertIn("loadNews({ force: true })", script)
         self.assertIn("function normalizeNewsItemForUi", script)
         self.assertIn("function newsDisplayTitle", script)
         self.assertIn("function filteredNewsItems", script)
@@ -50,6 +52,20 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn('data-toggle-search="tracking"', script)
         self.assertIn('data-toggle-search="portfolio"', script)
         self.assertIn('data-toggle-search="whales"', script)
+
+    def test_alerts_have_opportunity_scanner_and_visual_strategy_contract(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("OPPORTUNITY_TICKERS", script)
+        self.assertIn("function loadOpportunityQuotes", script)
+        self.assertIn("function mergeAlertRowsWithOpportunities", script)
+        self.assertIn("function localStrategyForOpportunity", script)
+        self.assertIn("function flowVolumeVisualMarkup", script)
+        self.assertIn("function strategyChecklistMarkup", script)
+        self.assertIn("is_opportunity: true", script)
+        self.assertIn("Oportunidad ·", script)
+        self.assertNotIn("senal de actividad", script)
+        self.assertNotIn("Que significa:", script)
 
 
 if __name__ == "__main__":

@@ -65,14 +65,19 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
     summary = _summary(events)
     if not events:
         scope = f" para {normalized}" if normalized else ""
-        answer = f"Sin ballena institucional confirmada{scope} con la fuente activa."
+        answer = (
+            f"No tengo ballena institucional confirmada{scope} con entidad y monto en la fuente activa. "
+            "Lo útil ahora: Genesis sigue volumen vigilado, dollar volume, precio y dirección; "
+            "si solo hay flujo estimado lo marca como vigilancia, no como compra confirmada."
+        )
         if watched_without_entity:
-            answer += " Genesis vigila flujo institucional, volumen anormal y acumulacion/distribucion sin inventar entidad ni monto."
+            answer += " Hay activos en vigilancia por flujo, pero sin institución confirmada."
     elif confirmed == 0:
         focus = ", ".join(summary.get("top_assets") or []) or (normalized or "mercado")
         answer = (
-            f"En sencillo: no hay ballena institucional confirmada con nombre y monto, "
-            f"pero Genesis detecta flujo en vigilancia en {focus}. No confirma compra directa; sirve para priorizar vigilancia."
+            f"En claro: no hay ballena institucional confirmada con nombre y monto, "
+            f"pero Genesis detecta flujo en vigilancia en {focus}. "
+            "Eso significa actividad para observar, no compra directa; la validación viene de volumen relativo, precio y ruptura/rechazo."
         )
     else:
         answer = f"{confirmed} eventos de ballenas guardados con entidad, fecha o monto reportado."
@@ -270,11 +275,11 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "evidence": _evidence(row),
         "genesis_reading": (
             f"{ticker}: flujo institucional en vigilancia ({direction}). "
-            "No hay entidad confirmada; Genesis lo usa como senal secundaria, no como compra directa."
+            "No hay entidad confirmada; Genesis lo usa como señal secundaria, no como compra directa."
         ),
         "genesis_reading_es": (
             f"{ticker}: flujo institucional en vigilancia ({direction}). "
-            "No hay entidad confirmada; Genesis lo usa como senal secundaria, no como compra directa."
+            "No hay entidad confirmada; Genesis lo usa como señal secundaria, no como compra directa."
         ),
         "timestamp": date,
     }

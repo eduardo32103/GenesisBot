@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import hashlib
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,14 @@ from app.settings import load_settings
 _ROOT_DIR = Path(__file__).resolve().parents[2]
 _DEFAULT_SQLITE_PATH = _ROOT_DIR / ".genesis_memory.sqlite3"
 _SECRET_KEY_PARTS = ("api", "key", "secret", "token", "password", "credential")
+_LEARNING_TABLES = {
+    "asset_memory": "genesis_asset_memory",
+    "signal_events": "genesis_signal_events",
+    "news_events": "genesis_news_events",
+    "decision_notes": "genesis_decision_notes",
+    "hypothesis_log": "genesis_hypothesis_log",
+    "outcome_tracking": "genesis_outcome_tracking",
+}
 
 
 class MemoryStore:
@@ -401,19 +410,157 @@ class MemoryStore:
     def get_alert_memory(self, ticker: str | None = None) -> list[dict[str, Any]]:
         return self._get_alert_event_rows(ticker)
 
+    def save_asset_memory(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "genesis",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        return self._save_learning_row("asset_memory", ticker, payload or {}, source, confidence, "asset_memory")
+
+    def get_asset_memory(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        return self._get_learning_rows("asset_memory", ticker, limit)
+
+    def save_signal_event(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "signals",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        return self._save_learning_row("signal_events", ticker, payload or {}, source, confidence, "signal_event")
+
+    def get_signal_events(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        return self._get_learning_rows("signal_events", ticker, limit)
+
+    def save_news_event(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "news",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        return self._save_learning_row("news_events", ticker, payload or {}, source, confidence, "news_event")
+
+    def get_news_events(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        return self._get_learning_rows("news_events", ticker, limit)
+
+    def save_decision_note(
+        self,
+        ticker: str,
+        verdict: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "genesis",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        data = {"verdict": verdict, **_sanitize(payload or {})}
+        return self._save_learning_row("decision_notes", ticker, data, source, confidence, "decision_note")
+
+    def get_decision_notes(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        return self._get_learning_rows("decision_notes", ticker, limit)
+
+    def save_hypothesis(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "genesis",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        return self._save_learning_row("hypothesis_log", ticker, payload or {}, source, confidence, "hypothesis")
+
+    def get_hypotheses(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        return self._get_learning_rows("hypothesis_log", ticker, limit)
+
+    def save_outcome_tracking(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "genesis",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        return self._save_learning_row("outcome_tracking", ticker, payload or {}, source, confidence, "outcome_tracking")
+
+    def get_outcome_tracking(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        return self._get_learning_rows("outcome_tracking", ticker, limit)
+
+    def get_asset_learning_summary(self, ticker: str, limit: int = 12) -> dict[str, Any]:
+        normalized = str(ticker or "").upper().strip()[:40]
+        if not normalized:
+            return {
+                "ticker": "",
+                "asset_memory": [],
+                "signals": [],
+                "alerts": [],
+                "whales": [],
+                "news": [],
+                "decisions": [],
+                "hypotheses": [],
+                "outcomes": [],
+                "patterns": [],
+                "summary_lines": ["Aún no hay activo claro para consultar memoria."],
+            }
+        asset_memory = self.get_asset_memory(normalized, limit)
+        signals = self.get_signal_events(normalized, limit)
+        alerts = self.get_alert_memory(normalized)[:limit]
+        whales = self.get_whale_memory(normalized)[:limit]
+        news = self.get_news_events(normalized, limit)
+        decisions = self.get_decision_notes(normalized, limit)
+        hypotheses = self.get_hypotheses(normalized, limit)
+        outcomes = self.get_outcome_tracking(normalized, limit)
+        patterns = [
+            row
+            for row in self.get_learned_context(limit * 3)
+            if normalized in str(row.get("key") or "").upper()
+            or normalized in json.dumps(row.get("value") or {}, ensure_ascii=False).upper()
+        ][:limit]
+        summary_lines = _asset_summary_lines(normalized, asset_memory, signals, alerts, whales, news, decisions, hypotheses, outcomes, patterns)
+        return {
+            "ticker": normalized,
+            "asset_memory": asset_memory,
+            "signals": signals,
+            "alerts": alerts,
+            "whales": whales,
+            "news": news,
+            "decisions": decisions,
+            "hypotheses": hypotheses,
+            "outcomes": outcomes,
+            "patterns": patterns,
+            "summary_lines": summary_lines,
+            "counts": {
+                "asset_memory": len(asset_memory),
+                "signals": len(signals),
+                "alerts": len(alerts),
+                "whales": len(whales),
+                "news": len(news),
+                "decisions": len(decisions),
+                "hypotheses": len(hypotheses),
+                "outcomes": len(outcomes),
+            },
+        }
+
     def save_genesis_conversation_summary(self, summary: str) -> None:
         self.save_event("conversation_summary", {"summary": summary}, "genesis", "media")
 
     def get_relevant_memory(self, query: str) -> list[dict[str, Any]]:
         text = str(query or "").casefold()
         events = self.get_recent_events(80)
+        domain_events = (
+            self.get_asset_memory(limit=20)
+            + self.get_signal_events(limit=20)
+            + self.get_news_events(limit=20)
+            + self.get_decision_notes(limit=20)
+            + self.get_hypotheses(limit=20)
+            + self.get_outcome_tracking(limit=20)
+        )
         if not text:
-            return events[:10]
+            return (domain_events + events)[:10]
         return [
             event
-            for event in events
+            for event in (domain_events + events)
             if text in json.dumps(event.get("payload", {}), ensure_ascii=False).casefold()
             or text in str(event.get("event_type", "")).casefold()
+            or text in str(event.get("ticker", "")).casefold()
         ][:10]
 
     def get_memory_summary(self, query: str = "") -> dict[str, Any]:
@@ -428,8 +575,122 @@ class MemoryStore:
             "market_observations": self._get_market_observation_rows("", limit=8),
             "whale_events": self._get_whale_event_rows(None, limit=8),
             "alert_events": self._get_alert_event_rows(None, limit=8),
+            "asset_memory": self.get_asset_memory(limit=8),
+            "signal_events": self.get_signal_events(limit=8),
+            "news_events": self.get_news_events(limit=8),
+            "decision_notes": self.get_decision_notes(limit=8),
+            "hypothesis_log": self.get_hypotheses(limit=8),
+            "outcome_tracking": self.get_outcome_tracking(limit=8),
             "relevant": self.get_relevant_memory(query) if query else [],
         }
+
+    def _save_learning_row(
+        self,
+        table_key: str,
+        ticker: str,
+        payload: dict[str, Any],
+        source: str,
+        confidence: str | float,
+        default_event_type: str,
+    ) -> dict[str, Any]:
+        table = _learning_table_name(table_key)
+        clean_payload = _sanitize(payload or {})
+        normalized = str(ticker or clean_payload.get("ticker") or "").upper().strip()[:40]
+        now = datetime.now(timezone.utc).isoformat()
+        record = {
+            "id": str(clean_payload.get("id") or clean_payload.get("event_id") or "")[:180],
+            "event_type": str(clean_payload.get("event_type") or default_event_type)[:80],
+            "ticker": normalized,
+            "asset_name": str(clean_payload.get("asset_name") or clean_payload.get("name") or "")[:240],
+            "timestamp": str(clean_payload.get("timestamp") or clean_payload.get("created_at") or clean_payload.get("published_at") or now)[:80],
+            "source": str(clean_payload.get("source") or source or "genesis")[:80],
+            "confidence": str(clean_payload.get("confidence") or confidence or "media")[:40],
+            "raw_data_sanitized": clean_payload.get("raw_data_sanitized") or clean_payload.get("raw_data") or {},
+            "genesis_reading": str(clean_payload.get("genesis_reading") or clean_payload.get("genesis_reading_es") or clean_payload.get("summary") or clean_payload.get("thesis") or "")[:4000],
+            "expected_direction": str(clean_payload.get("expected_direction") or clean_payload.get("direction") or clean_payload.get("direction_estimate") or "")[:80],
+            "expected_impact": str(clean_payload.get("expected_impact") or clean_payload.get("impact") or "")[:120],
+            "actual_outcome_1h": clean_payload.get("actual_outcome_1h"),
+            "actual_outcome_24h": clean_payload.get("actual_outcome_24h"),
+            "actual_outcome_7d": clean_payload.get("actual_outcome_7d"),
+            "status": str(clean_payload.get("status") or "watching")[:40],
+            "created_at": str(clean_payload.get("created_at") or now)[:80],
+            "updated_at": now,
+        }
+        record["payload"] = {**clean_payload, **{key: value for key, value in record.items() if key != "payload"}}
+        record["event_id"] = record["id"] or _stable_learning_id(table_key, record["payload"])
+        params = (
+            record["event_id"],
+            record["event_type"],
+            record["ticker"],
+            record["asset_name"],
+            record["source"],
+            record["confidence"],
+            record["expected_direction"],
+            record["expected_impact"],
+            record["status"],
+            json.dumps(record["payload"]),
+            record["created_at"],
+            record["updated_at"],
+        )
+        if self.backend == "postgres" and self._pg is not None:
+            self._pg_execute(
+                f"""
+                INSERT INTO {table} (event_id, event_type, ticker, asset_name, source, confidence, expected_direction, expected_impact, status, payload_json, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (event_id) DO UPDATE SET
+                    event_type = EXCLUDED.event_type,
+                    ticker = EXCLUDED.ticker,
+                    asset_name = EXCLUDED.asset_name,
+                    source = EXCLUDED.source,
+                    confidence = EXCLUDED.confidence,
+                    expected_direction = EXCLUDED.expected_direction,
+                    expected_impact = EXCLUDED.expected_impact,
+                    status = EXCLUDED.status,
+                    payload_json = EXCLUDED.payload_json,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                params,
+            )
+        else:
+            with closing(self._sqlite()) as conn:
+                conn.execute(
+                    f"""
+                    INSERT OR REPLACE INTO {table} (event_id, event_type, ticker, asset_name, source, confidence, expected_direction, expected_impact, status, payload_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    params,
+                )
+                conn.commit()
+        return {key: value for key, value in record.items() if key != "id"}
+
+    def _get_learning_rows(self, table_key: str, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        table = _learning_table_name(table_key)
+        safe_limit = max(1, min(int(limit or 30), 200))
+        normalized = str(ticker or "").upper().strip()[:40]
+        if self.backend == "postgres" and self._pg is not None:
+            if normalized:
+                rows = self._pg_fetch(
+                    f"SELECT event_id, event_type, ticker, asset_name, source, confidence, expected_direction, expected_impact, status, payload_json, created_at, updated_at FROM {table} WHERE ticker = %s ORDER BY updated_at DESC LIMIT %s",
+                    (normalized, safe_limit),
+                )
+            else:
+                rows = self._pg_fetch(
+                    f"SELECT event_id, event_type, ticker, asset_name, source, confidence, expected_direction, expected_impact, status, payload_json, created_at, updated_at FROM {table} ORDER BY updated_at DESC LIMIT %s",
+                    (safe_limit,),
+                )
+        else:
+            with closing(self._sqlite()) as conn:
+                if normalized:
+                    rows = conn.execute(
+                        f"SELECT event_id, event_type, ticker, asset_name, source, confidence, expected_direction, expected_impact, status, payload_json, created_at, updated_at FROM {table} WHERE ticker = ? ORDER BY updated_at DESC LIMIT ?",
+                        (normalized, safe_limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        f"SELECT event_id, event_type, ticker, asset_name, source, confidence, expected_direction, expected_impact, status, payload_json, created_at, updated_at FROM {table} ORDER BY updated_at DESC LIMIT ?",
+                        (safe_limit,),
+                    ).fetchall()
+        return [_learning_row(table_key, row) for row in rows]
 
     def _save_market_observation_row(self, ticker: str, observation: str, source: str, confidence: str | float) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -720,6 +981,26 @@ class MemoryStore:
                 """,
                 (),
             )
+            for table in _LEARNING_TABLES.values():
+                self._pg_execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {table} (
+                        event_id TEXT PRIMARY KEY,
+                        event_type TEXT NOT NULL,
+                        ticker TEXT NOT NULL,
+                        asset_name TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        confidence TEXT NOT NULL,
+                        expected_direction TEXT NOT NULL,
+                        expected_impact TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """,
+                    (),
+                )
             return
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._sqlite()) as conn:
@@ -836,6 +1117,25 @@ class MemoryStore:
                 )
                 """
             )
+            for table in _LEARNING_TABLES.values():
+                conn.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {table} (
+                        event_id TEXT PRIMARY KEY,
+                        event_type TEXT NOT NULL,
+                        ticker TEXT NOT NULL,
+                        asset_name TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        confidence TEXT NOT NULL,
+                        expected_direction TEXT NOT NULL,
+                        expected_impact TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
             conn.commit()
 
     def _sqlite(self) -> sqlite3.Connection:
@@ -878,6 +1178,116 @@ def _event_row(row: Any) -> dict[str, Any]:
         "confidence": row[3],
         "created_at": row[4],
     }
+
+
+def _learning_table_name(table_key: str) -> str:
+    try:
+        return _LEARNING_TABLES[table_key]
+    except KeyError as exc:
+        raise ValueError(f"Unknown learning table: {table_key}") from exc
+
+
+def _stable_learning_id(table_key: str, payload: dict[str, Any]) -> str:
+    basis = {
+        "table": table_key,
+        "event_type": payload.get("event_type"),
+        "ticker": payload.get("ticker"),
+        "source": payload.get("source"),
+        "timestamp": payload.get("timestamp") or payload.get("published_at") or payload.get("date") or payload.get("created_at"),
+        "title": payload.get("title") or payload.get("title_es") or payload.get("verdict") or payload.get("summary"),
+        "price": payload.get("price_at_decision") or payload.get("current_price") or payload.get("price"),
+    }
+    digest = hashlib.sha1(json.dumps(_sanitize(basis), sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+    return f"{table_key}:{digest[:24]}"
+
+
+def _learning_row(table_key: str, row: Any) -> dict[str, Any]:
+    payload = _loads(row[9])
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("event_id", row[0])
+    payload.setdefault("event_type", row[1])
+    payload.setdefault("ticker", row[2])
+    payload.setdefault("asset_name", row[3])
+    payload.setdefault("source", row[4])
+    payload.setdefault("confidence", row[5])
+    payload.setdefault("expected_direction", row[6])
+    payload.setdefault("expected_impact", row[7])
+    payload.setdefault("status", row[8])
+    payload.setdefault("created_at", row[10])
+    payload.setdefault("updated_at", row[11])
+    return {
+        "collection": table_key,
+        "event_id": row[0],
+        "event_type": row[1],
+        "ticker": row[2],
+        "asset_name": row[3],
+        "source": row[4],
+        "confidence": row[5],
+        "expected_direction": row[6],
+        "expected_impact": row[7],
+        "status": row[8],
+        "payload": payload,
+        "created_at": row[10],
+        "updated_at": row[11],
+    }
+
+
+def _asset_summary_lines(
+    ticker: str,
+    asset_memory: list[dict[str, Any]],
+    signals: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+    whales: list[dict[str, Any]],
+    news: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    hypotheses: list[dict[str, Any]],
+    outcomes: list[dict[str, Any]],
+    patterns: list[dict[str, Any]],
+) -> list[str]:
+    lines: list[str] = []
+    if decisions:
+        verdict = decisions[0].get("payload", {}).get("verdict") or decisions[0].get("payload", {}).get("decision")
+        price = decisions[0].get("payload", {}).get("price_at_decision")
+        price_text = f" en {price}" if price is not None else ""
+        lines.append(f"Última decisión sobre {ticker}: {verdict or 'vigilar'}{price_text}.")
+    if signals or alerts:
+        lines.append(f"Tengo {len(signals) + len(alerts)} señales/alertas recientes guardadas para {ticker}.")
+    if news:
+        title = news[0].get("payload", {}).get("title_es") or news[0].get("payload", {}).get("title")
+        lines.append(f"Noticia relevante mas reciente: {title or 'catalizador guardado'}.")
+    if whales:
+        event = whales[0].get("payload", {})
+        event_type = event.get("event_type") or whales[0].get("event_type")
+        if event_type == "whale_confirmed":
+            lines.append(f"Hay una lectura de ballena confirmada guardada para {ticker}; revisa fuente y monto antes de actuar.")
+        else:
+            lines.append(f"Hay flujo smart money estimado guardado para {ticker}; no lo trato como compra confirmada.")
+    if hypotheses:
+        hypothesis = hypotheses[0].get("payload", {}).get("hypothesis") or hypotheses[0].get("payload", {}).get("genesis_reading")
+        hypothesis = _clean_spanish_text(str(hypothesis or ""))
+        lines.append(f"Hipótesis activa: {hypothesis or 'vigilar confirmación de precio y volumen'}.")
+    if outcomes:
+        status = outcomes[0].get("payload", {}).get("status") or outcomes[0].get("status")
+        lines.append(f"Seguimiento de resultado: {status or 'abierto'}.")
+    if patterns:
+        lines.append(f"Genesis encontró {len(patterns)} patrones o contextos aprendidos relacionados con {ticker}.")
+    if asset_memory and not lines:
+        lines.append(f"{ticker} ya tiene memoria de analisis, pero faltan resultados cerrados para afirmar un patron.")
+    if not lines:
+        lines.append(f"Aún no tengo suficiente historial de {ticker}; desde ahora guardo tesis, señales, noticias y outcomes.")
+    return lines[:6]
+
+
+def _clean_spanish_text(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("confirmacion", "confirmación")
+        .replace("direccion", "dirección")
+        .replace("senal", "señal")
+        .replace("senales", "señales")
+        .replace("patron", "patrón")
+    )
 
 
 def _message_row(row: Any) -> dict[str, Any]:

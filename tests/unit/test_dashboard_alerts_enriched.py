@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from api import main as api_main
+from services.dashboard import get_alerts_snapshot as alerts_module
 from services.dashboard.get_alerts_snapshot import get_alerts_snapshot
 
 
@@ -127,6 +129,81 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertIn("what_to_watch", alert)
         self.assertEqual(alert["title_es"], "Ruptura en vigilancia")
         self.assertIn("what_happened_es", alert)
+
+    @patch("integrations.fmp.client.FmpClient")
+    @patch("services.dashboard.get_alerts_snapshot.load_settings")
+    def test_external_market_opportunities_use_fmp_quotes_and_strategy(
+        self,
+        mock_settings: Mock,
+        mock_fmp_client: Mock,
+    ) -> None:
+        alerts_module._OPPORTUNITY_CACHE["expires_at"] = 0
+        alerts_module._OPPORTUNITY_CACHE["items"] = []
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="test-key", fmp_live_enabled=True)
+        client = mock_fmp_client.return_value
+
+        def quote_for(ticker: str) -> dict | None:
+            if ticker == "NVDA":
+                return {
+                    "name": "NVIDIA Corporation",
+                    "price": 215.2,
+                    "change": 3.7,
+                    "changesPercentage": 1.75,
+                    "volume": 134_128_204,
+                    "dayLow": 211.0,
+                    "dayHigh": 218.0,
+                }
+            return None
+
+        client.get_quote.side_effect = quote_for
+
+        rows = alerts_module._market_opportunity_alerts()
+
+        self.assertEqual(len(rows), 1)
+        alert = rows[0]
+        self.assertEqual(alert["ticker"], "NVDA")
+        self.assertEqual(alert["id"], "opportunity:NVDA")
+        self.assertTrue(alert["is_opportunity"])
+        self.assertEqual(alert["price"], 215.2)
+        self.assertEqual(alert["volume"], 134_128_204)
+        self.assertAlmostEqual(alert["dollar_volume"], 28_864_389_500.8)
+        self.assertIn("strategy", alert)
+        self.assertIn("validación", alert["strategy"]["name"])
+        self.assertNotIn("Senal", alert["strategy"]["summary"])
+
+    @patch("api.main._market_search_for_proxy")
+    def test_proxy_alerts_add_external_opportunities_for_non_wallet_assets(self, mock_search: Mock) -> None:
+        def search(ticker: str) -> dict:
+            if ticker == "NVDA":
+                return {
+                    "results": [
+                        {
+                            "ticker": "NVDA",
+                            "name": "NVIDIA Corporation",
+                            "current_price": 215.2,
+                            "daily_change_pct": 1.75,
+                            "volume": 134_128_204,
+                            "day_low": 211.0,
+                            "day_high": 218.0,
+                        }
+                    ]
+                }
+            return {"results": []}
+
+        mock_search.side_effect = search
+        payload = {
+            "summary": {},
+            "items": [{"id": "alert:mara", "ticker": "MARA", "price": 12.94, "volume": 47_962_656}],
+            "recent_alerts": [],
+        }
+
+        api_main._massage_alerts_payload(payload)
+
+        self.assertEqual(payload["items"][0]["id"], "opportunity:NVDA")
+        self.assertTrue(payload["items"][0]["is_opportunity"])
+        self.assertEqual(payload["items"][0]["ticker"], "NVDA")
+        self.assertIn("strategy", payload["items"][0])
+        self.assertEqual(payload["summary"]["opportunities"], 1)
 
 
 if __name__ == "__main__":
