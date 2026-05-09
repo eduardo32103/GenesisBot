@@ -1,7 +1,7 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
-const GENESIS_LOGO_SRC = "./assets/genesis-logo-green.png";
+const GENESIS_LOGO_SRC = "./assets/genesis-logo-green.png?v=genesis-g-mark";
 
 function initialChatMessage() {
   return {
