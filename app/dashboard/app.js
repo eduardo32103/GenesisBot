@@ -1783,7 +1783,7 @@ async function correctGenesisIntentPayload(payload = {}, question = "") {
 }
 
 function setLiveRefreshIndicator(active) {
-  const enabled = Boolean(active || appState.refreshInFlight || appState.marketPulseLoading || appState.newsLoading || appState.opportunityQuotesLoading);
+  const enabled = Boolean(active || appState.refreshInFlight || appState.marketPulseLoading || appState.opportunityQuotesLoading);
   document.body.classList.toggle("is-live-refreshing", enabled);
 }
 
@@ -3141,7 +3141,6 @@ async function openGenesisConversation(conversationId) {
 async function loadNews(options = {}) {
   if (appState.newsLoading) return appState.newsSnapshot;
   appState.newsLoading = true;
-  setLiveRefreshIndicator(true);
   if (!options.silent) renderNewsScreen();
   try {
     const newsUrl = options.force ? `/api/dashboard/news?refresh=${Date.now()}` : "/api/dashboard/news";
@@ -3162,7 +3161,6 @@ async function loadNews(options = {}) {
     };
   } finally {
     appState.newsLoading = false;
-    setLiveRefreshIndicator(false);
     renderNewsScreen();
   }
   return appState.newsSnapshot;
