@@ -160,6 +160,28 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(payload["sections"]["mine"][0]["id"], "n1")
         self.assertEqual(payload["source_status"]["fmp_market_news"]["status"], "ok")
 
+    @patch("services.dashboard.get_news_snapshot.get_recent_market_news")
+    @patch("services.dashboard.get_news_snapshot.get_news_source_status")
+    @patch("services.dashboard.get_news_snapshot._focus_tickers")
+    def test_dashboard_news_snapshot_does_not_fake_important_section(self, mock_focus: Mock, mock_status: Mock, mock_recent: Mock) -> None:
+        mock_focus.return_value = ["NVDA"]
+        mock_status.return_value = {"fmp_market_news": {"status": "ok"}}
+        mock_recent.return_value = [
+            {
+                "id": "n1",
+                "title": "Mercado mixto",
+                "published_at": "2026-05-05T12:00:00+00:00",
+                "tickers": [],
+                "is_important": False,
+            }
+        ]
+
+        payload = get_news_snapshot(limit=12)
+
+        self.assertEqual(payload["important"], [])
+        self.assertEqual(payload["sections"]["important"], [])
+        self.assertEqual(payload["latest"][0]["id"], "n1")
+
 
 if __name__ == "__main__":
     unittest.main()

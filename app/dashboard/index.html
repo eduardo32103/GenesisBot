@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Genesis App</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css?v=genesis-voice-chat">
+  <link rel="stylesheet" href="./styles.css?v=genesis-brand-mark">
 </head>
 <body>
   <main class="phone-shell" id="genesis-app">
@@ -42,7 +42,13 @@
         <span class="nav-label">Noticias</span>
       </button>
       <button class="nav-link is-active nav-genesis" type="button" data-view="genesis">
-        <span class="nav-icon genesis-g" aria-hidden="true">G</span>
+        <span class="nav-icon genesis-g" aria-hidden="true">
+          <svg class="genesis-mark-svg genesis-nav-logo" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+            <path class="genesis-mark-stroke" d="M47 14v28.5C47 54 39.4 61 28.4 61c-7.2 0-13.1-2.4-17.6-7.1"/>
+            <path class="genesis-mark-stroke" d="M46 31.8a18.6 18.6 0 1 1-5.7-13.4"/>
+            <path class="genesis-mark-fill" d="M21 36h7v12h-7zM31 30h7v18h-7zM41 23h7v25h-7z"/>
+          </svg>
+        </span>
         <span class="nav-label">Genesis</span>
       </button>
       <button class="nav-link" type="button" data-view="radar">
@@ -129,6 +135,6 @@
     </aside>
 
   <div class="toast" id="app-toast" role="status" aria-live="polite" hidden></div>
-  <script src="./app.js?v=genesis-voice-chat"></script>
+  <script src="./app.js?v=genesis-brand-mark"></script>
 </body>
 </html>

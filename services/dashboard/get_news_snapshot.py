@@ -10,7 +10,7 @@ from services.genesis.ticker_parser import normalize_ticker
 def get_news_snapshot(limit: int = 24) -> dict[str, Any]:
     focus = _focus_tickers()
     items = get_recent_market_news(focus, limit=limit, max_age_days=30)
-    important = [item for item in items if item.get("is_important")][:8] or items[:5]
+    important = [item for item in items if item.get("is_important")][:8]
     latest = sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)[:16]
     mine = [item for item in items if set(item.get("tickers") or item.get("assets") or []) & set(focus)]
     global_items = [item for item in items if not (set(item.get("tickers") or item.get("assets") or []) & set(focus))]

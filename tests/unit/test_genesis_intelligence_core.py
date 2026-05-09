@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from api.main import create_app
+from api.main import _massage_image_analysis_payload, _normalize_analyze_image_body, create_app
 from app.settings import load_settings
 from integrations.fmp.client import FmpClient
 from services.genesis.agent_router import AgentRouter
@@ -854,6 +854,31 @@ class GenesisTechnicalAnalysisTests(unittest.TestCase):
 
 
 class GenesisImageAnalysisTests(unittest.TestCase):
+    def test_api_normalizes_image_payload_aliases_for_vision(self) -> None:
+        normalized = _normalize_analyze_image_body(
+            {
+                "question": "analiza esta grafica de NVDA",
+                "image_data": "data:image/png;base64,abc123",
+            }
+        )
+
+        self.assertEqual(normalized["message"], "analiza esta grafica de NVDA")
+        self.assertEqual(normalized["image"]["data_url"], "data:image/png;base64,abc123")
+        self.assertEqual(normalized["image_base64"], "abc123")
+        self.assertEqual(normalized["mime_type"], "image/png")
+
+    def test_proxy_image_analysis_response_gets_visual_contract(self) -> None:
+        payload = _massage_image_analysis_payload(
+            {"ok": True, "answer": "Lectura rapida. Vigilar soporte y volumen.", "status": "vision_ready"},
+            {"message": "analiza esta grafica de NVDA"},
+        )
+
+        self.assertEqual(payload["intent"], "image_chart_analysis")
+        self.assertEqual(payload["response_type"], "chart_analysis")
+        self.assertEqual(payload["structured"]["kind"], "chart_image_analysis")
+        self.assertEqual(payload["structured"]["ticker"], "NVDA")
+        self.assertIn("vision_policy", payload)
+
     @patch("services.genesis.chart_image_analysis.load_settings")
     def test_image_analysis_fallback_without_vision_provider(self, mock_settings: Mock) -> None:
         mock_settings.return_value = SimpleNamespace(
@@ -868,7 +893,26 @@ class GenesisImageAnalysisTests(unittest.TestCase):
         self.assertEqual(payload["intent"], "image_chart_analysis")
         self.assertEqual(payload["status"], "vision_not_configured")
         self.assertEqual(payload["tickers"], ["NVDA"])
-        self.assertIn("falta proveedor de vision", payload["answer"])
+        self.assertIn("falta activar visi", payload["answer"])
+        self.assertEqual(payload["response_type"], "chart_analysis")
+        self.assertEqual(payload["structured"]["kind"], "chart_image_analysis")
+
+    @patch("services.genesis.chart_image_analysis.load_settings")
+    def test_image_analysis_accepts_root_data_url_alias(self, mock_settings: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(
+            genesis_vision_enabled=False,
+            genesis_llm_enabled=False,
+            openai_api_key="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = analyze_chart_image(
+                {"question": "lee esta grafica de BTC", "image_data": "data:image/png;base64,abc123"},
+                memory=store,
+            )
+
+        self.assertEqual(payload["image"]["mime"], "image/png")
+        self.assertEqual(payload["tickers"], ["BTC-USD"])
 
 
 if __name__ == "__main__":

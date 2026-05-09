@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +59,7 @@ _PROXY_GET_PATHS = {
     "/api/dashboard/genesis",
     "/api/dashboard/macro-activity",
     "/api/dashboard/market/search",
+    "/api/dashboard/news",
     "/api/dashboard/money-flow/causal",
     "/api/dashboard/money-flow/detection",
     "/api/dashboard/money-flow/jarvis",
@@ -90,8 +92,21 @@ def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _running_on_hosted_runtime() -> bool:
+    return any(
+        os.getenv(name)
+        for name in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_PUBLIC_DOMAIN",
+            "RAILWAY_PRIVATE_DOMAIN",
+        )
+    )
+
+
 def _local_live_sources_missing() -> bool:
-    if os.getenv("PORT"):
+    if _running_on_hosted_runtime():
         return False
     if _truthy(os.getenv("GENESIS_DISABLE_PROD_PROXY")):
         return False
@@ -165,6 +180,36 @@ def _first_safe_num(*values: object) -> float | None:
     return None
 
 
+def _normalize_quote_change_fields(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return row
+    price = _first_safe_num(row.get("current_price"), row.get("price"))
+    previous_close = _safe_num(row.get("previous_close"))
+    daily_change = _first_safe_num(row.get("daily_change"), row.get("change"))
+    daily_change_pct = _first_safe_num(row.get("daily_change_pct"), row.get("change_pct"), row.get("percent_change"))
+    if daily_change is None and price is not None and previous_close:
+        daily_change = price - previous_close
+    if (daily_change_pct is None or abs(daily_change_pct) < 0.005) and daily_change is not None and previous_close:
+        daily_change_pct = (daily_change / previous_close) * 100
+    if daily_change is not None:
+        row["daily_change"] = daily_change
+        row["change"] = daily_change
+    if daily_change_pct is not None:
+        row["daily_change_pct"] = daily_change_pct
+        row["change_pct"] = daily_change_pct
+        row["percent_change"] = daily_change_pct
+    return row
+
+
+def _normalize_market_payload(payload: dict) -> dict:
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict):
+                _normalize_quote_change_fields(row)
+    return payload
+
+
 def _money_short(value: object) -> str:
     number = _safe_num(value)
     if number is None:
@@ -187,20 +232,108 @@ def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> 
         return data
     if not isinstance(payload, dict):
         return data
-    if path == "/api/dashboard/alerts":
+    if path == "/api/dashboard/market/search":
+        _normalize_market_payload(payload)
+    elif path == "/api/dashboard/news":
+        _massage_news_payload(payload)
+    elif path == "/api/dashboard/alerts":
         _massage_alerts_payload(payload)
-    elif path == "/api/dashboard/whales":
+    elif path in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection"}:
         _massage_whales_payload(payload)
     elif path == "/api/genesis/ask":
         payload = _correct_genesis_proxy_payload(payload, body or {})
         payload = _enrich_genesis_asset_quote(payload)
+    elif path == "/api/genesis/analyze-image":
+        payload = _massage_image_analysis_payload(payload, body or {})
     return json.dumps(payload).encode("utf-8")
+
+
+def _massage_image_analysis_payload(payload: dict, body: dict) -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    message = _genesis_message_from_body(body)
+    tickers = payload.get("tickers") if isinstance(payload.get("tickers"), list) else []
+    if not tickers and message:
+        try:
+            from services.genesis.ticker_parser import extract_tickers_from_prompt
+
+            tickers = extract_tickers_from_prompt(message)
+        except Exception:
+            tickers = []
+    answer = str(payload.get("assistant_narrative") or payload.get("answer") or "").strip()
+    payload["intent"] = payload.get("intent") or "image_chart_analysis"
+    payload["response_type"] = payload.get("response_type") or "chart_analysis"
+    payload["tickers"] = tickers
+    if "structured" not in payload or not isinstance(payload.get("structured"), dict):
+        sentences = [part.strip(" -") for part in answer.replace("\n", ". ").split(".") if part.strip()]
+        payload["structured"] = {
+            "kind": "chart_image_analysis",
+            "title": "Analisis visual de grafica",
+            "ticker": tickers[0] if tickers else "",
+            "status": payload.get("status") or "vision_proxy",
+            "confidence": 0.42 if "no respond" in answer.lower() else 0.72,
+            "summary": sentences[0] if sentences else "Genesis recibio la imagen para lectura visual.",
+            "sections": [
+                {"title": "Lectura rapida", "bullets": sentences[:2]},
+                {"title": "Que vigilar", "bullets": sentences[2:5]},
+            ],
+        }
+    if "vision_policy" not in payload:
+        payload["vision_policy"] = "La imagen se interpreta visualmente; precios y retornos se reconfirman con FMP."
+    return payload
 
 
 def _genesis_message_from_body(body: dict | None) -> str:
     if not isinstance(body, dict):
         return ""
     return str(body.get("message") or body.get("question") or "").strip()
+
+
+def _normalize_analyze_image_body(body: dict | None) -> dict:
+    if not isinstance(body, dict):
+        body = {}
+    normalized = dict(body)
+    message = str(
+        normalized.get("message")
+        or normalized.get("question")
+        or normalized.get("prompt")
+        or normalized.get("text")
+        or ""
+    ).strip()
+    if not message:
+        message = "Analiza esta grafica financiera: tendencia, niveles, volumen, riesgo y que vigilar."
+    normalized["message"] = message
+    normalized["question"] = message
+
+    image = normalized.get("image") if isinstance(normalized.get("image"), dict) else {}
+    image = dict(image)
+    data_url = str(
+        image.get("data_url")
+        or image.get("dataUrl")
+        or normalized.get("image_data")
+        or normalized.get("imageData")
+        or normalized.get("data_url")
+        or normalized.get("dataUrl")
+        or normalized.get("image_url")
+        or normalized.get("imageUrl")
+        or ""
+    ).strip()
+    raw_base64 = str(normalized.get("image_base64") or normalized.get("base64") or "").strip()
+    mime_type = str(image.get("type") or normalized.get("mime_type") or normalized.get("mime") or "image/png").strip() or "image/png"
+    if raw_base64 and not data_url:
+        data_url = f"data:{mime_type};base64,{raw_base64}"
+    if data_url.startswith("data:") and ";base64," in data_url:
+        prefix, raw_base64 = data_url.split(";base64,", 1)
+        detected_mime = prefix.replace("data:", "", 1).strip()
+        if detected_mime:
+            mime_type = detected_mime
+    image["data_url"] = data_url
+    image["type"] = mime_type
+    normalized["image"] = image
+    normalized["image_data"] = data_url
+    normalized["image_base64"] = raw_base64
+    normalized["mime_type"] = mime_type
+    return normalized
 
 
 def _fold_prompt(value: object) -> str:
@@ -370,6 +503,151 @@ def _whale_prompt_fallback_payload(message: str) -> dict:
     }
 
 
+def _whale_payload_row_lists(payload: dict) -> list[list[dict]]:
+    if not isinstance(payload, dict):
+        return []
+    candidates: list[object] = []
+    for key in ("events", "items", "estimated", "confirmed", "premium_activity"):
+        if isinstance(payload.get(key), list):
+            candidates.append(payload.get(key))
+    whales = payload.get("whales")
+    if isinstance(whales, dict):
+        for key in ("events", "items", "estimated", "confirmed"):
+            if isinstance(whales.get(key), list):
+                candidates.append(whales.get(key))
+        snapshot = whales.get("snapshot")
+        if isinstance(snapshot, dict):
+            for key in ("events", "items", "estimated", "confirmed"):
+                if isinstance(snapshot.get(key), list):
+                    candidates.append(snapshot.get(key))
+    structured = payload.get("structured")
+    if isinstance(structured, dict) and isinstance(structured.get("events"), list):
+        candidates.append(structured.get("events"))
+    for nested_key in ("causal", "detection", "snapshot"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            for key in ("events", "items", "estimated", "confirmed"):
+                if isinstance(nested.get(key), list):
+                    candidates.append(nested.get(key))
+    row_lists: list[list[dict]] = []
+    for candidate in candidates:
+        rows = [row for row in candidate if isinstance(row, dict)] if isinstance(candidate, list) else []
+        if rows:
+            row_lists.append(rows)
+    return row_lists
+
+
+def _whale_payload_rows(payload: dict) -> list[dict]:
+    for rows in _whale_payload_row_lists(payload):
+        return rows
+    return []
+
+
+def _enrich_genesis_whale_payload(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return result
+    if not (
+        result.get("intent") in {"whale_activity", "money_flow"}
+        or result.get("response_type") == "whale_flow"
+        or result.get("kind") == "whale_flow"
+    ):
+        return result
+
+    containers: list[dict] = []
+    if isinstance(result.get("events"), list):
+        containers.append(result)
+    whales = result.setdefault("whales", {})
+    if isinstance(whales, dict):
+        if isinstance(whales.get("events"), list):
+            containers.append(whales)
+        snapshot = whales.get("snapshot")
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("events"), list):
+            containers.append(snapshot)
+    structured = result.get("structured")
+    if isinstance(structured, dict) and isinstance(structured.get("events"), list):
+        containers.append(structured)
+
+    for container in containers:
+        _massage_whales_payload(container)
+
+    rows = _whale_payload_rows(result)
+    if rows:
+        _massage_whales_payload({"events": rows})
+
+    watched_volume = sum(
+        _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume")) or 0
+        for row in rows
+    )
+    confirmed_value = sum(
+        _safe_num(row.get("confirmed_amount_usd") or row.get("amount_usd")) or 0
+        for row in rows
+        if row.get("confirmed") or row.get("event_type") == "whale_confirmed"
+    )
+    confirmed_count = sum(1 for row in rows if row.get("confirmed") or row.get("event_type") == "whale_confirmed")
+    estimated_count = max(0, len(rows) - confirmed_count)
+    focus = []
+    for row in rows[:3]:
+        ticker = str(row.get("ticker") or row.get("asset_name") or "").upper()
+        monitored = _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume"))
+        if ticker and monitored:
+            focus.append(f"{ticker} {_money_short(monitored)} vigilados")
+        elif ticker:
+            focus.append(f"{ticker} pendiente de volumen")
+    answer = (
+        "En claro: no hay ballena confirmada con entidad y monto; Genesis está viendo "
+        f"{', '.join(focus)}. Es señal de actividad para vigilar, no compra confirmada."
+        if focus
+        else "En claro: no hay ballena confirmada con entidad y monto; Genesis vigila volumen, precio y flujo sin inventar comprador."
+    )
+
+    metrics = {
+        "confirmed_value": confirmed_value or None,
+        "watched_volume": watched_volume or None,
+        "confirmed_count": confirmed_count,
+        "estimated_count": estimated_count,
+        "confidence": "medium" if watched_volume else "low",
+    }
+    result.update(
+        {
+            "ok": True,
+            "intent": "whale_activity",
+            "response_type": "whale_flow",
+            "kind": "whale_flow",
+            "answer": answer,
+            "assistant_narrative": answer,
+            "tickers": [],
+        }
+    )
+    whales.update({"answer": answer, "items": rows, "events": rows, "summary": metrics})
+    if isinstance(whales.get("snapshot"), dict):
+        whales["snapshot"]["events"] = rows
+        whales["snapshot"]["metrics"] = metrics
+    result["structured"] = {
+        "kind": "whale_flow",
+        "title": "Ballenas / Smart money",
+        "summary": answer,
+        "events": rows,
+        "metrics": metrics,
+        "sections": [
+            {
+                "title": "Lectura rápida",
+                "bullets": [
+                    answer,
+                    "Separado: volumen vigilado no es monto confirmado de ballena.",
+                ],
+            },
+            {
+                "title": "Qué vigilar",
+                "bullets": [
+                    "Volumen relativo, reacción de precio, ruptura o rechazo de niveles.",
+                    "Sube a confirmada solo si aparece entidad, monto y fuente directa.",
+                ],
+            },
+        ],
+    }
+    return result
+
+
 def _news_prompt_fallback_payload(message: str) -> dict:
     answer = (
         "En noticias: esta pregunta pide contexto de titulares, no un ticker. "
@@ -447,10 +725,10 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             if isinstance(local, dict) and local.get("intent") == "whale_activity":
-                return local
+                return _enrich_genesis_whale_payload(local)
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local whale prompt correction failed", exc_info=True)
-        return _whale_prompt_fallback_payload(message)
+        return _enrich_genesis_whale_payload(_whale_prompt_fallback_payload(message))
     if _is_news_genesis_prompt(message):
         if payload.get("intent") == "macro_news" or payload.get("response_type") == "news_brief":
             payload["tickers"] = []
@@ -641,52 +919,106 @@ def _proxy_opportunity_is_important(change_pct: float, dollar_volume: float | No
 
 
 def _massage_whales_payload(payload: dict) -> None:
-    events = payload.get("events")
-    if not isinstance(events, list):
+    row_lists = _whale_payload_row_lists(payload)
+    if not row_lists:
         return
-    for row in events:
-        if not isinstance(row, dict):
-            continue
-        confirmed = bool(row.get("confirmed") or row.get("confirmed_amount_usd"))
-        ticker = str(row.get("ticker") or "").upper()
-        if ticker and (
-            _safe_num(row.get("price") or row.get("current_price")) is None
-            or _safe_num(row.get("volume") or row.get("monitored_volume")) is None
-        ):
-            _enrich_whale_event_with_quote(row, ticker)
-        monitored = _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume"))
-        if not confirmed and monitored is not None and monitored > 1_000_000_000_000:
-            row["amount_suspicious"] = True
-            row["monitored_dollar_volume"] = None
-            row["dollar_volume"] = None
-            row["estimated_flow"] = None
-            row["genesis_reading_es"] = (
-                f"{ticker}: volumen bruto demasiado grande para tratarlo como flujo institucional. "
-                "Genesis lo oculta como monto y espera confirmacion de fuente."
-            )
-    events.sort(key=lambda item: (_safe_num(item.get("monitored_dollar_volume") or item.get("dollar_volume")) or 0), reverse=True)
+    quote_cache: dict[str, dict] = {}
+    missing_tickers: set[str] = set()
+    for events in row_lists:
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
+            if ticker and (
+                _first_safe_num(row.get("price"), row.get("price_used"), row.get("current_price"), row.get("currentPrice")) is None
+                or _first_safe_num(row.get("volume"), row.get("monitored_volume"), row.get("monitoredVolume")) is None
+            ):
+                missing_tickers.add(ticker)
+    if missing_tickers:
+        try:
+            with ThreadPoolExecutor(max_workers=min(6, len(missing_tickers))) as executor:
+                future_map = {executor.submit(_market_search_for_proxy, ticker): ticker for ticker in missing_tickers}
+                for future in as_completed(future_map, timeout=10):
+                    ticker = future_map[future]
+                    try:
+                        quote_cache[ticker] = future.result()
+                    except Exception:
+                        quote_cache[ticker] = {}
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Parallel whale quote enrichment failed", exc_info=True)
+    for events in row_lists:
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            confirmed = bool(row.get("confirmed") or row.get("confirmed_amount_usd"))
+            ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
+            if ticker and (
+                _first_safe_num(row.get("price"), row.get("price_used"), row.get("current_price"), row.get("currentPrice")) is None
+                or _first_safe_num(row.get("volume"), row.get("monitored_volume"), row.get("monitoredVolume")) is None
+            ):
+                _enrich_whale_event_with_quote(row, ticker, quote_cache)
+            monitored = _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume"))
+            if not confirmed and monitored is not None and monitored > 1_000_000_000_000:
+                row["amount_suspicious"] = True
+                row["monitored_dollar_volume"] = None
+                row["dollar_volume"] = None
+                row["estimated_flow"] = None
+                row["genesis_reading_es"] = (
+                    f"{ticker}: volumen bruto demasiado grande para tratarlo como flujo institucional. "
+                    "Genesis lo oculta como monto y espera confirmacion de fuente."
+                )
+            price = _first_safe_num(row.get("price"), row.get("price_used"), row.get("current_price"), row.get("currentPrice"))
+            volume = _first_safe_num(row.get("volume"), row.get("monitored_volume"), row.get("monitoredVolume"))
+            dollar_volume = _first_safe_num(row.get("dollar_volume"), row.get("dollarVolume"), row.get("monitored_dollar_volume"), row.get("monitoredDollarVolume"))
+            if price is not None:
+                row["price"] = price
+                row["price_used"] = price
+                row["current_price"] = price
+                row["currentPrice"] = price
+            if volume is not None:
+                row["volume"] = volume
+                row["monitored_volume"] = volume
+                row["monitoredVolume"] = volume
+            if dollar_volume is None and price is not None and volume is not None:
+                dollar_volume = price * volume
+            if dollar_volume is not None:
+                row["dollar_volume"] = dollar_volume
+                row["dollarVolume"] = dollar_volume
+                row["monitored_dollar_volume"] = dollar_volume
+                row["monitoredDollarVolume"] = dollar_volume
+        events.sort(key=lambda item: (_safe_num(item.get("monitored_dollar_volume") or item.get("dollar_volume")) or 0), reverse=True)
 
 
-def _enrich_whale_event_with_quote(row: dict, ticker: str) -> None:
-    search = _market_search_for_proxy(ticker)
+def _enrich_whale_event_with_quote(row: dict, ticker: str, quote_cache: dict[str, dict] | None = None) -> None:
+    if quote_cache is not None and ticker in quote_cache:
+        search = quote_cache[ticker]
+    else:
+        search = _market_search_for_proxy(ticker)
+        if quote_cache is not None:
+            quote_cache[ticker] = search
     rows = search.get("results") if isinstance(search, dict) and isinstance(search.get("results"), list) else []
     asset = next((item for item in rows if str(item.get("ticker") or "").upper() == ticker), rows[0] if rows else None)
     if not isinstance(asset, dict):
         return
-    price = _safe_num(asset.get("current_price"))
-    volume = _safe_num(asset.get("volume"))
+    price = _first_safe_num(asset.get("current_price"), asset.get("price"), asset.get("reference_price"))
+    volume = _first_safe_num(asset.get("volume"), asset.get("monitored_volume"), asset.get("avg_volume"))
     if price is not None:
         row["price"] = price
         row["price_used"] = price
         row["current_price"] = price
+        row["currentPrice"] = price
     if volume is not None:
         row["volume"] = volume
         row["monitored_volume"] = volume
+        row["monitoredVolume"] = volume
     if price is not None and volume is not None:
         dollar_volume = price * volume
         row["dollar_volume"] = dollar_volume
+        row["dollarVolume"] = dollar_volume
         row["monitored_dollar_volume"] = dollar_volume
+        row["monitoredDollarVolume"] = dollar_volume
         row["source"] = asset.get("source") or row.get("source") or "datos_directos"
+        row["confidence"] = row.get("confidence") if row.get("confidence") not in ("", None, "low", "baja") else "medium"
         row["genesis_reading_es"] = (
             f"{ticker}: {_money_short(dollar_volume)} de volumen vigilado con precio {price}. "
             "No es ballena confirmada; es radar de actividad para priorizar seguimiento."
@@ -699,6 +1031,41 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
     response_type = str(result.get("response_type") or result.get("kind") or "")
     if response_type not in {"asset_analysis", "chart_analysis"} and result.get("intent") not in {"ticker_analysis", "technical_indicators", "chart_request"}:
         return result
+
+    def apply_confirmed_asset_copy(payload: dict, quote_payload: dict, ticker_label: str) -> None:
+        price_label = quote_payload.get("formatted_price") or _money_short(quote_payload.get("current_price") or quote_payload.get("price"))
+        change = _safe_num(quote_payload.get("daily_change"))
+        change_pct = _safe_num(quote_payload.get("daily_change_pct"))
+        previous_close = _safe_num(quote_payload.get("previous_close"))
+        if (change_pct is None or abs(change_pct) < 0.005) and change is not None and previous_close:
+            change_pct = (change / previous_close) * 100
+            quote_payload["daily_change_pct"] = change_pct
+        move_text = ""
+        if change is not None:
+            move_text = f" cambio {_money_short(change)}"
+            if change_pct is not None and abs(change_pct) >= 0.005:
+                move_text += f" ({change_pct:+.2f}%)"
+        thesis = (
+            f"{ticker_label}: precio confirmado por FMP en {price_label}{move_text}. "
+            "Genesis usa este dato como base; la decisión depende de volumen, niveles, noticias y riesgo."
+        )
+        payload["answer"] = thesis
+        quote_payload.pop("message", None)
+        structured = payload.get("structured")
+        if isinstance(structured, dict):
+            old_thesis = str(structured.get("thesis") or "")
+            if (
+                "no tiene precio confirmado" in old_thesis.casefold()
+                or "no tengo precio confirmado" in old_thesis.casefold()
+                or _safe_num(structured.get("confidence")) is None
+                or (_safe_num(structured.get("confidence")) or 0) < 0.7
+            ):
+                structured["thesis"] = thesis
+                structured["summary"] = thesis
+            structured["confidence"] = max(_safe_num(structured.get("confidence")) or 0, 0.82)
+            move = _safe_num(quote_payload.get("daily_change_pct") or quote_payload.get("daily_change"))
+            structured["verdict"] = "Alcista" if (move or 0) > 0 else "Bajista" if (move or 0) < 0 else "Neutral"
+
     quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
     existing_price = _safe_num(quote.get("current_price") or quote.get("price"))
     if existing_price is not None:
@@ -725,17 +1092,9 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
                     }
                 )
             ticker_label = str(quote.get("ticker") or result["structured"].get("ticker") or "").upper()
-            if "no tiene precio confirmado" in str(result["structured"].get("thesis") or "").casefold():
-                result["structured"]["thesis"] = (
-                    f"{ticker_label}: precio confirmado por FMP en {quote['formatted_price']}. "
-                    "Genesis usa este dato como base y mantiene cautela operativa hasta confirmar volumen, niveles y noticia."
-                )
-        if "no tengo precio confirmado" in str(result.get("answer") or "").casefold() or "no tiene precio confirmado" in str(result.get("answer") or "").casefold():
-            ticker_label = str(quote.get("ticker") or "").upper()
-            result["answer"] = (
-                f"{ticker_label}: precio confirmado por FMP en {quote['formatted_price']}. "
-                "Genesis usa este dato como base y mantiene cautela operativa hasta confirmar volumen, niveles y noticia."
-            )
+            apply_confirmed_asset_copy(result, quote, ticker_label)
+        else:
+            apply_confirmed_asset_copy(result, quote, str(quote.get("ticker") or "").upper())
         return result
     tickers = result.get("tickers") if isinstance(result.get("tickers"), list) else []
     ticker = str(quote.get("ticker") or (tickers[0] if tickers else "") or "").strip().upper()
@@ -781,17 +1140,15 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
                     "sanity": merged_quote["sanity"],
                 }
             )
-    if "no tengo precio confirmado" in str(result.get("answer") or "").casefold():
-        result["answer"] = (
-            f"{ticker}: precio confirmado por FMP en {_money_short(asset.get('current_price'))}. "
-            "Genesis usa este dato como base y mantiene cautela operativa hasta confirmar volumen, niveles y noticia."
-        )
+    apply_confirmed_asset_copy(result, merged_quote, ticker)
     return result
 
 
 def _market_search_for_proxy(ticker: str) -> dict:
     try:
         local = search_dashboard_market_ticker(ticker)
+        if isinstance(local, dict):
+            _normalize_market_payload(local)
         rows = local.get("results") if isinstance(local, dict) else []
         if isinstance(rows, list) and rows and _safe_num(rows[0].get("current_price")) is not None:
             return local
@@ -802,20 +1159,97 @@ def _market_search_for_proxy(ticker: str) -> dict:
         request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
         with urlopen(request, timeout=8) as response:
             payload = json.loads(response.read().decode("utf-8"))
-            return payload if isinstance(payload, dict) else {}
+            return _normalize_market_payload(payload) if isinstance(payload, dict) else {}
     except Exception:
         return {}
 
 
 def _search_market_with_live_fallback(query: str) -> dict:
-    fallback = search_dashboard_market_ticker(query)
+    fallback = _normalize_market_payload(search_dashboard_market_ticker(query))
     live = _market_search_for_proxy(query)
     rows = live.get("results") if isinstance(live, dict) else []
     if isinstance(rows, list) and any(_safe_num(row.get("current_price")) is not None for row in rows if isinstance(row, dict)):
         live["provider_used"] = live.get("provider_used") or "railway_fmp_proxy"
         live["cache_hit"] = bool(live.get("cache_hit", False))
-        return live
+        return _normalize_market_payload(live)
     return fallback
+
+
+def _massage_news_payload(payload: dict) -> None:
+    items = _dedupe_news_rows(payload.get("items"))
+    if not items:
+        fallback_rows = []
+        for key in ("important", "latest"):
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                fallback_rows.extend(rows)
+        items = _dedupe_news_rows(fallback_rows)
+    focus = {_proxy_news_normalize_ticker(ticker) for ticker in payload.get("focus_tickers") or [] if _proxy_news_normalize_ticker(ticker)}
+    important = [row for row in items if _proxy_news_is_important(row)][:8]
+    latest = sorted(items, key=lambda row: str(row.get("published_at") or row.get("time") or ""), reverse=True)[:16]
+    mine = [row for row in items if _proxy_news_tickers(row) & focus][:12]
+    global_items = [row for row in items if not (_proxy_news_tickers(row) & focus)][:12]
+    payload["items"] = items
+    payload["important"] = important
+    payload["latest"] = latest
+    payload["sections"] = {
+        "important": important,
+        "latest": latest,
+        "mine": mine,
+        "global": global_items,
+    }
+    payload["policy"] = "FMP/RSS live separado por filtro; no mezcla alertas ni ballenas como noticias."
+
+
+def _dedupe_news_rows(rows: object) -> list[dict]:
+    output: list[dict] = []
+    seen: set[str] = set()
+    if not isinstance(rows, list):
+        return output
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title_es") or row.get("title") or "").strip()
+        if _is_internal_news_title(title):
+            continue
+        key = str(row.get("id") or row.get("url") or title).strip().casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        output.append(row)
+    return output
+
+
+def _is_internal_news_title(title: str) -> bool:
+    text = str(title or "").casefold()
+    return any(token in text for token in ("contexto pendiente", "sin contexto", "genesis mantiene vigilancia", "briefing genesis listo"))
+
+
+def _proxy_news_normalize_ticker(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def _proxy_news_tickers(row: dict) -> set[str]:
+    values = []
+    for key in ("tickers", "assets", "tickers_affected"):
+        raw = row.get(key)
+        if isinstance(raw, list):
+            values.extend(raw)
+    return {_proxy_news_normalize_ticker(ticker) for ticker in values if _proxy_news_normalize_ticker(ticker)}
+
+
+def _proxy_news_is_important(row: dict) -> bool:
+    if bool(row.get("is_important")):
+        return True
+    category = str(row.get("category") or "").strip().casefold()
+    impact = str(row.get("impact") or row.get("sentiment") or "").strip().casefold()
+    recency = _safe_num(row.get("recency_score")) or 0
+    relevance = _safe_num(row.get("relevance_score")) or 0
+    if relevance >= 3 and recency >= 1:
+        return True
+    if category in {"macro", "geopolitics", "commodity", "earnings"} and recency >= 1:
+        return True
+    return impact in {"bullish", "bearish", "alcista", "bajista"} and recency >= 3
 
 
 def _quote_rows_from_payload(payload: dict) -> list[dict]:
@@ -832,6 +1266,7 @@ def _live_quote_for_snapshot_ticker(ticker: str) -> dict | None:
 
 
 def _merge_live_quote_into_snapshot_item(item: dict, quote_row: dict) -> bool:
+    _normalize_quote_change_fields(quote_row)
     price = _first_safe_num(quote_row.get("current_price"), quote_row.get("price"))
     if price is None or price <= 0:
         return False
@@ -985,7 +1420,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             headers["Content-Type"] = "application/json; charset=utf-8"
         request = Request(target, data=payload_bytes if method == "POST" else None, headers=headers, method=method)
         try:
-            proxy_timeout = 10 if parsed.path in {"/api/genesis/ask", "/api/dashboard/genesis", "/api/dashboard/source-health"} else 18
+            proxy_timeout = 55 if parsed.path == "/api/genesis/analyze-image" else 6 if parsed.path == "/api/genesis/ask" else 14 if parsed.path == "/api/dashboard/source-health" else 10 if parsed.path == "/api/dashboard/genesis" else 18
             with urlopen(request, timeout=proxy_timeout) as response:
                 data = response.read()
                 status = int(getattr(response, "status", 200) or 200)
@@ -1010,20 +1445,32 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         body = self._read_json_body()
+        if parsed.path == "/api/genesis/analyze-image":
+            body = _normalize_analyze_image_body(body)
+        message = _genesis_message_from_body(body)
         if parsed.path == "/api/genesis/ask" and (
-            _is_casual_genesis_prompt(_genesis_message_from_body(body))
-            or _is_market_genesis_prompt(_genesis_message_from_body(body))
-            or _is_news_genesis_prompt(_genesis_message_from_body(body))
-            or _is_memory_genesis_prompt(_genesis_message_from_body(body))
-            or _is_whale_genesis_prompt(_genesis_message_from_body(body))
+            _is_casual_genesis_prompt(message)
+            or _is_market_genesis_prompt(message)
+            or _is_news_genesis_prompt(message)
+            or _is_memory_genesis_prompt(message)
+            or _is_whale_genesis_prompt(message)
         ):
+            if (
+                not _is_casual_genesis_prompt(message)
+                and not _is_whale_genesis_prompt(message)
+                and _local_live_sources_missing()
+                and self._try_proxy_to_production(parsed, method="POST", body=body)
+            ):
+                return
             result = ask_genesis(
-                _genesis_message_from_body(body),
+                message,
                 context=str(body.get("context") or "general"),
                 ticker="",
                 panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
+            result = _enrich_genesis_asset_quote(result)
+            result = _enrich_genesis_whale_payload(result)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
         if self._try_proxy_to_production(parsed, method="POST", body=body):
@@ -1038,6 +1485,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             result = _enrich_genesis_asset_quote(result)
+            result = _enrich_genesis_whale_payload(result)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -1089,7 +1537,31 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/dashboard/news":
+            if self._try_proxy_to_production(parsed, method="GET"):
+                return
             payload = json.dumps(get_dashboard_news()).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/money-flow/detection":
+            payload_data = get_dashboard_money_flow_detection()
+            _massage_whales_payload(payload_data)
+            payload = json.dumps(payload_data).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/money-flow/causal":
+            payload_data = get_dashboard_money_flow_causal()
+            _massage_whales_payload(payload_data)
+            payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -1162,7 +1634,9 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/money-flow/detection":
-            payload = json.dumps(get_dashboard_money_flow_detection()).encode("utf-8")
+            payload_data = get_dashboard_money_flow_detection()
+            _massage_whales_payload(payload_data)
+            payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -1171,7 +1645,9 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/money-flow/causal":
-            payload = json.dumps(get_dashboard_money_flow_causal()).encode("utf-8")
+            payload_data = get_dashboard_money_flow_causal()
+            _massage_whales_payload(payload_data)
+            payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -1313,7 +1789,9 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/whales":
             ticker = (parse_qs(parsed.query).get("ticker") or [""])[0]
-            payload = json.dumps(get_dashboard_whales(ticker)).encode("utf-8")
+            whales_payload = get_dashboard_whales(ticker)
+            _massage_whales_payload(whales_payload)
+            payload = json.dumps(whales_payload).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

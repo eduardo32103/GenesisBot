@@ -26,9 +26,14 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("function normalizeNewsItemForUi", script)
         self.assertIn("function newsDisplayTitle", script)
         self.assertIn("function filteredNewsItems", script)
+        self.assertIn("function newsItemsForActiveFilter", script)
+        self.assertIn("function newsItemsFromSnapshotSection", script)
+        self.assertIn("function newsSectionConfig", script)
+        self.assertIn("return importantNewsItems(rows, { strict: true })", script)
         self.assertIn("data-news-filter", script)
         self.assertIn("Importantes / influyentes", script)
         self.assertIn("Ultimas noticias", script)
+        self.assertNotIn("return mine.length ? mine : items", script)
         self.assertIn("news-sheet", Path("app/dashboard/index.html").read_text(encoding="utf-8"))
         self.assertNotIn("No encontre esa noticia en la lectura actual", script)
         self.assertNotIn("[data-alert-open]", script)
@@ -123,6 +128,59 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("function pushGenesisAssistantMessage", script)
         self.assertIn("chat-voice-status", styles)
         self.assertIn("voice-pulse", styles)
+
+    def test_genesis_image_chart_analysis_contract_exists(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+        styles = Path("app/dashboard/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("genesis-image-input", script)
+        self.assertIn("fileToDataUrl", script)
+        self.assertIn("/api/genesis/analyze-image", script)
+        self.assertIn("image_data: dataUrl", script)
+        self.assertIn("mime_type: imageFile.type", script)
+        self.assertIn("function imageChartVisual", script)
+        self.assertIn("function imageChartVisualMarkup", script)
+        self.assertIn("chart_image_analysis", script)
+        self.assertIn("chart-image-visual", styles)
+        self.assertIn("image-scan-panel", styles)
+
+    def test_genesis_brand_mark_replaces_plain_center_g(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+        styles = Path("app/dashboard/styles.css").read_text(encoding="utf-8")
+        markup = Path("app/dashboard/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("function genesisMarkSvg", script)
+        self.assertIn("genesis-brand-lockup", script)
+        self.assertIn("genesis-header-logo", styles)
+        self.assertIn("genesis-mark-svg", styles)
+        self.assertIn("genesis-nav-logo", markup)
+        self.assertNotIn('class="nav-icon genesis-g" aria-hidden="true">G</span>', markup)
+
+    def test_chart_cache_retries_failures_and_keeps_live_quote_visible(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("CHART_CACHE_TTL_MS", script)
+        self.assertIn("CHART_FAILURE_RETRY_MS", script)
+        self.assertIn("cached.payload?.ok !== false", script)
+        self.assertIn("cached.loadedAt", script)
+        self.assertIn("promise: request", script)
+        self.assertIn("const fallbackAsset = findAsset(normalizedTicker) || {}", script)
+        self.assertIn("const fallbackPrice = itemPrice(fallbackAsset)", script)
+        self.assertIn("positiveOrNull(payload?.quote?.price ?? payload?.summary?.end_price) ?? fallbackPrice", script)
+        self.assertIn("rawChangePct !== null && rawChangePct !== 0", script)
+        self.assertIn("derivedChangePct", script)
+
+    def test_whale_detail_rehydrates_live_quote_before_showing_empty_fields(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function hydrateWhaleRowWithLiveAsset", script)
+        self.assertIn("function whaleRowNeedsLiveHydration", script)
+        self.assertIn("function hydrateOpenWhaleDetailFromChart", script)
+        self.assertIn("chartQuoteAsset(ticker", script)
+        self.assertIn("loadChartSeries(ticker, \"1D\")", script)
+        self.assertIn("appState.whaleItemsById[whaleId] = { ...row, id: whaleId }", script)
+        self.assertIn("monitoredDollarVolume", script)
+        self.assertIn("monitored_dollar_volume", script)
 
 
 if __name__ == "__main__":

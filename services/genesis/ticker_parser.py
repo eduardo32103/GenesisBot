@@ -92,6 +92,8 @@ _STOPWORDS = {
     "INDICADORES",
     "LA",
     "LAS",
+    "LEE",
+    "LEER",
     "LO",
     "LOS",
     "MACRO",

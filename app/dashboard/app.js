@@ -85,6 +85,8 @@ const MARKET_FEED_REFRESH_MS = 60000;
 const MARKET_PULSE_TICKERS = ["SPY", "QQQ", "BTC-USD", "NVDA", "BZ=F"];
 const OPPORTUNITY_TICKERS = ["NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQQ", "BTC-USD"];
 const CHART_RANGES = ["1D", "1W", "1M", "1Y", "5Y", "MAX"];
+const CHART_CACHE_TTL_MS = 2 * 60 * 1000;
+const CHART_FAILURE_RETRY_MS = 8000;
 const MONEY_COLORS = ["#7be0ad", "#91a7ff", "#efbd6f", "#ec7f77", "#7fd9df", "#d7c27f", "#b7c5d9"];
 const NEWS_FALLBACK_IMAGES = {
   market: "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=640&q=80",
@@ -722,6 +724,17 @@ function iconSvg(name) {
   return icons[name] || "";
 }
 
+function genesisMarkSvg(className = "") {
+  const classAttr = className ? ` ${className}` : "";
+  return `
+    <svg class="genesis-mark-svg${classAttr}" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+      <path class="genesis-mark-stroke" d="M47 14v28.5C47 54 39.4 61 28.4 61c-7.2 0-13.1-2.4-17.6-7.1"/>
+      <path class="genesis-mark-stroke" d="M46 31.8a18.6 18.6 0 1 1-5.7-13.4"/>
+      <path class="genesis-mark-fill" d="M21 36h7v12h-7zM31 30h7v18h-7zM41 23h7v25h-7z"/>
+    </svg>
+  `;
+}
+
 function chartCacheKey(ticker, range) {
   return `${normalizeTicker(ticker)}:${String(range || "1Y").toUpperCase()}`;
 }
@@ -807,26 +820,39 @@ async function loadChartSeries(ticker, range = "1Y") {
   const normalizedTicker = normalizeTicker(ticker);
   const normalizedRange = CHART_RANGES.includes(String(range).toUpperCase()) ? String(range).toUpperCase() : "1Y";
   const key = chartCacheKey(normalizedTicker, normalizedRange);
-  if (appState.chartCache[key]?.payload) return appState.chartCache[key].payload;
-  appState.chartCache[key] = { loading: true, payload: null };
-  try {
-    const payload = await getJson(`/api/dashboard/asset/chart?ticker=${encodeURIComponent(normalizedTicker)}&range=${encodeURIComponent(normalizedRange)}`);
-    appState.chartCache[key] = { loading: false, payload };
-    return payload;
-  } catch (error) {
-    const payload = {
-      ok: false,
-      ticker: normalizedTicker,
-      timeframe: normalizedRange,
-      points: [],
-      ohlc: [],
-      returns: {},
-      summary: {},
-      message: error.message || "No pude cargar la grafica.",
-    };
-    appState.chartCache[key] = { loading: false, payload };
-    return payload;
-  }
+  const cached = appState.chartCache[key] || {};
+  const now = Date.now();
+  const age = now - (cached.loadedAt || 0);
+  if (cached.loading && cached.promise) return cached.promise;
+  if (cached.payload?.ok !== false && cached.loadedAt && age <= CHART_CACHE_TTL_MS) return cached.payload;
+  if (cached.payload?.ok === false && cached.loadedAt && age <= CHART_FAILURE_RETRY_MS) return cached.payload;
+  const request = (async () => {
+    try {
+      const payload = await getJson(`/api/dashboard/asset/chart?ticker=${encodeURIComponent(normalizedTicker)}&range=${encodeURIComponent(normalizedRange)}`);
+      appState.chartCache[key] = { loading: false, payload, promise: null, loadedAt: Date.now() };
+      return payload;
+    } catch (error) {
+      const payload = {
+        ok: false,
+        ticker: normalizedTicker,
+        timeframe: normalizedRange,
+        points: [],
+        ohlc: [],
+        returns: {},
+        summary: {},
+        message: error.message || "No pude cargar la grafica.",
+      };
+      appState.chartCache[key] = { loading: false, payload, promise: null, loadedAt: Date.now() };
+      return payload;
+    }
+  })();
+  appState.chartCache[key] = {
+    loading: true,
+    payload: cached.payload?.ok !== false ? cached.payload : null,
+    promise: request,
+    loadedAt: cached.loadedAt || 0,
+  };
+  return request;
 }
 
 function chartReading(payload) {
@@ -951,11 +977,20 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
   const normalizedRange = CHART_RANGES.includes(String(range).toUpperCase()) ? String(range).toUpperCase() : "1Y";
   const state = appState.chartCache[chartCacheKey(normalizedTicker, normalizedRange)] || {};
   const payload = state.payload;
-  const tone = positiveClass(payload?.summary?.change_pct ?? payload?.summary?.change);
-  const quotePrice = payload?.quote?.price ?? payload?.summary?.end_price;
-  const change = payload?.quote?.change ?? payload?.summary?.change;
-  const changePct = payload?.quote?.changesPercentage ?? payload?.summary?.change_pct;
-  const display = getAssetDisplayName({ ticker: normalizedTicker, name: payload?.name });
+  const fallbackAsset = findAsset(normalizedTicker) || {};
+  const fallbackPrice = itemPrice(fallbackAsset);
+  const fallbackChange = itemDailyUsd(fallbackAsset);
+  const fallbackPct = itemDailyPct(fallbackAsset);
+  const quotePrice = positiveOrNull(payload?.quote?.price ?? payload?.summary?.end_price) ?? fallbackPrice;
+  const change = numberOrNull(payload?.quote?.change ?? payload?.summary?.change) ?? fallbackChange;
+  const rawChangePct = numberOrNull(payload?.quote?.changesPercentage ?? payload?.quote?.change_pct ?? payload?.summary?.change_pct);
+  const previousClose = positiveOrNull(payload?.quote?.previousClose ?? payload?.quote?.previous_close ?? fallbackAsset.previousClose ?? fallbackAsset.previous_close);
+  const derivedChangePct = quotePrice !== null && previousClose !== null && previousClose > 0
+    ? ((quotePrice - previousClose) / previousClose) * 100
+    : null;
+  const changePct = rawChangePct !== null && rawChangePct !== 0 ? rawChangePct : (derivedChangePct ?? fallbackPct);
+  const tone = positiveClass(changePct ?? change);
+  const display = getAssetDisplayName({ ticker: normalizedTicker, name: payload?.name || fallbackAsset.name });
   return `
     <section class="chart-card" data-chart-card="${escapeHtml(normalizedTicker)}">
       <div class="chart-card-header">
@@ -1027,14 +1062,17 @@ function chartQuoteAsset(ticker, range = "1Y") {
   const indicators = payload.indicators || {};
   const price = positiveOrNull(quote.price ?? quote.current_price ?? summary.end_price ?? lastCandle.close);
   if (price === null) return null;
+  const previousClose = positiveOrNull(quote.previousClose ?? quote.previous_close);
+  const rawChangePct = numberOrNull(quote.changesPercentage ?? quote.change_pct ?? summary.change_pct);
+  const derivedChangePct = previousClose !== null && previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : null;
   return {
     ticker: normalized,
     name: payload.name || normalized,
     current_price: price,
     price,
     daily_change: numberOrNull(quote.change ?? summary.change),
-    daily_change_pct: numberOrNull(quote.changesPercentage ?? quote.change_pct ?? summary.change_pct),
-    previous_close: positiveOrNull(quote.previousClose ?? quote.previous_close),
+    daily_change_pct: rawChangePct !== null && rawChangePct !== 0 ? rawChangePct : derivedChangePct,
+    previous_close: previousClose,
     day_high: positiveOrNull(quote.dayHigh ?? quote.day_high ?? lastCandle.high),
     day_low: positiveOrNull(quote.dayLow ?? quote.day_low ?? lastCandle.low),
     volume: positiveOrNull(quote.volume ?? lastCandle.volume ?? indicators.volume),
@@ -1460,9 +1498,12 @@ function renderGenesisScreen() {
     <section class="genesis-stage">
       <div class="genesis-conversation">
         <div class="genesis-chat-head">
-          <div>
-            <strong>Genesis</strong>
-            <span>Tu copiloto financiero con IA</span>
+          <div class="genesis-brand-lockup">
+            <span class="genesis-header-logo" aria-hidden="true">${genesisMarkSvg("genesis-header-logo-svg")}</span>
+            <div>
+              <strong>Genesis</strong>
+              <span>Tu copiloto financiero con IA</span>
+            </div>
           </div>
           ${renderConfidenceBar("activa")}
         </div>
@@ -1576,7 +1617,7 @@ function genesisVisualFromPayload(payload, answer = "") {
   if (responseType === "general_assistant" && payload?.structured?.kind === "general_assistant") return generalAssistantVisual(payload, answer);
   if (intent === "portfolio_summary") return summaryVisual("Cartera", answer);
   if (intent === "tracking_summary") return summaryVisual("Seguimiento", answer);
-  if (intent === "image_chart_analysis") return summaryVisual("Imagen", answer);
+  if (intent === "image_chart_analysis" || payload?.structured?.kind === "chart_image_analysis") return imageChartVisual(payload, answer);
   if (responseType === "general_assistant" && answer) return summaryVisual("Genesis", answer);
   return null;
 }
@@ -1782,8 +1823,12 @@ function assetAnalysisVisual(payload, answer = "") {
     .map(stripMarkdownCopy)
     .filter(Boolean)
     .slice(0, 5);
-  const thesis = structured.thesis || sections[0] || `${ticker || "El activo"} queda en vigilancia con datos confirmados por backend.`;
-  const confidence = numberOrNull(structured.confidence) ?? confidenceFromQuote(quote);
+  const hasConfirmedPrice = price !== null && price !== undefined;
+  let thesis = structured.thesis || sections[0] || `${ticker || "El activo"} queda en vigilancia con datos confirmados por backend.`;
+  if (hasConfirmedPrice && /no (tiene|tengo) precio confirmado/i.test(String(thesis))) {
+    thesis = `${ticker || "El activo"} tiene precio confirmado en ${money(price)}. Genesis evalúa volumen, niveles, noticias y riesgo antes de convertirlo en señal operativa.`;
+  }
+  const confidence = Math.max(numberOrNull(structured.confidence) ?? confidenceFromQuote(quote), hasConfirmedPrice ? 0.82 : 0);
   const volatility = firstKnownValue(technical.volatility?.annualized_pct, technical.volatility?.pct, technical.volatility);
   const convictionScore = Math.round(Math.max(0, Math.min(1, confidence || 0)) * 100);
   return {
@@ -1947,6 +1992,36 @@ function summaryVisual(title, answer = "") {
   };
 }
 
+function imageChartVisual(payload, answer = "") {
+  const structured = payload?.structured || {};
+  const sections = Array.isArray(structured.sections) ? structured.sections : [];
+  const lines = cleanSentenceList(structured.summary || answer, 7);
+  const ticker = normalizeTicker(structured.ticker || payload?.tickers?.[0] || tickerFromText(answer) || "");
+  const status = cleanCopy(payload?.status || structured.status || "");
+  const confidence = numberOrNull(structured.confidence) ?? (status === "vision_ready" ? 0.78 : 0.42);
+  const sectionCards = sections.length
+    ? sections.map((section) => ({
+        title: cleanCopy(section?.title || "Lectura"),
+        bullets: Array.isArray(section?.bullets) ? section.bullets.map(stripMarkdownCopy).filter(Boolean).slice(0, 3) : [],
+      })).filter((section) => section.bullets.length)
+    : [
+        { title: "Lectura rapida", bullets: lines.slice(0, 2) },
+        { title: "Que vigilar", bullets: lines.slice(2, 5) },
+      ];
+  return {
+    kind: "chart_image_analysis",
+    title: structured.title || "Grafica analizada",
+    ticker,
+    thesis: lines[0] || "Genesis recibio la grafica y la separa de los datos duros del mercado.",
+    status,
+    confidence,
+    source: payload?.source_status?.provider || "Vision Genesis",
+    model: payload?.source_status?.model || "",
+    policy: payload?.vision_policy || "La imagen se interpreta visualmente; precios y retornos se reconfirman con FMP.",
+    sections: sectionCards,
+  };
+}
+
 function generalAssistantVisual(payload, answer = "") {
   const structured = payload?.structured || {};
   const sections = Array.isArray(structured.sections) ? structured.sections : [];
@@ -2063,6 +2138,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "whale_flow") return whaleFlowVisualMarkup(visual);
   if (visual.kind === "memory_digest") return memoryDigestVisualMarkup(visual);
   if (visual.kind === "general_assistant") return generalAssistantVisualMarkup(visual);
+  if (visual.kind === "chart_image_analysis") return imageChartVisualMarkup(visual);
   if (visual.kind === "feed") return feedVisualMarkup(visual);
   return summaryVisualMarkup(visual);
 }
@@ -2559,6 +2635,42 @@ function summaryVisualMarkup(visual) {
   `;
 }
 
+function imageChartVisualMarkup(visual) {
+  const confidencePct = Math.round(Math.max(0, Math.min(1, visual.confidence || 0)) * 100);
+  const bars = [72, 48, 86, 61, 38].map((height, index) => `<i style="height:${height}%"><b>${index + 1}</b></i>`).join("");
+  return `
+    <section class="visual-response chart-image-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">${escapeHtml(visual.ticker || "Grafica")}</span>
+          <strong>${escapeHtml(visual.title || "Analisis visual")}</strong>
+        </div>
+        <span class="conviction-pill neutral">${escapeHtml(`${confidencePct}%`)}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis || "Genesis recibio la imagen y valida la lectura visual.")}</p>
+      <div class="image-scan-panel" aria-hidden="true">
+        <span></span>
+        <div>${bars}</div>
+        <small>Lectura visual + reconfirmacion FMP</small>
+      </div>
+      <div class="visual-market-strip">
+        <span><small>Fuente</small><strong>${escapeHtml(visual.source || "Vision Genesis")}</strong></span>
+        <span><small>Estado</small><strong>${escapeHtml(visual.status || "analizado")}</strong></span>
+        ${visual.model ? `<span><small>Modelo</small><strong>${escapeHtml(visual.model)}</strong></span>` : ""}
+      </div>
+      <div class="visual-sections image-analysis-sections">
+        ${(visual.sections || []).slice(0, 3).map((section) => `
+          <article>
+            <strong>${escapeHtml(section.title || "Lectura")}</strong>
+            ${(section.bullets || []).slice(0, 3).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+          </article>
+        `).join("")}
+      </div>
+      <small class="visual-footnote">${escapeHtml(visual.policy || "La imagen no reemplaza precios confirmados.")}</small>
+    </section>
+  `;
+}
+
 function chatBubbleMarkup(message) {
   const role = message.role === "user" ? "user" : "assistant";
   const text = stripMarkdownCopy(message.text);
@@ -2742,14 +2854,17 @@ async function submitGenesisQuestion(event) {
       const dataUrl = await fileToDataUrl(imageFile);
       const payload = await postJson("/api/genesis/analyze-image", {
         message: question,
+        question: question || "Analiza esta grafica financiera.",
         conversation_id: appState.currentConversationId,
+        image_data: dataUrl,
+        mime_type: imageFile.type || "image/png",
         image: {
           name: imageFile.name,
           type: imageFile.type,
           size: imageFile.size,
           data_url: dataUrl,
         },
-      });
+      }, { timeoutMs: 60000, attempts: 1 });
       pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(
         { ...payload, intent: payload.intent || "image_chart_analysis" },
         payload.answer || "Recibi la imagen."
@@ -3064,10 +3179,8 @@ function renderNewsScreen() {
   const snapshot = appState.newsSnapshot || {};
   const newsItems = newsFeedItems(snapshot);
   indexNewsItems(newsItems);
-  const scopedNewsItems = filteredNewsItems(newsItems);
-  const importantItems = importantNewsItems(scopedNewsItems);
-  const importantIds = new Set(importantItems.map((item) => newsItemId(item)));
-  const latestItems = latestNewsItems(scopedNewsItems).filter((item) => !importantIds.has(newsItemId(item)));
+  const activeFeed = newsItemsForActiveFilter(snapshot, newsItems);
+  const feedConfig = newsSectionConfig(appState.newsFilter || "important", activeFeed.length);
   root.innerHTML = `
     <section class="screen-stack news-screen investing-feed-screen news-only-screen">
       ${premiumScreenHeader(
@@ -3085,23 +3198,13 @@ function renderNewsScreen() {
       </div>
       <section class="news-section investing-section">
         <div class="section-heading">
-          <strong>Importantes / influyentes</strong>
-          <small>${importantItems.length} catalizadores</small>
+          <strong>${escapeHtml(feedConfig.title)}</strong>
+          <small>${escapeHtml(feedConfig.countLabel)}</small>
         </div>
         <div class="news-feed important-news-feed investing-news-list">
           ${appState.newsLoading ? newsLoadingMarkup("Actualizando noticias") : ""}
-          ${importantItems.length ? importantItems.map(newsCardMarkup).join("") : emptyStateMarkup("Aun no cargo noticia influyente.", "Genesis reintenta FMP/RSS sin mezclar alertas ni placeholders internos.")}
+          ${activeFeed.length ? activeFeed.map(newsCardMarkup).join("") : emptyStateMarkup(feedConfig.emptyTitle, feedConfig.emptyBody)}
         </div>
-      </section>
-      <section class="news-section investing-section">
-        <div class="section-heading">
-          <strong>Ultimas noticias</strong>
-          <small>24h / 7d / 30d</small>
-        </div>
-      <div class="news-feed latest-news-feed investing-news-list">
-        ${appState.newsLoading ? newsLoadingMarkup("Actualizando noticias") : ""}
-        ${latestItems.length ? latestItems.map(newsCardMarkup).join("") : emptyStateMarkup("Sin ultimas noticias cargadas.", "La pantalla queda limpia hasta que FMP/RSS confirme titulares reales.")}
-      </div>
       </section>
     </section>
   `;
@@ -3193,19 +3296,99 @@ function newsFilterButtonMarkup(filter, label) {
   return `<button type="button" class="${appState.newsFilter === filter ? "is-active" : ""}" data-news-filter="${escapeHtml(filter)}">${escapeHtml(label)}</button>`;
 }
 
-function filteredNewsItems(items = []) {
+function newsItemsForActiveFilter(snapshot = {}, allItems = []) {
   const filter = appState.newsFilter || "important";
+  const sectionItems = newsItemsFromSnapshotSection(snapshot, filter);
+  const source = sectionItems.length ? sectionItems : allItems;
+  return uniqueNewsItems(filteredNewsItems(source, filter)).slice(0, filter === "latest" ? 14 : 10);
+}
+
+function newsItemsFromSnapshotSection(snapshot = {}, section = "important") {
+  const newsSnapshot = snapshot.news || {};
+  const sections = newsSnapshot.sections || {};
+  const aliases = {
+    important: ["important", "important_news", "influential"],
+    latest: ["latest", "latest_news"],
+    mine: ["mine", "my_assets", "watchlist"],
+    global: ["global", "market", "macro"],
+  };
+  const keys = aliases[section] || [section];
+  const rows = keys.flatMap((key) => (Array.isArray(sections[key]) ? sections[key] : []));
+  if (!rows.length) return [];
+  return uniqueNewsItems(rows.map(normalizeNewsItemForUi).filter((item) => item.title && !isInternalNewsPlaceholder(item)));
+}
+
+function newsSectionConfig(filter = "important", count = 0) {
+  const configs = {
+    important: {
+      title: "Importantes / influyentes",
+      countLabel: `${count} catalizadores`,
+      emptyTitle: "Sin catalizadores importantes ahora.",
+      emptyBody: "Genesis no mezcla ultimas o globales aqui; usa Actualizar para pedir FMP/RSS otra lectura live.",
+    },
+    latest: {
+      title: "Ultimas noticias",
+      countLabel: "24h / 7d / 30d",
+      emptyTitle: "Sin ultimas noticias cargadas.",
+      emptyBody: "Genesis espera titulares recientes de FMP/RSS sin rellenar con alertas ni ballenas.",
+    },
+    mine: {
+      title: "Mis activos",
+      countLabel: `${count} notas ligadas`,
+      emptyTitle: "Sin noticias directas de tus activos.",
+      emptyBody: "No mezclo noticias globales en este filtro; cambia a Global o actualiza el feed.",
+    },
+    global: {
+      title: "Global",
+      countLabel: `${count} notas macro`,
+      emptyTitle: "Sin noticias globales confirmadas.",
+      emptyBody: "Genesis espera cobertura macro/mercado desde FMP/RSS.",
+    },
+  };
+  return configs[filter] || configs.important;
+}
+
+function filteredNewsItems(items = [], filter = appState.newsFilter || "important") {
+  const rows = uniqueNewsItems(items).filter((item) => !isInternalNewsPlaceholder(item));
   if (filter === "mine") {
     const focus = new Set(currentFocusAssets().map(itemTicker).filter(Boolean));
-    const mine = items.filter((item) => (item.assets || item.tickers || []).some((ticker) => focus.has(normalizeTicker(ticker))));
-    return mine.length ? mine : items;
+    return rows.filter((item) => newsItemTickers(item).some((ticker) => focus.has(normalizeTicker(ticker))));
   }
   if (filter === "global") {
     const focus = new Set(currentFocusAssets().map(itemTicker).filter(Boolean));
-    return items.filter((item) => !(item.assets || item.tickers || []).some((ticker) => focus.has(normalizeTicker(ticker))));
+    const globalCategories = new Set(["macro", "market", "geopolitics", "commodity", "crypto"]);
+    return rows.filter((item) => {
+      const tickers = newsItemTickers(item);
+      const touchesMine = tickers.some((ticker) => focus.has(normalizeTicker(ticker)));
+      const category = cleanCopy(item.category || "").toLowerCase();
+      return !touchesMine && (globalCategories.has(category) || !tickers.length);
+    });
   }
-  if (filter === "latest") return latestNewsItems(items);
-  return items;
+  if (filter === "latest") return latestNewsItems(rows);
+  return importantNewsItems(rows, { strict: true });
+}
+
+function newsItemTickers(item = {}) {
+  const values = [
+    ...(Array.isArray(item.assets) ? item.assets : []),
+    ...(Array.isArray(item.tickers) ? item.tickers : []),
+    ...(Array.isArray(item.tickersAffected) ? item.tickersAffected : []),
+    ...(Array.isArray(item.tickers_affected) ? item.tickers_affected : []),
+  ];
+  return Array.from(new Set(values.map(normalizeTicker).filter(Boolean)));
+}
+
+function uniqueNewsItems(items = []) {
+  const seen = new Set();
+  const output = [];
+  (items || []).forEach((item) => {
+    if (!item) return;
+    const key = newsItemId(item) || cleanCopy(item.title || "").toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    output.push(item);
+  });
+  return output;
 }
 
 function normalizeNewsItemForUi(item = {}) {
@@ -3284,10 +3467,12 @@ function isInternalNewsPlaceholder(item) {
   );
 }
 
-function importantNewsItems(items) {
+function importantNewsItems(items, options = {}) {
+  const strict = Boolean(options.strict);
   const important = items
     .filter((item) => item.isImportant || item.is_important || newsImpactTone(item.impact) !== "flat" || (numberOrNull(item.relevanceScore ?? item.relevance_score) || 0) >= 2)
     .sort((a, b) => (numberOrNull(b.relevanceScore ?? b.relevance_score) || 0) - (numberOrNull(a.relevanceScore ?? a.relevance_score) || 0));
+  if (strict) return important.slice(0, 5);
   return (important.length ? important : items.slice(0, 3)).slice(0, 5);
 }
 
@@ -4003,8 +4188,9 @@ function extractWhaleRows(causal, detection, learned = appState.whalesSnapshot?.
     if (!ticker) return;
     const normalizedLearned = normalizeWhaleEventForUi(item);
     if (normalizedLearned) {
-      const key = whaleItemId(normalizedLearned);
-      if (!byEvent.has(key)) byEvent.set(key, normalizedLearned);
+      const hydratedLearned = hydrateWhaleRowWithLiveAsset(normalizedLearned);
+      const key = whaleItemId(hydratedLearned);
+      if (!byEvent.has(key)) byEvent.set(key, hydratedLearned);
       return;
     }
     const whale = typeof item.whale === "object" && item.whale ? item.whale : {};
@@ -4056,8 +4242,9 @@ function extractWhaleRows(causal, detection, learned = appState.whalesSnapshot?.
         ? "Falta continuidad y contexto de precio para elevar conviccion."
         : "Falta entidad, monto y fecha confirmada para llamarlo ballena.",
     };
-    const key = whaleItemId(row);
-    if (!byEvent.has(key)) byEvent.set(key, row);
+    const hydratedRow = hydrateWhaleRowWithLiveAsset(row);
+    const key = whaleItemId(hydratedRow);
+    if (!byEvent.has(key)) byEvent.set(key, hydratedRow);
   });
   return Array.from(byEvent.values()).slice(0, 12);
 }
@@ -4117,6 +4304,71 @@ function normalizeWhaleEventForUi(item = {}) {
     confirmed,
     raw: item,
   };
+}
+
+function hydrateWhaleRowWithLiveAsset(row = {}) {
+  const ticker = itemTicker(row);
+  if (!ticker) return row;
+  const chartAsset = chartQuoteAsset(ticker, appState.assetChartRanges?.[ticker] || "1D");
+  const asset = chartAsset || findAsset(ticker) || {};
+  const price = positiveOrNull(row.price ?? row.price_used ?? row.currentPrice ?? row.current_price) ?? itemPrice(asset);
+  const volume = positiveOrNull(row.volume ?? row.monitoredVolume ?? row.monitored_volume) ?? positiveOrNull(asset.volume);
+  const avgVolume = positiveOrNull(row.avgVolume ?? row.avg_volume) ?? positiveOrNull(asset.avg_volume ?? asset.average_volume);
+  const relativeVolume = numberOrNull(row.relativeVolume ?? row.relative_volume) ?? numberOrNull(asset.relative_volume ?? asset.relativeVolume) ?? (volume !== null && avgVolume ? volume / avgVolume : null);
+  const existingDollar = positiveOrNull(row.monitoredDollarVolume ?? row.monitored_dollar_volume ?? row.dollarVolume ?? row.dollar_volume);
+  const dollarVolume = existingDollar ?? (price !== null && volume !== null ? price * volume : null);
+  const source = cleanCopy(row.source || "");
+  const display = getAssetDisplayName(ticker).displayName;
+  const hydrated = {
+    ...row,
+    ticker,
+    assetName: row.assetName || row.asset_name || display,
+  };
+  if (price !== null) {
+    hydrated.price = price;
+    hydrated.price_used = price;
+    hydrated.currentPrice = price;
+    hydrated.current_price = price;
+  }
+  if (volume !== null) {
+    hydrated.volume = volume;
+    hydrated.monitoredVolume = volume;
+    hydrated.monitored_volume = volume;
+  }
+  if (avgVolume !== null) {
+    hydrated.avgVolume = avgVolume;
+    hydrated.avg_volume = avgVolume;
+  }
+  if (relativeVolume !== null) {
+    hydrated.relativeVolume = relativeVolume;
+    hydrated.relative_volume = relativeVolume;
+  }
+  if (dollarVolume !== null) {
+    hydrated.dollarVolume = dollarVolume;
+    hydrated.dollar_volume = dollarVolume;
+    hydrated.monitoredDollarVolume = dollarVolume;
+    hydrated.monitored_dollar_volume = dollarVolume;
+    hydrated.netFlow = numberOrNull(hydrated.netFlow) ?? dollarVolume;
+  }
+  if ((price !== null || volume !== null) && (!source || /market_flow|technical|pendiente/i.test(source))) {
+    hydrated.source = chartAsset?.source || priceSourceLabel(asset) || "FMP / market_flow";
+  }
+  if (!cleanCopy(hydrated.read) || /espera volumen|sin volumen|no confirmado/i.test(cleanCopy(hydrated.read))) {
+    hydrated.read = dollarVolume !== null
+      ? `${display}: ${formatMoneyCompact(dollarVolume)} de volumen vigilado con precio ${money(price, "pendiente")}. No es compra confirmada; es radar de actividad.`
+      : `${display}: flujo en vigilancia; Genesis busca precio y volumen live antes de elevar conviccion.`;
+  }
+  return hydrated;
+}
+
+function whaleRowNeedsLiveHydration(row = {}) {
+  return Boolean(
+    itemTicker(row)
+    && (
+      positiveOrNull(row.price ?? row.price_used ?? row.currentPrice ?? row.current_price) === null
+      || positiveOrNull(row.volume ?? row.monitoredVolume ?? row.monitored_volume) === null
+    )
+  );
 }
 
 function saneFlowAmount(value, dollarVolume = null) {
@@ -4631,8 +4883,9 @@ function whaleItemId(item) {
 function indexWhaleItems(items) {
   appState.whaleItemsById = {};
   (items || []).forEach((item) => {
-    const id = whaleItemId(item);
-    appState.whaleItemsById[id] = { ...item, id };
+    const hydrated = hydrateWhaleRowWithLiveAsset(item);
+    const id = whaleItemId(hydrated);
+    appState.whaleItemsById[id] = { ...hydrated, id };
   });
 }
 
@@ -4888,7 +5141,7 @@ function currentAlertRows() {
 
 function currentWhaleRows() {
   const whales = extractWhaleRows(appState.whalesSnapshot?.causal || {}, appState.whalesSnapshot?.detection || {});
-  return whales.length ? whales : whaleFallbackRows();
+  return (whales.length ? whales : whaleFallbackRows()).map(hydrateWhaleRowWithLiveAsset);
 }
 
 function openAlertDetail(alertId) {
@@ -4938,11 +5191,14 @@ function openAlertDetail(alertId) {
 
 function openWhaleDetail(whaleId) {
   if (!Object.keys(appState.whaleItemsById || {}).length) indexWhaleItems(currentWhaleRows());
-  const row = appState.whaleItemsById?.[whaleId];
+  let row = appState.whaleItemsById?.[whaleId];
   if (!row) {
     toast(`No encontre flujo ${cleanCopy(whaleId)}. Actualiza Ballenas.`, "error");
     return;
   }
+  row = hydrateWhaleRowWithLiveAsset(row);
+  appState.whaleItemsById[whaleId] = { ...row, id: whaleId };
+  hydrateOpenWhaleDetailFromChart(row, whaleId);
   appState.selectedWhaleId = whaleId;
   const sheet = document.getElementById("event-sheet");
   const body = document.getElementById("event-sheet-body");
@@ -4993,6 +5249,19 @@ function openWhaleDetail(whaleId) {
     ${row.ticker && row.ticker !== "MERCADO" ? `<button class="secondary-button full" type="button" data-open-asset="${escapeHtml(row.ticker)}">Ver activo</button>` : ""}
   `;
   sheet.hidden = false;
+}
+
+function hydrateOpenWhaleDetailFromChart(row = {}, whaleId = "") {
+  const ticker = itemTicker(row);
+  if (!ticker || !whaleRowNeedsLiveHydration(row)) return;
+  const key = chartCacheKey(ticker, "1D");
+  if (appState.chartCache[key]?.loading) return;
+  loadChartSeries(ticker, "1D").then(() => {
+    if (appState.selectedWhaleId !== whaleId) return;
+    const hydrated = hydrateWhaleRowWithLiveAsset(appState.whaleItemsById?.[whaleId] || row);
+    appState.whaleItemsById[whaleId] = { ...hydrated, id: whaleId };
+    if (!whaleRowNeedsLiveHydration(hydrated)) openWhaleDetail(whaleId);
+  }).catch(() => {});
 }
 
 function closeEventDetail() {
