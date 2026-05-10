@@ -903,6 +903,33 @@ def _yahoo_asset_chart_payload(ticker: str, timeframe: str = "1Y") -> dict:
     }
 
 
+def _chart_payload_has_live_points(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for key in ("ohlc", "points", "series"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and len(rows) >= 2:
+            return True
+    return False
+
+
+def _chart_payload_with_live_fallback(ticker: str, timeframe: str = "1Y") -> dict:
+    primary = get_dashboard_asset_chart(ticker, timeframe=timeframe)
+    if _chart_payload_has_live_points(primary):
+        return primary
+    fallback = _yahoo_asset_chart_payload(ticker, timeframe)
+    if fallback.get("ok") and _chart_payload_has_live_points(fallback):
+        fallback["primary_status"] = {
+            "ok": bool(primary.get("ok")) if isinstance(primary, dict) else False,
+            "status": primary.get("status") if isinstance(primary, dict) else "unavailable",
+            "source": primary.get("source") if isinstance(primary, dict) else None,
+        }
+        fallback["fallback_from"] = "fmp_empty_or_timeout"
+        fallback.setdefault("source", {})["fallback_from"] = "fmp_empty_or_timeout"
+        return fallback
+    return primary if isinstance(primary, dict) else fallback
+
+
 def _call_json_with_timeout(fn, timeout: float, fallback: dict) -> dict:
     result_queue: queue.Queue = queue.Queue(maxsize=1)
 
@@ -1438,7 +1465,7 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
     executor = ThreadPoolExecutor(max_workers=min(4, len(tickers)))
     future_map = {executor.submit(_market_search_for_proxy, ticker): ticker for ticker in tickers}
     try:
-        for future in as_completed(future_map, timeout=2):
+        for future in as_completed(future_map, timeout=2.5):
             ticker = future_map[future]
             try:
                 result = future.result(timeout=0)
@@ -1450,6 +1477,25 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
         pass
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+
+    missing_tickers = [ticker for ticker in tickers if ticker not in search_by_ticker]
+    if missing_tickers:
+        yahoo_executor = ThreadPoolExecutor(max_workers=min(8, len(missing_tickers)))
+        yahoo_future_map = {yahoo_executor.submit(_yahoo_market_search_payload, ticker): ticker for ticker in missing_tickers}
+        try:
+            for future in as_completed(yahoo_future_map, timeout=4.5):
+                ticker = yahoo_future_map[future]
+                try:
+                    result = future.result(timeout=0)
+                except Exception:
+                    result = {}
+                rows = result.get("results") if isinstance(result, dict) else []
+                if isinstance(rows, list) and rows:
+                    search_by_ticker[ticker] = result
+        except Exception:
+            pass
+        finally:
+            yahoo_executor.shutdown(wait=False, cancel_futures=True)
 
     rows: list[dict] = []
     for ticker, search in search_by_ticker.items():
@@ -1491,7 +1537,7 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
                 "title_es": f"{ticker}: oportunidad externa detectada",
                 "summary_es": f"{ticker}: {change_pct:+.2f}% con {flow} de flujo observado. {strategy['summary']}",
                 "alert_type": "opportunity_scan",
-                "source": "FMP oportunidad",
+                "source": asset.get("source_label") or asset.get("source") or "datos_directos",
                 "status": "opportunity",
                 "is_opportunity": True,
                 "price": price,
@@ -1536,7 +1582,7 @@ def _fast_whale_rows_from_quotes(ticker: str = "") -> list[dict]:
     requested = str(ticker or "").strip().upper()
     tickers = [requested] if requested else ["NVDA", "MSFT", "BTC-USD", "SPY", "QQQ", "BNO", "IAU"]
     quote_payloads: dict[str, dict] = {}
-    executor = ThreadPoolExecutor(max_workers=min(4, len(tickers)))
+    executor = ThreadPoolExecutor(max_workers=min(8, len(tickers)))
     future_map = {executor.submit(_market_search_for_proxy, symbol): symbol for symbol in tickers}
     try:
         for future in as_completed(future_map, timeout=2.8):
@@ -2796,7 +2842,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             ticker = (query.get("ticker") or [""])[0]
             timeframe = (query.get("range") or query.get("timeframe") or ["1Y"])[0]
-            payload = json.dumps(get_dashboard_asset_chart(ticker, timeframe=timeframe)).encode("utf-8")
+            payload = json.dumps(_chart_payload_with_live_fallback(ticker, timeframe=timeframe)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
