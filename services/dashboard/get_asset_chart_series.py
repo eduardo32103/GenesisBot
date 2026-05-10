@@ -52,7 +52,7 @@ def _row_date(row: dict[str, Any]) -> str:
     return str(row.get("date") or row.get("label") or row.get("datetime") or row.get("timestamp") or "").strip()
 
 
-def _shape_ohlc(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _shape_ohlc(rows: list[dict[str, Any]], *, allow_price_only: bool = False) -> list[dict[str, Any]]:
     candles: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -62,6 +62,10 @@ def _shape_ohlc(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         high = _safe_float(row.get("high") or row.get("dayHigh"))
         low = _safe_float(row.get("low") or row.get("dayLow"))
         close = _safe_float(row.get("close") or row.get("price") or row.get("adjClose") or row.get("adj_close"))
+        if allow_price_only and close is not None:
+            open_price = open_price if open_price is not None else close
+            high = high if high is not None else close
+            low = low if low is not None else close
         if not time or open_price is None or high is None or low is None or close is None:
             continue
         if min(open_price, high, low, close) <= 0:
@@ -228,6 +232,23 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
     history_meta = get_meta(normalized_ticker) if callable(get_meta) else {}
     history_meta = history_meta if isinstance(history_meta, dict) else {}
     eod_points = _shape_ohlc(eod_rows)
+    price_only_history = False
+    if not eod_points:
+        get_light_history = getattr(client, "get_historical_price_light", None)
+        if callable(get_light_history):
+            light_rows = get_light_history(normalized_ticker, symbol_map=symbol_map) or []
+            if isinstance(light_rows, list):
+                eod_points = _shape_ohlc(light_rows, allow_price_only=True)
+                if eod_points:
+                    price_only_history = True
+                    history_meta = {
+                        **history_meta,
+                        "fmp_endpoint_used": history_meta.get("fmp_endpoint_used") or "historical-price-eod/light",
+                        "raw_eod_points": len(light_rows),
+                        "has_full_history": _history_years(eod_points) > 5.05,
+                        "max_history_years": _history_years(eod_points),
+                        "truncation_reason": "price_only_history",
+                    }
     max_history_years = float(history_meta.get("max_history_years") or _history_years(eod_points))
     derived_truncation = _max_truncation(max_history_years, eod_points)
     raw_reason = str(history_meta.get("truncation_reason") or derived_truncation["truncation_reason"])
@@ -287,6 +308,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
                 "provider": "FMP",
                 "endpoint": endpoint_label,
                 "live_enabled": True,
+                "price_only": price_only_history,
                 "downsampled": False,
                 "raw_points": 0,
                 "selected_range_points": raw_count,
@@ -309,6 +331,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
         "range": normalized_timeframe,
         "points": points,
         "ohlc": points,
+        "price_only": price_only_history,
         "returns": return_map,
         "return_details": return_details,
         "indicators": compute_technical_indicators(selected_points),
@@ -337,6 +360,7 @@ def get_asset_chart_series(ticker: str = "", timeframe: str = "1Y") -> dict[str,
             "provider": "FMP",
             "endpoint": endpoint_label,
             "live_enabled": True,
+            "price_only": price_only_history,
             "downsampled": raw_count > len(points),
             "raw_points": raw_count,
             "selected_range_points": raw_count,

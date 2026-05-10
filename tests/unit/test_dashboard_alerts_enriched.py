@@ -130,32 +130,27 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertEqual(alert["title_es"], "Ruptura en vigilancia")
         self.assertIn("what_happened_es", alert)
 
-    @patch("integrations.fmp.client.FmpClient")
+    @patch("services.dashboard.get_alerts_snapshot._fetch_opportunity_quotes_bulk")
     @patch("services.dashboard.get_alerts_snapshot.load_settings")
     def test_external_market_opportunities_use_fmp_quotes_and_strategy(
         self,
         mock_settings: Mock,
-        mock_fmp_client: Mock,
+        mock_bulk_quotes: Mock,
     ) -> None:
         alerts_module._OPPORTUNITY_CACHE["expires_at"] = 0
         alerts_module._OPPORTUNITY_CACHE["items"] = []
         mock_settings.return_value = SimpleNamespace(fmp_api_key="test-key", fmp_live_enabled=True)
-        client = mock_fmp_client.return_value
-
-        def quote_for(ticker: str) -> dict | None:
-            if ticker == "NVDA":
-                return {
-                    "name": "NVIDIA Corporation",
-                    "price": 215.2,
-                    "change": 3.7,
-                    "changesPercentage": 1.75,
-                    "volume": 134_128_204,
-                    "dayLow": 211.0,
-                    "dayHigh": 218.0,
-                }
-            return None
-
-        client.get_quote.side_effect = quote_for
+        mock_bulk_quotes.return_value = {
+            "NVDA": {
+                "name": "NVIDIA Corporation",
+                "price": 215.2,
+                "change": 3.7,
+                "changesPercentage": 1.75,
+                "volume": 134_128_204,
+                "dayLow": 211.0,
+                "dayHigh": 218.0,
+            }
+        }
 
         rows = alerts_module._market_opportunity_alerts()
 
@@ -168,8 +163,33 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertEqual(alert["volume"], 134_128_204)
         self.assertAlmostEqual(alert["dollar_volume"], 28_864_389_500.8)
         self.assertIn("strategy", alert)
+        self.assertIn("decision", alert)
+        self.assertIn(alert["decision"], {"buy_cautiously", "watch_confirmation", "wait_for_setup", "wait", "reduce_or_sell_risk"})
+        self.assertIn("decision_label_es", alert)
         self.assertIn("validación", alert["strategy"]["name"])
         self.assertNotIn("Senal", alert["strategy"]["summary"])
+
+    def test_crypto_alert_does_not_multiply_quote_volume_into_absurd_value(self) -> None:
+        alert = alerts_module._technical_alert(
+            "BTC-USD",
+            "BTC-USD: volumen visible",
+            "BTC-USD con actividad de mercado.",
+            "technical_watch",
+            1.2,
+            "2026-05-09T12:00:00+00:00",
+            {
+                "price": 80_767.34,
+                "change_pct": 0.4,
+                "volume": 17_765_685_248,
+                "avg_volume": 34_000_000_000,
+                "support": 79_000,
+                "resistance": 82_000,
+            },
+        )
+
+        self.assertEqual(alert["dollar_volume"], 17_765_685_248)
+        self.assertIn("$17.8B", alert["strategy"]["flow_context"])
+        self.assertLess(alert["dollar_volume"], 1_000_000_000_000)
 
     @patch("api.main._market_search_for_proxy")
     def test_proxy_alerts_add_external_opportunities_for_non_wallet_assets(self, mock_search: Mock) -> None:
@@ -203,6 +223,7 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertTrue(payload["items"][0]["is_opportunity"])
         self.assertEqual(payload["items"][0]["ticker"], "NVDA")
         self.assertIn("strategy", payload["items"][0])
+        self.assertIn("decision_label_es", payload["items"][0])
         self.assertEqual(payload["summary"]["opportunities"], 1)
 
 

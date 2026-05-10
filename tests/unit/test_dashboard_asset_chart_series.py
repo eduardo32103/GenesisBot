@@ -170,6 +170,34 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
 
     @patch("services.dashboard.get_asset_chart_series.FmpClient")
     @patch("services.dashboard.get_asset_chart_series.load_settings")
+    def test_uses_fmp_light_price_history_when_full_ohlc_is_missing(self, mock_settings: Mock, mock_fmp_client: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="test-key", fmp_live_enabled=True)
+        client = mock_fmp_client.return_value
+        client.get_quote.return_value = {"price": 132, "change": 2, "changesPercentage": 1.54, "name": "NVIDIA"}
+        client.get_profile.return_value = {"companyName": "NVIDIA Corporation"}
+        client.get_full_historical_eod.return_value = []
+        client.get_historical_price_light.return_value = [
+            {"date": "2026-01-01", "price": 100, "volume": 1000},
+            {"date": "2026-01-02", "price": 120, "volume": 2500},
+            {"date": "2026-01-03", "price": 132, "volume": 4000},
+        ]
+
+        payload = get_asset_chart_series("NVDA", "1Y")
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["price_only"])
+        self.assertTrue(payload["source"]["price_only"])
+        self.assertEqual(payload["source"]["fmp_endpoint_used"], "historical-price-eod/light")
+        self.assertEqual(payload["ohlc"][0]["open"], 100)
+        self.assertEqual(payload["ohlc"][0]["high"], 100)
+        self.assertEqual(payload["ohlc"][0]["low"], 100)
+        self.assertEqual(payload["ohlc"][0]["close"], 100)
+        self.assertEqual(payload["ohlc"][-1]["volume"], 4000)
+        self.assertEqual(payload["summary"]["end_price"], 132)
+        client.get_historical_price_light.assert_called_once_with("NVDA", symbol_map=None)
+
+    @patch("services.dashboard.get_asset_chart_series.FmpClient")
+    @patch("services.dashboard.get_asset_chart_series.load_settings")
     def test_short_max_history_uses_clean_human_note(self, mock_settings: Mock, mock_fmp_client: Mock) -> None:
         mock_settings.return_value = SimpleNamespace(fmp_api_key="test-key", fmp_live_enabled=True)
         client = mock_fmp_client.return_value

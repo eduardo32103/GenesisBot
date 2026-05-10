@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any
 
 from app.settings import load_settings
@@ -9,12 +10,25 @@ from services.dashboard.get_money_flow_detection_snapshot import get_money_flow_
 from services.genesis.memory_store import MemoryStore
 from services.genesis.ticker_parser import normalize_ticker
 
+_MAX_CONFIRMED_FLOW_VALUE = 1_000_000_000_000
+_MAX_MONITORED_DOLLAR_VOLUME = 1_000_000_000_000
+_SNAPSHOT_TIMEOUT_SECONDS = 1.2
+_FMP_SMART_MONEY_TIMEOUT_SECONDS = 1.4
+
 
 def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = None) -> dict[str, Any]:
     store = memory or MemoryStore()
     normalized = normalize_ticker(ticker or "")
-    rows = _extract_rows(get_money_flow_causal_snapshot()) + _extract_rows(get_money_flow_detection_snapshot())
-    rows.extend(_fmp_rows(normalized, rows))
+    rows: list[dict[str, Any]] = []
+    if normalized:
+        rows.extend(_fmp_rows(normalized, []))
+        if not rows:
+            rows.extend(_safe_snapshot_rows(get_money_flow_causal_snapshot))
+            rows.extend(_safe_snapshot_rows(get_money_flow_detection_snapshot))
+    else:
+        rows.extend(_safe_snapshot_rows(get_money_flow_causal_snapshot))
+        rows.extend(_safe_snapshot_rows(get_money_flow_detection_snapshot))
+        rows.extend(_fmp_rows("", rows))
     learned = 0
     confirmed = 0
     watched_without_entity: set[str] = set()
@@ -58,7 +72,8 @@ def learn_whale_events(ticker: str | None = None, memory: MemoryStore | None = N
             event=event,
         )
         learned += 1
-        confirmed += 1
+        if event.get("confirmed"):
+            confirmed += 1
     for row_ticker in watched_without_entity:
         store.save_market_observation(row_ticker, "Ballena vigilada sin entidad institucional confirmada.")
     memory = store.get_whale_memory(normalized or None)
@@ -107,6 +122,24 @@ def _extract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _run_with_timeout(fn, timeout_seconds: float, fallback: Any) -> Any:
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except TimeoutError:
+        return fallback
+    except Exception:
+        return fallback
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _safe_snapshot_rows(fn) -> list[dict[str, Any]]:
+    payload = _run_with_timeout(fn, _SNAPSHOT_TIMEOUT_SECONDS, {})
+    return _extract_rows(payload) if isinstance(payload, dict) else []
+
+
 def _fmp_rows(normalized: str, existing_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     try:
         settings = load_settings()
@@ -136,7 +169,19 @@ def _fmp_rows(normalized: str, existing_rows: list[dict[str, Any]]) -> list[dict
     for ticker in tickers[:8]:
         quote = client.get_quote(ticker) or {}
         current_price = _num(quote.get("price"))
-        for item in client.get_smart_money_activity(ticker, limit=5) or []:
+        volume = _num(quote.get("volume") or quote.get("vol"))
+        avg_volume = _num(quote.get("avgVolume") or quote.get("avg_volume"))
+        change_pct = _num(quote.get("changesPercentage") or quote.get("change_pct"))
+        quote_rows_before = len(rows)
+        smart_money_rows = []
+        is_crypto = client.is_crypto_ticker(ticker) if hasattr(client, "is_crypto_ticker") else _is_crypto_asset(ticker, {"ticker": ticker})
+        if not is_crypto:
+            smart_money_rows = _run_with_timeout(
+                lambda ticker=ticker: client.get_smart_money_activity(ticker, limit=5) or [],
+                _FMP_SMART_MONEY_TIMEOUT_SECONDS,
+                [],
+            )
+        for item in smart_money_rows or []:
             entity = str(item.get("entity") or "").strip()
             if not entity:
                 continue
@@ -161,6 +206,29 @@ def _fmp_rows(normalized: str, existing_rows: list[dict[str, Any]]) -> list[dict
                     "confidence": "medium",
                 }
             )
+        if current_price is not None and volume is not None and len(rows) == quote_rows_before:
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "name": quote.get("name") or ticker,
+                    "asset_type": "crypto" if _is_crypto_asset(ticker, {"asset_type": "crypto" if ticker.endswith("-USD") else ""}) else "equity",
+                    "current_price": current_price,
+                    "price": current_price,
+                    "volume": volume,
+                    "avg_volume": avg_volume,
+                    "relative_volume": (volume / avg_volume) if avg_volume else None,
+                    "change_pct": change_pct,
+                    "direction": "accumulation" if (change_pct or 0) > 0.75 else "distribution" if (change_pct or 0) < -0.75 else "neutral flow",
+                    "timestamp": quote.get("timestamp"),
+                    "source": "fmp/quote",
+                    "confidence": "medium" if avg_volume else "low",
+                    "evidence": {
+                        "price_source": "FMP quote",
+                        "volume_source": "FMP quote",
+                        "confirmed_entity": False,
+                    },
+                }
+            )
     return rows
 
 
@@ -176,11 +244,17 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         amount_usd = units * (price or current_price)
     volume = _num(row.get("volume") or row.get("session_volume"))
     relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio"))
-    dollar_volume = volume * current_price if volume is not None and current_price is not None else _num(row.get("dollar_volume") or row.get("dollarVolume"))
+    dollar_volume, monitored_basis, monitored_suspicious = _safe_monitored_dollar_volume(
+        ticker,
+        row,
+        volume,
+        current_price,
+    )
     amount_usd, amount_suspicious = _sanitize_flow_value(amount_usd, dollar_volume)
     estimated_value = amount_usd if amount_usd is not None else (units * (price or current_price) if units is not None and (price or current_price) else None)
     estimated_value, estimated_suspicious = _sanitize_flow_value(estimated_value, dollar_volume)
     amount_suspicious = amount_suspicious or estimated_suspicious
+    confirmed_event = bool(entity and amount_usd is not None and not amount_suspicious)
     date = str(row.get("money_flow_timestamp") or row.get("timestamp") or row.get("date") or "").strip()
     source = str(row.get("source") or whale.get("source") or "fmp").strip()
     confidence = str(whale.get("confidence") or row.get("confidence") or "medium").strip().lower()
@@ -193,7 +267,7 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "ticker": ticker,
         "asset_name": str(row.get("name") or row.get("asset_name") or ticker),
         "asset_type": str(row.get("asset_type") or "equity"),
-        "event_type": "whale_confirmed" if entity and (amount_usd is not None or amount) else "institutional_flow",
+        "event_type": "whale_confirmed" if confirmed_event else "institutional_flow",
         "entity": entity,
         "entity_name": entity,
         "entity_type": str(row.get("entity_type") or whale.get("entity_type") or "institution"),
@@ -204,18 +278,20 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "price": price,
         "price_used": price or current_price,
         "amount_usd": amount_usd,
-        "confirmed_amount_usd": amount_usd,
+        "confirmed_amount_usd": amount_usd if confirmed_event else None,
         "from_address": str(row.get("from_address") or row.get("from_entity") or ""),
         "to_address": str(row.get("to_address") or row.get("to_entity") or ""),
         "current_price": current_price,
         "estimated_value": estimated_value,
         "monitored_volume": volume,
         "monitored_dollar_volume": dollar_volume,
+        "monitored_volume_basis": monitored_basis,
+        "monitored_value_suspicious": monitored_suspicious,
         "estimated_flow": None,
         "direction_estimate": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "reduction", "distribution"} else "neutral",
         "estimated_flow_direction": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "reduction", "distribution"} else "neutral",
-        "confirmed": bool(entity and amount_usd is not None),
-        "amount_suspicious": amount_suspicious,
+        "confirmed": confirmed_event,
+        "amount_suspicious": amount_suspicious or (bool(entity) and amount_usd is None),
         "volume": volume,
         "relative_volume": relative_volume,
         "dollar_volume": dollar_volume,
@@ -225,8 +301,12 @@ def _shape_event(ticker: str, entity: str, row: dict[str, Any]) -> dict[str, Any
         "confidence": confidence,
         "impact": impact,
         "evidence": _evidence(row),
-        "genesis_reading": _event_reading(ticker, entity, action, confidence),
-        "genesis_reading_es": _event_reading(ticker, entity, action, confidence),
+        "genesis_reading": _event_reading(ticker, entity, action, confidence) if confirmed_event else (
+            f"{ticker}: hay entidad reportada, pero el monto no pasa validación. Genesis lo deja como flujo institucional en vigilancia, no ballena confirmada."
+        ),
+        "genesis_reading_es": _event_reading(ticker, entity, action, confidence) if confirmed_event else (
+            f"{ticker}: hay entidad reportada, pero el monto no pasa validación. Genesis lo deja como flujo institucional en vigilancia, no ballena confirmada."
+        ),
         "timestamp": date,
     }
 
@@ -243,9 +323,12 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
     relative_volume = _num(row.get("relative_volume") or row.get("relativeVolume") or row.get("volume_ratio") or row.get("intensity"))
     if relative_volume is None and volume is not None and avg_volume:
         relative_volume = volume / avg_volume
-    dollar_volume = _num(row.get("dollar_volume") or row.get("dollarVolume"))
-    if dollar_volume is None and volume is not None and current_price is not None:
-        dollar_volume = volume * current_price
+    dollar_volume, monitored_basis, monitored_suspicious = _safe_monitored_dollar_volume(
+        ticker,
+        row,
+        volume,
+        current_price,
+    )
     _, amount_suspicious = _sanitize_flow_value(raw_unconfirmed_amount, dollar_volume)
     amount_usd = None
     event_type = "unusual_volume" if _has_unusual_volume(row) else "smart_money_estimate"
@@ -271,6 +354,8 @@ def _shape_estimate_event(ticker: str, row: dict[str, Any]) -> dict[str, Any]:
         "estimated_value": None,
         "monitored_volume": volume,
         "monitored_dollar_volume": dollar_volume,
+        "monitored_volume_basis": monitored_basis,
+        "monitored_value_suspicious": monitored_suspicious,
         "estimated_flow": dollar_volume if action in {"buy", "accumulation"} else (-dollar_volume if action in {"sell", "distribution", "reduction"} and dollar_volume is not None else None),
         "direction_estimate": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "distribution", "reduction"} else "neutral",
         "estimated_flow_direction": "inflow" if action in {"buy", "accumulation"} else "outflow" if action in {"sell", "distribution", "reduction"} else "neutral",
@@ -318,11 +403,74 @@ def _sanitize_flow_value(value: float | None, dollar_volume: float | None) -> tu
         return None, False
     if value <= 0:
         return None, True
-    if value > 1_000_000_000_000:
+    if value > _MAX_CONFIRMED_FLOW_VALUE:
         return None, True
     if dollar_volume is not None and dollar_volume > 0 and value > dollar_volume * 20:
         return None, True
     return value, False
+
+
+def _safe_monitored_dollar_volume(
+    ticker: str,
+    row: dict[str, Any],
+    volume: float | None,
+    current_price: float | None,
+) -> tuple[float | None, str, bool]:
+    """Return monitored dollar volume without inventing whale amounts.
+
+    Some crypto feeds expose volume already in quote currency. Multiplying that
+    by price creates impossible quadrillion-sized "whale" values, so Genesis
+    treats those rows as monitored market flow instead of confirmed amount.
+    """
+    direct = _num(
+        row.get("monitored_dollar_volume")
+        or row.get("dollar_volume")
+        or row.get("dollarVolume")
+        or row.get("quote_volume")
+        or row.get("quoteVolume")
+    )
+    if direct is not None:
+        sanitized, suspicious = _sanitize_monitored_value(direct)
+        if sanitized is not None:
+            return sanitized, "reported_dollar_volume", suspicious
+        fallback = _crypto_quote_volume_fallback(ticker, row, volume)
+        if fallback is not None:
+            return fallback, "crypto_quote_volume", True
+        return None, "blocked_absurd", True
+    if volume is None or current_price is None:
+        return None, "missing", False
+    computed = volume * current_price
+    if _is_crypto_asset(ticker, row) and computed > _MAX_MONITORED_DOLLAR_VOLUME:
+        fallback = _crypto_quote_volume_fallback(ticker, row, volume)
+        if fallback is not None:
+            return fallback, "crypto_quote_volume", False
+    sanitized, suspicious = _sanitize_monitored_value(computed)
+    if sanitized is None:
+        return None, "blocked_absurd", suspicious
+    return sanitized, "price_times_volume", suspicious
+
+
+def _sanitize_monitored_value(value: float | None) -> tuple[float | None, bool]:
+    if value is None:
+        return None, False
+    if value <= 0:
+        return None, True
+    if value > _MAX_MONITORED_DOLLAR_VOLUME:
+        return None, True
+    return value, False
+
+
+def _crypto_quote_volume_fallback(ticker: str, row: dict[str, Any], volume: float | None) -> float | None:
+    if not _is_crypto_asset(ticker, row) or volume is None:
+        return None
+    sanitized, _ = _sanitize_monitored_value(volume)
+    return sanitized
+
+
+def _is_crypto_asset(ticker: str, row: dict[str, Any]) -> bool:
+    asset_type = str(row.get("asset_type") or row.get("category") or "").casefold()
+    symbol = normalize_ticker(ticker)
+    return "crypto" in asset_type or symbol.endswith("-USD") or symbol in {"BTC", "ETH", "SOL"}
 
 
 def _estimate_action(row: dict[str, Any]) -> str:
@@ -405,7 +553,7 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     accumulation: list[str] = []
     distribution: list[str] = []
     for event in events:
-        confirmed = bool(event.get("entity_name") and _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) is not None)
+        confirmed = bool(event.get("confirmed") and event.get("entity_name") and _num(event.get("confirmed_amount_usd")) is not None)
         amount = _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) if confirmed else 0.0
         watched = _num(event.get("monitored_dollar_volume") or event.get("dollar_volume")) if not confirmed else 0.0
         confirmed_value += amount or 0.0
@@ -440,8 +588,8 @@ def _summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "distribution": distribution[:8],
         "top_assets": top_assets[:8],
         "confidence": "medium" if events else "low",
-        "confirmed_count": len([event for event in events if event.get("entity_name") and _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) is not None]),
-        "estimated_count": len([event for event in events if not (event.get("entity_name") and _num(event.get("confirmed_amount_usd") or event.get("amount_usd")) is not None)]),
+        "confirmed_count": len([event for event in events if event.get("confirmed") and event.get("entity_name") and _num(event.get("confirmed_amount_usd")) is not None]),
+        "estimated_count": len([event for event in events if not (event.get("confirmed") and event.get("entity_name") and _num(event.get("confirmed_amount_usd")) is not None)]),
     }
 
 

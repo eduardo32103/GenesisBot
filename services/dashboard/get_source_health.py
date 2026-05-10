@@ -63,6 +63,7 @@ def _fmp_health(settings: Any) -> dict[str, Any]:
         quote = client.get_quote("SPY") or {}
         health["quote_ok"] = bool(quote.get("price"))
         health["quote_sample_count"] = 1 if health["quote_ok"] else 0
+        quote_error = client.get_last_error("SPY") or ""
         history = client.get_historical_eod("SPY", limit=10) or []
         health["historical_ok"] = bool(history)
         health["historical_points_sample"] = len(history)
@@ -74,7 +75,7 @@ def _fmp_health(settings: Any) -> dict[str, Any]:
         health["insider_ok"] = any(str(row.get("source") or "").casefold().startswith("insider") for row in activity)
         health["source_status"] = get_news_source_status()
         if not health["quote_ok"]:
-            health["last_error_safe"] = client.get_last_error("SPY") or "quote empty"
+            health["last_error_safe"] = quote_error or "quote empty"
     except Exception:
         health["last_error_safe"] = "fmp health unavailable"
     health["elapsed_ms"] = int((time.monotonic() - started) * 1000)

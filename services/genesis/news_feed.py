@@ -50,12 +50,18 @@ _RSS_QUERIES = [
 ]
 
 
-def get_recent_market_news(tickers: list[str] | None = None, *, limit: int = 12, max_age_days: int = 30) -> list[dict[str, Any]]:
+def get_recent_market_news(
+    tickers: list[str] | None = None,
+    *,
+    limit: int = 12,
+    max_age_days: int = 30,
+    force_refresh: bool = False,
+) -> list[dict[str, Any]]:
     safe_tickers = _safe_tickers(tickers)
     cache_key = f"news:{','.join(safe_tickers)}:{int(limit)}:{int(max_age_days)}"
     now = time.monotonic()
     cached = _CACHE.get(cache_key)
-    if cached and now - cached[0] <= _NEWS_TTL_SECONDS:
+    if cached and not force_refresh and now - cached[0] <= _NEWS_TTL_SECONDS:
         _set_source_status("fmp_market_news", "ok", elapsed_ms=0, cache_hit=True, count=len(cached[1]))
         return [dict(item, cache_hit=True) for item in cached[1]]
 
@@ -168,6 +174,8 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
         has_source_image = bool(image_url)
         if not image_url:
             image_url = _category_photo_url(title, category, tickers)
+        published_ts = _published_ts(published_at)
+        age_seconds = _news_age_seconds(published_at)
         item = {
             "id": _news_id(title, source, published_at.isoformat() if published_at else raw.get("publishedDate") or raw.get("date") or "", url),
             "title": title_es,
@@ -178,6 +186,9 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
             "original_summary": summary,
             "source": source,
             "published_at": published_at.isoformat() if published_at else str(raw.get("publishedDate") or raw.get("date") or ""),
+            "published_ts": published_ts,
+            "age_hours": round(age_seconds / 3600, 2) if age_seconds is not None else None,
+            "recency_bucket": _recency_bucket(published_at),
             "relative_time": _relative_time(published_at),
             "tickers": tickers,
             "tickers_affected": tickers,
@@ -212,7 +223,16 @@ def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *,
         item["risk"] = _risk_for_impact(impact)
         item["watch"] = _watch_for_news(impact, tickers)
         items.append(item)
-    return sorted(items, key=lambda item: (item.get("is_important") is True, item.get("relevance_score") or 0, item.get("recency_score") or 0), reverse=True)
+    return sorted(
+        items,
+        key=lambda item: (
+            item.get("recency_score") or 0,
+            item.get("published_ts") or 0,
+            item.get("is_important") is True,
+            item.get("relevance_score") or 0,
+        ),
+        reverse=True,
+    )
 
 
 def _fetch_public_rss_news(focus_tickers: list[str], *, limit: int) -> list[dict[str, Any]]:
@@ -661,6 +681,31 @@ def _relative_time(published_at: datetime | None) -> str:
     return f"hace {seconds // 86_400} d"
 
 
+def _published_ts(published_at: datetime | None) -> int:
+    if not published_at:
+        return 0
+    return int(published_at.timestamp())
+
+
+def _news_age_seconds(published_at: datetime | None) -> int | None:
+    if not published_at:
+        return None
+    return max(int((datetime.now(timezone.utc) - published_at).total_seconds()), 0)
+
+
+def _recency_bucket(published_at: datetime | None) -> str:
+    seconds = _news_age_seconds(published_at)
+    if seconds is None:
+        return "unknown"
+    if seconds <= 86_400:
+        return "24h"
+    if seconds <= 7 * 86_400:
+        return "7d"
+    if seconds <= 30 * 86_400:
+        return "30d"
+    return "old"
+
+
 def _asset_name(ticker: str) -> str:
     return {
         "BZ=F": "Brent Crude Oil",
@@ -815,7 +860,8 @@ def _is_bad_news_title(title: object) -> bool:
 
 
 def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
     tickers = focus_tickers[:5]
     image = _CATEGORY_PHOTOS["macro"]
     return {
@@ -828,6 +874,9 @@ def _fallback_news_item(focus_tickers: list[str]) -> dict[str, Any]:
         "original_summary": "No hay titulares externos recientes confirmados por la fuente activa; Genesis sigue usando precios, alertas, cartera y seguimiento.",
         "source": "Genesis",
         "published_at": now,
+        "published_ts": _published_ts(now_dt),
+        "age_hours": 0,
+        "recency_bucket": "24h",
         "relative_time": "ahora",
         "tickers": tickers,
         "tickers_affected": tickers,

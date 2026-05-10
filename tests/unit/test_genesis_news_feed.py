@@ -5,10 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from services.dashboard.get_news_snapshot import get_news_snapshot
+from services.genesis import news_feed as news_feed_module
 from services.genesis.news_feed import get_news_source_status, get_recent_market_news
 
 
 class GenesisNewsFeedTests(unittest.TestCase):
+    def setUp(self) -> None:
+        news_feed_module._CACHE.clear()
+        news_feed_module._SOURCE_STATUS.clear()
+
     @patch("services.genesis.news_feed.FmpClient")
     @patch("services.genesis.news_feed._fetch_public_rss_news")
     @patch("services.genesis.news_feed.load_settings")
@@ -65,6 +70,9 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertTrue(items[0]["id"])
         self.assertTrue(items[0]["is_latest"])
         self.assertTrue(items[0]["is_important"])
+        self.assertGreater(items[0]["published_ts"], 0)
+        self.assertIn(items[0]["recency_bucket"], {"24h", "7d", "30d"})
+        self.assertIsNotNone(items[0]["age_hours"])
         self.assertGreaterEqual(items[0]["recency_score"], 1)
         self.assertGreaterEqual(items[0]["relevance_score"], 1)
         self.assertIn("why_it_matters", items[0])
@@ -122,11 +130,53 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertIn("Brent", items[0]["title"])
         self.assertEqual(items[0]["image_url"], "https://example.com/oil.jpg")
         self.assertIn("BZ=F", items[0]["tickers"])
+        self.assertGreater(items[0]["published_ts"], 0)
+        self.assertIn(items[0]["recency_bucket"], {"24h", "7d", "30d"})
         self.assertIn("Brent Crude Oil", items[0]["genesis_takeaway_es"])
         self.assertIn("Brent Crude Oil", items[0]["what_to_watch_es"])
         self.assertNotIn("BZ=F", items[0]["genesis_takeaway_es"])
         self.assertNotIn("BZ=F", items[0]["what_to_watch_es"])
         self.assertTrue(items[0]["id"])
+
+    @patch("services.genesis.news_feed.FmpClient")
+    @patch("services.genesis.news_feed._fetch_public_rss_news")
+    @patch("services.genesis.news_feed.load_settings")
+    def test_force_refresh_bypasses_news_cache(self, mock_settings: Mock, mock_rss: Mock, mock_client_cls: Mock) -> None:
+        mock_settings.return_value = SimpleNamespace(fmp_api_key="fmp-key", fmp_live_enabled=True)
+        mock_rss.return_value = []
+        client = mock_client_cls.return_value
+        client.get_market_news.side_effect = [
+            [
+                {
+                    "title": "NVIDIA rallies after AI demand update",
+                    "text": "Demand update lifts chip sentiment.",
+                    "site": "Market Source",
+                    "publishedDate": "2026-05-05T12:00:00Z",
+                    "symbol": "NVDA",
+                    "url": "https://example.com/nvda-1",
+                }
+            ],
+            [
+                {
+                    "title": "NVIDIA shares move after latest Blackwell report",
+                    "text": "New report updates AI chip expectations.",
+                    "site": "Market Source",
+                    "publishedDate": "2026-05-06T12:00:00Z",
+                    "symbol": "NVDA",
+                    "url": "https://example.com/nvda-2",
+                }
+            ],
+        ]
+        client.get_stock_news.return_value = []
+
+        first = get_recent_market_news(["NVDA"], limit=3, max_age_days=30)
+        cached = get_recent_market_news(["NVDA"], limit=3, max_age_days=30)
+        refreshed = get_recent_market_news(["NVDA"], limit=3, max_age_days=30, force_refresh=True)
+
+        self.assertEqual(client.get_market_news.call_count, 2)
+        self.assertEqual(cached[0]["id"], first[0]["id"])
+        self.assertNotEqual(refreshed[0]["id"], first[0]["id"])
+        self.assertFalse(refreshed[0]["cache_hit"])
 
     @patch("services.dashboard.get_news_snapshot.get_recent_market_news")
     @patch("services.dashboard.get_news_snapshot.get_news_source_status")
@@ -151,13 +201,16 @@ class GenesisNewsFeedTests(unittest.TestCase):
             },
         ]
 
-        payload = get_news_snapshot(limit=12)
+        payload = get_news_snapshot(limit=12, force_refresh=True)
 
         self.assertTrue(payload["ok"])
+        mock_recent.assert_called_once()
+        self.assertTrue(mock_recent.call_args.kwargs["force_refresh"])
         self.assertEqual(payload["items"][0]["id"], "n1")
         self.assertEqual(payload["important"][0]["id"], "n1")
         self.assertEqual(payload["latest"][0]["id"], "n1")
         self.assertEqual(payload["sections"]["mine"][0]["id"], "n1")
+        self.assertIn("recency_windows", payload)
         self.assertEqual(payload["source_status"]["fmp_market_news"]["status"], "ok")
 
     @patch("services.dashboard.get_news_snapshot.get_recent_market_news")

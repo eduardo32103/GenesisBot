@@ -151,51 +151,57 @@ class FmpClient:
             symbols_to_try = ["GCUSD", "XAUUSD"]
 
         for symbol in symbols_to_try:
-            url = f"https://financialmodelingprep.com/stable/quote?symbol={urllib.parse.quote(symbol)}&apikey={self.api_key}"
-            try:
-                status, payload = self._request_json(url, timeout=10)
-                self.logger.debug("FMP quote status %s para %s", status, symbol)
-                if status in (401, 403):
-                    self.last_error_by_ticker[tk] = f"{status} - Key rechazada o plan insuficiente"
-                    return None
-                if status != 200 or payload is None:
-                    continue
+            safe_symbol = urllib.parse.quote(symbol)
+            urls = [
+                f"https://financialmodelingprep.com/stable/quote?symbol={safe_symbol}&apikey={self.api_key}",
+                f"https://financialmodelingprep.com/api/v3/quote/{safe_symbol}?apikey={self.api_key}",
+                f"https://financialmodelingprep.com/api/v3/quote-short/{safe_symbol}?apikey={self.api_key}",
+            ]
+            for url in urls:
+                try:
+                    status, payload = self._request_json(url, timeout=3)
+                    self.logger.debug("FMP quote status %s para %s", status, symbol)
+                    if status in (401, 403):
+                        self.last_error_by_ticker[tk] = f"{status} - Key rechazada o plan insuficiente"
+                        return None
+                    if status != 200 or payload is None:
+                        continue
 
-                if isinstance(payload, list):
-                    quote = payload[0] if payload else {}
-                elif isinstance(payload, dict):
-                    quote = payload
-                else:
-                    quote = {}
+                    if isinstance(payload, list):
+                        quote = payload[0] if payload else {}
+                    elif isinstance(payload, dict):
+                        quote = payload
+                    else:
+                        quote = {}
 
-                price = _safe_float(quote.get("price"))
-                if price <= 0:
-                    continue
+                    price = _safe_float(quote.get("price"))
+                    if price <= 0:
+                        continue
 
-                result = {
-                    "price": price,
-                    "vol": _safe_float(quote.get("volume")),
-                    "volume": _safe_float(quote.get("volume")),
-                    "avgVolume": _safe_float(quote.get("avgVolume")),
-                    "change": _safe_float(quote.get("change")),
-                    "changesPercentage": _safe_float(quote.get("changesPercentage")),
-                    "pe": _safe_float(quote.get("pe")),
-                    "marketCap": _safe_float(quote.get("marketCap")),
-                    "name": quote.get("name") or quote.get("companyName") or "",
-                    "open": _safe_float(quote.get("open")),
-                    "dayHigh": _safe_float(quote.get("dayHigh") or quote.get("high")),
-                    "dayLow": _safe_float(quote.get("dayLow") or quote.get("low")),
-                    "previousClose": _safe_float(quote.get("previousClose")),
-                    "extendedHoursPrice": _first_float(quote, ("extendedHoursPrice", "afterHoursPrice", "postMarketPrice", "preMarketPrice")),
-                    "extendedHoursChange": _first_float(quote, ("extendedHoursChange", "afterHoursChange", "postMarketChange", "preMarketChange")),
-                    "extendedHoursChangePct": _first_float(quote, ("extendedHoursChangePct", "afterHoursChangePercent", "postMarketChangePercent", "preMarketChangePercent")),
-                    "marketSession": quote.get("marketSession") or quote.get("session") or quote.get("marketState") or "",
-                    "timestamp": quote.get("timestamp") or quote.get("lastUpdated") or quote.get("date") or "",
-                }
-                self.last_error_by_ticker.pop(tk, None)
-                return result
-            except Exception as exc:
-                self.logger.error("FMP error fetching %s: %s", symbol, exc)
+                    result = {
+                        "price": price,
+                        "vol": _safe_float(quote.get("volume")),
+                        "volume": _safe_float(quote.get("volume")),
+                        "avgVolume": _safe_float(quote.get("avgVolume")),
+                        "change": _safe_float(quote.get("change")),
+                        "changesPercentage": _safe_float(quote.get("changesPercentage")),
+                        "pe": _safe_float(quote.get("pe")),
+                        "marketCap": _safe_float(quote.get("marketCap")),
+                        "name": quote.get("name") or quote.get("companyName") or "",
+                        "open": _safe_float(quote.get("open")),
+                        "dayHigh": _safe_float(quote.get("dayHigh") or quote.get("high")),
+                        "dayLow": _safe_float(quote.get("dayLow") or quote.get("low")),
+                        "previousClose": _safe_float(quote.get("previousClose")),
+                        "extendedHoursPrice": _first_float(quote, ("extendedHoursPrice", "afterHoursPrice", "postMarketPrice", "preMarketPrice")),
+                        "extendedHoursChange": _first_float(quote, ("extendedHoursChange", "afterHoursChange", "postMarketChange", "preMarketChange")),
+                        "extendedHoursChangePct": _first_float(quote, ("extendedHoursChangePct", "afterHoursChangePercent", "postMarketChangePercent", "preMarketChangePercent")),
+                        "marketSession": quote.get("marketSession") or quote.get("session") or quote.get("marketState") or "",
+                        "timestamp": quote.get("timestamp") or quote.get("lastUpdated") or quote.get("date") or "",
+                    }
+                    self.last_error_by_ticker.pop(tk, None)
+                    return result
+                except Exception as exc:
+                    self.logger.error("FMP error fetching %s: %s", symbol, exc)
 
         self.last_error_by_ticker[tk] = "Activo no encontrado en FMP"
         return None
@@ -214,7 +220,7 @@ class FmpClient:
 
         for url in urls:
             try:
-                status, payload = self._request_json(url, timeout=10)
+                status, payload = self._request_json(url, timeout=5)
                 self.logger.debug("FMP symbol search status %s", status)
                 if status != 200 or not isinstance(payload, list):
                     continue
@@ -245,16 +251,29 @@ class FmpClient:
             return None
 
         symbol = self.resolve_symbol(tk, symbol_map)
+        today = date.today().isoformat()
         endpoints = [
+            (
+                "stable_chart_1day",
+                f"https://financialmodelingprep.com/stable/historical-chart/1day?symbol={urllib.parse.quote(symbol)}&from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
             ("stable", f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={urllib.parse.quote(symbol)}&apikey={self.api_key}"),
+            (
+                "legacy_chart_1day",
+                f"https://financialmodelingprep.com/api/v3/historical-chart/1day/{urllib.parse.quote(symbol)}?from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
             ("legacy", f"https://financialmodelingprep.com/api/v3/historical-price-full/{urllib.parse.quote(symbol)}?apikey={self.api_key}"),
+            (
+                "legacy_timeseries",
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/{urllib.parse.quote(symbol)}?timeseries=5000&apikey={self.api_key}",
+            ),
         ]
         last_status = None
         best_rows: list[dict] = []
 
         for endpoint_name, url in endpoints:
             try:
-                status, payload = self._request_json(url, timeout=10)
+                status, payload = self._request_json(url, timeout=5)
                 last_status = status
                 self.logger.debug("FMP historical %s status %s para %s", endpoint_name, status, tk)
                 if status != 200 or payload is None:
@@ -307,6 +326,22 @@ class FmpClient:
                 "legacy_full",
                 f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?apikey={self.api_key}",
             ),
+            (
+                "stable_chart_1day_from_1990",
+                f"https://financialmodelingprep.com/stable/historical-chart/1day?symbol={safe_symbol}&from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
+            (
+                "stable_chart_1day",
+                f"https://financialmodelingprep.com/stable/historical-chart/1day?symbol={safe_symbol}&apikey={self.api_key}",
+            ),
+            (
+                "legacy_chart_1day_from_1990",
+                f"https://financialmodelingprep.com/api/v3/historical-chart/1day/{safe_symbol}?from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
+            (
+                "legacy_timeseries",
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?timeseries=5000&apikey={self.api_key}",
+            ),
         ]
         last_status = None
         best_rows: list[dict] = []
@@ -337,6 +372,59 @@ class FmpClient:
             reason = f"Historico FMP no disponible para {tk}"
         self.last_error_by_ticker[tk] = reason
         self.last_full_history_meta_by_ticker[tk] = _full_history_meta(tk, symbol, [], best_endpoint, reason)
+        return None
+
+    def get_historical_price_light(self, ticker: str, symbol_map: dict[str, str] | None = None) -> list[dict] | None:
+        """Return real FMP price/volume history when full OHLC is unavailable."""
+        tk = str(ticker or "").strip().upper()
+        if not self.api_key:
+            self.last_error_by_ticker[tk] = "FMP_API_KEY no detectada."
+            return None
+
+        symbol = self.resolve_symbol(tk, symbol_map)
+        safe_symbol = urllib.parse.quote(symbol)
+        today = date.today().isoformat()
+        endpoints = [
+            (
+                "stable_light_from_1990",
+                f"https://financialmodelingprep.com/stable/historical-price-eod/light?symbol={safe_symbol}&from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
+            (
+                "stable_light",
+                f"https://financialmodelingprep.com/stable/historical-price-eod/light?symbol={safe_symbol}&apikey={self.api_key}",
+            ),
+            (
+                "legacy_line_from_1990",
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?serietype=line&from=1990-01-01&to={today}&apikey={self.api_key}",
+            ),
+            (
+                "legacy_line",
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/{safe_symbol}?serietype=line&apikey={self.api_key}",
+            ),
+        ]
+
+        best_rows: list[dict] = []
+        last_status = None
+        for endpoint_name, url in endpoints:
+            try:
+                status, payload = self._request_json(url, timeout=12)
+                last_status = status
+                self.logger.debug("FMP light historical %s status %s para %s", endpoint_name, status, tk)
+                if status != 200 or payload is None:
+                    continue
+                rows = self._parse_historical_payload(payload)
+                if rows and len(rows) > len(best_rows):
+                    best_rows = rows
+            except Exception as exc:
+                self.logger.debug("FMP light historical %s error para %s: %s", endpoint_name, tk, exc)
+
+        if best_rows:
+            self.last_error_by_ticker.pop(tk, None)
+            return best_rows
+        if last_status in (401, 403):
+            self.last_error_by_ticker[tk] = f"Historico light FMP no disponible para {tk}: HTTP {last_status}"
+        else:
+            self.last_error_by_ticker[tk] = f"Historico light FMP no disponible para {tk}"
         return None
 
     def get_full_history_meta(self, ticker: str) -> dict:
@@ -409,7 +497,7 @@ class FmpClient:
 
         for url in urls:
             try:
-                status, payload = self._request_json(url, timeout=10)
+                status, payload = self._request_json(url, timeout=5)
                 if status != 200 or payload is None:
                     continue
                 if isinstance(payload, list) and payload:
@@ -434,7 +522,7 @@ class FmpClient:
         symbol = self.resolve_symbol(tk, symbol_map)
         url = f"https://financialmodelingprep.com/stable/stock-news?symbol={urllib.parse.quote(symbol)}&limit={int(limit)}&apikey={self.api_key}"
         try:
-            status, payload = self._request_json(url, timeout=10)
+            status, payload = self._request_json(url, timeout=5)
             if status != 200 or payload is None:
                 return []
             return payload if isinstance(payload, list) else []
@@ -460,7 +548,7 @@ class FmpClient:
         activity: list[dict] = []
         for source_label, url in endpoints:
             try:
-                status, payload = self._request_json(url, timeout=10)
+                status, payload = self._request_json(url, timeout=3)
                 self.logger.debug("FMP smart money %s status %s para %s", source_label, status, tk)
                 if status != 200 or payload is None:
                     continue

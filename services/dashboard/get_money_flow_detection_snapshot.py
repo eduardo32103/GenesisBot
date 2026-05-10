@@ -40,6 +40,29 @@ def _normalize_ticker(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _is_crypto_ticker(value: Any) -> bool:
+    symbol = _normalize_ticker(value)
+    return symbol.endswith("-USD") or symbol in {"BTC", "ETH", "SOL", "DOGE", "XRP"}
+
+
+def _safe_dollar_volume(ticker: str, price: float | None, volume: float | None, direct_value: Any = None) -> float | None:
+    direct = _safe_float(direct_value)
+    if direct is not None:
+        if 0 < direct <= 1_000_000_000_000:
+            return direct
+        if _is_crypto_ticker(ticker) and volume is not None and 0 < volume <= 1_000_000_000_000:
+            return volume
+        return None
+    if price is None or volume is None:
+        return None
+    computed = price * volume
+    if _is_crypto_ticker(ticker) and computed > 1_000_000_000_000:
+        return volume if 0 < volume <= 1_000_000_000_000 else None
+    if 0 < computed <= 1_000_000_000_000:
+        return computed
+    return None
+
+
 def _load_persisted_market_metrics() -> dict[str, dict[str, Any]]:
     if not _FMP_SNAPSHOT_PATH.exists():
         return {}
@@ -117,9 +140,12 @@ def _extract_market_metrics(item: dict[str, Any], persisted_metrics: dict[str, d
     volume_baseline = _safe_float(metrics.get("volume_baseline")) or avg_volume
     if relative_volume is None and volume is not None and volume_baseline:
         relative_volume = volume / volume_baseline
-    dollar_volume = _safe_float(metrics.get("dollar_volume")) or _safe_float(item.get("dollar_volume")) or _safe_float(item.get("dollarVolume"))
-    if dollar_volume is None and current_price is not None and volume is not None:
-        dollar_volume = current_price * volume
+    dollar_volume = _safe_dollar_volume(
+        ticker,
+        current_price,
+        volume,
+        metrics.get("dollar_volume") or item.get("dollar_volume") or item.get("dollarVolume"),
+    )
     breakout_reference = _safe_float(metrics.get("breakout_reference"))
     sector_move_pct = _safe_float(metrics.get("sector_move_pct"))
     risk_proxy_move_pct = _safe_float(metrics.get("risk_proxy_move_pct"))

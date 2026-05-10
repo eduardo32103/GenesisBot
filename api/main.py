@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
+import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -225,6 +228,50 @@ def _money_short(value: object) -> str:
     return f"{sign}${absolute:.0f}"
 
 
+def _is_crypto_ticker(ticker: str) -> bool:
+    symbol = str(ticker or "").upper()
+    return symbol.endswith("-USD") or symbol in {"BTC", "ETH", "SOL", "DOGE", "XRP"}
+
+
+def _safe_monitored_dollar_volume_for_proxy(
+    ticker: str,
+    price: object,
+    volume: object,
+    direct_value: object = None,
+) -> tuple[float | None, str, bool]:
+    direct = _safe_num(direct_value)
+    vol = _safe_num(volume)
+    if direct is not None:
+        if 0 < direct <= 1_000_000_000_000:
+            return direct, "reported_dollar_volume", False
+        if _is_crypto_ticker(ticker) and vol is not None and 0 < vol <= 1_000_000_000_000:
+            return vol, "crypto_quote_volume", True
+        return None, "blocked_absurd", True
+    px = _safe_num(price)
+    if px is None or vol is None:
+        return None, "missing", False
+    computed = px * vol
+    if _is_crypto_ticker(ticker) and computed > 1_000_000_000_000:
+        if 0 < vol <= 1_000_000_000_000:
+            return vol, "crypto_quote_volume", True
+        return None, "blocked_absurd", True
+    if 0 < computed <= 1_000_000_000_000:
+        return computed, "price_times_volume", False
+    return None, "blocked_absurd", True
+
+
+def _copy_strategy_decision(row: dict, strategy: dict | None = None) -> None:
+    if not isinstance(row, dict):
+        return
+    strategy = strategy if isinstance(strategy, dict) else row.get("strategy")
+    if not isinstance(strategy, dict):
+        return
+    row.setdefault("decision", strategy.get("decision"))
+    row.setdefault("decision_label_es", strategy.get("decision_label_es"))
+    row.setdefault("decision_reason_es", strategy.get("decision_reason_es"))
+    row.setdefault("action_verdict", strategy.get("decision_label_es"))
+
+
 def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> bytes:
     try:
         payload = json.loads(data.decode("utf-8"))
@@ -238,11 +285,12 @@ def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> 
         _massage_news_payload(payload)
     elif path == "/api/dashboard/alerts":
         _massage_alerts_payload(payload)
-    elif path in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection"}:
+    elif path in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection", "/api/dashboard/money-flow/jarvis"}:
         _massage_whales_payload(payload)
     elif path == "/api/genesis/ask":
         payload = _correct_genesis_proxy_payload(payload, body or {})
         payload = _enrich_genesis_asset_quote(payload)
+        payload = _enrich_genesis_whale_payload(payload)
     elif path == "/api/genesis/analyze-image":
         payload = _massage_image_analysis_payload(payload, body or {})
     return json.dumps(payload).encode("utf-8")
@@ -453,19 +501,112 @@ def _is_whale_genesis_prompt(message: str) -> bool:
         for token in (
             " ballena ",
             " ballenas ",
+            " ballnea ",
+            " ballneas ",
+            " ballnes ",
             " smart money ",
             " dinero grande ",
             " flujo institucional ",
+            " dinero institucional ",
+            " manos fuertes ",
         )
     )
 
 
-def _whale_prompt_fallback_payload(message: str) -> dict:
-    answer = (
-        "En claro: esta es una pregunta sobre ballenas y smart money, no un ticker. "
-        "Genesis debe separar flujo vigilado de ballena confirmada: solo llamo ballena confirmada "
-        "a un evento con entidad, monto y fuente; si falta eso, lo trato como vigilancia de volumen/precio."
+def _production_get_json(path: str, *, timeout: float = 6) -> dict:
+    try:
+        target = f"{_PRODUCTION_API_ORIGIN}{path}"
+        request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _call_json_with_timeout(fn, timeout: float, fallback: dict) -> dict:
+    result_queue: queue.Queue = queue.Queue(maxsize=1)
+
+    def _runner() -> None:
+        try:
+            result_queue.put(fn(), block=False)
+        except Exception:
+            result_queue.put(fallback, block=False)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    try:
+        result = result_queue.get(timeout=timeout)
+    except queue.Empty:
+        return fallback
+    return result if isinstance(result, dict) else fallback
+
+
+def _production_whale_snapshot() -> dict:
+    paths = {
+        "whales": "/api/dashboard/whales",
+        "detection": "/api/dashboard/money-flow/detection",
+        "causal": "/api/dashboard/money-flow/causal",
+    }
+    results: dict[str, dict] = {}
+    executor = ThreadPoolExecutor(max_workers=3)
+    future_map = {executor.submit(_production_get_json, path, timeout=4): key for key, path in paths.items()}
+    try:
+        for future in as_completed(future_map, timeout=4.5):
+            key = future_map[future]
+            try:
+                value = future.result(timeout=0)
+            except Exception:
+                value = {}
+            if isinstance(value, dict):
+                results[key] = value
+    except Exception:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    if _whale_payload_rows(results.get("whales") or {}):
+        return results["whales"]
+    return {"ok": True, **results}
+
+
+def _fast_whale_snapshot_for_prompt() -> dict:
+    local_detection = _call_json_with_timeout(
+        get_dashboard_money_flow_detection,
+        3.5,
+        {"ok": True, "items": [], "detection": {"items": []}, "source_status": {"status": "timeout"}},
     )
+    if _whale_payload_rows(local_detection):
+        return {"ok": True, "detection": local_detection}
+    return _production_whale_snapshot()
+
+
+def _whale_prompt_fallback_payload(message: str, snapshot: dict | None = None) -> dict:
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    if snapshot:
+        _massage_whales_payload(snapshot, hydrate_missing=False)
+    rows = _whale_payload_rows(snapshot)
+    focus: list[str] = []
+    for row in rows[:4]:
+        ticker = str(row.get("ticker") or row.get("asset_name") or "").upper()
+        monitored = _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume"))
+        confirmed_amount = _safe_num(row.get("confirmed_amount_usd") or row.get("amount_usd"))
+        if ticker and row.get("confirmed") and (row.get("entity_name") or row.get("entity")) and confirmed_amount:
+            focus.append(f"{ticker} {_money_short(confirmed_amount)} confirmado")
+        elif ticker and monitored:
+            focus.append(f"{ticker} {_money_short(monitored)} vigilado")
+        elif ticker:
+            focus.append(f"{ticker} pendiente de volumen")
+    answer = (
+        "En claro: no hay ballena confirmada con entidad y monto; Genesis esta viendo "
+        f"{', '.join(focus)}. Es actividad relevante para vigilar, no compra confirmada."
+        if focus
+        else (
+            "En claro: esta es una pregunta sobre ballenas y smart money, no un ticker. "
+            "Genesis debe separar flujo vigilado de ballena confirmada: solo llamo ballena confirmada "
+            "a un evento con entidad, monto y fuente; si falta eso, lo trato como vigilancia de volumen/precio."
+        )
+    )
+    metrics = _whale_metrics_from_rows(rows)
     return {
         "ok": True,
         "status": "genesis_intelligence_ready",
@@ -474,23 +615,24 @@ def _whale_prompt_fallback_payload(message: str) -> dict:
         "answer": answer,
         "tickers": [],
         "kind": "whale_flow",
+        "fast_whale_snapshot": True,
         "whales": {
             "answer": answer,
-            "items": [],
-            "events": [],
-            "summary": {"estimated_count": 0, "confirmed_value": None, "watched_volume": None},
+            "items": rows,
+            "events": rows,
+            "summary": metrics,
         },
         "structured": {
             "kind": "whale_flow",
             "title": "Ballenas / Smart money",
             "summary": answer,
-            "events": [],
-            "metrics": {"estimated_count": 0, "confirmed_value": None, "watched_volume": None},
+            "events": rows,
+            "metrics": metrics,
             "sections": [
                 {
                     "title": "Lectura rapida",
                     "bullets": [
-                        "No convierto palabras como esta, dime o ballenas en ticker.",
+                        answer,
                         "Si no hay entidad y monto confirmados, lo presento como flujo vigilado.",
                     ],
                 },
@@ -538,9 +680,63 @@ def _whale_payload_row_lists(payload: dict) -> list[list[dict]]:
 
 
 def _whale_payload_rows(payload: dict) -> list[dict]:
+    seen: set[int] = set()
+    merged: list[dict] = []
     for rows in _whale_payload_row_lists(payload):
-        return rows
-    return []
+        for row in rows:
+            marker = id(row)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            merged.append(row)
+    return merged
+
+
+def _strict_confirmed_whale(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+    amount = _safe_num(row.get("confirmed_amount_usd") or row.get("amount_usd"))
+    return bool(
+        (row.get("confirmed") or row.get("event_type") == "whale_confirmed")
+        and (row.get("entity_name") or row.get("entity"))
+        and amount is not None
+        and 0 < amount <= 1_000_000_000_000
+    )
+
+
+def _whale_metrics_from_rows(rows: list[dict]) -> dict:
+    confirmed_rows = [row for row in rows if _strict_confirmed_whale(row)]
+    estimated_rows = [row for row in rows if not _strict_confirmed_whale(row)]
+    confirmed_value = sum(
+        _safe_num(row.get("confirmed_amount_usd") or row.get("amount_usd")) or 0
+        for row in confirmed_rows
+    )
+    watched_volume = sum(
+        _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume")) or 0
+        for row in estimated_rows
+    )
+    return {
+        "confirmed_count": len(confirmed_rows),
+        "estimated_count": len(estimated_rows),
+        "confirmed_value": confirmed_value or None,
+        "watched_volume": watched_volume or None,
+        "monitored_dollar_volume": watched_volume or None,
+    }
+
+
+def _apply_whale_metrics(payload: dict, rows: list[dict]) -> None:
+    if not isinstance(payload, dict):
+        return
+    metrics = _whale_metrics_from_rows(rows)
+    payload["summary"] = {**(payload.get("summary") if isinstance(payload.get("summary"), dict) else {}), **metrics}
+    payload["metrics"] = {**(payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}), **metrics}
+    whales = payload.get("whales")
+    if isinstance(whales, dict):
+        whales["summary"] = {**(whales.get("summary") if isinstance(whales.get("summary"), dict) else {}), **metrics}
+        whales["metrics"] = {**(whales.get("metrics") if isinstance(whales.get("metrics"), dict) else {}), **metrics}
+    structured = payload.get("structured")
+    if isinstance(structured, dict):
+        structured["metrics"] = {**(structured.get("metrics") if isinstance(structured.get("metrics"), dict) else {}), **metrics}
 
 
 def _enrich_genesis_whale_payload(result: dict) -> dict:
@@ -567,12 +763,13 @@ def _enrich_genesis_whale_payload(result: dict) -> dict:
     if isinstance(structured, dict) and isinstance(structured.get("events"), list):
         containers.append(structured)
 
+    hydrate_missing = not bool(result.get("fast_whale_snapshot"))
     for container in containers:
-        _massage_whales_payload(container)
+        _massage_whales_payload(container, hydrate_missing=hydrate_missing)
 
     rows = _whale_payload_rows(result)
     if rows:
-        _massage_whales_payload({"events": rows})
+        _massage_whales_payload({"events": rows}, hydrate_missing=hydrate_missing)
 
     watched_volume = sum(
         _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume")) or 0
@@ -581,9 +778,9 @@ def _enrich_genesis_whale_payload(result: dict) -> dict:
     confirmed_value = sum(
         _safe_num(row.get("confirmed_amount_usd") or row.get("amount_usd")) or 0
         for row in rows
-        if row.get("confirmed") or row.get("event_type") == "whale_confirmed"
+        if _strict_confirmed_whale(row)
     )
-    confirmed_count = sum(1 for row in rows if row.get("confirmed") or row.get("event_type") == "whale_confirmed")
+    confirmed_count = sum(1 for row in rows if _strict_confirmed_whale(row))
     estimated_count = max(0, len(rows) - confirmed_count)
     focus = []
     for row in rows[:3]:
@@ -595,7 +792,7 @@ def _enrich_genesis_whale_payload(result: dict) -> dict:
             focus.append(f"{ticker} pendiente de volumen")
     answer = (
         "En claro: no hay ballena confirmada con entidad y monto; Genesis está viendo "
-        f"{', '.join(focus)}. Es señal de actividad para vigilar, no compra confirmada."
+        f"{', '.join(focus)}. Es actividad relevante para vigilar, no compra confirmada."
         if focus
         else "En claro: no hay ballena confirmada con entidad y monto; Genesis vigila volumen, precio y flujo sin inventar comprador."
     )
@@ -716,19 +913,8 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     if _is_whale_genesis_prompt(message) and not (
         payload.get("intent") in {"whale_activity", "money_flow"} or payload.get("response_type") == "whale_flow"
     ):
-        try:
-            local = ask_genesis(
-                message,
-                context=str(body.get("context") or "general"),
-                ticker="",
-                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
-                conversation_id=str(body.get("conversation_id") or "default"),
-            )
-            if isinstance(local, dict) and local.get("intent") == "whale_activity":
-                return _enrich_genesis_whale_payload(local)
-        except Exception:
-            logging.getLogger("genesis.dashboard").warning("Local whale prompt correction failed", exc_info=True)
-        return _enrich_genesis_whale_payload(_whale_prompt_fallback_payload(message))
+        snapshot = _fast_whale_snapshot_for_prompt()
+        return _enrich_genesis_whale_payload(_whale_prompt_fallback_payload(message, snapshot))
     if _is_news_genesis_prompt(message):
         if payload.get("intent") == "macro_news" or payload.get("response_type") == "news_brief":
             payload["tickers"] = []
@@ -788,10 +974,22 @@ def _massage_alerts_payload(payload: dict) -> None:
                 existing_tickers.add(ticker)
             price = _safe_num(row.get("price"))
             volume = _safe_num(row.get("volume"))
-            dollar_volume = _safe_num(row.get("dollar_volume") or row.get("dollarVolume"))
-            if dollar_volume is None and price is not None and volume is not None:
-                dollar_volume = price * volume
+            dollar_volume, dollar_basis, dollar_suspicious = _safe_monitored_dollar_volume_for_proxy(
+                ticker,
+                price,
+                volume,
+                row.get("dollar_volume") or row.get("dollarVolume"),
+            )
+            if dollar_volume is not None:
                 row["dollar_volume"] = dollar_volume
+                row["dollarVolume"] = dollar_volume
+                row["dollar_volume_basis"] = dollar_basis
+            elif dollar_suspicious:
+                row["dollar_volume"] = None
+                row["dollarVolume"] = None
+                row["dollar_volume_basis"] = dollar_basis
+                row["amount_suspicious"] = True
+            _copy_strategy_decision(row)
             title = str(row.get("title_es") or row.get("title") or "")
             summary = str(row.get("summary_es") or row.get("summary") or "")
             bland = "precio confirmado" in title.casefold() or "genesis lo mantiene" in summary.casefold()
@@ -820,7 +1018,8 @@ def _massage_alerts_payload(payload: dict) -> None:
                 row["genesis_reading_es"] = (
                     f"{ticker}: la noticia no es señal aislada; pesa si mueve precio, volumen o rompe soporte/resistencia."
                 )
-    opportunities = _proxy_opportunity_rows(existing_tickers)
+    current_count = sum(len(payload.get(key) or []) for key in ("items", "recent_alerts") if isinstance(payload.get(key), list))
+    opportunities = _proxy_opportunity_rows(existing_tickers) if current_count < 4 else []
     if opportunities:
         payload["opportunities"] = opportunities
         for key in ("items", "recent_alerts"):
@@ -842,11 +1041,29 @@ def _massage_alerts_payload(payload: dict) -> None:
 
 
 def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
+    tickers = [ticker for ticker in _PROXY_OPPORTUNITY_TICKERS if ticker not in existing_tickers]
+    if not tickers:
+        return []
+
+    search_by_ticker: dict[str, dict] = {}
+    executor = ThreadPoolExecutor(max_workers=min(4, len(tickers)))
+    future_map = {executor.submit(_market_search_for_proxy, ticker): ticker for ticker in tickers}
+    try:
+        for future in as_completed(future_map, timeout=2):
+            ticker = future_map[future]
+            try:
+                result = future.result(timeout=0)
+            except Exception:
+                result = {}
+            if isinstance(result, dict):
+                search_by_ticker[ticker] = result
+    except Exception:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
     rows: list[dict] = []
-    for ticker in _PROXY_OPPORTUNITY_TICKERS:
-        if ticker in existing_tickers:
-            continue
-        search = _market_search_for_proxy(ticker)
+    for ticker, search in search_by_ticker.items():
         candidates = search.get("results") if isinstance(search, dict) else []
         asset = candidates[0] if isinstance(candidates, list) and candidates else None
         if not isinstance(asset, dict):
@@ -856,7 +1073,7 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
         change_pct = _safe_num(asset.get("daily_change_pct") or asset.get("change_pct")) or 0.0
         if price is None:
             continue
-        dollar_volume = price * volume if volume is not None else None
+        dollar_volume, dollar_basis, dollar_suspicious = _safe_monitored_dollar_volume_for_proxy(ticker, price, volume)
         if not _proxy_opportunity_is_important(change_pct, dollar_volume, volume):
             continue
         support = _safe_num(asset.get("day_low") or asset.get("dayLow"))
@@ -868,6 +1085,8 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
                 "change_pct": change_pct,
                 "volume": volume,
                 "dollar_volume": dollar_volume,
+                "dollar_volume_basis": dollar_basis,
+                "amount_suspicious": dollar_suspicious,
                 "support": support,
                 "resistance": resistance,
             },
@@ -891,6 +1110,8 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
                 "change_pct": change_pct,
                 "volume": volume,
                 "dollar_volume": dollar_volume,
+                "dollar_volume_basis": dollar_basis,
+                "amount_suspicious": dollar_suspicious,
                 "support": support,
                 "resistance": resistance,
                 "impact": "bullish" if change_pct > 0 else "bearish" if change_pct < 0 else "neutral",
@@ -898,6 +1119,10 @@ def _proxy_opportunity_rows(existing_tickers: set[str]) -> list[dict]:
                 "severity": "high" if strategy["score"] >= 72 else "medium",
                 "confidence": "medium" if strategy["score"] >= 60 else "low",
                 "strategy": strategy,
+                "decision": strategy.get("decision"),
+                "decision_label_es": strategy.get("decision_label_es"),
+                "decision_reason_es": strategy.get("decision_reason_es"),
+                "action_verdict": strategy.get("decision_label_es"),
                 "genesis_reading_es": strategy["summary"],
                 "what_it_means": strategy["summary"],
                 "what_to_watch_es": "; ".join(strategy["validation"]),
@@ -918,7 +1143,7 @@ def _proxy_opportunity_is_important(change_pct: float, dollar_volume: float | No
     return abs(change_pct) >= 1.0
 
 
-def _massage_whales_payload(payload: dict) -> None:
+def _massage_whales_payload(payload: dict, *, hydrate_missing: bool = True) -> None:
     row_lists = _whale_payload_row_lists(payload)
     if not row_lists:
         return
@@ -934,42 +1159,47 @@ def _massage_whales_payload(payload: dict) -> None:
                 or _first_safe_num(row.get("volume"), row.get("monitored_volume"), row.get("monitoredVolume")) is None
             ):
                 missing_tickers.add(ticker)
-    if missing_tickers:
+    if hydrate_missing and missing_tickers:
+        executor = None
         try:
-            with ThreadPoolExecutor(max_workers=min(6, len(missing_tickers))) as executor:
-                future_map = {executor.submit(_market_search_for_proxy, ticker): ticker for ticker in missing_tickers}
-                for future in as_completed(future_map, timeout=10):
-                    ticker = future_map[future]
-                    try:
-                        quote_cache[ticker] = future.result()
-                    except Exception:
-                        quote_cache[ticker] = {}
+            executor = ThreadPoolExecutor(max_workers=min(6, len(missing_tickers)))
+            future_map = {executor.submit(_market_search_for_proxy, ticker): ticker for ticker in missing_tickers}
+            for future in as_completed(future_map, timeout=2.5):
+                ticker = future_map[future]
+                try:
+                    quote_cache[ticker] = future.result(timeout=0)
+                except Exception:
+                    quote_cache[ticker] = {}
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Parallel whale quote enrichment failed", exc_info=True)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
     for events in row_lists:
         for row in events:
             if not isinstance(row, dict):
                 continue
-            confirmed = bool(row.get("confirmed") or row.get("confirmed_amount_usd"))
+            confirmed_amount = _safe_num(row.get("confirmed_amount_usd") or row.get("amount_usd"))
+            confirmed = bool(
+                (row.get("confirmed") or row.get("event_type") == "whale_confirmed")
+                and (row.get("entity_name") or row.get("entity"))
+                and confirmed_amount is not None
+                and 0 < confirmed_amount <= 1_000_000_000_000
+            )
             ticker = str(row.get("ticker") or row.get("symbol") or "").upper()
             if ticker and (
                 _first_safe_num(row.get("price"), row.get("price_used"), row.get("current_price"), row.get("currentPrice")) is None
                 or _first_safe_num(row.get("volume"), row.get("monitored_volume"), row.get("monitoredVolume")) is None
             ):
                 _enrich_whale_event_with_quote(row, ticker, quote_cache)
-            monitored = _safe_num(row.get("monitored_dollar_volume") or row.get("dollar_volume"))
-            if not confirmed and monitored is not None and monitored > 1_000_000_000_000:
-                row["amount_suspicious"] = True
-                row["monitored_dollar_volume"] = None
-                row["dollar_volume"] = None
-                row["estimated_flow"] = None
-                row["genesis_reading_es"] = (
-                    f"{ticker}: volumen bruto demasiado grande para tratarlo como flujo institucional. "
-                    "Genesis lo oculta como monto y espera confirmacion de fuente."
-                )
             price = _first_safe_num(row.get("price"), row.get("price_used"), row.get("current_price"), row.get("currentPrice"))
             volume = _first_safe_num(row.get("volume"), row.get("monitored_volume"), row.get("monitoredVolume"))
-            dollar_volume = _first_safe_num(row.get("dollar_volume"), row.get("dollarVolume"), row.get("monitored_dollar_volume"), row.get("monitoredDollarVolume"))
+            dollar_volume, dollar_basis, dollar_suspicious = _safe_monitored_dollar_volume_for_proxy(
+                ticker,
+                price,
+                volume,
+                _first_safe_num(row.get("dollar_volume"), row.get("dollarVolume"), row.get("monitored_dollar_volume"), row.get("monitoredDollarVolume")),
+            )
             if price is not None:
                 row["price"] = price
                 row["price_used"] = price
@@ -979,14 +1209,40 @@ def _massage_whales_payload(payload: dict) -> None:
                 row["volume"] = volume
                 row["monitored_volume"] = volume
                 row["monitoredVolume"] = volume
-            if dollar_volume is None and price is not None and volume is not None:
-                dollar_volume = price * volume
             if dollar_volume is not None:
                 row["dollar_volume"] = dollar_volume
                 row["dollarVolume"] = dollar_volume
                 row["monitored_dollar_volume"] = dollar_volume
                 row["monitoredDollarVolume"] = dollar_volume
+                row["monitored_volume_basis"] = dollar_basis
+                row["monitored_value_suspicious"] = dollar_suspicious
+            elif dollar_suspicious and not confirmed:
+                row["amount_suspicious"] = True
+                row["monitored_value_suspicious"] = True
+                row["monitored_volume_basis"] = dollar_basis
+                row["monitored_dollar_volume"] = None
+                row["monitoredDollarVolume"] = None
+                row["dollar_volume"] = None
+                row["dollarVolume"] = None
+                row["estimated_flow"] = None
+                row["genesis_reading_es"] = (
+                    f"{ticker}: volumen bruto demasiado grande para tratarlo como flujo institucional. "
+                    "Genesis lo oculta como monto y espera confirmación de fuente."
+                )
+            if not confirmed:
+                row["confirmed"] = False
+                if row.get("event_type") == "whale_confirmed":
+                    row["event_type"] = "smart_money_estimate"
+                row["confirmed_amount_usd"] = None
+                row["amount_usd"] = None
+                row["amountUsd"] = None
+            else:
+                row["confirmed"] = True
+                row["event_type"] = "whale_confirmed"
+                row["confirmed_amount_usd"] = confirmed_amount
         events.sort(key=lambda item: (_safe_num(item.get("monitored_dollar_volume") or item.get("dollar_volume")) or 0), reverse=True)
+    all_rows = _whale_payload_rows(payload)
+    _apply_whale_metrics(payload, all_rows)
 
 
 def _enrich_whale_event_with_quote(row: dict, ticker: str, quote_cache: dict[str, dict] | None = None) -> None:
@@ -1012,11 +1268,26 @@ def _enrich_whale_event_with_quote(row: dict, ticker: str, quote_cache: dict[str
         row["monitored_volume"] = volume
         row["monitoredVolume"] = volume
     if price is not None and volume is not None:
-        dollar_volume = price * volume
+        dollar_volume, dollar_basis, dollar_suspicious = _safe_monitored_dollar_volume_for_proxy(
+            ticker,
+            price,
+            volume,
+            asset.get("dollar_volume") or asset.get("dollarVolume") or asset.get("quoteVolume") or asset.get("quote_volume"),
+        )
+        if dollar_volume is None:
+            row["amount_suspicious"] = dollar_suspicious
+            row["monitored_volume_basis"] = dollar_basis
+            row["genesis_reading_es"] = (
+                f"{ticker}: precio y volumen detectados, pero el valor no pasa validación. "
+                "Genesis no lo muestra como monto de ballena."
+            )
+            return
         row["dollar_volume"] = dollar_volume
         row["dollarVolume"] = dollar_volume
         row["monitored_dollar_volume"] = dollar_volume
         row["monitoredDollarVolume"] = dollar_volume
+        row["monitored_volume_basis"] = dollar_basis
+        row["monitored_value_suspicious"] = dollar_suspicious
         row["source"] = asset.get("source") or row.get("source") or "datos_directos"
         row["confidence"] = row.get("confidence") if row.get("confidence") not in ("", None, "low", "baja") else "medium"
         row["genesis_reading_es"] = (
@@ -1157,7 +1428,7 @@ def _market_search_for_proxy(ticker: str) -> dict:
     try:
         target = f"{_PRODUCTION_API_ORIGIN}/api/dashboard/market/search?q={quote(ticker)}"
         request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
-        with urlopen(request, timeout=8) as response:
+        with urlopen(request, timeout=4) as response:
             payload = json.loads(response.read().decode("utf-8"))
             return _normalize_market_payload(payload) if isinstance(payload, dict) else {}
     except Exception:
@@ -1184,11 +1455,30 @@ def _massage_news_payload(payload: dict) -> None:
             if isinstance(rows, list):
                 fallback_rows.extend(rows)
         items = _dedupe_news_rows(fallback_rows)
+    for row in items:
+        ts = _proxy_news_ts(row)
+        if ts and not row.get("published_ts"):
+            row["published_ts"] = ts
+        row["recency_bucket"] = _proxy_news_bucket(row)
+        row["is_latest"] = row["recency_bucket"] in {"24h", "7d", "30d"}
+    fresh_items = [row for row in items if row.get("is_latest")]
+    if fresh_items:
+        items = fresh_items
     focus = {_proxy_news_normalize_ticker(ticker) for ticker in payload.get("focus_tickers") or [] if _proxy_news_normalize_ticker(ticker)}
-    important = [row for row in items if _proxy_news_is_important(row)][:8]
-    latest = sorted(items, key=lambda row: str(row.get("published_at") or row.get("time") or ""), reverse=True)[:16]
-    mine = [row for row in items if _proxy_news_tickers(row) & focus][:12]
-    global_items = [row for row in items if not (_proxy_news_tickers(row) & focus)][:12]
+    sorted_items = sorted(items, key=lambda row: (_proxy_news_bucket_rank(row), _proxy_news_ts(row)), reverse=True)
+    important = sorted(
+        [row for row in sorted_items if _proxy_news_is_important(row)],
+        key=lambda row: (_proxy_news_bucket_rank(row), int(_safe_num(row.get("relevance_score")) or 0), _proxy_news_ts(row)),
+        reverse=True,
+    )[:8]
+    latest = sorted(items, key=_proxy_news_ts, reverse=True)[:16]
+    mine = sorted([row for row in items if _proxy_news_tickers(row) & focus], key=_proxy_news_ts, reverse=True)[:12]
+    global_items = sorted([row for row in items if not (_proxy_news_tickers(row) & focus)], key=_proxy_news_ts, reverse=True)[:12]
+    recency_windows = {
+        "24h": sum(1 for row in items if _proxy_news_bucket(row) == "24h"),
+        "7d": sum(1 for row in items if _proxy_news_bucket(row) in {"24h", "7d"}),
+        "30d": sum(1 for row in items if _proxy_news_bucket(row) in {"24h", "7d", "30d"}),
+    }
     payload["items"] = items
     payload["important"] = important
     payload["latest"] = latest
@@ -1198,7 +1488,45 @@ def _massage_news_payload(payload: dict) -> None:
         "mine": mine,
         "global": global_items,
     }
-    payload["policy"] = "FMP/RSS live separado por filtro; no mezcla alertas ni ballenas como noticias."
+    payload["recency_windows"] = recency_windows
+    payload["policy"] = "FMP/RSS live separado por filtro; últimas prioriza 24h, luego 7d y máximo 30d. No mezcla alertas ni ballenas como noticias."
+
+
+def _proxy_news_ts(row: dict) -> int:
+    direct = _safe_num(row.get("published_ts") or row.get("publishedTs"))
+    if direct and direct > 0:
+        return int(direct)
+    text = str(row.get("published_at") or row.get("publishedDate") or row.get("date") or row.get("time") or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    except Exception:
+        return 0
+
+
+def _proxy_news_bucket(row: dict) -> str:
+    bucket = str(row.get("recency_bucket") or row.get("recencyBucket") or "").strip().lower()
+    if bucket in {"24h", "7d", "30d"}:
+        return bucket
+    ts = _proxy_news_ts(row)
+    if not ts:
+        return "unknown"
+    age_seconds = max(int(datetime.now(timezone.utc).timestamp()) - ts, 0)
+    if age_seconds <= 86_400:
+        return "24h"
+    if age_seconds <= 7 * 86_400:
+        return "7d"
+    if age_seconds <= 30 * 86_400:
+        return "30d"
+    return "old"
+
+
+def _proxy_news_bucket_rank(row: dict) -> int:
+    return {"24h": 3, "7d": 2, "30d": 1, "unknown": 0}.get(_proxy_news_bucket(row), 0)
 
 
 def _dedupe_news_rows(rows: object) -> list[dict]:
@@ -1420,7 +1748,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             headers["Content-Type"] = "application/json; charset=utf-8"
         request = Request(target, data=payload_bytes if method == "POST" else None, headers=headers, method=method)
         try:
-            proxy_timeout = 55 if parsed.path == "/api/genesis/analyze-image" else 6 if parsed.path == "/api/genesis/ask" else 14 if parsed.path == "/api/dashboard/source-health" else 10 if parsed.path == "/api/dashboard/genesis" else 18
+            proxy_timeout = 55 if parsed.path == "/api/genesis/analyze-image" else 6 if parsed.path == "/api/genesis/ask" else 8 if parsed.path == "/api/dashboard/source-health" else 10 if parsed.path == "/api/dashboard/genesis" else 5 if parsed.path in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection", "/api/dashboard/money-flow/jarvis"} else 18
             with urlopen(request, timeout=proxy_timeout) as response:
                 data = response.read()
                 status = int(getattr(response, "status", 200) or 200)
@@ -1455,9 +1783,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             or _is_memory_genesis_prompt(message)
             or _is_whale_genesis_prompt(message)
         ):
+            if _is_whale_genesis_prompt(message):
+                snapshot = _fast_whale_snapshot_for_prompt()
+                result = _enrich_genesis_whale_payload(_whale_prompt_fallback_payload(message, snapshot))
+                self._write_json(result, HTTPStatus.OK)
+                return
             if (
                 not _is_casual_genesis_prompt(message)
-                and not _is_whale_genesis_prompt(message)
                 and _local_live_sources_missing()
                 and self._try_proxy_to_production(parsed, method="POST", body=body)
             ):
@@ -1536,10 +1868,20 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/jarvis"}:
+            if self._try_proxy_to_production(parsed, method="GET"):
+                return
+
         if parsed.path == "/api/dashboard/news":
             if self._try_proxy_to_production(parsed, method="GET"):
                 return
-            payload = json.dumps(get_dashboard_news()).encode("utf-8")
+            query = parse_qs(parsed.query)
+            force_refresh = any(
+                str(value).lower() in {"1", "true", "yes", "now"}
+                for key in ("refresh", "force", "no_cache")
+                for value in query.get(key, [])
+            )
+            payload = json.dumps(get_dashboard_news(force_refresh=force_refresh)).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -1548,7 +1890,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/money-flow/detection":
-            payload_data = get_dashboard_money_flow_detection()
+            payload_data = _call_json_with_timeout(
+                get_dashboard_money_flow_detection,
+                4,
+                {"ok": True, "items": [], "detection": {"items": []}, "source_status": {"status": "timeout", "provider_used": "local_fallback"}},
+            )
             _massage_whales_payload(payload_data)
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -1559,7 +1905,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/money-flow/causal":
-            payload_data = get_dashboard_money_flow_causal()
+            payload_data = _call_json_with_timeout(
+                get_dashboard_money_flow_causal,
+                4,
+                {"ok": True, "items": [], "causal": {"items": []}, "source_status": {"status": "timeout", "provider_used": "local_fallback"}},
+            )
             _massage_whales_payload(payload_data)
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -1634,7 +1984,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/money-flow/detection":
-            payload_data = get_dashboard_money_flow_detection()
+            payload_data = _call_json_with_timeout(
+                get_dashboard_money_flow_detection,
+                4,
+                {"ok": True, "items": [], "detection": {"items": []}, "source_status": {"status": "timeout", "provider_used": "local_fallback"}},
+            )
             _massage_whales_payload(payload_data)
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -1645,7 +1999,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/money-flow/causal":
-            payload_data = get_dashboard_money_flow_causal()
+            payload_data = _call_json_with_timeout(
+                get_dashboard_money_flow_causal,
+                4,
+                {"ok": True, "items": [], "causal": {"items": []}, "source_status": {"status": "timeout", "provider_used": "local_fallback"}},
+            )
             _massage_whales_payload(payload_data)
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -1657,7 +2015,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/money-flow/jarvis":
             question = (parse_qs(parsed.query).get("q") or [""])[0]
-            payload = json.dumps(get_dashboard_money_flow_jarvis(question)).encode("utf-8")
+            payload_data = _call_json_with_timeout(
+                lambda: get_dashboard_money_flow_jarvis(question),
+                4,
+                {"ok": True, "answer": "Genesis no inventa ballenas: fuente lenta, sigo con volumen vigilado disponible.", "items": []},
+            )
+            _massage_whales_payload(payload_data)
+            payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -1809,7 +2173,17 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/source-health":
-            payload = json.dumps(get_dashboard_source_health()).encode("utf-8")
+            payload_data = _call_json_with_timeout(
+                get_dashboard_source_health,
+                6,
+                {
+                    "ok": True,
+                    "fmp": {"status": "timeout", "last_error_safe": "source health lento; no se exponen secretos"},
+                    "rss_news": {"enabled": True, "status": "unknown"},
+                    "cache": {"status": "available"},
+                },
+            )
+            payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

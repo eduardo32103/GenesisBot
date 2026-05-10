@@ -7,13 +7,22 @@ from services.genesis.news_feed import get_news_source_status, get_recent_market
 from services.genesis.ticker_parser import normalize_ticker
 
 
-def get_news_snapshot(limit: int = 24) -> dict[str, Any]:
+def get_news_snapshot(limit: int = 24, *, force_refresh: bool = False) -> dict[str, Any]:
     focus = _focus_tickers()
-    items = get_recent_market_news(focus, limit=limit, max_age_days=30)
-    important = [item for item in items if item.get("is_important")][:8]
-    latest = sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)[:16]
-    mine = [item for item in items if set(item.get("tickers") or item.get("assets") or []) & set(focus)]
-    global_items = [item for item in items if not (set(item.get("tickers") or item.get("assets") or []) & set(focus))]
+    items = get_recent_market_news(focus, limit=limit, max_age_days=30, force_refresh=force_refresh)
+    important = sorted(
+        [item for item in items if item.get("is_important")],
+        key=lambda item: (_bucket_rank(item), int(item.get("relevance_score") or 0), int(item.get("published_ts") or _news_ts(item))),
+        reverse=True,
+    )[:8]
+    latest = sorted(items, key=_news_ts, reverse=True)[:16]
+    mine = sorted([item for item in items if _touches_focus(item, focus)], key=_news_ts, reverse=True)
+    global_items = sorted([item for item in items if not _touches_focus(item, focus)], key=_news_ts, reverse=True)
+    recency_windows = {
+        "24h": sum(1 for item in items if _news_bucket(item) == "24h"),
+        "7d": sum(1 for item in items if _news_bucket(item) in {"24h", "7d"}),
+        "30d": sum(1 for item in items if _news_bucket(item) in {"24h", "7d", "30d"}),
+    }
     return {
         "ok": True,
         "kind": "news_snapshot",
@@ -28,9 +37,51 @@ def get_news_snapshot(limit: int = 24) -> dict[str, Any]:
             "mine": mine[:12],
             "global": global_items[:12],
         },
+        "recency_windows": recency_windows,
+        "force_refresh": force_refresh,
         "source_status": get_news_source_status(),
-        "policy": "FMP primero; si no alcanza, RSS publico con timeout y cache. No mezcla alertas ni ballenas como noticias.",
+        "policy": "FMP primero; si no alcanza, RSS publico con timeout. Últimas se ordena por timestamp real 24h/7d/30d. No mezcla alertas ni ballenas como noticias.",
     }
+
+
+def _touches_focus(item: dict[str, Any], focus: list[str]) -> bool:
+    tickers = set(item.get("tickers") or item.get("assets") or item.get("tickers_affected") or [])
+    return bool(tickers & set(focus))
+
+
+def _news_ts(item: dict[str, Any]) -> int:
+    direct = item.get("published_ts")
+    if isinstance(direct, (int, float)) and direct > 0:
+        return int(direct)
+    text = str(item.get("published_at") or item.get("publishedDate") or item.get("date") or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return int((parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp())
+    except Exception:
+        return 0
+
+
+def _news_bucket(item: dict[str, Any]) -> str:
+    bucket = str(item.get("recency_bucket") or "").strip().lower()
+    if bucket in {"24h", "7d", "30d"}:
+        return bucket
+    ts = _news_ts(item)
+    if not ts:
+        return "unknown"
+    age_seconds = max(int(datetime.now(timezone.utc).timestamp()) - ts, 0)
+    if age_seconds <= 86_400:
+        return "24h"
+    if age_seconds <= 7 * 86_400:
+        return "7d"
+    if age_seconds <= 30 * 86_400:
+        return "30d"
+    return "old"
+
+
+def _bucket_rank(item: dict[str, Any]) -> int:
+    return {"24h": 3, "7d": 2, "30d": 1}.get(_news_bucket(item), 0)
 
 
 def _focus_tickers() -> list[str]:

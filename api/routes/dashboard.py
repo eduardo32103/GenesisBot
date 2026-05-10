@@ -120,8 +120,8 @@ def get_dashboard_macro_activity() -> dict:
     return get_macro_activity_snapshot()
 
 
-def get_dashboard_news() -> dict:
-    return get_news_snapshot()
+def get_dashboard_news(force_refresh: bool = False) -> dict:
+    return get_news_snapshot(force_refresh=force_refresh)
 
 
 def get_dashboard_whales(ticker: str = "") -> dict:

@@ -24,6 +24,8 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("data-news-refresh", script)
         self.assertIn("loadNews({ force: true })", script)
         self.assertIn("function normalizeNewsItemForUi", script)
+        self.assertIn("function newsPublishedTs", script)
+        self.assertIn("function newsRecencyRank", script)
         self.assertIn("function newsDisplayTitle", script)
         self.assertIn("function filteredNewsItems", script)
         self.assertIn("function newsItemsForActiveFilter", script)

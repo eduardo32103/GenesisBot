@@ -198,14 +198,14 @@ input:focus-visible {
 }
 
 .nav-genesis {
-  transform: translateY(-6px);
+  transform: translateY(-4px);
   border-color: transparent;
   background: transparent;
 }
 
 .nav-genesis .nav-icon {
-  width: 46px;
-  height: 46px;
+  width: 40px;
+  height: 40px;
   overflow: visible;
   border: 0;
   border-radius: 0;
@@ -218,12 +218,12 @@ input:focus-visible {
 }
 
 .nav-genesis .genesis-nav-logo {
-  width: 88%;
-  height: 88%;
+  width: 68%;
+  height: 68%;
   transform: none;
-  filter:
-    drop-shadow(0 0 3px rgba(82, 230, 164, 0.16))
-    drop-shadow(0 0 7px rgba(82, 230, 164, 0.07));
+  object-position: center;
+  opacity: 0.92;
+  filter: brightness(1.08) contrast(1.06) saturate(0.92);
 }
 
 .nav-genesis.is-active {
@@ -2085,6 +2085,54 @@ input:focus-visible {
 .candle.flat .candle-body {
   stroke: var(--muted);
   fill: var(--muted);
+}
+
+.price-line-chart .chart-area-fill {
+  fill: rgba(190, 206, 220, 0.07);
+}
+
+.price-line-chart.up .chart-area-fill,
+.price-line-chart.flat .chart-area-fill {
+  fill: rgba(98, 217, 152, 0.08);
+}
+
+.price-line-chart.down .chart-area-fill {
+  fill: rgba(255, 111, 103, 0.08);
+}
+
+.chart-price-line {
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 8px rgba(98, 217, 152, 0.24));
+}
+
+.price-line-chart.down .chart-price-line {
+  stroke: var(--red);
+  filter: drop-shadow(0 0 8px rgba(255, 111, 103, 0.22));
+}
+
+.price-line-chart.flat .chart-price-line {
+  stroke: var(--soft);
+  filter: drop-shadow(0 0 8px rgba(190, 206, 220, 0.14));
+}
+
+.chart-volume-bar {
+  fill: rgba(98, 217, 152, 0.45);
+}
+
+.price-line-chart.down .chart-volume-bar {
+  fill: rgba(255, 111, 103, 0.42);
+}
+
+.chart-source-chip {
+  fill: var(--soft);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .chart-returns {
@@ -4349,13 +4397,13 @@ input:focus-visible {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 13px;
 }
 
 .genesis-header-logo {
   flex: 0 0 auto;
-  width: 46px;
-  height: 46px;
+  width: 58px;
+  height: 58px;
   display: grid;
   place-items: center;
   overflow: visible;
@@ -4366,12 +4414,12 @@ input:focus-visible {
 }
 
 .genesis-header-logo-img {
-  width: 92%;
-  height: 92%;
+  width: 100%;
+  height: 100%;
   transform: none;
-  filter:
-    drop-shadow(0 0 3px rgba(82, 230, 164, 0.16))
-    drop-shadow(0 0 7px rgba(82, 230, 164, 0.07));
+  object-position: center;
+  opacity: 0.94;
+  filter: brightness(1.1) contrast(1.08) saturate(0.9);
 }
 
 .genesis-chat-head strong {
