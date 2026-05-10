@@ -5,6 +5,40 @@ import unicodedata
 from typing import Iterable
 
 _TOKEN_PATTERN = re.compile(r"\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b")
+_TOKEN_PATTERN_ORIGINAL = re.compile(r"\b[A-Za-z0-9]{1,12}(?:[.\-=][A-Za-z0-9]{1,8})?\b")
+_INTENT_NEAR_TICKER = {
+    "analiza",
+    "analizar",
+    "compra",
+    "comprar",
+    "compro",
+    "vender",
+    "vendo",
+    "opina",
+    "opinas",
+    "opinion",
+    "precio",
+    "grafica",
+    "graficas",
+    "grafico",
+    "chart",
+    "soporte",
+    "resistencia",
+    "rsi",
+    "macd",
+    "ema",
+    "sma",
+    "vwap",
+    "fib",
+    "fibonacci",
+    "ticker",
+    "activo",
+    "ver",
+    "revisa",
+    "comparar",
+    "compara",
+}
+_CONNECTOR_NEAR_TICKER = {"de", "con", "sobre", "vs", "contra"}
 
 _STOPWORDS = {
     "A",
@@ -183,6 +217,26 @@ _STOPWORDS = {
     "Y",
 }
 
+_STOPWORDS.update(
+    {
+        "CREE",
+        "CREER",
+        "CREES",
+        "CREO",
+        "MAS",
+        "MACD",
+        "ME",
+        "MEJOR",
+        "MUY",
+        "NO",
+        "SER",
+        "SERA",
+        "SERIA",
+        "SI",
+        "SIN",
+    }
+)
+
 _ALIASES = {
     "BTC": "BTC-USD",
     "BITCOIN": "BTC-USD",
@@ -211,16 +265,24 @@ def normalize_ticker(value: object) -> str:
 
 
 def extract_tickers_from_prompt(message: str, context: object | None = None) -> list[str]:
-    text = normalize_text(message).upper()
+    original_text = normalize_text(message)
+    text = original_text.upper()
+    folded_words = [normalize_text(word).casefold() for word in re.findall(r"\b[\w.\-=]+\b", original_text)]
+    has_market_intent = any(word in _INTENT_NEAR_TICKER for word in folded_words)
     tickers: list[str] = []
 
     for alias, ticker in _ALIASES.items():
         if re.search(rf"\b{re.escape(alias)}\b", text):
             _append_unique(tickers, ticker)
 
-    for raw in _TOKEN_PATTERN.findall(text):
+    for match in _TOKEN_PATTERN_ORIGINAL.finditer(original_text):
+        raw = match.group(0)
         token = normalize_ticker(raw)
         if not _looks_like_ticker(token):
+            continue
+        if token in _ALIASES.values():
+            continue
+        if not _token_is_intended_ticker(original_text, match.start(), raw, has_market_intent):
             continue
         _append_unique(tickers, token)
 
@@ -257,6 +319,33 @@ def _looks_like_ticker(token: str) -> bool:
     if not re.fullmatch(r"[A-Z0-9.\-=]+", token):
         return False
     return any(char.isalpha() for char in token)
+
+
+def _token_is_intended_ticker(original_text: str, start: int, raw: str, has_market_intent: bool) -> bool:
+    normalized_raw = normalize_text(raw).strip()
+    if not normalized_raw:
+        return False
+    token = normalize_ticker(normalized_raw)
+    if token in _ALIASES.values():
+        return True
+    if any(separator in normalized_raw for separator in (".", "-", "=")):
+        return True
+    if any(char.isdigit() for char in normalized_raw):
+        return True
+    if normalized_raw.isupper() and 1 < len(token) <= 6:
+        return True
+    if not has_market_intent:
+        return False
+
+    before = normalize_text(original_text[:start]).casefold()
+    before_words = re.findall(r"\b[\w.\-=]+\b", before)
+    recent_words = before_words[-6:]
+    previous = before_words[-1] if before_words else ""
+    if any(word in _INTENT_NEAR_TICKER for word in recent_words):
+        return True
+    if previous in _CONNECTOR_NEAR_TICKER and any(word in _INTENT_NEAR_TICKER for word in before_words[-10:]):
+        return True
+    return False
 
 
 def _append_unique(values: list[str], value: str) -> None:

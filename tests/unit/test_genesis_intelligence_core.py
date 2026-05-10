@@ -36,6 +36,9 @@ class GenesisTickerParserTests(unittest.TestCase):
     def test_extracts_real_tickers_without_verbs(self) -> None:
         cases = {
             "analiza nvda con graficas": ["NVDA"],
+            "crees que seria buena idea comprar bip?": ["BIP"],
+            "crees que seria buena idea comprar?": [],
+            "dame rsi y macd de nvda": ["NVDA"],
             "grafica btc-usd": ["BTC-USD"],
             "hazme una grafica de btc": ["BTC-USD"],
             "quiero ver meta": ["META"],
