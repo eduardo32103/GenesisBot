@@ -1,6 +1,6 @@
 {
   "owner_id": "dashboard_web",
-  "updated_at": "2026-05-09T06:03:08.174399+00:00",
+  "updated_at": "2026-05-09T12:34:57.141567+00:00",
   "positions": [
     {
       "ticker": "BNO",
@@ -19,14 +19,6 @@
       "display_name": "IXC",
       "reference_price": 927.55,
       "watchlist": true
-    },
-    {
-      "ticker": "MARA",
-      "display_name": "MARA",
-      "units": 12.0,
-      "entry_price": 1212.0,
-      "mode": "paper",
-      "opened_at": "2026-05-09T06:03:08.174288+00:00"
     }
   ]
 }
