@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 import threading
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -78,6 +79,15 @@ _PROXY_GET_PATHS = {
 }
 _PROXY_GET_PREFIXES = ("/api/genesis/memory/ticker/",)
 _PROXY_OPPORTUNITY_TICKERS = ("NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQQ", "BTC-USD")
+_YAHOO_CHART_CACHE: dict[str, tuple[float, dict]] = {}
+_YAHOO_TIMEFRAMES = {
+    "1D": ("1d", "5m"),
+    "1W": ("5d", "15m"),
+    "1M": ("1mo", "1d"),
+    "1Y": ("1y", "1d"),
+    "5Y": ("5y", "1wk"),
+    "MAX": ("max", "1mo"),
+}
 _PROXY_POST_PATHS = {
     "/api/dashboard/portfolio/paper",
     "/api/dashboard/portfolio/paper-buy",
@@ -513,6 +523,77 @@ def _is_whale_genesis_prompt(message: str) -> bool:
     )
 
 
+def _prompt_tickers(message: str, context: object | None = None) -> list[str]:
+    try:
+        from services.genesis.ticker_parser import extract_tickers_from_prompt, normalize_ticker
+
+        tickers: list[str] = []
+        for raw in extract_tickers_from_prompt(message, context=context):
+            ticker = normalize_ticker(raw)
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+        return tickers
+    except Exception:
+        logging.getLogger("genesis.dashboard").warning("Ticker extraction failed for Genesis prompt", exc_info=True)
+        return []
+
+
+def _is_asset_genesis_prompt(message: str, context: object | None = None) -> bool:
+    if not str(message or "").strip():
+        return False
+    if (
+        _is_casual_genesis_prompt(message)
+        or _is_news_genesis_prompt(message)
+        or _is_whale_genesis_prompt(message)
+        or _is_memory_genesis_prompt(message)
+    ):
+        return False
+    tickers = _prompt_tickers(message, context=context)
+    if not tickers:
+        return False
+    text = f" {_fold_prompt(message)} "
+    asset_intent_tokens = (
+        " analiza ",
+        " analizar ",
+        " opinion ",
+        " opinas ",
+        " comprar ",
+        " compro ",
+        " vender ",
+        " vendo ",
+        " precio ",
+        " grafica ",
+        " grafico ",
+        " chart ",
+        " soporte ",
+        " resistencia ",
+        " rsi ",
+        " macd ",
+        " ema ",
+        " que pasa con ",
+        " que esta pasando con ",
+        " deberia ",
+        " conviene ",
+    )
+    return any(token in text for token in asset_intent_tokens) or len(tickers) == 1
+
+
+def _local_asset_genesis_payload(body: dict, message: str) -> dict:
+    panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
+    tickers = _prompt_tickers(message, context=panel_context)
+    ticker = tickers[0] if tickers else str(body.get("ticker") or "")
+    result = ask_genesis(
+        message,
+        context=str(body.get("context") or "general"),
+        ticker=ticker,
+        panel_context=panel_context,
+        conversation_id=str(body.get("conversation_id") or "default"),
+    )
+    result = _enrich_genesis_asset_quote(result)
+    result = _enrich_genesis_whale_payload(result)
+    return result
+
+
 def _production_get_json(path: str, *, timeout: float = 6) -> dict:
     try:
         target = f"{_PRODUCTION_API_ORIGIN}{path}"
@@ -522,6 +603,216 @@ def _production_get_json(path: str, *, timeout: float = 6) -> dict:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _yahoo_symbol(ticker: str) -> str:
+    symbol = str(ticker or "").strip().upper()
+    if symbol == "BTC":
+        return "BTC-USD"
+    return symbol
+
+
+def _yahoo_fetch_chart(ticker: str, timeframe: str = "1D") -> dict:
+    symbol = _yahoo_symbol(ticker)
+    normalized_timeframe = str(timeframe or "1D").strip().upper()
+    yahoo_range, interval = _YAHOO_TIMEFRAMES.get(normalized_timeframe, _YAHOO_TIMEFRAMES["1Y"])
+    cache_key = f"{symbol}:{normalized_timeframe}:{interval}"
+    ttl = 20 if normalized_timeframe == "1D" else 180
+    cached = _YAHOO_CHART_CACHE.get(cache_key)
+    now = time.time()
+    if cached and now - cached[0] <= ttl:
+        return cached[1]
+    try:
+        target = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol)}?range={quote(yahoo_range)}&interval={quote(interval)}"
+        request = Request(target, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0 Genesis/1.0"}, method="GET")
+        with urlopen(request, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        result = ((data.get("chart") or {}).get("result") or [{}])[0]
+        if not isinstance(result, dict):
+            result = {}
+        _YAHOO_CHART_CACHE[cache_key] = (now, result)
+        return result
+    except Exception:
+        logging.getLogger("genesis.dashboard").warning("Yahoo chart fallback unavailable for %s", symbol, exc_info=True)
+        return {}
+
+
+def _yahoo_shape_points(result: dict) -> list[dict]:
+    timestamps = result.get("timestamp") if isinstance(result, dict) else []
+    quote_rows = ((result.get("indicators") or {}).get("quote") or [{}]) if isinstance(result, dict) else [{}]
+    series = quote_rows[0] if quote_rows and isinstance(quote_rows[0], dict) else {}
+    if not isinstance(timestamps, list) or not timestamps:
+        return []
+    opens = series.get("open") if isinstance(series.get("open"), list) else []
+    highs = series.get("high") if isinstance(series.get("high"), list) else []
+    lows = series.get("low") if isinstance(series.get("low"), list) else []
+    closes = series.get("close") if isinstance(series.get("close"), list) else []
+    volumes = series.get("volume") if isinstance(series.get("volume"), list) else []
+    points: list[dict] = []
+    last_close: float | None = None
+    for index, raw_ts in enumerate(timestamps):
+        close = _safe_num(closes[index] if index < len(closes) else None)
+        if close is None:
+            continue
+        opened = _safe_num(opens[index] if index < len(opens) else None) or last_close or close
+        high = _safe_num(highs[index] if index < len(highs) else None) or max(opened, close)
+        low = _safe_num(lows[index] if index < len(lows) else None) or min(opened, close)
+        volume = _safe_num(volumes[index] if index < len(volumes) else None)
+        try:
+            stamp = datetime.fromtimestamp(float(raw_ts), timezone.utc).isoformat()
+        except Exception:
+            stamp = str(raw_ts)
+        points.append(
+            {
+                "time": stamp,
+                "date": stamp[:10],
+                "open": opened,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            }
+        )
+        last_close = close
+    return points
+
+
+def _yahoo_quote_row(ticker: str) -> dict | None:
+    result = _yahoo_fetch_chart(ticker, "1D")
+    meta = result.get("meta") if isinstance(result, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    points = _yahoo_shape_points(result)
+    last_close = _safe_num(points[-1].get("close")) if points else None
+    price = _safe_num(meta.get("regularMarketPrice")) or last_close
+    if price is None or price <= 0:
+        return None
+    previous = _safe_num(meta.get("previousClose") or meta.get("chartPreviousClose"))
+    change = price - previous if previous else None
+    change_pct = (change / previous * 100) if change is not None and previous else None
+    symbol = _yahoo_symbol(ticker)
+    return {
+        "ticker": symbol,
+        "name": meta.get("longName") or meta.get("shortName") or symbol,
+        "current_price": price,
+        "price": price,
+        "daily_change": change,
+        "daily_change_pct": change_pct,
+        "change": change,
+        "change_pct": change_pct,
+        "percent_change": change_pct,
+        "previous_close": previous,
+        "day_high": _safe_num(meta.get("regularMarketDayHigh")) or (max((_safe_num(point.get("high")) or price) for point in points) if points else None),
+        "day_low": _safe_num(meta.get("regularMarketDayLow")) or (min((_safe_num(point.get("low")) or price) for point in points) if points else None),
+        "volume": _safe_num(meta.get("regularMarketVolume")) or (sum((_safe_num(point.get("volume")) or 0) for point in points) if points else None),
+        "quote_timestamp": meta.get("regularMarketTime") or (points[-1].get("time") if points else datetime.now(timezone.utc).isoformat()),
+        "source": "yahoo_chart_fallback",
+        "source_label": "Yahoo Chart fallback",
+        "provider_used": "yahoo_chart_fallback",
+    }
+
+
+def _yahoo_market_search_payload(query: str) -> dict:
+    row = _yahoo_quote_row(query)
+    if not row:
+        return {"ok": False, "status": "not_found", "results": [], "provider_used": "yahoo_chart_fallback"}
+    requested = str(query or "").strip().upper()
+    if requested:
+        row["ticker"] = requested
+    return {
+        "ok": True,
+        "status": "ready",
+        "results": [row],
+        "provider_used": "yahoo_chart_fallback",
+        "cache_hit": False,
+    }
+
+
+def _simple_return(first: object, last: object) -> float | None:
+    start = _safe_num(first)
+    end = _safe_num(last)
+    if start is None or end is None or start == 0:
+        return None
+    return (end - start) / start * 100
+
+
+def _yahoo_asset_chart_payload(ticker: str, timeframe: str = "1Y") -> dict:
+    normalized_ticker = _yahoo_symbol(ticker)
+    normalized_timeframe = str(timeframe or "1Y").strip().upper()
+    if normalized_timeframe not in _YAHOO_TIMEFRAMES:
+        normalized_timeframe = "1Y"
+    result = _yahoo_fetch_chart(normalized_ticker, normalized_timeframe)
+    points = _yahoo_shape_points(result)
+    quote_row = _yahoo_quote_row(normalized_ticker) or {}
+    if len(points) < 2:
+        return {
+            "ok": False,
+            "status": "no_data",
+            "ticker": normalized_ticker,
+            "range": normalized_timeframe,
+            "timeframe": normalized_timeframe,
+            "points": [],
+            "ohlc": [],
+            "message": "No hay datos OHLC suficientes para esta temporalidad.",
+            "source": {"provider": "Yahoo Chart fallback", "live_enabled": True, "price_only": False},
+        }
+    first = points[0]
+    last = points[-1]
+    summary_change = (_safe_num(last.get("close")) or 0) - (_safe_num(first.get("close")) or 0)
+    selected_return = _simple_return(first.get("close"), last.get("close"))
+    returns = {"1D": None, "1W": None, "1M": None, "1Y": None, "5Y": None, "MAX": None}
+    returns[normalized_timeframe] = selected_return
+    try:
+        from services.genesis.technical_analysis import compute_technical_indicators
+
+        indicators = compute_technical_indicators(points)
+    except Exception:
+        indicators = {}
+    return {
+        "ok": True,
+        "status": "ready",
+        "ticker": normalized_ticker,
+        "selected_range": normalized_timeframe,
+        "timeframe": normalized_timeframe,
+        "range": normalized_timeframe,
+        "name": quote_row.get("name") or normalized_ticker,
+        "points": points,
+        "ohlc": points,
+        "returns": returns,
+        "return_details": {},
+        "indicators": indicators,
+        "summary": {
+            "start_price": first.get("close"),
+            "end_price": last.get("close"),
+            "change": summary_change,
+            "change_pct": selected_return,
+        },
+        "max_history_years": 0.0,
+        "history_points": len(points),
+        "raw_eod_points": len(points),
+        "selected_range_points": len(points),
+        "fmp_endpoint_used": "yahoo-chart-fallback",
+        "has_full_history": normalized_timeframe in {"5Y", "MAX"},
+        "is_max_truncated": normalized_timeframe == "MAX",
+        "max_truncated": normalized_timeframe == "MAX",
+        "truncation_reason": "fallback_publico_sin_fmp_local",
+        "max_history_note": "Grafica servida por fallback publico cuando FMP/Railway no responde localmente.",
+        "first_date": first.get("date"),
+        "last_date": last.get("date"),
+        "first_close": first.get("close"),
+        "last_close": last.get("close"),
+        "quote": quote_row,
+        "source": {
+            "provider": "Yahoo Chart fallback",
+            "endpoint": "query1.finance.yahoo.com/v8/finance/chart",
+            "live_enabled": True,
+            "price_only": False,
+            "downsampled": False,
+            "raw_points": len(points),
+            "selected_range_points": len(points),
+            "fallback": True,
+        },
+    }
 
 
 def _call_json_with_timeout(fn, timeout: float, fallback: dict) -> dict:
@@ -881,6 +1172,7 @@ def _news_prompt_fallback_payload(message: str) -> dict:
 
 def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     message = _genesis_message_from_body(body)
+    panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
     if _is_casual_genesis_prompt(message):
         personal = _is_personal_genesis_prompt(message)
         answer = (
@@ -910,6 +1202,13 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 ],
             },
         }
+    if _is_asset_genesis_prompt(message, panel_context):
+        if payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"} or payload.get("response_type") in {"asset_analysis", "chart_analysis"}:
+            return payload
+        try:
+            return _local_asset_genesis_payload(body, message)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local asset prompt correction failed", exc_info=True)
     if _is_whale_genesis_prompt(message) and not (
         payload.get("intent") in {"whale_activity", "money_flow"} or payload.get("response_type") == "whale_flow"
     ):
@@ -927,7 +1226,7 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 message,
                 context=str(body.get("context") or "general"),
                 ticker="",
-                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                panel_context=panel_context,
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             if isinstance(local, dict) and local.get("intent") == "macro_news":
@@ -941,7 +1240,7 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 message,
                 context=str(body.get("context") or "general"),
                 ticker="",
-                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                panel_context=panel_context,
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             if isinstance(local, dict) and local.get("intent") == "market_overview":
@@ -1303,8 +1602,78 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
     if response_type not in {"asset_analysis", "chart_analysis"} and result.get("intent") not in {"ticker_analysis", "technical_indicators", "chart_request"}:
         return result
 
+    def attach_chart_payload(payload: dict, ticker_label: str) -> None:
+        ticker_key = str(ticker_label or "").strip().upper()
+        if not ticker_key:
+            return
+        structured = payload.get("structured") if isinstance(payload.get("structured"), dict) else None
+        current_chart = structured.get("chart") if isinstance(structured, dict) and isinstance(structured.get("chart"), dict) else {}
+        current_points = current_chart.get("points") or current_chart.get("ohlc") if isinstance(current_chart, dict) else []
+        if isinstance(current_points, list) and len(current_points) >= 2:
+            return
+        chart_payload = _yahoo_asset_chart_payload(ticker_key, "1Y")
+        if not chart_payload.get("ok"):
+            chart_payload = _yahoo_asset_chart_payload(ticker_key, "1D")
+        points = chart_payload.get("points") if isinstance(chart_payload.get("points"), list) else []
+        if not chart_payload.get("ok") or len(points) < 2:
+            return
+        compact_chart = {
+            "ticker": chart_payload.get("ticker") or ticker_key,
+            "range": chart_payload.get("selected_range") or chart_payload.get("range") or "1Y",
+            "ohlc": points,
+            "points": points,
+            "summary": chart_payload.get("summary") or {},
+            "returns": chart_payload.get("returns") or {},
+            "price_only": False,
+            "source": chart_payload.get("source") or {},
+        }
+        payload["technical"] = {
+            "ok": True,
+            "ticker": chart_payload.get("ticker") or ticker_key,
+            "range": compact_chart["range"],
+            "indicators": chart_payload.get("indicators") or {},
+            "summary": chart_payload.get("summary") or {},
+            "returns": chart_payload.get("returns") or {},
+            "history_points": chart_payload.get("history_points") or len(points),
+            "selected_range_points": chart_payload.get("selected_range_points") or len(points),
+            "source": chart_payload.get("source") or {},
+            "chart": compact_chart,
+        }
+        if isinstance(structured, dict):
+            indicators = chart_payload.get("indicators") if isinstance(chart_payload.get("indicators"), dict) else {}
+            structured["chart"] = compact_chart
+            structured["indicators"] = {
+                **(structured.get("indicators") if isinstance(structured.get("indicators"), dict) else {}),
+                **indicators,
+            }
+            structured.setdefault("levels", {})
+            if isinstance(structured["levels"], dict):
+                support = indicators.get("support")
+                resistance = indicators.get("resistance")
+                if support is not None:
+                    structured["levels"]["support"] = support
+                if resistance is not None:
+                    structured["levels"]["resistance"] = resistance
+            old_sections = structured.get("sections") if isinstance(structured.get("sections"), list) else []
+            if old_sections:
+                structured["sections"] = [
+                    {
+                        "title": "Lectura rapida",
+                        "bullets": [
+                            f"{ticker_key} ya tiene precio y grafica activa; Genesis evita operar solo por precio y valida volumen, niveles y noticias.",
+                        ],
+                    },
+                    {
+                        "title": "Que vigilar",
+                        "bullets": [
+                            "Confirmacion de volumen relativo, soporte/resistencia y catalizadores antes de tomar decision.",
+                        ],
+                    },
+                ]
+
     def apply_confirmed_asset_copy(payload: dict, quote_payload: dict, ticker_label: str) -> None:
         price_label = quote_payload.get("formatted_price") or _money_short(quote_payload.get("current_price") or quote_payload.get("price"))
+        source_label = quote_payload.get("source_label") or quote_payload.get("source") or "fuente activa"
         change = _safe_num(quote_payload.get("daily_change"))
         change_pct = _safe_num(quote_payload.get("daily_change_pct"))
         previous_close = _safe_num(quote_payload.get("previous_close"))
@@ -1317,13 +1686,15 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
             if change_pct is not None and abs(change_pct) >= 0.005:
                 move_text += f" ({change_pct:+.2f}%)"
         thesis = (
-            f"{ticker_label}: precio confirmado por FMP en {price_label}{move_text}. "
+            f"{ticker_label}: precio confirmado por {source_label} en {price_label}{move_text}. "
             "Genesis usa este dato como base; la decisión depende de volumen, niveles, noticias y riesgo."
         )
+        payload["ticker"] = ticker_label
         payload["answer"] = thesis
         quote_payload.pop("message", None)
         structured = payload.get("structured")
         if isinstance(structured, dict):
+            structured["ticker"] = ticker_label
             old_thesis = str(structured.get("thesis") or "")
             if (
                 "no tiene precio confirmado" in old_thesis.casefold()
@@ -1336,6 +1707,7 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
             structured["confidence"] = max(_safe_num(structured.get("confidence")) or 0, 0.82)
             move = _safe_num(quote_payload.get("daily_change_pct") or quote_payload.get("daily_change"))
             structured["verdict"] = "Alcista" if (move or 0) > 0 else "Bajista" if (move or 0) < 0 else "Neutral"
+        attach_chart_payload(payload, ticker_label)
 
     quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
     existing_price = _safe_num(quote.get("current_price") or quote.get("price"))
@@ -1343,7 +1715,7 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
         quote["current_price"] = existing_price
         quote["price"] = existing_price
         quote["formatted_price"] = quote.get("formatted_price") or _money_short(existing_price)
-        quote["source_label"] = quote.get("source_label") or "FMP / datos directos"
+        quote["source_label"] = quote.get("source_label") or "Fuente activa"
         quote["is_live"] = True
         quote["is_stale"] = False
         quote["sanity"] = {"ok": True, "suspicious": False, "reason": "Precio confirmado por fuente activa."}
@@ -1378,7 +1750,7 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
         return result
     merged_quote = {
         **quote,
-        "ticker": asset.get("ticker") or ticker,
+        "ticker": ticker,
         "name": asset.get("name") or quote.get("name") or ticker,
         "current_price": asset.get("current_price"),
         "price": asset.get("current_price"),
@@ -1390,10 +1762,10 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
         "day_high": asset.get("day_high"),
         "volume": asset.get("volume"),
         "source": asset.get("source") or "datos_directos",
-        "source_label": "FMP / datos directos",
+        "source_label": "Fuente activa",
         "is_live": True,
         "is_stale": False,
-        "sanity": {"ok": True, "suspicious": False, "reason": "Precio confirmado por FMP."},
+        "sanity": {"ok": True, "suspicious": False, "reason": "Precio confirmado por fuente activa."},
     }
     result["quote"] = merged_quote
     if isinstance(result.get("structured"), dict):
@@ -1416,8 +1788,9 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
 
 
 def _market_search_for_proxy(ticker: str) -> dict:
+    normalized_query = str(ticker or "").strip().upper()
     try:
-        local = search_dashboard_market_ticker(ticker)
+        local = search_dashboard_market_ticker(normalized_query)
         if isinstance(local, dict):
             _normalize_market_payload(local)
         rows = local.get("results") if isinstance(local, dict) else []
@@ -1426,13 +1799,32 @@ def _market_search_for_proxy(ticker: str) -> dict:
     except Exception:
         pass
     try:
-        target = f"{_PRODUCTION_API_ORIGIN}/api/dashboard/market/search?q={quote(ticker)}"
+        target = f"{_PRODUCTION_API_ORIGIN}/api/dashboard/market/search?q={quote(normalized_query)}"
         request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
         with urlopen(request, timeout=4) as response:
             payload = json.loads(response.read().decode("utf-8"))
-            return _normalize_market_payload(payload) if isinstance(payload, dict) else {}
+            payload = _normalize_market_payload(payload) if isinstance(payload, dict) else {}
+            rows = payload.get("results") if isinstance(payload, dict) else []
+            if isinstance(rows, list) and rows:
+                return payload
     except Exception:
-        return {}
+        pass
+    yahoo_payload = _yahoo_market_search_payload(normalized_query)
+    yahoo_rows = yahoo_payload.get("results") if isinstance(yahoo_payload, dict) else []
+    if isinstance(yahoo_rows, list) and yahoo_rows:
+        return yahoo_payload
+    if normalized_query.endswith("-USD"):
+        base_query = normalized_query.removesuffix("-USD")
+        if base_query and base_query != normalized_query:
+            payload = _market_search_for_proxy(base_query)
+            rows = payload.get("results") if isinstance(payload, dict) else []
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        row.setdefault("provider_symbol", row.get("ticker"))
+                        row["ticker"] = normalized_query
+            return payload
+    return {}
 
 
 def _search_market_with_live_fallback(query: str) -> dict:
@@ -1776,6 +2168,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/analyze-image":
             body = _normalize_analyze_image_body(body)
         message = _genesis_message_from_body(body)
+        panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
+        if parsed.path == "/api/genesis/ask" and _is_asset_genesis_prompt(message, panel_context):
+            result = _local_asset_genesis_payload(body, message)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/api/genesis/ask" and (
             _is_casual_genesis_prompt(message)
             or _is_market_genesis_prompt(message)
@@ -1798,7 +2195,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 message,
                 context=str(body.get("context") or "general"),
                 ticker="",
-                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                panel_context=panel_context,
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             result = _enrich_genesis_asset_quote(result)
@@ -1813,7 +2210,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 str(body.get("message") or body.get("question") or ""),
                 context=str(body.get("context") or "general"),
                 ticker=str(body.get("ticker") or ""),
-                panel_context=body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None,
+                panel_context=panel_context,
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             result = _enrich_genesis_asset_quote(result)
@@ -1870,6 +2267,20 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in {"/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/jarvis"}:
             if self._try_proxy_to_production(parsed, method="GET"):
+                return
+
+        if parsed.path in {"/api/dashboard/radar", "/api/dashboard/portfolio"}:
+            payload_data = _enrich_portfolio_snapshot_with_live_quotes(get_dashboard_radar())
+            self._write_json(payload_data, HTTPStatus.OK)
+            return
+
+        if parsed.path in {"/api/dashboard/asset/chart", "/api/dashboard/chart"} and _local_live_sources_missing():
+            query = parse_qs(parsed.query)
+            ticker = (query.get("ticker") or query.get("symbol") or [""])[0]
+            timeframe = (query.get("range") or query.get("timeframe") or ["1Y"])[0]
+            payload_data = _yahoo_asset_chart_payload(ticker, timeframe)
+            if payload_data.get("ok"):
+                self._write_json(payload_data, HTTPStatus.OK)
                 return
 
         if parsed.path == "/api/dashboard/news":
@@ -2022,15 +2433,6 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             )
             _massage_whales_payload(payload_data)
             payload = json.dumps(payload_data).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-
-        if parsed.path in {"/api/dashboard/radar", "/api/dashboard/portfolio"}:
-            payload = json.dumps(_enrich_portfolio_snapshot_with_live_quotes(get_dashboard_radar())).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
