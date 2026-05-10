@@ -183,7 +183,9 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("function hydrateOpenWhaleDetailFromChart", script)
         self.assertIn("chartQuoteAsset(ticker", script)
         self.assertIn("loadChartSeries(ticker, \"1D\")", script)
-        self.assertIn("appState.whaleItemsById[whaleId] = { ...row, id: whaleId }", script)
+        self.assertIn("function rememberWhaleItem", script)
+        self.assertIn("function resolveWhaleItem", script)
+        self.assertIn("rememberWhaleItem(row, whaleId)", script)
         self.assertIn("monitoredDollarVolume", script)
         self.assertIn("monitored_dollar_volume", script)
 

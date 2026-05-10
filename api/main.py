@@ -276,6 +276,72 @@ def _copy_strategy_decision(row: dict, strategy: dict | None = None) -> None:
     row.setdefault("action_verdict", strategy.get("decision_label_es"))
 
 
+def _massage_source_health_payload(payload: dict) -> None:
+    if not isinstance(payload, dict):
+        return
+    payload.setdefault("ok", True)
+    fmp = payload.setdefault("fmp", {})
+    if isinstance(fmp, dict):
+        fmp.setdefault("key_configured", bool(os.getenv("FMP_API_KEY", "").strip()))
+        fmp.setdefault("live_enabled", _truthy(os.getenv("FMP_LIVE_ENABLED")))
+        fmp.setdefault("quote_ok", False)
+        fmp.setdefault("news_ok", False)
+        fmp.setdefault("historical_ok", False)
+        fmp.setdefault("last_error_safe", "")
+        fmp.setdefault("provider_used", "production_proxy" if _local_live_sources_missing() else "local")
+    openai_status = payload.setdefault("openai", {})
+    if isinstance(openai_status, dict):
+        openai_status.setdefault("key_configured", bool(os.getenv("OPENAI_API_KEY", "").strip()))
+        openai_status.setdefault("llm_enabled", _truthy(os.getenv("GENESIS_LLM_ENABLED")))
+        openai_status.setdefault("model", os.getenv("GENESIS_LLM_MODEL", ""))
+        openai_status.setdefault("vision_enabled", _truthy(os.getenv("GENESIS_VISION_ENABLED")))
+    database = payload.setdefault("database", {})
+    if isinstance(database, dict):
+        database.setdefault("database_url_configured", bool(os.getenv("DATABASE_URL", "").strip()))
+        database.setdefault("memory_ok", False)
+        database.setdefault("portfolio_store", "unknown")
+    weather = payload.setdefault("weather", {})
+    if isinstance(weather, dict):
+        weather.setdefault("open_meteo_ok", False)
+    rss_news = payload.setdefault("rss_news", {})
+    if isinstance(rss_news, dict):
+        rss_news.setdefault("enabled", True)
+        rss_news.setdefault("status", "unknown")
+    cache = payload.setdefault("cache", {})
+    if isinstance(cache, dict):
+        cache.setdefault("status", "available")
+    payload.setdefault("policy", "Diagnostico seguro: solo banderas booleanas, sin API keys ni secretos.")
+
+
+def _replace_empty_proxy_whales_with_fast_flow(payload: dict) -> None:
+    if not isinstance(payload, dict) or _whale_payload_rows(payload):
+        return
+    fallback = _fast_whales_timeout_payload()
+    rows = _whale_payload_rows(fallback)
+    if not rows:
+        return
+    payload["ok"] = True
+    payload["kind"] = "whale_flow"
+    payload["events"] = rows
+    payload["items"] = rows
+    payload["estimated"] = rows
+    payload["confirmed"] = []
+    payload["detection"] = {"items": rows, "events": rows}
+    payload["causal"] = {"items": rows, "events": rows}
+    payload["answer"] = (
+        "No hay ballena confirmada con entidad y monto. Genesis muestra flujo vigilado con precio, "
+        "volumen y dollar volume; no lo presenta como compra confirmada."
+    )
+    payload["source_status"] = {
+        **(payload.get("source_status") if isinstance(payload.get("source_status"), dict) else {}),
+        "status": "proxy_empty_fast_flow",
+        "provider_used": "market_search_proxy",
+        "last_error_safe": "Railway devolvio ballenas activas vacias; se hidrato radar de flujo sin inventar entidad.",
+        "count": len(rows),
+    }
+    _apply_whale_metrics(payload, rows)
+
+
 def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> bytes:
     try:
         payload = json.loads(data.decode("utf-8"))
@@ -290,7 +356,11 @@ def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> 
     elif path == "/api/dashboard/alerts":
         _massage_alerts_payload(payload)
     elif path in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection", "/api/dashboard/money-flow/jarvis"}:
+        if path == "/api/dashboard/whales":
+            _replace_empty_proxy_whales_with_fast_flow(payload)
         _massage_whales_payload(payload)
+    elif path == "/api/dashboard/source-health":
+        _massage_source_health_payload(payload)
     elif path == "/api/genesis/ask":
         payload = _correct_genesis_proxy_payload(payload, body or {})
         payload = _enrich_genesis_asset_quote(payload)
@@ -1278,6 +1348,8 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
 
 
 def _massage_alerts_payload(payload: dict) -> None:
+    if isinstance(payload, dict):
+        payload.setdefault("ok", True)
     existing_tickers: set[str] = set()
     for key in ("items", "recent_alerts"):
         rows = payload.get(key)
@@ -1458,6 +1530,107 @@ def _proxy_opportunity_is_important(change_pct: float, dollar_volume: float | No
     if volume is not None and volume >= 10_000_000:
         return True
     return abs(change_pct) >= 1.0
+
+
+def _fast_whale_rows_from_quotes(ticker: str = "") -> list[dict]:
+    requested = str(ticker or "").strip().upper()
+    tickers = [requested] if requested else ["NVDA", "MSFT", "BTC-USD", "SPY", "QQQ", "BNO", "IAU"]
+    quote_payloads: dict[str, dict] = {}
+    executor = ThreadPoolExecutor(max_workers=min(4, len(tickers)))
+    future_map = {executor.submit(_market_search_for_proxy, symbol): symbol for symbol in tickers}
+    try:
+        for future in as_completed(future_map, timeout=2.8):
+            symbol = future_map[future]
+            try:
+                quote_payloads[symbol] = future.result(timeout=0)
+            except Exception:
+                quote_payloads[symbol] = {}
+    except Exception:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    rows: list[dict] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for symbol in tickers:
+        payload = quote_payloads.get(symbol) if isinstance(quote_payloads.get(symbol), dict) else {}
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        asset = next((row for row in results if str(row.get("ticker") or "").upper() == symbol), results[0] if results else None)
+        if not isinstance(asset, dict):
+            continue
+        price = _first_safe_num(asset.get("current_price"), asset.get("price"), asset.get("reference_price"))
+        volume = _first_safe_num(asset.get("volume"), asset.get("monitored_volume"), asset.get("avg_volume"))
+        change_pct = _safe_num(asset.get("daily_change_pct") or asset.get("change_pct") or asset.get("changesPercentage"))
+        dollar_volume, basis, suspicious = _safe_monitored_dollar_volume_for_proxy(
+            symbol,
+            price,
+            volume,
+            asset.get("dollar_volume") or asset.get("dollarVolume") or asset.get("quoteVolume") or asset.get("quote_volume"),
+        )
+        if price is None and volume is None and dollar_volume is None:
+            continue
+        direction = "inflow" if (change_pct or 0) > 0.35 else "outflow" if (change_pct or 0) < -0.35 else "neutral"
+        asset_name = str(asset.get("name") or asset.get("display_name") or symbol)
+        rows.append(
+            {
+                "id": f"whale-{symbol}-live-market-flow",
+                "event_type": "smart_money_estimate",
+                "type": "smart_money_estimate",
+                "ticker": symbol,
+                "asset_name": asset_name,
+                "event": "Flujo vigilado",
+                "action": "vigilancia",
+                "direction": direction,
+                "confirmed": False,
+                "entity_name": "",
+                "amount_usd": None,
+                "confirmed_amount_usd": None,
+                "price": price,
+                "price_used": price,
+                "current_price": price,
+                "volume": volume,
+                "monitored_volume": volume,
+                "dollar_volume": dollar_volume,
+                "monitored_dollar_volume": dollar_volume,
+                "monitored_volume_basis": basis,
+                "monitored_value_suspicious": suspicious,
+                "relative_volume": asset.get("relative_volume") or asset.get("relativeVolume"),
+                "source": asset.get("source_label") or asset.get("source") or "market_flow",
+                "confidence": "medium" if dollar_volume is not None and not suspicious else "low",
+                "timestamp": now,
+                "created_at": now,
+                "genesis_reading_es": (
+                    f"{symbol}: flujo estimado desde precio/volumen live. "
+                    "No es ballena confirmada sin entidad, monto reportado y fuente directa."
+                ),
+                "evidence": {
+                    "price": price,
+                    "volume": volume,
+                    "dollar_volume_basis": basis,
+                    "change_pct": change_pct,
+                    "not_confirmed": True,
+                },
+            }
+        )
+    return rows
+
+
+def _fast_whales_timeout_payload(ticker: str = "") -> dict:
+    rows = _fast_whale_rows_from_quotes(ticker)
+    payload: dict = {
+        "ok": True,
+        "items": rows,
+        "events": rows,
+        "detection": {"items": rows, "events": rows},
+        "causal": {"items": rows, "events": rows},
+        "source_status": {
+            "status": "timeout_fallback",
+            "provider_used": "market_search_proxy",
+            "last_error_safe": "whale source lenta; se usa flujo estimado sin inventar entidad",
+        },
+    }
+    _apply_whale_metrics(payload, rows)
+    return payload
 
 
 def _massage_whales_payload(payload: dict, *, hydrate_missing: bool = True) -> None:
@@ -2306,7 +2479,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 data = response.read()
                 status = int(getattr(response, "status", 200) or 200)
                 content_type = response.headers.get("Content-Type", "application/json; charset=utf-8")
-                if "json" in content_type:
+                if "json" in content_type or parsed.path.startswith("/api/"):
                     data = _massage_proxy_payload(parsed.path, data, body=body)
         except HTTPError as exc:
             data = exc.read() or json.dumps({"ok": False, "message": "Railway devolvio error seguro."}).encode("utf-8")
@@ -2594,6 +2767,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 {"ok": True, "answer": "Genesis no inventa ballenas: fuente lenta, sigo con volumen vigilado disponible.", "items": []},
             )
             _massage_whales_payload(payload_data)
+            if not _whale_payload_rows(payload_data):
+                fallback = _fast_whales_timeout_payload()
+                payload_data["items"] = fallback.get("items", [])
+                payload_data["events"] = fallback.get("events", [])
+                payload_data["answer"] = fallback.get("answer") or payload_data.get("answer")
+                payload_data["source_status"] = fallback.get("source_status")
+                _apply_whale_metrics(payload_data, _whale_payload_rows(payload_data))
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2697,7 +2877,19 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/dashboard/alerts":
-            payload = json.dumps(get_dashboard_alerts()).encode("utf-8")
+            payload_data = _call_json_with_timeout(
+                get_dashboard_alerts,
+                4,
+                {
+                    "ok": True,
+                    "items": [],
+                    "recent_alerts": [],
+                    "summary": {"engine_summary": "Alertas locales en timeout; Genesis mantiene oportunidades importantes si hay precio live."},
+                    "source_status": {"status": "timeout", "provider_used": "local_safe_timeout"},
+                },
+            )
+            _massage_alerts_payload(payload_data)
+            payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -2717,8 +2909,24 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/whales":
             ticker = (parse_qs(parsed.query).get("ticker") or [""])[0]
-            whales_payload = get_dashboard_whales(ticker)
+            whales_payload = _call_json_with_timeout(
+                lambda: get_dashboard_whales(ticker),
+                4.5,
+                {
+                    "ok": True,
+                    "items": [],
+                    "events": [],
+                    "detection": {"items": []},
+                    "causal": {"items": []},
+                    "source_status": {"status": "timeout", "provider_used": "local_safe_timeout"},
+                },
+            )
+            if not _whale_payload_rows(whales_payload):
+                whales_payload = _fast_whales_timeout_payload(ticker)
             _massage_whales_payload(whales_payload)
+            if not _whale_payload_rows(whales_payload):
+                whales_payload = _fast_whales_timeout_payload(ticker)
+                _massage_whales_payload(whales_payload)
             payload = json.dumps(whales_payload).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2742,11 +2950,35 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 6,
                 {
                     "ok": True,
-                    "fmp": {"status": "timeout", "last_error_safe": "source health lento; no se exponen secretos"},
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "fmp": {
+                        "status": "timeout",
+                        "key_configured": bool(os.getenv("FMP_API_KEY", "").strip()),
+                        "live_enabled": _truthy(os.getenv("FMP_LIVE_ENABLED")),
+                        "quote_ok": False,
+                        "news_ok": False,
+                        "historical_ok": False,
+                        "last_error_safe": "source health lento o proxy remoto no disponible; no se exponen secretos",
+                        "provider_used": "local_safe_timeout",
+                    },
+                    "openai": {
+                        "key_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+                        "llm_enabled": _truthy(os.getenv("GENESIS_LLM_ENABLED")),
+                        "model": os.getenv("GENESIS_LLM_MODEL", ""),
+                        "vision_enabled": _truthy(os.getenv("GENESIS_VISION_ENABLED")),
+                    },
+                    "database": {
+                        "database_url_configured": bool(os.getenv("DATABASE_URL", "").strip()),
+                        "memory_ok": False,
+                        "portfolio_store": "unknown_timeout",
+                    },
+                    "weather": {"open_meteo_ok": False, "last_error_safe": "no verificado por timeout seguro"},
                     "rss_news": {"enabled": True, "status": "unknown"},
                     "cache": {"status": "available"},
+                    "policy": "Diagnostico seguro de timeout: solo banderas booleanas, sin API keys ni secretos.",
                 },
             )
+            _massage_source_health_payload(payload_data)
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")

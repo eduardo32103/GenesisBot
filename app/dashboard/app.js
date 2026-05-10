@@ -4707,6 +4707,7 @@ function classifyWhaleType(value) {
 function whaleRowMarkup(row) {
   const display = getAssetDisplayName(row.ticker);
   const whaleId = whaleItemId(row);
+  rememberWhaleItem(row, whaleId);
   const confirmed = confirmedWhaleRow(row);
   const directionTone = String(row.direction || "").includes("out") ? "down" : String(row.direction || "").includes("in") ? "up" : "flat";
   const monitoredCheck = safeMonitoredDollarVolume(
@@ -5150,8 +5151,31 @@ function indexAlertItems(items) {
   appState.alertItemsById = {};
   (items || []).forEach((item) => {
     const id = alertItemId(item);
-    appState.alertItemsById[id] = { ...item, alert_id: id };
+    rememberAlertItem(item, id);
   });
+}
+
+function rememberAlertItem(item = {}, id = "") {
+  const alertId = id || alertItemId(item);
+  if (!alertId) return "";
+  appState.alertItemsById = appState.alertItemsById || {};
+  appState.alertItemsById[alertId] = { ...item, alert_id: alertId };
+  return alertId;
+}
+
+function resolveAlertItem(alertId = "") {
+  if (!alertId) return null;
+  let item = appState.alertItemsById?.[alertId];
+  if (item) return item;
+  indexAlertItems(currentAlertRows());
+  item = appState.alertItemsById?.[alertId];
+  if (item) return item;
+  const normalizedId = cleanCopy(alertId).toLowerCase();
+  const fallback = Object.values(appState.alertItemsById || {}).find((candidate) => {
+    const ticker = cleanCopy(itemTicker(candidate)).toLowerCase();
+    return ticker && normalizedId.includes(ticker.toLowerCase());
+  });
+  return fallback || null;
 }
 
 function whaleFlowBoardMarkup(rows = []) {
@@ -5215,8 +5239,48 @@ function indexWhaleItems(items) {
   (items || []).forEach((item) => {
     const hydrated = hydrateWhaleRowWithLiveAsset(item);
     const id = whaleItemId(hydrated);
-    appState.whaleItemsById[id] = { ...hydrated, id };
+    rememberWhaleItem(hydrated, id);
   });
+}
+
+function rememberWhaleItem(item = {}, id = "") {
+  const whaleId = id || whaleItemId(item);
+  if (!whaleId) return "";
+  const hydrated = hydrateWhaleRowWithLiveAsset(item);
+  appState.whaleItemsById = appState.whaleItemsById || {};
+  appState.whaleItemsById[whaleId] = { ...hydrated, id: whaleId };
+  return whaleId;
+}
+
+function tickerHintFromEventId(id = "") {
+  const raw = cleanCopy(id).replace(/^(whale|alert)-/i, "");
+  if (!raw) return "";
+  const knownTickers = [
+    "BTC-USD",
+    "ETH-USD",
+    "BZ=F",
+    "GC=F",
+    ...currentFocusAssets().map(itemTicker),
+    ...Object.values(appState.whaleItemsById || {}).map(itemTicker),
+    ...Object.values(appState.alertItemsById || {}).map(itemTicker),
+  ].filter(Boolean);
+  const known = knownTickers.find((ticker) => raw.toUpperCase().startsWith(ticker.toUpperCase()));
+  if (known) return normalizeTicker(known);
+  const firstToken = (raw.split("-")[0] || "").replace(/[^A-Z0-9.=^]/gi, "");
+  return normalizeTicker(firstToken);
+}
+
+function resolveWhaleItem(whaleId = "") {
+  if (!whaleId) return null;
+  let row = appState.whaleItemsById?.[whaleId];
+  if (row) return row;
+  indexWhaleItems(currentWhaleRows());
+  row = appState.whaleItemsById?.[whaleId];
+  if (row) return row;
+  const tickerHint = tickerHintFromEventId(whaleId);
+  if (!tickerHint) return null;
+  const fallback = Object.values(appState.whaleItemsById || {}).find((candidate) => itemTicker(candidate) === tickerHint);
+  return fallback || null;
 }
 
 function alertMarkup(item) {
@@ -5227,6 +5291,7 @@ function alertMarkup(item) {
   const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || priority;
   const tone = newsImpactTone(impact);
   const alertId = alertItemId(item);
+  rememberAlertItem(item, alertId);
   const priceLabel = item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica");
   const changeLabel = formatPercent(item.change_pct, "Sin dato");
   return `
@@ -5297,6 +5362,7 @@ function alertMarkupV2(item) {
   const impact = item.impact || item.impact_probable || item.latest_validation?.outcome_label || item.severity || "Vigilancia";
   const tone = newsImpactTone(impact);
   const alertId = alertItemId(item);
+  rememberAlertItem(item, alertId);
   const priceText = item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica");
   const changeText = formatPercent(item.change_pct, "Sin dato");
   const flowText = item.dollar_volume ? formatMoneyCompact(item.dollar_volume) : item.volume ? formatVolumeCompact(item.volume) : "Pendiente";
@@ -5355,6 +5421,7 @@ function alertVisualDigest(item = {}) {
 function whaleRowMarkupV2(row) {
   const display = getAssetDisplayName(row.ticker);
   const whaleId = whaleItemId(row);
+  rememberWhaleItem(row, whaleId);
   const confirmed = confirmedWhaleRow(row);
   const directionTone = String(row.direction || "").includes("out") ? "down" : String(row.direction || "").includes("in") ? "up" : "flat";
   const monitoredCheck = safeMonitoredDollarVolume(
@@ -5493,8 +5560,7 @@ function currentWhaleRows() {
 }
 
 function openAlertDetail(alertId) {
-  if (!Object.keys(appState.alertItemsById || {}).length) indexAlertItems(currentAlertRows());
-  const item = appState.alertItemsById?.[alertId];
+  const item = resolveAlertItem(alertId);
   if (!item) {
     toast(`No encontre alerta ${cleanCopy(alertId)}. Actualiza Alertas.`, "error");
     return;
@@ -5539,16 +5605,15 @@ function openAlertDetail(alertId) {
 }
 
 function openWhaleDetail(whaleId) {
-  if (!Object.keys(appState.whaleItemsById || {}).length) indexWhaleItems(currentWhaleRows());
-  let row = appState.whaleItemsById?.[whaleId];
+  let row = resolveWhaleItem(whaleId);
   if (!row) {
     toast(`No encontre flujo ${cleanCopy(whaleId)}. Actualiza Ballenas.`, "error");
     return;
   }
   row = hydrateWhaleRowWithLiveAsset(row);
-  appState.whaleItemsById[whaleId] = { ...row, id: whaleId };
-  hydrateOpenWhaleDetailFromChart(row, whaleId);
-  appState.selectedWhaleId = whaleId;
+  const resolvedWhaleId = rememberWhaleItem(row, whaleId);
+  hydrateOpenWhaleDetailFromChart(row, resolvedWhaleId);
+  appState.selectedWhaleId = resolvedWhaleId;
   const sheet = document.getElementById("event-sheet");
   const body = document.getElementById("event-sheet-body");
   if (!sheet || !body) return;
