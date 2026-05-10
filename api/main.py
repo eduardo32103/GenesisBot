@@ -89,12 +89,6 @@ _YAHOO_TIMEFRAMES = {
     "MAX": ("max", "1mo"),
 }
 _PROXY_POST_PATHS = {
-    "/api/dashboard/portfolio/paper",
-    "/api/dashboard/portfolio/paper-buy",
-    "/api/dashboard/portfolio/paper-remove",
-    "/api/dashboard/portfolio/watchlist",
-    "/api/dashboard/portfolio/watchlist/add",
-    "/api/dashboard/portfolio/watchlist/remove",
     "/api/genesis/analyze-image",
     "/api/genesis/ask",
     "/api/genesis/memory/event",
