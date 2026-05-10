@@ -1882,6 +1882,12 @@ function assetAnalysisVisual(payload, answer = "") {
   const fib = technical.fibonacci || {};
   const golden = technical.golden_pocket || {};
   const scenario = structured.scenario || {};
+  const decisionSource = structured.decision || payload?.decision || {};
+  const decisionWatch = Array.isArray(decisionSource.what_to_watch_es)
+    ? decisionSource.what_to_watch_es
+    : Array.isArray(decisionSource.what_to_watch)
+      ? decisionSource.what_to_watch
+      : [];
   const catalystLines = (structured.sections || [])
     .flatMap((section) => Array.isArray(section?.bullets) ? section.bullets : [])
     .map(stripMarkdownCopy)
@@ -1940,6 +1946,18 @@ function assetAnalysisVisual(payload, answer = "") {
       conviction: convictionScore,
       moneyFlow: payload?.whales?.answer || "Sin flujo institucional confirmado.",
     },
+    decision: decisionSource && Object.keys(decisionSource).length ? {
+      action: cleanCopy(decisionSource.action || "watch_confirmation"),
+      label: cleanCopy(decisionSource.label_es || decisionSource.label || "Vigilar confirmación"),
+      tone: cleanCopy(decisionSource.tone || bias),
+      reason: cleanCopy(decisionSource.reason_es || decisionSource.reason || "Genesis espera confirmación de precio, volumen y niveles."),
+      entry: cleanCopy(decisionSource.entry_condition_es || decisionSource.entry_condition || "Paper solo si confirma ruptura/retest con volumen."),
+      invalidation: cleanCopy(decisionSource.invalidation_es || decisionSource.invalidation || "Pierde soporte o falla volumen."),
+      risk: cleanCopy(decisionSource.risk_es || decisionSource.risk || "No perseguir precio sin confirmación."),
+      watch: decisionWatch.map(cleanCopy).filter(Boolean).slice(0, 4),
+      confidence: numberOrNull(decisionSource.confidence),
+      source: cleanCopy(decisionSource.source || quoteSourceLabel(quote)),
+    } : null,
     scenario: {
       probable: scenario.probable || "Esperar confirmacion de precio, volumen y contexto.",
       invalidation: scenario.invalidacion || scenario.invalidation || "Perder soporte o deteriorar volumen baja conviccion.",
@@ -2226,6 +2244,7 @@ function assetAnalysisVisualMarkup(visual) {
         <span class="conviction-pill ${visual.bias}">${escapeHtml(biasLabel(visual.bias))}</span>
       </div>
       <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      ${assetDecisionCardMarkup(visual)}
       <div class="visual-market-strip">
         <span>
           <small>Precio confirmado</small>
@@ -2287,6 +2306,42 @@ function assetAnalysisVisualMarkup(visual) {
       </div>
       ${assetVisualRelatedMarkup(visual.ticker)}
     </section>
+  `;
+}
+
+function assetDecisionCardMarkup(visual) {
+  const decision = visual?.decision;
+  if (!decision) return "";
+  const tone = decision.tone === "bearish" || decision.action === "reduce_risk" || decision.action === "wait_for_support"
+    ? "down"
+    : decision.tone === "bullish" || decision.action === "buy_cautiously"
+      ? "up"
+      : "flat";
+  const confidence = Math.round(Math.max(0, Math.min(1, numberOrNull(decision.confidence) ?? visual.confidence ?? 0.5)) * 100);
+  const watch = (decision.watch?.length ? decision.watch : ["Precio, volumen, soporte/resistencia y noticias antes de operar."]).slice(0, 4);
+  return `
+    <div class="asset-decision-card ${tone}">
+      <div class="asset-decision-head">
+        <span>Veredicto Genesis</span>
+        <strong>${escapeHtml(decision.label || "Vigilar confirmación")}</strong>
+        <em>${escapeHtml(`${confidence}% confianza`)}</em>
+      </div>
+      <p>${escapeHtml(decision.reason || "Genesis espera confirmación antes de actuar.")}</p>
+      <div class="decision-checks">
+        <span>
+          <small>Entrada condicional</small>
+          <b>${escapeHtml(decision.entry || "Paper solo si confirma con volumen.")}</b>
+        </span>
+        <span>
+          <small>Invalidación</small>
+          <b>${escapeHtml(decision.invalidation || "Pierde soporte o falla volumen.")}</b>
+        </span>
+      </div>
+      <div class="decision-watch">
+        ${watch.map((item) => `<i>${escapeHtml(item)}</i>`).join("")}
+      </div>
+      <small class="decision-risk">${escapeHtml(decision.risk || "No es orden real ni broker; es radar para validación.")}</small>
+    </div>
   `;
 }
 

@@ -600,6 +600,122 @@ input:focus-visible {
   font-size: 0.9rem !important;
 }
 
+.asset-decision-card {
+  display: grid;
+  gap: 9px;
+  border: 1px solid rgba(123, 224, 173, 0.2);
+  border-radius: 15px;
+  padding: 12px;
+  background:
+    linear-gradient(135deg, rgba(123, 224, 173, 0.11), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.018);
+}
+
+.asset-decision-card.down {
+  border-color: rgba(255, 111, 103, 0.22);
+  background:
+    linear-gradient(135deg, rgba(255, 111, 103, 0.11), rgba(255, 255, 255, 0.025)),
+    rgba(255, 255, 255, 0.018);
+}
+
+.asset-decision-card.flat {
+  border-color: rgba(119, 179, 255, 0.18);
+  background:
+    linear-gradient(135deg, rgba(119, 179, 255, 0.09), rgba(255, 255, 255, 0.025)),
+    rgba(255, 255, 255, 0.018);
+}
+
+.asset-decision-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  align-items: center;
+}
+
+.asset-decision-head span {
+  grid-column: 1 / -1;
+  color: var(--faint);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.asset-decision-head strong {
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.12;
+}
+
+.asset-decision-head em {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: var(--soft);
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.asset-decision-card p,
+.decision-risk {
+  margin: 0;
+  color: var(--soft);
+  font-size: 0.78rem;
+  line-height: 1.36;
+}
+
+.decision-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.decision-checks span {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 11px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.decision-checks small {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--faint);
+  font-size: 0.56rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.decision-checks b {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.22;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.decision-watch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.decision-watch i {
+  max-width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-style: normal;
+  line-height: 1.15;
+}
+
 .visual-market-strip,
 .visual-grid {
   display: grid;

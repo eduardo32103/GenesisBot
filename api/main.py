@@ -294,6 +294,7 @@ def _massage_proxy_payload(path: str, data: bytes, body: dict | None = None) -> 
     elif path == "/api/genesis/ask":
         payload = _correct_genesis_proxy_payload(payload, body or {})
         payload = _enrich_genesis_asset_quote(payload)
+        payload = _enrich_genesis_trade_decision(payload, _genesis_message_from_body(body or {}))
         payload = _enrich_genesis_whale_payload(payload)
     elif path == "/api/genesis/analyze-image":
         payload = _massage_image_analysis_payload(payload, body or {})
@@ -572,6 +573,28 @@ def _is_asset_genesis_prompt(message: str, context: object | None = None) -> boo
     return any(token in text for token in asset_intent_tokens) or len(tickers) == 1
 
 
+def _is_trade_decision_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    decision_tokens = (
+        " deberia ",
+        " deberia comprar ",
+        " deberia vender ",
+        " conviene ",
+        " buena idea ",
+        " comprar ",
+        " compro ",
+        " entrada ",
+        " entrar ",
+        " vender ",
+        " vendo ",
+        " mantener ",
+        " aguantar ",
+        " salirme ",
+        " operar ",
+    )
+    return any(token in text for token in decision_tokens)
+
+
 def _local_asset_genesis_payload(body: dict, message: str) -> dict:
     panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
     tickers = _prompt_tickers(message, context=panel_context)
@@ -584,6 +607,7 @@ def _local_asset_genesis_payload(body: dict, message: str) -> dict:
         conversation_id=str(body.get("conversation_id") or "default"),
     )
     result = _enrich_genesis_asset_quote(result)
+    result = _enrich_genesis_trade_decision(result, message)
     result = _enrich_genesis_whale_payload(result)
     return result
 
@@ -1781,6 +1805,149 @@ def _enrich_genesis_asset_quote(result: dict) -> dict:
     return result
 
 
+def _enrich_genesis_trade_decision(result: dict, message: str) -> dict:
+    if not isinstance(result, dict) or not _is_trade_decision_prompt(message):
+        return result
+    response_type = str(result.get("response_type") or result.get("kind") or "")
+    if response_type not in {"asset_analysis", "chart_analysis"} and result.get("intent") not in {"ticker_analysis", "technical_indicators", "chart_request"}:
+        return result
+
+    quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
+    structured = result.get("structured") if isinstance(result.get("structured"), dict) else {}
+    indicators = structured.get("indicators") if isinstance(structured.get("indicators"), dict) else {}
+    technical = result.get("technical") if isinstance(result.get("technical"), dict) else {}
+    if isinstance(technical.get("indicators"), dict):
+        indicators = {**indicators, **technical["indicators"]}
+    levels = structured.get("levels") if isinstance(structured.get("levels"), dict) else {}
+
+    ticker = str(
+        quote.get("ticker")
+        or structured.get("ticker")
+        or result.get("ticker")
+        or (result.get("tickers")[0] if isinstance(result.get("tickers"), list) and result.get("tickers") else "")
+        or ""
+    ).strip().upper()
+    if not ticker:
+        return result
+
+    price = _first_safe_num(quote.get("current_price"), quote.get("price"), structured.get("current_price"))
+    change = _first_safe_num(quote.get("daily_change"), quote.get("change"), structured.get("change"))
+    change_pct = _first_safe_num(quote.get("daily_change_pct"), quote.get("change_pct"), quote.get("percent_change"), structured.get("change_pct"))
+    previous_close = _safe_num(quote.get("previous_close"))
+    if (change_pct is None or abs(change_pct) < 0.005) and change is not None and previous_close:
+        change_pct = (change / previous_close) * 100
+    support = _first_safe_num(levels.get("support"), indicators.get("support"), quote.get("day_low"), quote.get("dayLow"))
+    resistance = _first_safe_num(levels.get("resistance"), indicators.get("resistance"), quote.get("day_high"), quote.get("dayHigh"))
+    volume = _first_safe_num(quote.get("volume"), indicators.get("volume"))
+    relative_volume = _first_safe_num(indicators.get("relative_volume"), indicators.get("relativeVolume"), quote.get("relative_volume"))
+    rsi = _safe_num(indicators.get("rsi"))
+    confidence = _safe_num(structured.get("confidence")) or (0.82 if price is not None else 0.35)
+    source = quote.get("source_label") or quote.get("source") or "FMP / datos directos"
+    text = f" {_fold_prompt(message)} "
+    asks_sell = any(token in text for token in (" vender ", " vendo ", " salirme ", " reducir "))
+
+    price_label = _money_short(price) if price is not None else "precio pendiente"
+    pct_label = f"{change_pct:+.2f}%" if change_pct is not None else "cambio pendiente"
+    support_label = _money_short(support) if support is not None else "soporte pendiente"
+    resistance_label = _money_short(resistance) if resistance is not None else "resistencia pendiente"
+    volume_label = f"{volume:,.0f}" if volume is not None else "volumen pendiente"
+    rel_volume_label = f"{relative_volume:.2f}x" if relative_volume is not None else "volumen relativo pendiente"
+
+    action = "wait"
+    label = "Esperar confirmacion"
+    tone = "neutral"
+    reason = "Genesis no tiene suficiente confirmacion de precio, volumen y niveles para subir la conviccion."
+    entry = f"Esperar ruptura y cierre arriba de {resistance_label} con volumen sostenido; si no confirma, no perseguir el movimiento."
+    invalidation = f"Invalidar la idea si pierde {support_label} o si el volumen se seca despues de tocar resistencia."
+    risk = "Riesgo principal: entrar solo por precio sin confirmacion de volumen, noticias y soporte."
+
+    if price is None:
+        label = "Esperar datos confirmados"
+        reason = f"No hay precio confirmado para {ticker}; Genesis no convierte esto en senal operativa."
+        entry = "Reintentar cuando FMP/backend entregue precio, historico y volumen."
+        invalidation = "Sin precio confirmado, la lectura queda invalidada para decision."
+    elif asks_sell:
+        if change_pct is not None and change_pct < 0:
+            action = "reduce_risk"
+            label = "Reducir riesgo con cautela"
+            tone = "bearish"
+            reason = f"{ticker} esta presionado ({pct_label}); si ya tienes posicion, Genesis prioriza proteger capital antes que promediar a ciegas."
+        else:
+            action = "hold_watch"
+            label = "Mantener y vigilar"
+            reason = f"{ticker} no muestra deterioro suficiente para forzar salida; vigila {support_label} y volumen."
+        entry = "Para paper: reducir parcial solo si pierde soporte con volumen o si falla el rebote."
+        invalidation = f"La salida pierde fuerza si recupera {resistance_label} con volumen."
+    elif change_pct is not None and change_pct < -1.2:
+        action = "wait_for_support"
+        label = "Esperar soporte"
+        tone = "bearish"
+        reason = f"{ticker} viene debil ({pct_label}); comprar ahora seria anticiparse sin confirmacion."
+        entry = f"Paper solo si respeta {support_label} y rebota con volumen mayor al promedio."
+    elif rsi is not None and rsi >= 72:
+        action = "wait_for_retest"
+        label = "Esperar retest"
+        tone = "neutral"
+        reason = f"{ticker} puede estar extendido por RSI {rsi:.1f}; Genesis prefiere entrada en retroceso o confirmacion limpia."
+        entry = f"Buscar retest cerca de {support_label} o cierre fuerte arriba de {resistance_label} con volumen."
+    elif change_pct is not None and change_pct > 0.35 and (relative_volume is None or relative_volume < 1.05):
+        action = "watch_confirmation"
+        label = "Vigilar confirmacion"
+        tone = "bullish"
+        reason = f"{ticker} sube ({pct_label}), pero el volumen relativo todavia no confirma fuerza institucional."
+    elif change_pct is not None and change_pct >= 0 and confidence >= 0.72:
+        action = "buy_cautiously"
+        label = "Comprar con cautela"
+        tone = "bullish"
+        reason = f"{ticker} tiene precio confirmado en {price_label} y sesgo positivo; solo tiene sentido si confirma volumen y respeta niveles."
+        entry = f"Paper pequeno si confirma arriba de {resistance_label} o hace retest limpio sin perder {support_label}."
+    else:
+        reason = f"{ticker} esta en rango ({pct_label}); Genesis espera una senal mas clara antes de actuar."
+
+    decision = {
+        "action": action,
+        "label_es": label,
+        "tone": tone,
+        "reason_es": reason,
+        "entry_condition_es": entry,
+        "invalidation_es": invalidation,
+        "risk_es": risk,
+        "what_to_watch_es": [
+            f"Precio: {price_label} ({pct_label})",
+            f"Volumen: {volume_label} / relativo {rel_volume_label}",
+            f"Zona: soporte {support_label}, resistencia {resistance_label}",
+            "Noticias, alertas y flujo de ballenas antes de subir tamano.",
+        ],
+        "confidence": min(0.92, max(0.35, confidence)),
+        "source": source,
+        "not_real_order": True,
+    }
+
+    result["decision"] = decision
+    if not isinstance(result.get("structured"), dict):
+        result["structured"] = {}
+    result["structured"]["decision"] = decision
+    result["structured"]["scenario"] = {
+        **(result["structured"].get("scenario") if isinstance(result["structured"].get("scenario"), dict) else {}),
+        "probable": reason,
+        "invalidation": invalidation,
+    }
+    result["structured"]["sections"] = [
+        {"title": "Veredicto", "bullets": [f"{label}: {reason}"]},
+        {"title": "Entrada condicional", "bullets": [entry]},
+        {"title": "Invalidacion", "bullets": [invalidation]},
+        {"title": "Que vigilar", "bullets": decision["what_to_watch_es"][:3]},
+    ]
+    result["answer"] = (
+        f"VEREDICTO: {label}. {ticker} cotiza en {price_label} ({pct_label}). {reason}\n\n"
+        f"Entrada condicional: {entry}\n\n"
+        f"Invalidacion: {invalidation}\n\n"
+        f"Riesgo: {risk}\n\n"
+        "No es compra real ni orden de broker; es una lectura para validar en paper."
+    )
+    return result
+
+
 def _market_search_for_proxy(ticker: str) -> dict:
     normalized_query = str(ticker or "").strip().upper()
     try:
@@ -2193,6 +2360,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             result = _enrich_genesis_asset_quote(result)
+            result = _enrich_genesis_trade_decision(result, message)
             result = _enrich_genesis_whale_payload(result)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return

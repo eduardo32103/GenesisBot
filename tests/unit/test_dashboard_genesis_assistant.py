@@ -5,7 +5,13 @@ import os
 import unittest
 from unittest.mock import patch
 
-from api.main import _massage_proxy_payload, _resolve_dashboard_host, _resolve_dashboard_port, create_app
+from api.main import (
+    _enrich_genesis_trade_decision,
+    _massage_proxy_payload,
+    _resolve_dashboard_host,
+    _resolve_dashboard_port,
+    create_app,
+)
 from services.dashboard.get_genesis_answer import get_genesis_answer, get_genesis_fallback_answer
 
 
@@ -107,6 +113,42 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["response_type"], "news_brief")
         self.assertEqual(fixed["tickers"], [])
         self.assertNotIn("ENH", json.dumps(fixed))
+
+    def test_trade_question_gets_decision_contract_for_ui(self) -> None:
+        payload = {
+            "ok": True,
+            "intent": "ticker_analysis",
+            "response_type": "asset_analysis",
+            "kind": "asset_analysis",
+            "tickers": ["NVDA"],
+            "answer": "NVDA tiene precio confirmado.",
+            "quote": {
+                "ticker": "NVDA",
+                "current_price": 215.20,
+                "daily_change": 3.70,
+                "daily_change_pct": 1.75,
+                "volume": 134128204,
+                "day_low": 212.89,
+                "day_high": 217.80,
+                "source_label": "FMP / datos directos",
+            },
+            "structured": {
+                "ticker": "NVDA",
+                "confidence": 0.82,
+                "levels": {"support": 212.89, "resistance": 217.80},
+                "indicators": {"relative_volume": 1.12, "rsi": 55.0},
+            },
+        }
+
+        fixed = _enrich_genesis_trade_decision(payload, "deberia comprar nvda?")
+
+        self.assertIn("decision", fixed)
+        self.assertIn("decision", fixed["structured"])
+        self.assertIn("VEREDICTO", fixed["answer"])
+        self.assertIn("Entrada condicional", fixed["answer"])
+        self.assertTrue(fixed["structured"]["decision"]["not_real_order"])
+        self.assertNotIn("compra segura", fixed["answer"].lower())
+        self.assertNotIn("garantiza", fixed["answer"].lower())
 
     def test_genesis_answer_is_local_and_conservative(self) -> None:
         payload = get_genesis_answer("que esta pasando")
