@@ -2615,29 +2615,45 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path in {"/api/dashboard/portfolio/watchlist", "/api/dashboard/portfolio/watchlist/add"}:
-            result = add_dashboard_portfolio_ticker(str(body.get("ticker") or ""))
+            ticker = str(
+                body.get("ticker")
+                or body.get("symbol")
+                or body.get("asset")
+                or body.get("query")
+                or ""
+            )
+            result = add_dashboard_portfolio_ticker(ticker)
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._write_json(result, status)
             return
 
         if parsed.path in {"/api/dashboard/portfolio/paper", "/api/dashboard/portfolio/paper-buy"}:
+            ticker = str(
+                body.get("ticker")
+                or body.get("symbol")
+                or body.get("asset")
+                or body.get("query")
+                or ""
+            )
             result = simulate_dashboard_portfolio_purchase(
-                str(body.get("ticker") or ""),
-                units=body.get("units"),
-                entry_price=body.get("entry_price"),
+                ticker,
+                units=body.get("units") or body.get("shares") or body.get("quantity"),
+                entry_price=body.get("entry_price") or body.get("price") or body.get("avg_price") or body.get("average_price"),
             )
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._write_json(result, status)
             return
 
         if parsed.path == "/api/dashboard/portfolio/watchlist/remove":
-            result = remove_dashboard_portfolio_ticker(str(body.get("ticker") or ""))
+            ticker = str(body.get("ticker") or body.get("symbol") or body.get("asset") or "")
+            result = remove_dashboard_portfolio_ticker(ticker)
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._write_json(result, status)
             return
 
         if parsed.path == "/api/dashboard/portfolio/paper-remove":
-            result = remove_dashboard_portfolio_purchase(str(body.get("ticker") or ""))
+            ticker = str(body.get("ticker") or body.get("symbol") or body.get("asset") or "")
+            result = remove_dashboard_portfolio_purchase(ticker)
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._write_json(result, status)
             return

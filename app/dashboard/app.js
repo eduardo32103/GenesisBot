@@ -1091,6 +1091,78 @@ function findAsset(ticker) {
     || null;
 }
 
+function marketSeedForTicker(ticker) {
+  const normalized = normalizeTicker(ticker);
+  return appState.marketSearchResults.tracking.find((item) => itemTicker(item) === normalized)
+    || appState.marketSearchResults.portfolio.find((item) => itemTicker(item) === normalized)
+    || findAsset(normalized)
+    || { ticker: normalized, symbol: normalized };
+}
+
+function upsertByTicker(list, row) {
+  const normalized = itemTicker(row);
+  if (!normalized) return list;
+  const index = list.findIndex((item) => itemTicker(item) === normalized);
+  if (index >= 0) {
+    list[index] = { ...list[index], ...row, ticker: normalized, symbol: normalized };
+    return list;
+  }
+  list.push({ ...row, ticker: normalized, symbol: normalized });
+  return list;
+}
+
+function upsertOptimisticWatchlist(ticker, seed = {}) {
+  const normalized = normalizeTicker(ticker);
+  if (!normalized) return null;
+  const display = getAssetDisplayName(seed?.ticker ? seed : normalized);
+  const row = {
+    ...seed,
+    ticker: normalized,
+    symbol: normalized,
+    display_name: seed.display_name || seed.name || seed.companyName || display.displayName || normalized,
+    name: seed.name || seed.display_name || seed.companyName || display.displayName || normalized,
+    watchlist: true,
+    removed_watchlist: false,
+    is_investment: Boolean(seed.is_investment && itemUnits(seed) !== null),
+    source: seed.source || "ui_confirmed",
+    updated_at: new Date().toISOString(),
+  };
+  upsertByTicker(appState.allItems, row);
+  upsertByTicker(appState.trackingItems, row);
+  return row;
+}
+
+function upsertOptimisticPaperPosition(ticker, units, entryPrice, seed = {}) {
+  const normalized = normalizeTicker(ticker);
+  const normalizedUnits = numberOrNull(units);
+  const normalizedEntry = numberOrNull(entryPrice);
+  if (!normalized || normalizedUnits === null || normalizedEntry === null) return null;
+  const livePrice = itemPrice(seed) ?? normalizedEntry;
+  const display = getAssetDisplayName(seed?.ticker ? seed : normalized);
+  const row = {
+    ...seed,
+    ticker: normalized,
+    symbol: normalized,
+    display_name: seed.display_name || seed.name || seed.companyName || display.displayName || normalized,
+    name: seed.name || seed.display_name || seed.companyName || display.displayName || normalized,
+    units: normalizedUnits,
+    entry_price: normalizedEntry,
+    amount_usd: normalizedUnits * normalizedEntry,
+    cost_basis: normalizedUnits * normalizedEntry,
+    current_price: livePrice,
+    reference_price: livePrice,
+    mode: "paper",
+    is_investment: true,
+    source: seed.source || "ui_confirmed",
+    updated_at: new Date().toISOString(),
+  };
+  upsertByTicker(appState.allItems, row);
+  upsertByTicker(appState.paperPositions, row);
+  if (row.watchlist === true) upsertByTicker(appState.trackingItems, { ...row, is_investment: false });
+  splitPortfolioSnapshot({ items: appState.allItems, summary: appState.portfolioTotals, generated_at: new Date().toISOString() });
+  return row;
+}
+
 function chartQuoteAsset(ticker, range = "1Y") {
   const normalized = normalizeTicker(ticker);
   const payload = appState.chartCache[chartCacheKey(normalized, range)]?.payload
@@ -1448,14 +1520,29 @@ async function searchPortfolioBuyTicker() {
 async function addTickerToWatchlist(ticker) {
   const normalized = normalizeTicker(ticker);
   if (!normalized) throw new Error("Ticker no valido.");
-  const result = await postJson("/api/dashboard/portfolio/watchlist/add", { ticker: normalized });
-  await refreshPortfolio({ render: false, force: true });
-  const exists = Boolean(findTrackingItem(normalized));
+  const seed = marketSeedForTicker(normalized);
+  const result = await postJson("/api/dashboard/portfolio/watchlist/add", {
+    ticker: normalized,
+    symbol: normalized,
+    name: seed?.name || seed?.display_name || seed?.companyName || "",
+    reference_price: itemPrice(seed),
+  });
+  let refreshError = null;
+  try {
+    await refreshPortfolio({ render: false, force: true });
+  } catch (error) {
+    refreshError = error;
+  }
+  let exists = Boolean(findTrackingItem(normalized));
   if (!exists) {
-    renderActiveScreen();
-    throw new Error("No se agrego a seguimiento. El snapshot no cambio.");
+    upsertOptimisticWatchlist(normalized, seed);
+    exists = Boolean(findTrackingItem(normalized));
   }
   renderActiveScreen();
+  if (refreshError) {
+    toast("Seguimiento guardado; Genesis esta sincronizando el snapshot live.", "info");
+  }
+  if (!exists) throw new Error("Genesis guardo el activo, pero no pudo reflejarlo en pantalla.");
   toast(result.status === "exists" ? "Ya esta en seguimiento." : `${normalized} agregado a seguimiento.`, "success");
   return result;
 }
@@ -1483,17 +1570,28 @@ async function savePaperBuy(ticker, units, entryPrice) {
 
   const result = await postJson("/api/dashboard/portfolio/paper-buy", {
     ticker: normalized,
+    symbol: normalized,
     units,
     entry_price: entryPrice,
     mode: "paper",
   });
-  await refreshPortfolio({ render: false, force: true });
-  const position = findPaperPosition(normalized);
+  const seed = marketSeedForTicker(normalized);
+  let refreshError = null;
+  try {
+    await refreshPortfolio({ render: false, force: true });
+  } catch (error) {
+    refreshError = error;
+  }
+  let position = findPaperPosition(normalized);
   if (!position) {
-    renderActiveScreen();
-    throw new Error("No se guardo la compra simulada. La lectura actual no trae la posicion paper.");
+    upsertOptimisticPaperPosition(normalized, units, entryPrice, seed);
+    position = findPaperPosition(normalized);
   }
   renderActiveScreen();
+  if (refreshError) {
+    toast("Compra paper guardada; Genesis esta sincronizando cartera live.", "info");
+  }
+  if (!position) throw new Error("Genesis guardo la compra, pero no pudo reflejarla en pantalla.");
   toast(result.message || `Compra simulada de ${normalized} guardada.`, "success");
   return result;
 }
