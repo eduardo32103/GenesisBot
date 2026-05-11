@@ -9,7 +9,9 @@ from api.main import (
     _enrich_genesis_trade_decision,
     _is_asset_genesis_prompt,
     _is_comparison_genesis_prompt,
+    _is_weather_genesis_prompt,
     _massage_proxy_payload,
+    _prompt_tickers,
     _resolve_dashboard_host,
     _resolve_dashboard_port,
     create_app,
@@ -120,6 +122,51 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertFalse(_is_asset_genesis_prompt("que esta pasando en noticias?"))
         self.assertFalse(_is_asset_genesis_prompt("que hicimos el viernes pasado?"))
         self.assertTrue(_is_comparison_genesis_prompt("compara nvda vs bno"))
+
+    @patch("api.main.get_weather_answer")
+    def test_local_proxy_routes_weather_before_market_or_asset(self, mock_weather) -> None:
+        mock_weather.return_value = {
+            "ok": True,
+            "intent": "weather",
+            "city": "Los Mochis, Sinaloa, Mexico",
+            "answer": "En Los Mochis esta despejado, cerca de 27.0 C. Fuente: Open-Meteo.",
+            "source": "open_meteo",
+            "condition": "despejado",
+            "icon": "\u2600\ufe0f",
+            "temperature": 27.0,
+            "feels_like": 28.0,
+            "min_temp": 22.0,
+            "max_temp": 34.0,
+            "precipitation_probability": 0,
+            "wind_speed": 8.0,
+            "updated_at": "2026-05-10T22:00",
+        }
+        stale_payload = {
+            "ok": True,
+            "intent": "market_overview",
+            "response_type": "market_summary",
+            "answer": "Panorama no concluyente",
+        }
+
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "como esta el clima en los mochis", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "weather")
+        self.assertEqual(fixed["response_type"], "weather")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertIn("Los Mochis", fixed["weather"]["city"])
+        self.assertNotIn("Panorama no concluyente", json.dumps(fixed))
+
+    def test_weather_words_are_not_tickers(self) -> None:
+        self.assertTrue(_is_weather_genesis_prompt("como esta el clima en los mochis"))
+        self.assertFalse(_is_asset_genesis_prompt("como esta el clima en los mochis"))
+        self.assertEqual(_prompt_tickers("como esta el clima en los mochis"), [])
+        self.assertEqual(_prompt_tickers("hola genesis como estas"), [])
 
     @patch("api.main.get_dashboard_alerts")
     @patch("api.main.get_dashboard_news")

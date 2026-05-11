@@ -243,6 +243,24 @@ _STOPWORDS.update(
     }
 )
 
+_STOPWORDS.update(
+    {
+        "CALOR",
+        "DESPEJADO",
+        "FRIO",
+        "HUMEDAD",
+        "LLUEVE",
+        "LLUVIA",
+        "MOCHIS",
+        "NUBLADO",
+        "PRONOSTICO",
+        "TEMPERATURA",
+        "TIEMPO",
+        "VIENTO",
+        "WEATHER",
+    }
+)
+
 _ALIASES = {
     "BTC": "BTC-USD",
     "BITCOIN": "BTC-USD",

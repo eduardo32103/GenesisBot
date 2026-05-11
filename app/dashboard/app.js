@@ -794,6 +794,23 @@ function isNewsQuestion(text) {
   ].some((needle) => normalized.includes(needle));
 }
 
+function isWeatherQuestion(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  return [
+    " clima ",
+    " temperatura ",
+    " lluvia ",
+    " llueve ",
+    " tiempo ",
+    " viento ",
+    " pronostico ",
+    " humedad ",
+    " calor ",
+    " frio ",
+    " weather ",
+  ].some((needle) => normalized.includes(needle));
+}
+
 function tickerFromText(text) {
   const normalized = String(text || "")
     .normalize("NFD")
@@ -801,11 +818,12 @@ function tickerFromText(text) {
     .toUpperCase();
   if (isMarketOverviewQuestion(normalized)) return "";
   if (isNewsQuestion(normalized)) return "";
+  if (isWeatherQuestion(normalized)) return "";
   if (isWhaleQuestion(normalized)) {
     const whaleTicker = normalized.match(/\b(BTC|BITCOIN|ETH|SOL|NVDA|MSFT|META|NFLX|TSLA|SPY|QQQ|BNO|BZ=F|IAU|SLV|MARA)\b/);
     if (!whaleTicker) return "";
   }
-  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "EN", "LA", "EL", "LAS", "LOS", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "NOTICIA", "NOTICIAS", "TITULAR", "TITULARES", "CATALIZADOR", "CATALIZADORES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTA", "ESTAN", "ESTAS", "ESTOY", "ESTAMOS", "PASANDO", "PASA", "PASO", "DIME", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS", "BALLENA", "BALLENAS", "SMART", "MONEY", "DINERO", "GRANDE", "FLUJO", "FLUJOS", "INSTITUCIONAL", "INSTITUCIONALES"]);
+  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "EN", "LA", "EL", "LAS", "LOS", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "NOTICIA", "NOTICIAS", "TITULAR", "TITULARES", "CATALIZADOR", "CATALIZADORES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTA", "ESTAN", "ESTAS", "ESTOY", "ESTAMOS", "PASANDO", "PASA", "PASO", "DIME", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS", "BALLENA", "BALLENAS", "SMART", "MONEY", "DINERO", "GRANDE", "FLUJO", "FLUJOS", "INSTITUCIONAL", "INSTITUCIONALES", "CLIMA", "TEMPERATURA", "LLUVIA", "LLUEVE", "TIEMPO", "VIENTO", "PRONOSTICO", "HUMEDAD", "CALOR", "FRIO", "MOCHIS", "WEATHER"]);
   const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F", PETROLEO: "BZ=F", ORO: "IAU", PLATA: "SLV" };
   const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
   const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
@@ -1904,6 +1922,15 @@ function forcedNewsPayloadFromState(question = "", sourcePayload = {}) {
 }
 
 async function correctGenesisIntentPayload(payload = {}, question = "") {
+  if (isWeatherQuestion(question)) {
+    return {
+      ...payload,
+      tickers: [],
+      quote: null,
+      chart: null,
+      technical: null,
+    };
+  }
   if (isWhaleQuestion(question)) {
     if (isWhalePayload(payload)) {
       return {
@@ -3166,6 +3193,7 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
   if (isMarketOverviewQuestion(question)) return payload;
   if (isNewsQuestion(question) || isNewsPayload(payload)) return payload;
   if (isWhaleQuestion(question) || isWhalePayload(payload)) return payload;
+  if (isWeatherQuestion(question)) return payload;
   const responseType = String(payload?.response_type || "");
   const intent = String(payload?.intent || "");
   if (!(["asset_analysis", "chart_analysis"].includes(responseType) || ["ticker_analysis", "technical_indicators", "chart_request"].includes(intent))) {
@@ -3208,6 +3236,7 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
 
 async function localAssetFallbackMessage(question, error) {
   if (isMarketOverviewQuestion(question)) return null;
+  if (isWeatherQuestion(question)) return null;
   if (isNewsQuestion(question)) {
     return genesisAssistantMessageFromPayload(forcedNewsPayloadFromState(question), question);
   }
@@ -3270,6 +3299,25 @@ function quoteFromAsset(asset = {}) {
 
 function offlineGenesisFallback(question, error) {
   const normalized = String(question || "").toLowerCase();
+  if (isWeatherQuestion(question)) {
+    const answer = "No pude conectar clima ahora. No lo voy a convertir en ticker; reintenta en unos segundos y Genesis usara Open-Meteo.";
+    return {
+      id: nextMessageId(),
+      role: "assistant",
+      text: answer,
+      visual: weatherVisual({
+        intent: "weather",
+        response_type: "weather",
+        weather: {
+          answer,
+          city: "",
+          source: "Open-Meteo",
+          icon: "\u26c5",
+          condition: "pendiente",
+        },
+      }, answer),
+    };
+  }
   if (isMarketOverviewQuestion(question)) {
     const movers = marketPulseRows().slice(0, 6);
     const alerts = currentAlertRows().slice(0, 6);

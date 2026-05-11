@@ -11,7 +11,7 @@ from app.settings import load_settings
 
 def detect_weather_request(message: str) -> bool:
     text = str(message or "").casefold()
-    return any(token in text for token in ("clima", "temperatura", "llueve", "lluvia", "weather"))
+    return any(token in text for token in ("clima", "temperatura", "llueve", "lluvia", "weather", "tiempo", "viento", "pronostico", "pronóstico"))
 
 
 def extract_city(message: str) -> str:

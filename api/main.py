@@ -48,6 +48,7 @@ from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.intelligence_core import ask_genesis
 from services.genesis.memory_store import MemoryStore
 from services.genesis.trading_strategy import build_signal_strategy
+from services.genesis.weather_tool import detect_weather_request, get_weather_answer
 
 _ROOT_DIR = Path(__file__).resolve().parents[1]
 _DASHBOARD_DIR = _ROOT_DIR / "app" / "dashboard"
@@ -613,6 +614,28 @@ def _is_whale_genesis_prompt(message: str) -> bool:
     )
 
 
+def _is_weather_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    if detect_weather_request(message):
+        return True
+    return any(
+        token in text
+        for token in (
+            " tiempo ",
+            " temperatura ",
+            " llueve ",
+            " lluvia ",
+            " viento ",
+            " pronostico ",
+            " humedad ",
+            " calor ",
+            " frio ",
+            " clima en ",
+            " clima de ",
+        )
+    )
+
+
 def _prompt_tickers(message: str, context: object | None = None) -> list[str]:
     try:
         from services.genesis.ticker_parser import extract_tickers_from_prompt, normalize_ticker
@@ -635,6 +658,7 @@ def _is_asset_genesis_prompt(message: str, context: object | None = None) -> boo
         _is_casual_genesis_prompt(message)
         or _is_news_genesis_prompt(message)
         or _is_whale_genesis_prompt(message)
+        or _is_weather_genesis_prompt(message)
         or _is_memory_genesis_prompt(message)
         or _is_comparison_genesis_prompt(message)
         or _is_market_genesis_prompt(message)
@@ -750,6 +774,13 @@ def _yahoo_fetch_chart(ticker: str, timeframe: str = "1D") -> dict:
             result = {}
         _YAHOO_CHART_CACHE[cache_key] = (now, result)
         return result
+    except HTTPError as exc:
+        logging.getLogger("genesis.dashboard").warning("Yahoo chart fallback HTTP %s for %s", exc.code, symbol)
+        _YAHOO_CHART_CACHE[cache_key] = (now, {})
+        return {}
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        logging.getLogger("genesis.dashboard").warning("Yahoo chart fallback unavailable for %s: %s", symbol, str(exc)[:120])
+        return {}
     except Exception:
         logging.getLogger("genesis.dashboard").warning("Yahoo chart fallback unavailable for %s", symbol, exc_info=True)
         return {}
@@ -1386,6 +1417,79 @@ def _general_assistant_payload(message: str) -> dict:
     }
 
 
+def _weather_prompt_payload(message: str) -> dict:
+    fallback = {
+        "ok": False,
+        "intent": "weather",
+        "city": "",
+        "answer": "No pude confirmar el clima ahora. Dime ciudad y estado, o reintento con Open-Meteo.",
+        "source": "weather_timeout",
+    }
+    raw = _call_json_with_timeout(lambda: get_weather_answer(message), 5, fallback)
+    weather = raw if isinstance(raw, dict) else fallback
+    city = str(weather.get("city") or "").strip()
+    answer = str(weather.get("answer") or fallback["answer"]).strip()
+    source = str(weather.get("source") or "Open-Meteo").strip()
+    condition = str(weather.get("condition") or weather.get("description") or "").strip()
+    confidence = 0.88 if weather.get("ok") else 0.45
+    weather_payload = {
+        "city": city,
+        "answer": answer,
+        "source": source,
+        "condition": condition,
+        "weather_code": weather.get("weather_code"),
+        "icon": weather.get("icon"),
+        "temperature": weather.get("temperature") if weather.get("temperature") is not None else weather.get("temp"),
+        "temp": weather.get("temp") if weather.get("temp") is not None else weather.get("temperature"),
+        "feels_like": weather.get("feels_like"),
+        "min_temp": weather.get("min_temp"),
+        "max_temp": weather.get("max_temp"),
+        "precipitation_probability": weather.get("precipitation_probability") if weather.get("precipitation_probability") is not None else weather.get("rain_probability"),
+        "rain_probability": weather.get("rain_probability") if weather.get("rain_probability") is not None else weather.get("precipitation_probability"),
+        "wind_speed": weather.get("wind_speed"),
+        "updated_at": weather.get("updated_at"),
+        "data": weather.get("data") if isinstance(weather.get("data"), dict) else {},
+    }
+    return {
+        "ok": True,
+        "status": "weather_ready" if weather.get("ok") else "weather_needs_location_or_retry",
+        "intent": "weather",
+        "response_type": "weather",
+        "kind": "weather",
+        "answer": answer,
+        "assistant_narrative": answer,
+        "tickers": [],
+        "weather": weather_payload,
+        "structured": {
+            "kind": "weather",
+            "title": f"Clima en {city}" if city else "Clima",
+            "summary": answer,
+            "confidence": confidence,
+            "metrics": {
+                "temperature": weather_payload["temperature"],
+                "feels_like": weather_payload["feels_like"],
+                "rain_probability": weather_payload["rain_probability"],
+                "wind_speed": weather_payload["wind_speed"],
+            },
+            "sections": [
+                {
+                    "title": "Lectura rapida",
+                    "bullets": [answer],
+                },
+                {
+                    "title": "Fuente",
+                    "bullets": [source],
+                },
+            ],
+        },
+        "source_status": {
+            "weather": "ok" if weather.get("ok") else str(weather.get("source") or "unavailable"),
+            "provider_used": source,
+            "cache_hit": False,
+        },
+    }
+
+
 def _memory_prompt_payload(message: str, body: dict) -> dict:
     tickers = _prompt_tickers(message, body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None)
     store = MemoryStore()
@@ -1862,6 +1966,8 @@ def _remember_genesis_turn(body: dict, message: str, result: dict) -> None:
 def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     message = _genesis_message_from_body(body)
     panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
+    if _is_weather_genesis_prompt(message):
+        return _weather_prompt_payload(message)
     if _is_casual_genesis_prompt(message):
         return _general_assistant_payload(message)
     if _is_whale_genesis_prompt(message) and not (
@@ -3166,6 +3272,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         message = _genesis_message_from_body(body)
         panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
         if parsed.path == "/api/genesis/ask":
+            if _is_weather_genesis_prompt(message):
+                result = _weather_prompt_payload(message)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK)
+                return
             if _is_casual_genesis_prompt(message):
                 result = _general_assistant_payload(message)
                 _remember_genesis_turn(body, message, result)
