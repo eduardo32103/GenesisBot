@@ -1,7 +1,7 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
-const GENESIS_LOGO_SRC = "./assets/genesis-logo-green.png?v=genesis-g-subtle";
+const GENESIS_LOGO_SRC = "./assets/genesis-logo-white.png?v=genesis-g-white-ink";
 
 function initialChatMessage() {
   return {
@@ -3566,8 +3566,11 @@ function newsFilterButtonMarkup(filter, label) {
 function newsItemsForActiveFilter(snapshot = {}, allItems = []) {
   const filter = appState.newsFilter || "important";
   const sectionItems = newsItemsFromSnapshotSection(snapshot, filter);
+  if (filter === "mine" && sectionItems.length) {
+    return uniqueNewsItems(sectionItems).slice(0, 10);
+  }
   const source = sectionItems.length ? sectionItems : allItems;
-  return uniqueNewsItems(filteredNewsItems(source, filter)).slice(0, filter === "latest" ? 14 : 10);
+  return uniqueNewsItems(filteredNewsItems(source, filter, snapshot)).slice(0, filter === "latest" ? 14 : 10);
 }
 
 function newsItemsFromSnapshotSection(snapshot = {}, section = "important") {
@@ -3619,24 +3622,79 @@ function newsSectionConfig(filter = "important", count = 0, newsSnapshot = {}) {
   return configs[filter] || configs.important;
 }
 
-function filteredNewsItems(items = [], filter = appState.newsFilter || "important") {
+function filteredNewsItems(items = [], filter = appState.newsFilter || "important", snapshot = appState.newsSnapshot || {}) {
   const rows = uniqueNewsItems(items).filter((item) => !isInternalNewsPlaceholder(item));
   if (filter === "mine") {
-    const focus = new Set(currentFocusAssets().map(itemTicker).filter(Boolean));
-    return rows.filter((item) => newsItemTickers(item).some((ticker) => focus.has(normalizeTicker(ticker))));
+    const focus = newsFocusTickerSet(snapshot);
+    const direct = rows.filter((item) => newsItemTickers(item).some((ticker) => focus.has(normalizeTicker(ticker))));
+    if (direct.length) return direct;
+    return rows.filter((item) => newsItemContextTouchesFocus(item, focus));
   }
   if (filter === "global") {
-    const focus = new Set(currentFocusAssets().map(itemTicker).filter(Boolean));
+    const focus = newsFocusTickerSet(snapshot);
     const globalCategories = new Set(["macro", "market", "geopolitics", "commodity", "crypto"]);
     return rows.filter((item) => {
       const tickers = newsItemTickers(item);
       const touchesMine = tickers.some((ticker) => focus.has(normalizeTicker(ticker)));
+      const contextualMine = newsItemContextTouchesFocus(item, focus);
       const category = cleanCopy(item.category || "").toLowerCase();
-      return !touchesMine && (globalCategories.has(category) || !tickers.length);
+      return !touchesMine && !contextualMine && (globalCategories.has(category) || !tickers.length);
     });
   }
   if (filter === "latest") return latestNewsItems(rows);
   return importantNewsItems(rows, { strict: true });
+}
+
+function newsFocusTickerSet(snapshot = appState.newsSnapshot || {}) {
+  const newsSnapshot = snapshot.news || snapshot || {};
+  const values = [
+    ...(Array.isArray(newsSnapshot.focus_tickers) ? newsSnapshot.focus_tickers : []),
+    ...(Array.isArray(newsSnapshot.focusTickers) ? newsSnapshot.focusTickers : []),
+    ...(Array.isArray(snapshot.focus_tickers) ? snapshot.focus_tickers : []),
+    ...currentFocusAssets().map(itemTicker),
+  ];
+  return new Set(values.map(normalizeTicker).filter(Boolean));
+}
+
+function newsTickerAliases(ticker) {
+  const normalized = normalizeTicker(ticker);
+  const map = {
+    "BTC": ["bitcoin", "btc", "crypto"],
+    "BTC-USD": ["bitcoin", "btc", "crypto"],
+    "BZ=F": ["brent", "petroleo", "petróleo", "oil", "crude", "energia", "energy"],
+    BNO: ["brent", "petroleo", "petróleo", "oil", "crude", "energia", "energy"],
+    IXC: ["energia", "energy", "oil", "petroleo", "petróleo", "crude"],
+    IAU: ["gold", "oro", "metales", "refugio"],
+    NVDA: ["nvidia", "nvda", "ia", "ai", "chip", "semiconductor", "blackwell"],
+    MSFT: ["microsoft", "msft", "nube", "cloud", "ai", "ia"],
+    NFLX: ["netflix", "nflx", "streaming"],
+    META: ["meta", "facebook", "instagram", "ia", "ai"],
+    MARA: ["marathon", "mara", "bitcoin", "btc", "crypto", "mineria"],
+    BIP: ["brookfield", "infrastructure", "infraestructura", "bip"],
+    ENH: ["endurance", "enh"],
+    NFE: ["new fortress", "lng", "gas natural", "energia", "energy"],
+    SPY: ["s&p 500", "sp500", "spy", "mercado accionario", "stock market"],
+    QQQ: ["nasdaq", "qqq", "tecnologia", "technology"],
+  };
+  return map[normalized] || (normalized ? [normalized.toLowerCase()] : []);
+}
+
+function newsItemContextTouchesFocus(item = {}, focus = new Set()) {
+  if (!focus.size) return false;
+  const text = [
+    item.title,
+    item.originalTitle,
+    item.summary,
+    item.genesisTakeaway,
+    item.whyItMatters,
+    item.watch,
+    item.category,
+    item.source,
+    ...(Array.isArray(item.asset_names_affected) ? item.asset_names_affected : []),
+    ...(Array.isArray(item.assetNamesAffected) ? item.assetNamesAffected : []),
+  ].join(" ").toLowerCase();
+  if (!text.trim()) return false;
+  return Array.from(focus).some((ticker) => newsTickerAliases(ticker).some((alias) => alias && text.includes(alias)));
 }
 
 function newsItemTickers(item = {}) {
@@ -3664,6 +3722,18 @@ function uniqueNewsItems(items = []) {
 
 function normalizeNewsItemForUi(item = {}) {
   const publishedTs = newsPublishedTs(item);
+  const assets = Array.isArray(item.tickers) && item.tickers.length
+    ? item.tickers
+    : Array.isArray(item.assets) && item.assets.length
+      ? item.assets
+      : [item.symbol || item.ticker].filter(Boolean);
+  const tickersAffected = Array.isArray(item.tickers_affected) && item.tickers_affected.length
+    ? item.tickers_affected
+    : Array.isArray(item.tickers) && item.tickers.length
+      ? item.tickers
+      : Array.isArray(item.assets) && item.assets.length
+        ? item.assets
+        : [];
   return {
     id: item.id,
     category: item.category || item.placeholder_key || "Mercado",
@@ -3677,7 +3747,7 @@ function normalizeNewsItemForUi(item = {}) {
     relative_time: item.relative_time || item.relativeTime || "",
     impact: item.impact || item.sentiment || "Neutral",
     summary: spanishUiCopy(item.summary_es || item.summary || item.text || item.title_es || item.title || "Titular confirmado."),
-    assets: item.tickers || item.assets || [item.symbol || item.ticker].filter(Boolean),
+    assets,
     imageUrl: item.image_url || item.thumbnail_url || item.thumbnail || item.image || "",
     url: item.url || item.link || "",
     genesisTakeaway: spanishUiCopy(item.genesis_takeaway_es || item.genesis_takeaway || ""),
@@ -3691,7 +3761,8 @@ function normalizeNewsItemForUi(item = {}) {
     risk: item.risk,
     watch: spanishUiCopy(item.what_to_watch_es || item.watch || ""),
     watchPoints: (item.watch_points || item.watchPoints || (item.what_to_watch_es ? [item.what_to_watch_es] : [])).map(spanishUiCopy),
-    tickersAffected: item.tickers_affected || item.tickers || item.assets || [],
+    tickersAffected,
+    assetNamesAffected: item.asset_names_affected || item.assetNamesAffected || [],
   };
 }
 
@@ -4382,7 +4453,6 @@ function assetRowMarkup(item, mode, totalValue = 0) {
     <article class="asset-row compact-market-row" data-ticker="${escapeHtml(ticker)}" data-mode="${mode}">
       <button class="asset-main" type="button" data-open-asset="${escapeHtml(ticker)}">
         <span class="asset-row-leading">
-          ${renderAssetIcon(item)}
           <span class="asset-title">
             <strong>${escapeHtml(display.displayName)}</strong>
             <small>${escapeHtml(subline || display.subtitle || ticker)}</small>

@@ -45,8 +45,59 @@ def get_news_snapshot(limit: int = 24, *, force_refresh: bool = False) -> dict[s
 
 
 def _touches_focus(item: dict[str, Any], focus: list[str]) -> bool:
-    tickers = set(item.get("tickers") or item.get("assets") or item.get("tickers_affected") or [])
-    return bool(tickers & set(focus))
+    normalized_focus = {normalize_ticker(ticker) for ticker in focus if normalize_ticker(ticker)}
+    tickers = _news_item_tickers(item)
+    if tickers & normalized_focus:
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            item.get("title"),
+            item.get("title_es"),
+            item.get("original_title"),
+            item.get("summary"),
+            item.get("summary_es"),
+            item.get("category"),
+            item.get("source"),
+            " ".join(item.get("asset_names_affected") or []),
+        )
+    ).lower()
+    return any(alias in text for ticker in normalized_focus for alias in _ticker_aliases(ticker))
+
+
+def _news_item_tickers(item: dict[str, Any]) -> set[str]:
+    tickers: set[str] = set()
+    for key in ("tickers", "assets", "tickers_affected"):
+        values = item.get(key) or []
+        if not isinstance(values, list):
+            values = [values]
+        for value in values:
+            ticker = normalize_ticker(value)
+            if ticker:
+                tickers.add(ticker)
+    return tickers
+
+
+def _ticker_aliases(ticker: str) -> tuple[str, ...]:
+    aliases = {
+        "BTC": ("bitcoin", "btc", "crypto"),
+        "BTC-USD": ("bitcoin", "btc", "crypto"),
+        "BZ=F": ("brent", "oil", "crude", "petroleo", "petróleo", "energia", "energy"),
+        "BNO": ("brent", "oil", "crude", "petroleo", "petróleo", "energia", "energy"),
+        "IXC": ("energy", "energia", "oil", "crude", "petroleo", "petróleo"),
+        "IAU": ("gold", "oro", "metales", "refugio"),
+        "NVDA": ("nvidia", "nvda", "chip", "semiconductor", "blackwell", "ai", "ia"),
+        "MSFT": ("microsoft", "msft", "cloud", "nube", "ai", "ia"),
+        "NFLX": ("netflix", "nflx", "streaming"),
+        "META": ("meta", "facebook", "instagram", "ai", "ia"),
+        "MARA": ("marathon", "mara", "bitcoin", "btc", "crypto", "mineria"),
+        "BIP": ("brookfield", "infrastructure", "infraestructura", "bip"),
+        "ENH": ("endurance", "enh"),
+        "NFE": ("new fortress", "lng", "gas natural", "energy", "energia"),
+        "SPY": ("s&p 500", "sp500", "spy", "stock market", "mercado accionario"),
+        "QQQ": ("nasdaq", "qqq", "technology", "tecnologia"),
+    }
+    return aliases.get(ticker, (ticker.lower(),))
 
 
 def _news_ts(item: dict[str, Any]) -> int:

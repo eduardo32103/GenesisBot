@@ -235,6 +235,38 @@ class GenesisNewsFeedTests(unittest.TestCase):
         self.assertEqual(payload["sections"]["important"], [])
         self.assertEqual(payload["latest"][0]["id"], "n1")
 
+    @patch("services.dashboard.get_news_snapshot.get_recent_market_news")
+    @patch("services.dashboard.get_news_snapshot.get_news_source_status")
+    @patch("services.dashboard.get_news_snapshot._focus_tickers")
+    def test_dashboard_news_snapshot_links_asset_context_without_local_ui_state(self, mock_focus: Mock, mock_status: Mock, mock_recent: Mock) -> None:
+        mock_focus.return_value = ["BNO", "BTC-USD"]
+        mock_status.return_value = {"rss_news": {"status": "ok"}}
+        mock_recent.return_value = [
+            {
+                "id": "oil-1",
+                "title": "Oil prices rise as Brent supply tightens",
+                "published_at": "2026-05-06T12:00:00+00:00",
+                "tickers": [],
+                "assets": [],
+                "tickers_affected": [],
+                "category": "commodity",
+                "is_important": True,
+            },
+            {
+                "id": "btc-1",
+                "title": "Bitcoin momentum improves after ETF demand",
+                "published_at": "2026-05-06T13:00:00+00:00",
+                "tickers_affected": ["BTC-USD"],
+                "is_important": True,
+            },
+        ]
+
+        payload = get_news_snapshot(limit=12)
+
+        mine_ids = {item["id"] for item in payload["sections"]["mine"]}
+        self.assertIn("oil-1", mine_ids)
+        self.assertIn("btc-1", mine_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

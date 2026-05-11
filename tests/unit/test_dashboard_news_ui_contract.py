@@ -31,6 +31,9 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("function newsItemsForActiveFilter", script)
         self.assertIn("function newsItemsFromSnapshotSection", script)
         self.assertIn("function newsSectionConfig", script)
+        self.assertIn('filter === "mine" && sectionItems.length', script)
+        self.assertIn("function newsFocusTickerSet", script)
+        self.assertIn("function newsItemContextTouchesFocus", script)
         self.assertIn("return importantNewsItems(rows, { strict: true })", script)
         self.assertIn("data-news-filter", script)
         self.assertIn("Importantes / influyentes", script)
@@ -146,7 +149,7 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("chart-image-visual", styles)
         self.assertIn("image-scan-panel", styles)
 
-    def test_genesis_green_logo_replaces_plain_center_g(self) -> None:
+    def test_genesis_white_logo_replaces_plain_center_g(self) -> None:
         script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
         styles = Path("app/dashboard/styles.css").read_text(encoding="utf-8")
         markup = Path("app/dashboard/index.html").read_text(encoding="utf-8")
@@ -156,7 +159,7 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("genesis-brand-lockup", script)
         self.assertIn("genesis-header-logo", styles)
         self.assertIn("genesis-logo-img", styles)
-        self.assertIn("genesis-logo-green.png", markup)
+        self.assertIn("genesis-logo-white.png", markup)
         self.assertIn("apple-touch-icon", markup)
         self.assertIn("genesis-nav-logo", markup)
         self.assertNotIn('class="nav-icon genesis-g" aria-hidden="true">G</span>', markup)
