@@ -85,8 +85,10 @@ _PROXY_OPPORTUNITY_TICKERS = ("NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQ
 _YAHOO_CHART_CACHE: dict[str, tuple[float, dict]] = {}
 _MARKET_SEARCH_CACHE: dict[str, tuple[float, dict]] = {}
 _LIVE_QUOTE_CACHE: dict[str, tuple[float, dict]] = {}
+_NEWS_SNAPSHOT_CACHE: tuple[float, dict] | None = None
 _MARKET_SEARCH_TTL_SECONDS = 20
 _LIVE_QUOTE_TTL_SECONDS = 20
+_NEWS_SNAPSHOT_STALE_SECONDS = 60 * 60
 _YAHOO_TIMEFRAMES = {
     "1D": ("1d", "5m"),
     "1W": ("5d", "15m"),
@@ -2976,6 +2978,40 @@ def _massage_news_payload(payload: dict) -> None:
     payload["policy"] = "FMP/RSS live separado por filtro; últimas prioriza 24h, luego 7d y máximo 30d. No mezcla alertas ni ballenas como noticias."
 
 
+def _remember_news_snapshot(payload: dict) -> None:
+    global _NEWS_SNAPSHOT_CACHE
+    if not isinstance(payload, dict):
+        return
+    rows = payload.get("items")
+    if isinstance(rows, list) and rows:
+        _NEWS_SNAPSHOT_CACHE = (time.time(), copy.deepcopy(payload))
+
+
+def _news_timeout_payload() -> dict:
+    cached = _NEWS_SNAPSHOT_CACHE
+    if cached and time.time() - cached[0] <= _NEWS_SNAPSHOT_STALE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache_hit"] = True
+        status = payload.setdefault("source_status", {})
+        if isinstance(status, dict):
+            status["status"] = "stale_cache"
+            status["provider_used"] = status.get("provider_used") or "FMP/RSS"
+            status["last_error_safe"] = "noticias servidas desde cache mientras fuente lenta responde"
+        return payload
+    return {
+        "ok": True,
+        "items": [],
+        "important": [],
+        "latest": [],
+        "sections": {"important": [], "latest": [], "mine": [], "global": []},
+        "source_status": {
+            "status": "timeout",
+            "provider_used": "local_safe_timeout",
+            "last_error_safe": "noticias tardaron demasiado; frontend no se bloquea",
+        },
+    }
+
+
 def _proxy_news_ts(row: dict) -> int:
     direct = _safe_num(row.get("published_ts") or row.get("publishedTs"))
     if direct and direct > 0:
@@ -3483,7 +3519,15 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 for key in ("refresh", "force", "no_cache")
                 for value in query.get(key, [])
             )
-            self._write_json(get_dashboard_news(force_refresh=force_refresh), HTTPStatus.OK)
+            payload_data = _call_json_with_timeout(
+                lambda: get_dashboard_news(force_refresh=force_refresh),
+                4.5 if force_refresh else 3.2,
+                _news_timeout_payload(),
+            )
+            if isinstance(payload_data, dict):
+                _massage_news_payload(payload_data)
+                _remember_news_snapshot(payload_data)
+            self._write_json(payload_data, HTTPStatus.OK)
             return
 
         if parsed.path == "/api/dashboard/money-flow/detection":

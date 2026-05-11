@@ -472,7 +472,7 @@ def _enrich_items_with_fmp(items: list[dict[str, Any]], settings: Any) -> None:
         try:
             futures = {executor.submit(_fetch_quote, ticker): ticker for ticker in tickers}
             try:
-                for future in as_completed(futures, timeout=5.0):
+                for future in as_completed(futures, timeout=3.2):
                     ticker, quote = future.result(timeout=0)
                     if quote:
                         quotes_by_ticker[ticker] = quote
@@ -515,7 +515,7 @@ def _enrich_items_with_fmp(items: list[dict[str, Any]], settings: Any) -> None:
         try:
             futures = {executor.submit(_fetch_profile, ticker): ticker for ticker in profile_tickers}
             try:
-                for future in as_completed(futures, timeout=4.0):
+                for future in as_completed(futures, timeout=1.2):
                     ticker, profile = future.result(timeout=0)
                     if profile:
                         profiles_by_ticker[ticker] = profile
