@@ -237,6 +237,16 @@ def _is_crypto_ticker(ticker: str) -> bool:
     return symbol.endswith("-USD") or symbol in {"BTC", "ETH", "SOL", "DOGE", "XRP"}
 
 
+def _asset_display_name_for_proxy(ticker: object, fallback: object = "") -> str:
+    symbol = str(ticker or "").strip().upper()
+    fallback_text = str(fallback or "").strip()
+    if symbol == "BZ=F":
+        return "Brent Crude Oil"
+    if symbol == "BTC-USD":
+        return "Bitcoin"
+    return fallback_text or symbol or "Activo"
+
+
 def _safe_monitored_dollar_volume_for_proxy(
     ticker: str,
     price: object,
@@ -569,6 +579,11 @@ def _is_memory_genesis_prompt(message: str) -> bool:
     )
 
 
+def _is_comparison_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(token in text for token in (" compara ", " comparar ", " vs ", " versus ", " contra "))
+
+
 def _is_whale_genesis_prompt(message: str) -> bool:
     text = f" {_fold_prompt(message)} "
     return any(
@@ -611,6 +626,8 @@ def _is_asset_genesis_prompt(message: str, context: object | None = None) -> boo
         or _is_news_genesis_prompt(message)
         or _is_whale_genesis_prompt(message)
         or _is_memory_genesis_prompt(message)
+        or _is_comparison_genesis_prompt(message)
+        or _is_market_genesis_prompt(message)
     ):
         return False
     tickers = _prompt_tickers(message, context=context)
@@ -640,7 +657,10 @@ def _is_asset_genesis_prompt(message: str, context: object | None = None) -> boo
         " deberia ",
         " conviene ",
     )
-    return any(token in text for token in asset_intent_tokens) or len(tickers) == 1
+    if any(token in text for token in asset_intent_tokens):
+        return True
+    compact = "".join(text.split()).upper()
+    return len(tickers) == 1 and compact == str(tickers[0]).upper()
 
 
 def _is_trade_decision_prompt(message: str) -> bool:
@@ -1285,45 +1305,263 @@ def _news_prompt_fallback_payload(message: str) -> dict:
     }
 
 
+def _general_assistant_payload(message: str) -> dict:
+    personal = _is_personal_genesis_prompt(message)
+    answer = (
+        "Te escucho. Esto no es una orden de mercado ni un ticker: puedo ayudarte a pensarlo con calma. "
+        "Si quieres, dime que paso, que buscas reparar y que resultado quieres conseguir."
+        if personal
+        else (
+            "Estoy activo. Puedo conversar normal, revisar mercado, comparar activos, leer noticias, "
+            "alertas, ballenas y memoria sin convertir una frase cotidiana en ticker."
+        )
+    )
+    return {
+        "ok": True,
+        "status": "genesis_intelligence_ready",
+        "intent": "general" if personal else "greeting",
+        "response_type": "general_assistant",
+        "answer": answer,
+        "tickers": [],
+        "kind": "general_assistant",
+        "structured": {
+            "kind": "general_assistant",
+            "title": "Modo humano" if personal else "Genesis",
+            "mode": "Vida diaria" if personal else "Asistente completo",
+            "summary": answer,
+            "confidence": 0.76,
+            "sections": [
+                {"title": "Lectura rapida", "bullets": [answer]},
+                {
+                    "title": "Como sigo",
+                    "bullets": [
+                        "Si es una duda personal, respondo como copiloto conversacional.",
+                        "Si es mercado, valido precio, volumen y fuente antes de dar lectura.",
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _memory_prompt_payload(message: str, body: dict) -> dict:
+    tickers = _prompt_tickers(message, body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None)
+    store = MemoryStore()
+    sections: list[dict] = []
+    if tickers:
+        for ticker in tickers[:3]:
+            summary = store.get_asset_learning_summary(ticker, limit=8)
+            lines = [str(line) for line in summary.get("summary_lines") or [] if str(line).strip()]
+            sections.append(
+                {
+                    "title": f"Memoria {ticker}",
+                    "bullets": lines[:5] or [f"Todavia no tengo suficientes eventos utiles guardados para {ticker}."],
+                }
+            )
+    else:
+        memory = store.get_memory_summary(message)
+        recent_topics = memory.get("recent_topics") or []
+        recent_events = memory.get("recent_events") or []
+        sections.append(
+            {
+                "title": "Memoria reciente",
+                "bullets": [
+                    str((topic or {}).get("topic") or "") for topic in recent_topics[:4] if isinstance(topic, dict)
+                ]
+                or ["Aun no hay suficiente historial util; Genesis empieza a guardar conversaciones, senales y decisiones desde ahora."],
+            }
+        )
+        if recent_events:
+            sections.append(
+                {
+                    "title": "Eventos guardados",
+                    "bullets": [
+                        f"{event.get('event_type')}: {event.get('source')}" for event in recent_events[:4] if isinstance(event, dict)
+                    ],
+                }
+            )
+    answer = "Esto es lo que recuerdo y puedo usar como contexto. No lo trato como certeza; lo uso para mejorar la lectura y verificar resultados con datos nuevos."
+    return {
+        "ok": True,
+        "status": "genesis_memory_ready",
+        "intent": "memory",
+        "response_type": "general_assistant",
+        "answer": answer,
+        "tickers": tickers,
+        "kind": "general_assistant",
+        "structured": {
+            "kind": "general_assistant",
+            "title": "Memoria Genesis",
+            "summary": answer,
+            "sections": sections + [
+                {
+                    "title": "Siguiente aprendizaje",
+                    "bullets": [
+                        "Guardare decisiones, alertas y flujo relevante para revisar si funcionaron despues.",
+                        "Nunca guardo API keys, tokens ni secretos.",
+                    ],
+                }
+            ],
+        },
+    }
+
+
+def _comparison_prompt_payload(message: str, body: dict) -> dict:
+    panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
+    tickers = _prompt_tickers(message, context=panel_context)[:2]
+    rows: list[dict] = []
+    for ticker in tickers:
+        search = _market_search_for_proxy(ticker)
+        candidates = search.get("results") if isinstance(search, dict) else []
+        quote_row = next((row for row in candidates if isinstance(row, dict)), {}) if isinstance(candidates, list) else {}
+        quote_row = _normalize_quote_change_fields(dict(quote_row or {}))
+        price = _safe_num(quote_row.get("current_price") or quote_row.get("price"))
+        change_pct = _safe_num(quote_row.get("daily_change_pct") or quote_row.get("change_pct"))
+        volume = _safe_num(quote_row.get("volume"))
+        score = 50
+        if change_pct is not None:
+            score += 18 if change_pct > 1 else 8 if change_pct > 0 else -8 if change_pct > -1 else -18
+        if volume is not None and volume > 1_000_000:
+            score += 8
+        score = max(5, min(95, score))
+        rows.append(
+            {
+                "ticker": ticker,
+                "asset_name": _asset_display_name_for_proxy(ticker, quote_row.get("asset_name") or quote_row.get("name")),
+                "price": price,
+                "formatted_price": _money_short(price) if price is not None else "precio pendiente",
+                "change_pct": change_pct,
+                "volume": volume,
+                "score": score,
+                "source": quote_row.get("source") or quote_row.get("provider_used") or search.get("provider_used") or "FMP/backend",
+                "tone": "alcista" if score >= 62 else "presionado" if score <= 42 else "neutral",
+            }
+        )
+    if len(rows) < 2:
+        return {
+            "ok": True,
+            "status": "genesis_needs_two_assets",
+            "intent": "comparison",
+            "response_type": "comparison",
+            "answer": "Para comparar bien necesito dos activos claros, por ejemplo: compara NVDA vs BNO.",
+            "tickers": tickers,
+            "kind": "comparison",
+            "structured": {"kind": "comparison", "title": "Comparacion", "summary": "Falta un segundo activo.", "items": rows},
+        }
+    leader = max(rows, key=lambda row: row.get("score") or 0)
+    laggard = min(rows, key=lambda row: row.get("score") or 0)
+    answer = (
+        f"Comparacion clara: {leader['ticker']} llega con mejor lectura relativa que {laggard['ticker']} "
+        f"por precio/volumen disponibles. No es orden de compra: es prioridad para vigilar entrada, riesgo e invalidacion."
+    )
+    return {
+        "ok": True,
+        "status": "genesis_comparison_ready",
+        "intent": "comparison",
+        "response_type": "comparison",
+        "answer": answer,
+        "tickers": tickers,
+        "kind": "comparison",
+        "comparison": {"items": rows, "leader": leader.get("ticker"), "laggard": laggard.get("ticker")},
+        "structured": {
+            "kind": "comparison",
+            "title": f"{rows[0]['ticker']} vs {rows[1]['ticker']}",
+            "summary": answer,
+            "items": rows,
+            "sections": [
+                {"title": "Lectura rapida", "bullets": [answer]},
+                {
+                    "title": "Que vigilar",
+                    "bullets": [
+                        "Confirmacion de volumen relativo.",
+                        "Reaccion contra soporte/resistencia.",
+                        "Noticias o flujo institucional que cambien la tesis.",
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _remember_genesis_turn(body: dict, message: str, result: dict) -> None:
+    if not str(message or "").strip() or not isinstance(result, dict):
+        return
+    try:
+        conversation_id = str(body.get("conversation_id") or "default")
+        store = MemoryStore()
+        intent = str(result.get("intent") or result.get("response_type") or "general")
+        response_type = str(result.get("response_type") or result.get("kind") or "general_assistant")
+        tickers = [str(ticker).upper() for ticker in (result.get("tickers") or _prompt_tickers(message)) if str(ticker).strip()]
+        structured = result.get("structured") if isinstance(result.get("structured"), dict) else {}
+        decision_payload = result.get("decision") if isinstance(result.get("decision"), dict) else {}
+        store.save_message(conversation_id, "user", message, {"intent": intent, "tickers": tickers})
+        store.save_message(
+            conversation_id,
+            "assistant",
+            str(result.get("answer") or structured.get("summary") or "")[:2000],
+            {"intent": intent, "response_type": response_type, "tickers": tickers},
+        )
+        store.save_recent_topic(message[:180], {"intent": intent, "response_type": response_type, "tickers": tickers})
+        for ticker in tickers[:4]:
+            store.track_entity(ticker, "asset", {"last_intent": intent})
+            store.save_asset_memory(
+                ticker,
+                {
+                    "event_type": "genesis_query",
+                    "question": message[:280],
+                    "response_type": response_type,
+                    "summary": str(result.get("answer") or "")[:500],
+                },
+                source="genesis_chat",
+                confidence=decision_payload.get("confidence") or "media",
+            )
+            if _is_trade_decision_prompt(message):
+                quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
+                verdict = str(decision_payload.get("label") or decision_payload.get("verdict") or "Vigilar")
+                store.save_decision_note(
+                    ticker,
+                    verdict,
+                    {
+                        "reason": decision_payload.get("reason") or str(result.get("answer") or "")[:280],
+                        "price_at_decision": _safe_num(quote.get("current_price") or quote.get("price")),
+                        "support": structured.get("support"),
+                        "resistance": structured.get("resistance"),
+                        "expected_direction": decision_payload.get("direction") or decision_payload.get("impact"),
+                        "status": "watching",
+                    },
+                    source="genesis_chat",
+                    confidence=decision_payload.get("confidence") or "media",
+                )
+                store.save_outcome_tracking(
+                    ticker,
+                    {
+                        "event_type": "decision_followup",
+                        "verdict": verdict,
+                        "question": message[:280],
+                        "status": "open",
+                        "actual_outcome_1h": None,
+                        "actual_outcome_24h": None,
+                        "actual_outcome_7d": None,
+                    },
+                    source="genesis_chat",
+                    confidence=decision_payload.get("confidence") or "media",
+                )
+        if response_type == "whale_flow":
+            store.save_event(
+                "genesis_whale_query",
+                {"question": message[:280], "summary": str(result.get("answer") or "")[:500]},
+                source="genesis_chat",
+                confidence="media",
+            )
+    except Exception:
+        logging.getLogger("genesis.dashboard").warning("Genesis memory write failed", exc_info=True)
+
+
 def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     message = _genesis_message_from_body(body)
     panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
     if _is_casual_genesis_prompt(message):
-        personal = _is_personal_genesis_prompt(message)
-        answer = (
-            "Te escucho. Esto es una pregunta cotidiana, no un ticker. "
-            "Genesis puede responder como asistente general y solo usa datos financieros cuando realmente pides mercado o activos."
-        ) if personal else (
-            "Estoy activo y listo. Puedo leer mercado, noticias, alertas, ballenas, "
-            "cartera o un activo sin convertir una frase normal en ticker."
-        )
-        return {
-            "ok": True,
-            "status": "genesis_intelligence_ready",
-            "intent": "general" if personal else "greeting",
-            "response_type": "general_assistant",
-            "answer": answer,
-            "tickers": [],
-            "kind": "general_assistant",
-            "structured": {
-                "kind": "general_assistant",
-                "title": "Modo humano" if personal else "Genesis",
-                "mode": "Vida diaria" if personal else "Asistente completo",
-                "summary": answer,
-                "confidence": 0.72,
-                "sections": [
-                    {"title": "Lectura rapida", "bullets": [answer]},
-                    {"title": "Siguiente paso", "bullets": ["Cuentame el contexto y te doy una respuesta clara.", "Si es mercado, valido FMP/backend antes de dar cifras."]},
-                ],
-            },
-        }
-    if _is_asset_genesis_prompt(message, panel_context):
-        if payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"} or payload.get("response_type") in {"asset_analysis", "chart_analysis"}:
-            return payload
-        try:
-            return _local_asset_genesis_payload(body, message)
-        except Exception:
-            logging.getLogger("genesis.dashboard").warning("Local asset prompt correction failed", exc_info=True)
+        return _general_assistant_payload(message)
     if _is_whale_genesis_prompt(message) and not (
         payload.get("intent") in {"whale_activity", "money_flow"} or payload.get("response_type") == "whale_flow"
     ):
@@ -1349,6 +1587,16 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local news prompt correction failed", exc_info=True)
         return _news_prompt_fallback_payload(message)
+    if _is_memory_genesis_prompt(message):
+        try:
+            return _memory_prompt_payload(message, body)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local memory prompt correction failed", exc_info=True)
+    if _is_comparison_genesis_prompt(message):
+        try:
+            return _comparison_prompt_payload(message, body)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local comparison prompt correction failed", exc_info=True)
     if _is_market_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
         try:
             local = ask_genesis(
@@ -1371,6 +1619,13 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
             "tickers": [],
             "kind": "market_briefing",
         }
+    if _is_asset_genesis_prompt(message, panel_context):
+        if payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"} or payload.get("response_type") in {"asset_analysis", "chart_analysis"}:
+            return payload
+        try:
+            return _local_asset_genesis_payload(body, message)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local asset prompt correction failed", exc_info=True)
     return payload
 
 
@@ -2549,40 +2804,50 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             body = _normalize_analyze_image_body(body)
         message = _genesis_message_from_body(body)
         panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
-        if parsed.path == "/api/genesis/ask" and _is_asset_genesis_prompt(message, panel_context):
-            result = _local_asset_genesis_payload(body, message)
-            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
-            return
-        if parsed.path == "/api/genesis/ask" and (
-            _is_casual_genesis_prompt(message)
-            or _is_market_genesis_prompt(message)
-            or _is_news_genesis_prompt(message)
-            or _is_memory_genesis_prompt(message)
-            or _is_whale_genesis_prompt(message)
-        ):
+        if parsed.path == "/api/genesis/ask":
+            if _is_casual_genesis_prompt(message):
+                result = _general_assistant_payload(message)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK)
+                return
             if _is_whale_genesis_prompt(message):
                 snapshot = _fast_whale_snapshot_for_prompt()
                 result = _enrich_genesis_whale_payload(_whale_prompt_fallback_payload(message, snapshot))
+                _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK)
                 return
-            if (
-                not _is_casual_genesis_prompt(message)
-                and _local_live_sources_missing()
-                and self._try_proxy_to_production(parsed, method="POST", body=body)
-            ):
+            if _is_memory_genesis_prompt(message):
+                result = _memory_prompt_payload(message, body)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK)
                 return
-            result = ask_genesis(
-                message,
-                context=str(body.get("context") or "general"),
-                ticker="",
-                panel_context=panel_context,
-                conversation_id=str(body.get("conversation_id") or "default"),
-            )
-            result = _enrich_genesis_asset_quote(result)
-            result = _enrich_genesis_trade_decision(result, message)
-            result = _enrich_genesis_whale_payload(result)
-            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
-            return
+            if _is_comparison_genesis_prompt(message):
+                result = _comparison_prompt_payload(message, body)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
+            if _is_news_genesis_prompt(message) or _is_market_genesis_prompt(message):
+                if _local_live_sources_missing() and self._try_proxy_to_production(parsed, method="POST", body=body):
+                    return
+                result = ask_genesis(
+                    message,
+                    context=str(body.get("context") or "general"),
+                    ticker="",
+                    panel_context=panel_context,
+                    conversation_id=str(body.get("conversation_id") or "default"),
+                )
+                result = _enrich_genesis_asset_quote(result)
+                result = _enrich_genesis_trade_decision(result, message)
+                result = _enrich_genesis_whale_payload(result)
+                result = _correct_genesis_proxy_payload(result, body)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
+            if _is_asset_genesis_prompt(message, panel_context):
+                result = _local_asset_genesis_payload(body, message)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
         if self._try_proxy_to_production(parsed, method="POST", body=body):
             return
 
@@ -2596,6 +2861,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             )
             result = _enrich_genesis_asset_quote(result)
             result = _enrich_genesis_whale_payload(result)
+            result = _correct_genesis_proxy_payload(result, body)
+            _remember_genesis_turn(body, message, result)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

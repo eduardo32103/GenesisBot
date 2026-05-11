@@ -61,6 +61,8 @@ class GenesisTickerParserTests(unittest.TestCase):
             "todo bien": [],
             "genesis mi novia esta enojada ayudame": [],
             "que hicimos ayer": [],
+            "que aprendiste de nvda": ["NVDA"],
+            "memoria de btc": ["BTC-USD"],
             "que noticias afectan a mis activos": [],
             "dame una grafica de bno": ["BNO"],
             "compara meta vs nvda": ["META", "NVDA"],

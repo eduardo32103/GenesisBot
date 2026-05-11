@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from api.main import (
     _enrich_genesis_trade_decision,
+    _is_asset_genesis_prompt,
+    _is_comparison_genesis_prompt,
     _massage_proxy_payload,
     _resolve_dashboard_host,
     _resolve_dashboard_port,
@@ -113,6 +115,46 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["response_type"], "news_brief")
         self.assertEqual(fixed["tickers"], [])
         self.assertNotIn("ENH", json.dumps(fixed))
+
+    def test_genesis_intent_router_does_not_treat_news_or_memory_as_asset(self) -> None:
+        self.assertFalse(_is_asset_genesis_prompt("que esta pasando en noticias?"))
+        self.assertFalse(_is_asset_genesis_prompt("que hicimos el viernes pasado?"))
+        self.assertTrue(_is_comparison_genesis_prompt("compara nvda vs bno"))
+
+    @patch("api.main._market_search_for_proxy")
+    def test_local_proxy_corrects_comparison_prompt_before_asset(self, mock_search) -> None:
+        def fake_search(query: str) -> dict:
+            return {
+                "results": [
+                    {
+                        "ticker": query,
+                        "asset_name": query,
+                        "current_price": 100 if query == "NVDA" else 50,
+                        "daily_change_pct": 1.2 if query == "NVDA" else -0.5,
+                        "volume": 2_000_000,
+                    }
+                ],
+                "provider_used": "test",
+            }
+
+        mock_search.side_effect = fake_search
+        stale_payload = {
+            "intent": "ticker_analysis",
+            "response_type": "asset_analysis",
+            "tickers": ["NVDA"],
+            "answer": "NVDA tiene precio confirmado.",
+        }
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "compara nvda vs bno", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "comparison")
+        self.assertEqual(fixed["response_type"], "comparison")
+        self.assertEqual(fixed["tickers"], ["NVDA", "BNO"])
 
     def test_trade_question_gets_decision_contract_for_ui(self) -> None:
         payload = {
