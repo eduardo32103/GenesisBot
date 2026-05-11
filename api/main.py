@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import unicodedata
+import errno
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import partial
@@ -480,6 +481,9 @@ def _is_casual_genesis_prompt(message: str) -> bool:
     return any(
         token in text
         for token in (
+            " hola ",
+            " hey ",
+            " buenos dias ",
             " como estas ",
             " como vas ",
             " que tal ",
@@ -1278,10 +1282,35 @@ def _enrich_genesis_whale_payload(result: dict) -> dict:
 
 
 def _news_prompt_fallback_payload(message: str) -> dict:
-    answer = (
-        "En noticias: esta pregunta pide contexto de titulares, no un ticker. "
-        "Genesis debe usar FMP/RSS, separar importantes y ultimas, y explicar impacto en tus activos sin inventar precios."
+    snapshot = _call_json_with_timeout(
+        lambda: get_dashboard_news(force_refresh=False),
+        4,
+        {"ok": True, "items": [], "important": [], "latest": [], "sections": {}},
     )
+    if isinstance(snapshot, dict):
+        _massage_news_payload(snapshot)
+    else:
+        snapshot = {"items": [], "important": [], "latest": [], "sections": {}}
+    sections_payload = snapshot.get("sections") if isinstance(snapshot.get("sections"), dict) else {}
+    important = sections_payload.get("important") if isinstance(sections_payload.get("important"), list) else snapshot.get("important") or []
+    latest = sections_payload.get("latest") if isinstance(sections_payload.get("latest"), list) else snapshot.get("latest") or []
+    news_items = _dedupe_news_rows([*(important or []), *(latest or []), *(snapshot.get("items") or [])])
+    top_titles = [
+        str(row.get("title_es") or row.get("title") or row.get("original_title") or "").strip()
+        for row in news_items[:3]
+        if isinstance(row, dict) and str(row.get("title_es") or row.get("title") or row.get("original_title") or "").strip()
+    ]
+    if top_titles:
+        answer = (
+            "Estas son las noticias que mueven mercado ahora: "
+            + " | ".join(top_titles[:3])
+            + ". Genesis las trata como catalizadores: confirma impacto con precio, volumen y activos afectados antes de operar."
+        )
+    else:
+        answer = (
+            "No tengo titulares frescos confirmados en este segundo. No voy a inventar noticias: "
+            "reintento FMP/RSS y mientras miro precio, volumen y alertas vivas."
+        )
     return {
         "ok": True,
         "status": "genesis_intelligence_ready",
@@ -1293,19 +1322,26 @@ def _news_prompt_fallback_payload(message: str) -> dict:
         "overview": {
             "answer": answer,
             "summary": answer,
-            "news": [],
-            "source_status": {"fallback": True},
+            "news": news_items[:8],
+            "source_status": snapshot.get("source_status") if isinstance(snapshot.get("source_status"), dict) else {"fallback": True},
         },
         "structured": {
             "kind": "news_brief",
             "title": "Noticias",
             "summary": answer,
-            "important_news": [],
-            "latest_news": [],
-            "news": [],
+            "important_news": important[:6],
+            "latest_news": latest[:8],
+            "news": news_items[:10],
             "sections": [
                 {"title": "Lectura rapida", "bullets": [answer]},
-                {"title": "Que vigilar", "bullets": ["Impacto en precio.", "Volumen posterior al titular.", "Activos afectados de cartera/watchlist."]},
+                {
+                    "title": "Que vigilar",
+                    "bullets": [
+                        "Reaccion de precio en los activos mencionados.",
+                        "Volumen posterior al titular.",
+                        "Si una noticia se conecta con tu cartera o watchlist.",
+                    ],
+                },
             ],
         },
     }
@@ -1840,18 +1876,6 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
             payload.pop("chart", None)
             payload.pop("technical", None)
             return payload
-        try:
-            local = ask_genesis(
-                message,
-                context=str(body.get("context") or "general"),
-                ticker="",
-                panel_context=panel_context,
-                conversation_id=str(body.get("conversation_id") or "default"),
-            )
-            if isinstance(local, dict) and local.get("intent") == "macro_news":
-                return local
-        except Exception:
-            logging.getLogger("genesis.dashboard").warning("Local news prompt correction failed", exc_info=True)
         return _news_prompt_fallback_payload(message)
     if _is_memory_genesis_prompt(message):
         try:
@@ -3015,13 +3039,48 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, directory: str | None = None, **kwargs):
         super().__init__(*args, directory=directory or str(_DASHBOARD_DIR), **kwargs)
 
+    @staticmethod
+    def _client_disconnect_error(exc: OSError) -> bool:
+        code = getattr(exc, "errno", None)
+        return isinstance(exc, (BrokenPipeError, ConnectionResetError)) or code in {
+            errno.EPIPE,
+            errno.ECONNRESET,
+            10053,
+            10054,
+        }
+
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except OSError as exc:
+            if self._client_disconnect_error(exc):
+                logging.getLogger("genesis.dashboard").info("Client disconnected before response finished | %s", self.path)
+                return
+            raise
+
+    def _safe_write_bytes(self, payload: bytes) -> bool:
+        try:
+            self.wfile.write(payload)
+            return True
+        except OSError as exc:
+            if self._client_disconnect_error(exc):
+                logging.getLogger("genesis.dashboard").info("Client disconnected while writing response | %s", self.path)
+                return False
+            raise
+
     def _write_json(self, payload_data: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = json.dumps(payload_data).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self._safe_write_bytes(payload)
+        except OSError as exc:
+            if self._client_disconnect_error(exc):
+                logging.getLogger("genesis.dashboard").info("Client disconnected before JSON response finished | %s", self.path)
+                return
+            raise
 
     def _read_json_body(self) -> dict:
         try:
@@ -3053,7 +3112,20 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             headers["Content-Type"] = "application/json; charset=utf-8"
         request = Request(target, data=payload_bytes if method == "POST" else None, headers=headers, method=method)
         try:
-            proxy_timeout = 55 if parsed.path == "/api/genesis/analyze-image" else 6 if parsed.path == "/api/genesis/ask" else 8 if parsed.path == "/api/dashboard/source-health" else 10 if parsed.path == "/api/dashboard/genesis" else 5 if parsed.path in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection", "/api/dashboard/money-flow/jarvis"} else 18
+            proxy_timeout = (
+                55
+                if parsed.path == "/api/genesis/analyze-image"
+                else 3
+                if parsed.path == "/api/genesis/ask"
+                else 8
+                if parsed.path == "/api/dashboard/source-health"
+                else 10
+                if parsed.path == "/api/dashboard/genesis"
+                else 5
+                if parsed.path
+                in {"/api/dashboard/whales", "/api/dashboard/money-flow/causal", "/api/dashboard/money-flow/detection", "/api/dashboard/money-flow/jarvis"}
+                else 18
+            )
             with urlopen(request, timeout=proxy_timeout) as response:
                 data = response.read()
                 status = int(getattr(response, "status", 200) or 200)
@@ -3061,18 +3133,29 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 if "json" in content_type or parsed.path.startswith("/api/"):
                     data = _massage_proxy_payload(parsed.path, data, body=body)
         except HTTPError as exc:
-            data = exc.read() or json.dumps({"ok": False, "message": "Railway devolvio error seguro."}).encode("utf-8")
             status = int(exc.code or 502)
-            content_type = exc.headers.get("Content-Type", "application/json; charset=utf-8")
+            logging.getLogger("genesis.dashboard").warning(
+                "Production proxy returned HTTP %s for %s %s; using local fallback",
+                status,
+                method,
+                parsed.path,
+            )
+            return False
         except (TimeoutError, URLError, OSError):
             logging.getLogger("genesis.dashboard").warning("Production proxy unavailable for %s %s", method, parsed.path)
             return False
-        self.send_response(status)
-        self.send_header("Content-Type", content_type if "json" in content_type else "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type if "json" in content_type else "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self._safe_write_bytes(data)
+        except OSError as exc:
+            if self._client_disconnect_error(exc):
+                logging.getLogger("genesis.dashboard").info("Client disconnected during proxy response | %s", parsed.path)
+                return True
+            raise
         return True
 
     def do_POST(self) -> None:
@@ -3107,17 +3190,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             if _is_news_genesis_prompt(message):
                 if _local_live_sources_missing() and self._try_proxy_to_production(parsed, method="POST", body=body):
                     return
-                result = ask_genesis(
-                    message,
-                    context=str(body.get("context") or "general"),
-                    ticker="",
-                    panel_context=panel_context,
-                    conversation_id=str(body.get("conversation_id") or "default"),
-                )
-                result = _enrich_genesis_asset_quote(result)
-                result = _enrich_genesis_trade_decision(result, message)
-                result = _enrich_genesis_whale_payload(result)
-                result = _correct_genesis_proxy_payload(result, body)
+                result = _news_prompt_fallback_payload(message)
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
@@ -3135,12 +3208,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/genesis/ask":
-            result = ask_genesis(
-                str(body.get("message") or body.get("question") or ""),
-                context=str(body.get("context") or "general"),
-                ticker=str(body.get("ticker") or ""),
-                panel_context=panel_context,
-                conversation_id=str(body.get("conversation_id") or "default"),
+            result = _call_json_with_timeout(
+                lambda: ask_genesis(
+                    str(body.get("message") or body.get("question") or ""),
+                    context=str(body.get("context") or "general"),
+                    ticker=str(body.get("ticker") or ""),
+                    panel_context=panel_context,
+                    conversation_id=str(body.get("conversation_id") or "default"),
+                ),
+                7,
+                _general_assistant_payload(message),
             )
             result = _enrich_genesis_asset_quote(result)
             result = _enrich_genesis_whale_payload(result)
@@ -3239,12 +3316,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 for key in ("refresh", "force", "no_cache")
                 for value in query.get(key, [])
             )
-            payload = json.dumps(get_dashboard_news(force_refresh=force_refresh)).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_json(get_dashboard_news(force_refresh=force_refresh), HTTPStatus.OK)
             return
 
         if parsed.path == "/api/dashboard/money-flow/detection":
@@ -3480,12 +3552,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/dashboard/market/search":
             query = (parse_qs(parsed.query).get("q") or [""])[0]
-            payload = json.dumps(_search_market_with_live_fallback(query)).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_json(_search_market_with_live_fallback(query), HTTPStatus.OK)
             return
 
         if parsed.path == "/api/dashboard/alerts":
@@ -3501,22 +3568,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 },
             )
             _massage_alerts_payload(payload_data)
-            payload = json.dumps(payload_data).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_json(payload_data, HTTPStatus.OK)
             return
 
         if parsed.path == "/api/dashboard/alerts/drilldown":
             alert_id = (parse_qs(parsed.query).get("alert_id") or [""])[0]
-            payload = json.dumps(get_dashboard_alert_drilldown(alert_id)).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_json(get_dashboard_alert_drilldown(alert_id), HTTPStatus.OK)
             return
 
         if parsed.path == "/api/dashboard/whales":
@@ -3539,12 +3596,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             if not _whale_payload_rows(whales_payload):
                 whales_payload = _fast_whales_timeout_payload(ticker)
                 _massage_whales_payload(whales_payload)
-            payload = json.dumps(whales_payload).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._write_json(whales_payload, HTTPStatus.OK)
             return
 
         if parsed.path == "/api/dashboard/fmp":
