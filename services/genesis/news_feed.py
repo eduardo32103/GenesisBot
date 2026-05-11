@@ -23,8 +23,8 @@ _SOURCE_STATUS: dict[str, Any] = {}
 _NEWS_TTL_SECONDS = 15 * 60
 _OG_TTL_SECONDS = 30 * 60
 _GLOBAL_TICKERS = ["SPY", "QQQ", "DIA", "NVDA", "AAPL", "MSFT", "TSLA", "META", "BTC-USD", "BZ=F"]
-_RSS_TIMEOUT_SECONDS = 1.5
-_MAX_OG_IMAGES_PER_BATCH = 8
+_RSS_TIMEOUT_SECONDS = 2.4
+_MAX_OG_IMAGES_PER_BATCH = 2
 _CATEGORY_PHOTOS = {
     "market": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=640&q=80",
     "macro": "https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?auto=format&fit=crop&w=640&q=80",
@@ -73,11 +73,8 @@ def get_recent_market_news(
         settings = load_settings()
         if getattr(settings, "fmp_api_key", "") and getattr(settings, "fmp_live_enabled", False):
             status = "empty"
-            client = FmpClient(settings.fmp_api_key)
             focus = safe_tickers or _GLOBAL_TICKERS
-            raw_news.extend(client.get_market_news(focus, limit=max(int(limit) * 2, 12)) or [])
-            for ticker in focus[:8]:
-                raw_news.extend(client.get_stock_news(ticker, limit=3) or [])
+            raw_news.extend(_fetch_fmp_news_parallel(settings.fmp_api_key, focus, limit=max(int(limit) * 2, 12)))
             status = "ok" if raw_news else "empty"
     except Exception:
         status = "unavailable"
@@ -136,6 +133,58 @@ def _safe_tickers(tickers: list[str] | None) -> list[str]:
         if ticker and ticker not in output:
             output.append(ticker)
     return output[:12]
+
+
+def _fetch_fmp_news_parallel(api_key: str, focus_tickers: list[str], *, limit: int) -> list[dict[str, Any]]:
+    focus = [ticker for ticker in (focus_tickers or _GLOBAL_TICKERS) if ticker]
+    symbols: list[str] = []
+    for ticker in focus + _GLOBAL_TICKERS:
+        normalized = normalize_ticker(ticker)
+        if normalized and normalized not in symbols:
+            symbols.append(normalized)
+    if not api_key or not symbols:
+        return []
+
+    def _market_news() -> list[dict[str, Any]]:
+        try:
+            return FmpClient(api_key).get_market_news(symbols[:5], limit=max(6, min(int(limit or 12), 18))) or []
+        except Exception:
+            return []
+
+    def _ticker_news(ticker: str) -> list[dict[str, Any]]:
+        try:
+            return FmpClient(api_key).get_stock_news(ticker, limit=3) or []
+        except Exception:
+            return []
+
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    executor = ThreadPoolExecutor(max_workers=min(8, max(2, len(symbols[:8]) + 1)))
+    futures = [executor.submit(_market_news)]
+    futures.extend(executor.submit(_ticker_news, ticker) for ticker in symbols[:8])
+    try:
+        for future in as_completed(futures, timeout=2.2):
+            try:
+                rows = future.result(timeout=0)
+            except Exception:
+                rows = []
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("url") or "").strip() or _dedupe_key(row.get("title") or row.get("headline") or "")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                output.append(row)
+                if len(output) >= limit:
+                    return output
+    except TimeoutError:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return output[:limit]
 
 
 def _normalize_news(raw_news: list[dict[str, Any]], focus_tickers: list[str], *, max_age_days: int) -> list[dict[str, Any]]:
@@ -240,23 +289,25 @@ def _fetch_public_rss_news(focus_tickers: list[str], *, limit: int) -> list[dict
     feeds = _rss_urls(queries, focus_tickers)[:8]
     output: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
+    executor = ThreadPoolExecutor(max_workers=6)
     try:
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            futures = [executor.submit(_fetch_rss_feed, feed) for feed in feeds]
-            for future in as_completed(futures, timeout=3):
+        futures = [executor.submit(_fetch_rss_feed, feed) for feed in feeds]
+        for future in as_completed(futures, timeout=5.0):
+            if len(output) >= limit:
+                break
+            for item in future.result() or []:
+                url = str(item.get("url") or item.get("link") or "").strip()
+                key = url or _dedupe_key(item.get("title") or "")
+                if key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                output.append(item)
                 if len(output) >= limit:
                     break
-                for item in future.result() or []:
-                    url = str(item.get("url") or item.get("link") or "").strip()
-                    key = url or _dedupe_key(item.get("title") or "")
-                    if key in seen_urls:
-                        continue
-                    seen_urls.add(key)
-                    output.append(item)
-                    if len(output) >= limit:
-                        break
     except TimeoutError:
         pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     return output
 
 
@@ -400,7 +451,7 @@ def _fetch_og_image(url: str) -> str:
         return cached[1]
     image = ""
     try:
-        response = requests.get(text, timeout=1, headers={"User-Agent": "GenesisBot/1.0"})
+        response = requests.get(text, timeout=0.35, headers={"User-Agent": "GenesisBot/1.0"})
         if response.status_code == 200:
             body = response.text[:250_000]
             match = re.search(r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']', body, re.I)
@@ -851,9 +902,17 @@ def _is_bad_news_title(title: object) -> bool:
         "quote & history",
         "quote and history",
         "company profile",
+        "new york stock exchange | nyse",
+        "nyse - nyse",
+        "indexes, exchanges",
+        "britannica",
+        "nasdaq closing bell",
+        "rings the nasdaq",
         "weekly market commentary",
+        "weekly market wrap",
         "market commentary",
         "weekly mercado commentary",
+        "weekly mercado wrap",
         "contexto relevante",
     )
     return any(token in text for token in blocked)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from api.main import create_app
+from api.main import _yahoo_asset_chart_payload
 from services.dashboard.get_asset_chart_series import get_asset_chart_series
 
 
@@ -220,6 +221,46 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         app_config = create_app()
 
         self.assertEqual(app_config["asset_chart_endpoint"], "/api/dashboard/asset/chart?ticker={symbol}&range={range}")
+
+    @patch("api.main._yahoo_quote_row")
+    @patch("api.main._yahoo_fetch_chart")
+    def test_yahoo_fallback_populates_return_tiles_from_broader_series(self, mock_fetch: Mock, mock_quote: Mock) -> None:
+        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+        def chart_payload(days: int, start_price: float, step: float) -> dict:
+            timestamps = []
+            opens = []
+            highs = []
+            lows = []
+            closes = []
+            volumes = []
+            for index in range(days):
+                stamp = start + timedelta(days=index)
+                close = start_price + index * step
+                timestamps.append(int(stamp.timestamp()))
+                opens.append(close - 0.5)
+                highs.append(close + 1)
+                lows.append(close - 1)
+                closes.append(close)
+                volumes.append(1_000 + index)
+            return {"timestamp": timestamps, "indicators": {"quote": [{"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}]}}
+
+        def fake_fetch(ticker: str, timeframe: str = "1D") -> dict:
+            if timeframe == "5Y":
+                return chart_payload(520, 100, 0.5)
+            return chart_payload(30, 200, 1)
+
+        mock_fetch.side_effect = fake_fetch
+        mock_quote.return_value = {"price": 229, "previous_close": 228, "quote_timestamp": "2026-05-11T00:00:00+00:00"}
+
+        payload = _yahoo_asset_chart_payload("NVDA", "1M")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["returns"]["1M"], 14.5)
+        self.assertIsNotNone(payload["returns"]["1W"])
+        self.assertIsNotNone(payload["returns"]["1Y"])
+        self.assertIsNotNone(payload["returns"]["MAX"])
+        self.assertEqual(payload["return_details"]["1M"]["points_used"], 30)
 
 
 if __name__ == "__main__":

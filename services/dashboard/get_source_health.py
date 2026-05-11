@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -58,26 +59,47 @@ def _fmp_health(settings: Any) -> dict[str, Any]:
     if not health["key_configured"] or not health["live_enabled"]:
         health["last_error_safe"] = "FMP no esta habilitado en entorno."
         return health
+    executor = ThreadPoolExecutor(max_workers=4)
     try:
         client = FmpClient(settings.fmp_api_key)
-        quote = client.get_quote("SPY") or {}
+        futures = {
+            "quote": executor.submit(client.get_quote, "SPY"),
+            "history": executor.submit(client.get_historical_eod, "SPY", limit=5),
+            "activity": executor.submit(client.get_smart_money_activity, "NVDA", limit=2),
+            "news": executor.submit(get_recent_market_news, ["SPY", "NVDA", "BTC-USD", "BZ=F"], limit=4, max_age_days=30),
+        }
+        deadline = time.monotonic() + 3.2
+
+        def result_for(name: str) -> Any:
+            remaining = max(0.05, deadline - time.monotonic())
+            try:
+                return futures[name].result(timeout=remaining)
+            except Exception:
+                return None
+
+        quote = result_for("quote") or {}
         health["quote_ok"] = bool(quote.get("price"))
         health["quote_sample_count"] = 1 if health["quote_ok"] else 0
         quote_error = client.get_last_error("SPY") or ""
-        history = client.get_historical_eod("SPY", limit=10) or []
+        history = result_for("history") or []
         health["historical_ok"] = bool(history)
         health["historical_points_sample"] = len(history)
-        news = get_recent_market_news(["SPY", "NVDA", "BTC-USD", "BZ=F"], limit=8, max_age_days=30)
-        health["news_ok"] = bool(news)
-        health["news_count"] = len(news)
-        activity = client.get_smart_money_activity("NVDA", limit=2) or []
+        news = result_for("news") or []
+        source_status = get_news_source_status()
+        fmp_news_status = source_status.get("fmp_market_news") if isinstance(source_status, dict) else {}
+        health["news_ok"] = bool(news) or str((fmp_news_status or {}).get("status") or "").lower() == "ok"
+        health["news_count"] = len(news) if isinstance(news, list) and news else int((fmp_news_status or {}).get("count") or 0)
+        activity = result_for("activity") or []
         health["institutional_ok"] = bool(activity)
         health["insider_ok"] = any(str(row.get("source") or "").casefold().startswith("insider") for row in activity)
-        health["source_status"] = get_news_source_status()
+        health["source_status"] = source_status
         if not health["quote_ok"]:
             health["last_error_safe"] = quote_error or "quote empty"
+        health["status"] = "ok" if health["quote_ok"] or health["historical_ok"] or health["news_ok"] else "unavailable"
     except Exception:
         health["last_error_safe"] = "fmp health unavailable"
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     health["elapsed_ms"] = int((time.monotonic() - started) * 1000)
     return health
 

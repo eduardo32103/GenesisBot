@@ -588,8 +588,8 @@ function toast(message, tone = "info") {
   }, 3600);
 }
 
-async function getJson(url) {
-  return requestJson(url);
+async function getJson(url, config = {}) {
+  return requestJson(url, {}, config);
 }
 
 async function postJson(url, body, config = {}) {
@@ -846,7 +846,10 @@ async function loadChartSeries(ticker, range = "1Y") {
   if (cached.payload?.ok === false && cached.loadedAt && age <= CHART_FAILURE_RETRY_MS) return cached.payload;
   const request = (async () => {
     try {
-      const payload = await getJson(`/api/dashboard/asset/chart?ticker=${encodeURIComponent(normalizedTicker)}&range=${encodeURIComponent(normalizedRange)}`);
+      const payload = await getJson(
+        `/api/dashboard/asset/chart?ticker=${encodeURIComponent(normalizedTicker)}&range=${encodeURIComponent(normalizedRange)}`,
+        { timeoutMs: 12000, attempts: 1, localOnly: true }
+      );
       appState.chartCache[key] = { loading: false, payload, promise: null, loadedAt: Date.now() };
       return payload;
     } catch (error) {
@@ -990,9 +993,18 @@ function chartSvgMarkup(payload) {
 
 function chartReturnsMarkup(payload) {
   const returns = payload?.returns || {};
+  const details = payload?.return_details || payload?.returnDetails || {};
+  const valueForRange = (range) => {
+    const direct = numberOrNull(returns[range]);
+    if (direct !== null) return direct;
+    return numberOrNull(details?.[range]?.return_pct ?? details?.[range]?.returnPct);
+  };
   return `
     <div class="chart-returns">
-      ${CHART_RANGES.map((range) => `<span class="${marketClass(returns[range])}"><small>${range}</small>${escapeHtml(formatSignedPercent(returns[range], "Sin dato"))}</span>`).join("")}
+      ${CHART_RANGES.map((range) => {
+        const value = valueForRange(range);
+        return `<span class="${marketClass(value)}"><small>${range}</small>${escapeHtml(formatSignedPercent(value, "Sin dato"))}</span>`;
+      }).join("")}
     </div>
   `;
 }
@@ -1071,7 +1083,7 @@ function chartBlockMarkup(ticker, range = "1Y", target = "asset") {
         ${CHART_RANGES.map((item) => `<button type="button" class="${item === normalizedRange ? "is-active" : ""}" data-chart-range="${item}" data-chart-ticker="${escapeHtml(normalizedTicker)}" data-chart-target="${escapeHtml(target)}">${item}</button>`).join("")}
       </div>
       <div class="chart-canvas">
-        ${state.loading ? `<div class="chart-empty">Cargando grafica...</div>` : chartSvgMarkup(payload)}
+        ${state.loading && !payload ? `<div class="chart-empty">Cargando grafica...</div>` : chartSvgMarkup(payload)}
       </div>
       ${payload ? chartReturnsMarkup(payload) : ""}
       ${payload ? indicatorStripMarkup(payload) : ""}
@@ -1317,7 +1329,7 @@ async function refreshPortfolio(options = {}) {
   setLiveRefreshIndicator(true);
   if (shouldRender) renderActiveScreen();
   appState.refreshPromise = (async () => {
-    const snapshot = await getJson(PORTFOLIO_ENDPOINT);
+    const snapshot = await getJson(PORTFOLIO_ENDPOINT, { timeoutMs: 10000, attempts: 1, localOnly: true });
     appState.portfolioSnapshot = snapshot;
     appState.radarSnapshot = snapshot;
     splitPortfolioSnapshot(snapshot);
@@ -1397,7 +1409,10 @@ async function loadMarketPulse(options = {}) {
   setLiveRefreshIndicator(true);
   try {
     const results = await Promise.allSettled(MARKET_PULSE_TICKERS.map(async (ticker) => {
-      const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const payload = await getJson(
+        `/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`,
+        { timeoutMs: 9000, attempts: 1, localOnly: true }
+      );
       const rows = Array.isArray(payload?.results) ? payload.results : Array.isArray(payload?.items) ? payload.items : [];
       const first = rows.find((row) => itemTicker(row) === ticker) || rows[0] || payload;
       return { ticker, item: { ...first, ticker: itemTicker(first) || ticker } };
@@ -1424,7 +1439,10 @@ async function loadOpportunityQuotes(options = {}) {
   setLiveRefreshIndicator(true);
   try {
     const results = await Promise.allSettled(OPPORTUNITY_TICKERS.map(async (ticker) => {
-      const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const payload = await getJson(
+        `/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`,
+        { timeoutMs: 9000, attempts: 1, localOnly: true }
+      );
       const rows = Array.isArray(payload?.results) ? payload.results : [];
       const first = rows.find((row) => itemTicker(row) === ticker) || rows[0];
       return first ? { ticker, item: { ...first, ticker: itemTicker(first) || ticker } } : null;
@@ -1498,7 +1516,10 @@ function setActiveScreen(screen, options = {}) {
 async function searchMarket(query, mode) {
   const value = String(query || "").trim();
   if (!value) throw new Error("Escribe un ticker o empresa.");
-  const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(value)}`);
+  const payload = await getJson(
+    `/api/dashboard/market/search?q=${encodeURIComponent(value)}`,
+    { timeoutMs: 9000, attempts: 1, localOnly: true }
+  );
   const results = Array.isArray(payload.results) ? payload.results : [];
   appState.marketSearchResults[mode] = results;
   if (mode === "tracking") appState.trackingSearchQuery = value;
@@ -1552,7 +1573,7 @@ async function addTickerToWatchlist(ticker) {
     symbol: normalized,
     name: seed?.name || seed?.display_name || seed?.companyName || "",
     reference_price: itemPrice(seed),
-  });
+  }, { timeoutMs: 9000, attempts: 1, localOnly: true });
   let refreshError = null;
   try {
     await refreshPortfolio({ render: false, force: true });
@@ -1576,7 +1597,11 @@ async function addTickerToWatchlist(ticker) {
 async function removeTickerFromWatchlist(ticker) {
   const normalized = normalizeTicker(ticker);
   if (!normalized) return;
-  const result = await postJson("/api/dashboard/portfolio/watchlist/remove", { ticker: normalized });
+  const result = await postJson(
+    "/api/dashboard/portfolio/watchlist/remove",
+    { ticker: normalized },
+    { timeoutMs: 9000, attempts: 1, localOnly: true }
+  );
   await refreshPortfolio({ render: false, force: true });
   const stillThere = Boolean(findTrackingItem(normalized));
   if (stillThere) {
@@ -1600,7 +1625,7 @@ async function savePaperBuy(ticker, units, entryPrice) {
     units,
     entry_price: entryPrice,
     mode: "paper",
-  });
+  }, { timeoutMs: 9000, attempts: 1, localOnly: true });
   const seed = marketSeedForTicker(normalized);
   let refreshError = null;
   try {
@@ -1625,7 +1650,11 @@ async function savePaperBuy(ticker, units, entryPrice) {
 async function removePaperTicker(ticker) {
   const normalized = normalizeTicker(ticker);
   if (!normalized) return;
-  const result = await postJson("/api/dashboard/portfolio/paper-remove", { ticker: normalized });
+  const result = await postJson(
+    "/api/dashboard/portfolio/paper-remove",
+    { ticker: normalized },
+    { timeoutMs: 9000, attempts: 1, localOnly: true }
+  );
   await refreshPortfolio({ render: false, force: true });
   const stillThere = appState.paperPositions.some((item) => itemTicker(item) === normalized);
   if (stillThere) {
@@ -3117,7 +3146,7 @@ async function submitGenesisQuestion(event) {
           size: imageFile.size,
           data_url: dataUrl,
         },
-      }, { timeoutMs: 60000, attempts: 1 });
+      }, { timeoutMs: 30000, attempts: 1, localOnly: true });
       pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(
         { ...payload, intent: payload.intent || "image_chart_analysis" },
         payload.answer || "Recibi la imagen."
@@ -3132,7 +3161,11 @@ async function submitGenesisQuestion(event) {
   if (chartIntent) {
     let routed = null;
     try {
-      routed = await postJson("/api/genesis/ask", { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId });
+      routed = await postJson(
+        "/api/genesis/ask",
+        { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId },
+        { timeoutMs: 12000, attempts: 1, localOnly: true }
+      );
       if (routed?.chart?.ticker) chartIntent.ticker = routed.chart.ticker;
     } catch (error) {
       routed = null;
@@ -3187,7 +3220,10 @@ async function submitGenesisQuestion(event) {
       return;
     }
     try {
-      const payload = await getJson(`/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`);
+      const payload = await getJson(
+        `/api/dashboard/genesis?q=${encodeURIComponent(question)}&context=${encodeURIComponent(appState.activeScreen)}&ticker=&panel_context=`,
+        { timeoutMs: 7000, attempts: 1, localOnly: true }
+      );
       const correctedPayload = await correctGenesisIntentPayload(payload, question);
       pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(await enrichGenesisPayloadWithLocalQuote(correctedPayload, question), question));
     } catch (fallbackError) {
@@ -3212,7 +3248,10 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
   let asset = findAsset(ticker);
   if (!asset) {
     try {
-      const search = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const search = await getJson(
+        `/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`,
+        { timeoutMs: 7000, attempts: 1, localOnly: true }
+      );
       const results = Array.isArray(search.results) ? search.results : [];
       asset = results.find((item) => itemTicker(item) === ticker) || results[0] || null;
       if (asset) {
@@ -3256,7 +3295,10 @@ async function localAssetFallbackMessage(question, error) {
   let asset = findAsset(ticker);
   if (!asset) {
     try {
-      const payload = await getJson(`/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`);
+      const payload = await getJson(
+        `/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`,
+        { timeoutMs: 7000, attempts: 1, localOnly: true }
+      );
       const results = Array.isArray(payload.results) ? payload.results : [];
       asset = results.find((item) => itemTicker(item) === ticker) || results[0] || null;
       if (asset) {
@@ -3422,19 +3464,25 @@ async function loadNews(options = {}) {
   appState.newsLoading = true;
   if (!options.silent) renderNewsScreen();
   try {
-    const newsUrl = options.force ? `/api/dashboard/news?refresh=${Date.now()}` : "/api/dashboard/news";
-    const [newsResult, alertsResult, whalesResult] = await Promise.allSettled([
-      getJson(newsUrl),
-      getJson("/api/dashboard/alerts"),
-      loadWhalesData(),
+    const newsUrl = options.force ? `/api/dashboard/news?refresh=1&_=${Date.now()}` : "/api/dashboard/news";
+    const fastRequest = { timeoutMs: options.force ? 12000 : 10000, attempts: 1, localOnly: true };
+    const [newsResult, alertsResult] = await Promise.allSettled([
+      getJson(newsUrl, fastRequest),
+      getJson("/api/dashboard/alerts", { timeoutMs: 7000, attempts: 1, localOnly: true }),
     ]);
     if (alertsResult.status === "fulfilled") appState.alertsSnapshot = alertsResult.value;
+    loadWhalesData({ timeoutMs: 6500 }).catch(() => {});
+    const incomingNews = newsResult.status === "fulfilled" ? newsResult.value : null;
+    const previousNews = appState.newsSnapshot?.news || null;
+    const incomingHasRows = newsPayloadHasRows(incomingNews);
+    const previousHasRows = newsPayloadHasRows(previousNews);
+    const activeNews = incomingHasRows || !previousHasRows ? incomingNews : previousNews;
     appState.newsSnapshot = {
-      news: newsResult.status === "fulfilled" ? newsResult.value : null,
+      news: activeNews,
+      stale: !incomingHasRows && previousHasRows,
       errors: [
         newsResult.status === "rejected" ? newsResult.reason?.message : "",
         alertsResult.status === "rejected" ? alertsResult.reason?.message : "",
-        whalesResult.status === "rejected" ? whalesResult.reason?.message : "",
       ].filter(Boolean),
       loadedAt: new Date().toISOString(),
     };
@@ -3443,6 +3491,11 @@ async function loadNews(options = {}) {
     renderNewsScreen();
   }
   return appState.newsSnapshot;
+}
+
+function newsPayloadHasRows(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  return newsFeedItems({ news: payload }).length > 0;
 }
 
 async function refreshScreenData(screen = appState.activeScreen) {
@@ -3581,7 +3634,7 @@ function newsHeaderSummary(value) {
 }
 
 function newsFeedItems(snapshot = {}) {
-  const newsSnapshot = snapshot.news || {};
+  const newsSnapshot = snapshot.news || snapshot || {};
   const directNews = [
     ...(Array.isArray(newsSnapshot.important) ? newsSnapshot.important : []),
     ...(Array.isArray(newsSnapshot.latest) ? newsSnapshot.latest : []),
@@ -3625,12 +3678,18 @@ function newsItemsForActiveFilter(snapshot = {}, allItems = []) {
   if (filter === "mine" && sectionItems.length) {
     return uniqueNewsItems(sectionItems).slice(0, 10);
   }
+  if (filter === "global" && sectionItems.length) {
+    return uniqueNewsItems(sectionItems).slice(0, 10);
+  }
+  if (sectionItems.length) {
+    return uniqueNewsItems(sectionItems).slice(0, filter === "latest" ? 14 : 10);
+  }
   const source = sectionItems.length ? sectionItems : allItems;
   return uniqueNewsItems(filteredNewsItems(source, filter, snapshot)).slice(0, filter === "latest" ? 14 : 10);
 }
 
 function newsItemsFromSnapshotSection(snapshot = {}, section = "important") {
-  const newsSnapshot = snapshot.news || {};
+  const newsSnapshot = snapshot.news || snapshot || {};
   const sections = newsSnapshot.sections || {};
   const aliases = {
     important: ["important", "important_news", "influential"],
@@ -4607,11 +4666,12 @@ async function loadWhales() {
   renderAlertsScreen();
 }
 
-async function loadWhalesData() {
+async function loadWhalesData(options = {}) {
+  const requestConfig = { timeoutMs: options.timeoutMs || 7000, attempts: 1, localOnly: true };
   const [learnedResult, causalResult, detectionResult] = await Promise.allSettled([
-    getJson("/api/dashboard/whales"),
-    getJson("/api/dashboard/money-flow/causal"),
-    getJson("/api/dashboard/money-flow/detection"),
+    getJson("/api/dashboard/whales", requestConfig),
+    getJson("/api/dashboard/money-flow/causal", requestConfig),
+    getJson("/api/dashboard/money-flow/detection", requestConfig),
   ]);
   const learned = learnedResult.status === "fulfilled" ? learnedResult.value : {};
   const causal = causalResult.status === "fulfilled" ? causalResult.value : {};
@@ -5017,7 +5077,7 @@ function bindMoneyFlowJarvisForm() {
     const answerNode = document.getElementById("money-flow-jarvis-answer");
     answerNode.textContent = "Consultando Ballenas...";
     try {
-      const payload = await getJson(`/api/dashboard/money-flow/jarvis?q=${encodeURIComponent(question)}`);
+      const payload = await getJson(`/api/dashboard/money-flow/jarvis?q=${encodeURIComponent(question)}`, { timeoutMs: 7000, attempts: 1, localOnly: true });
       renderMoneyFlowJarvisAnswer(payload);
     } catch (error) {
       answerNode.textContent = cleanCopy(error.message || "No pude consultar Ballenas.");
@@ -5044,7 +5104,7 @@ function renderMoneyFlowJarvisAnswer(payload = {}) {
 }
 
 async function loadAlerts() {
-  appState.alertsSnapshot = await getJson("/api/dashboard/alerts");
+  appState.alertsSnapshot = await getJson("/api/dashboard/alerts", { timeoutMs: 7000, attempts: 1, localOnly: true });
   return appState.alertsSnapshot;
 }
 

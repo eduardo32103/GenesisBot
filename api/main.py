@@ -99,7 +99,6 @@ _YAHOO_TIMEFRAMES = {
 }
 _PROXY_POST_PATHS = {
     "/api/genesis/analyze-image",
-    "/api/genesis/ask",
     "/api/genesis/memory/event",
 }
 
@@ -784,7 +783,7 @@ def _yahoo_fetch_chart(ticker: str, timeframe: str = "1D") -> dict:
     try:
         target = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol)}?range={quote(yahoo_range)}&interval={quote(interval)}"
         request = Request(target, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0 Genesis/1.0"}, method="GET")
-        with urlopen(request, timeout=8) as response:
+        with urlopen(request, timeout=4.5) as response:
             data = json.loads(response.read().decode("utf-8"))
         result = ((data.get("chart") or {}).get("result") or [{}])[0]
         if not isinstance(result, dict):
@@ -792,7 +791,8 @@ def _yahoo_fetch_chart(ticker: str, timeframe: str = "1D") -> dict:
         _YAHOO_CHART_CACHE[cache_key] = (now, result)
         return result
     except HTTPError as exc:
-        logging.getLogger("genesis.dashboard").warning("Yahoo chart fallback HTTP %s for %s", exc.code, symbol)
+        level = logging.INFO if exc.code == 404 else logging.WARNING
+        logging.getLogger("genesis.dashboard").log(level, "Yahoo chart fallback HTTP %s for %s", exc.code, symbol)
         _YAHOO_CHART_CACHE[cache_key] = (now, {})
         return {}
     except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
@@ -902,6 +902,52 @@ def _simple_return(first: object, last: object) -> float | None:
     return (end - start) / start * 100
 
 
+def _yahoo_return_maps(
+    ticker: str,
+    timeframe: str,
+    points: list[dict],
+    quote_row: dict,
+) -> tuple[dict, dict]:
+    try:
+        from services.genesis.returns_engine import calculate_returns, flatten_return_details
+    except Exception:
+        return ({range_name: None for range_name in _YAHOO_TIMEFRAMES}, {})
+
+    normalized_timeframe = str(timeframe or "1Y").strip().upper()
+    base_points = points
+    if normalized_timeframe in {"1D", "1W", "1M"}:
+        broader_points = _yahoo_shape_points(_yahoo_fetch_chart(ticker, "5Y"))
+        if len(broader_points) >= 2:
+            base_points = broader_points
+
+    intraday_points = points if normalized_timeframe == "1D" else []
+    details = calculate_returns(
+        base_points,
+        intraday_points,
+        source="Yahoo Chart fallback",
+        current_price=quote_row.get("price") or quote_row.get("current_price"),
+        previous_close=quote_row.get("previous_close") or quote_row.get("previousClose"),
+        current_date=str(quote_row.get("quote_timestamp") or "live"),
+    )
+    returns = flatten_return_details(details)
+    selected_return = _simple_return((points[0] if points else {}).get("close"), (points[-1] if points else {}).get("close"))
+    if selected_return is not None:
+        returns[normalized_timeframe] = round(selected_return, 4)
+        details[normalized_timeframe] = {
+            **(details.get(normalized_timeframe) or {}),
+            "range": normalized_timeframe,
+            "first_date": (points[0] if points else {}).get("date") or "",
+            "last_date": (points[-1] if points else {}).get("date") or "",
+            "first_close": (points[0] if points else {}).get("close"),
+            "last_close": (points[-1] if points else {}).get("close"),
+            "return_pct": round(selected_return, 4),
+            "source": "Yahoo Chart fallback",
+            "points_used": len(points),
+            "confidence": "medium",
+        }
+    return returns, details
+
+
 def _yahoo_asset_chart_payload(ticker: str, timeframe: str = "1Y") -> dict:
     normalized_ticker = _yahoo_symbol(ticker)
     normalized_timeframe = str(timeframe or "1Y").strip().upper()
@@ -926,8 +972,7 @@ def _yahoo_asset_chart_payload(ticker: str, timeframe: str = "1Y") -> dict:
     last = points[-1]
     summary_change = (_safe_num(last.get("close")) or 0) - (_safe_num(first.get("close")) or 0)
     selected_return = _simple_return(first.get("close"), last.get("close"))
-    returns = {"1D": None, "1W": None, "1M": None, "1Y": None, "5Y": None, "MAX": None}
-    returns[normalized_timeframe] = selected_return
+    returns, return_details = _yahoo_return_maps(normalized_ticker, normalized_timeframe, points, quote_row)
     try:
         from services.genesis.technical_analysis import compute_technical_indicators
 
@@ -945,7 +990,7 @@ def _yahoo_asset_chart_payload(ticker: str, timeframe: str = "1Y") -> dict:
         "points": points,
         "ohlc": points,
         "returns": returns,
-        "return_details": {},
+        "return_details": return_details,
         "indicators": indicators,
         "summary": {
             "start_price": first.get("close"),
@@ -3407,8 +3452,6 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
             if _is_news_genesis_prompt(message):
-                if _local_live_sources_missing() and self._try_proxy_to_production(parsed, method="POST", body=body):
-                    return
                 result = _news_prompt_fallback_payload(message)
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
@@ -3527,17 +3570,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 return
 
         if parsed.path == "/api/dashboard/news":
-            if self._try_proxy_to_production(parsed, method="GET"):
-                return
             query = parse_qs(parsed.query)
-            force_refresh = any(
+            refresh_keys = {"refresh", "force", "force_refresh", "no_cache", "_"}
+            force_refresh = any(key in query for key in refresh_keys) or any(
                 str(value).lower() in {"1", "true", "yes", "now"}
-                for key in ("refresh", "force", "no_cache")
+                for key in refresh_keys
                 for value in query.get(key, [])
             )
             payload_data = _call_json_with_timeout(
                 lambda: get_dashboard_news(force_refresh=force_refresh),
-                4.5 if force_refresh else 3.2,
+                9.5 if force_refresh else 8.0,
                 _news_timeout_payload(),
             )
             if isinstance(payload_data, dict):
@@ -3574,6 +3616,44 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/dashboard/source-health":
+            payload_data = _call_json_with_timeout(
+                get_dashboard_source_health,
+                7.5,
+                {
+                    "ok": True,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "fmp": {
+                        "status": "timeout",
+                        "key_configured": bool(os.getenv("FMP_API_KEY", "").strip()),
+                        "live_enabled": _truthy(os.getenv("FMP_LIVE_ENABLED")),
+                        "quote_ok": False,
+                        "news_ok": False,
+                        "historical_ok": False,
+                        "last_error_safe": "source health lento o proxy remoto no disponible; no se exponen secretos",
+                        "provider_used": "local_safe_timeout",
+                    },
+                    "openai": {
+                        "key_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+                        "llm_enabled": _truthy(os.getenv("GENESIS_LLM_ENABLED")),
+                        "model": os.getenv("GENESIS_LLM_MODEL", ""),
+                        "vision_enabled": _truthy(os.getenv("GENESIS_VISION_ENABLED")),
+                    },
+                    "database": {
+                        "database_url_configured": bool(os.getenv("DATABASE_URL", "").strip()),
+                        "memory_ok": False,
+                        "portfolio_store": "unknown_timeout",
+                    },
+                    "weather": {"open_meteo_ok": False, "last_error_safe": "no verificado por timeout seguro"},
+                    "rss_news": {"enabled": True, "status": "unknown"},
+                    "cache": {"status": "available"},
+                    "policy": "Diagnostico seguro de timeout: solo banderas booleanas, sin API keys ni secretos.",
+                },
+            )
+            _massage_source_health_payload(payload_data)
+            self._write_json(payload_data, HTTPStatus.OK)
             return
 
         if self._try_proxy_to_production(parsed, method="GET"):
@@ -3838,7 +3918,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/dashboard/source-health":
             payload_data = _call_json_with_timeout(
                 get_dashboard_source_health,
-                2.2,
+                7.5,
                 {
                     "ok": True,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
