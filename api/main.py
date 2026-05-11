@@ -535,6 +535,12 @@ def _is_market_genesis_prompt(message: str) -> bool:
         for token in (
             " como esta el mercado ",
             " como va el mercado ",
+            " como ves el mercado ",
+            " como viene el mercado ",
+            " mercado para manana ",
+            " mercado manana ",
+            " apertura manana ",
+            " premercado ",
             " mercado el dia de hoy ",
             " mercado hoy ",
             " que esta pasando hoy ",
@@ -1483,6 +1489,266 @@ def _comparison_prompt_payload(message: str, body: dict) -> dict:
     }
 
 
+def _market_outlook_focus_tickers() -> list[str]:
+    return ["SPY", "QQQ", "BTC-USD", "BZ=F", "NVDA"]
+
+
+def _market_outlook_row(ticker: str) -> dict:
+    search = _market_search_for_proxy(ticker)
+    candidates = search.get("results") if isinstance(search, dict) else []
+    row = next((item for item in candidates if isinstance(item, dict)), {}) if isinstance(candidates, list) else {}
+    row = _normalize_quote_change_fields(dict(row or {}))
+    price = _first_safe_num(row.get("current_price"), row.get("price"))
+    change = _first_safe_num(row.get("daily_change"), row.get("change"))
+    change_pct = _first_safe_num(row.get("daily_change_pct"), row.get("change_pct"), row.get("percent_change"))
+    volume = _first_safe_num(row.get("volume"), row.get("avg_volume"))
+    display = _asset_display_name_for_proxy(ticker, row.get("asset_name") or row.get("name"))
+    label = "Brent" if ticker == "BZ=F" else ticker
+    return {
+        "ticker": ticker,
+        "label": label,
+        "asset_name": display,
+        "price": price,
+        "formatted_price": _money_short(price) if price is not None else "precio pendiente",
+        "change": change,
+        "change_pct": change_pct,
+        "formatted_change_pct": f"{change_pct:+.2f}%" if change_pct is not None else "cambio pendiente",
+        "volume": volume,
+        "formatted_volume": f"{volume:,.0f}" if volume is not None else "volumen pendiente",
+        "tone": "alcista" if (change_pct or 0) > 0.15 else "presionado" if (change_pct or 0) < -0.15 else "neutral",
+        "source": row.get("source_label") or row.get("source") or search.get("provider_used") or "FMP/backend",
+    }
+
+
+def _market_outlook_rows() -> list[dict]:
+    rows_by_ticker: dict[str, dict] = {}
+    tickers = _market_outlook_focus_tickers()
+    executor = ThreadPoolExecutor(max_workers=len(tickers))
+    future_map = {executor.submit(_market_outlook_row, ticker): ticker for ticker in tickers}
+    try:
+        for future in as_completed(future_map, timeout=3.2):
+            ticker = future_map[future]
+            try:
+                row = future.result(timeout=0)
+            except Exception:
+                row = {}
+            if isinstance(row, dict):
+                rows_by_ticker[ticker] = row
+    except Exception:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    rows: list[dict] = []
+    for ticker in tickers:
+        row = rows_by_ticker.get(ticker)
+        if isinstance(row, dict) and row:
+            rows.append(row)
+        else:
+            display = _asset_display_name_for_proxy(ticker, "")
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "label": "Brent" if ticker == "BZ=F" else ticker,
+                    "asset_name": display,
+                    "price": None,
+                    "formatted_price": "precio pendiente",
+                    "change_pct": None,
+                    "formatted_change_pct": "cambio pendiente",
+                    "volume": None,
+                    "formatted_volume": "volumen pendiente",
+                    "tone": "pendiente",
+                    "source": "timeout",
+                }
+            )
+    return rows
+
+
+def _market_latest_context() -> dict:
+    fallback = {"news": {}, "alerts": {}}
+    executor = ThreadPoolExecutor(max_workers=2)
+    future_map = {
+        executor.submit(lambda: get_dashboard_news(force_refresh=False)): "news",
+        executor.submit(get_dashboard_alerts): "alerts",
+    }
+    try:
+        for future in as_completed(future_map, timeout=2.2):
+            key = future_map[future]
+            try:
+                value = future.result(timeout=0)
+            except Exception:
+                value = {}
+            if isinstance(value, dict):
+                fallback[key] = value
+    except Exception:
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return fallback
+
+
+def _market_context_titles(news_payload: dict, limit: int = 3) -> list[str]:
+    rows: list[dict] = []
+    if isinstance(news_payload, dict):
+        for key in ("important", "latest", "items"):
+            value = news_payload.get(key)
+            if isinstance(value, list):
+                rows.extend([row for row in value if isinstance(row, dict)])
+    titles: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        title = str(row.get("title_es") or row.get("title") or row.get("original_title") or "").strip()
+        folded = _fold_prompt(title)
+        if not title or folded in seen or any(bad in folded for bad in ("contexto pendiente", "sin contexto", "stock price news quote")):
+            continue
+        seen.add(folded)
+        titles.append(title[:110])
+        if len(titles) >= limit:
+            break
+    return titles
+
+
+def _market_alert_titles(alert_payload: dict, limit: int = 3) -> list[str]:
+    rows: list[dict] = []
+    if isinstance(alert_payload, dict):
+        for key in ("items", "recent_alerts", "opportunities"):
+            value = alert_payload.get(key)
+            if isinstance(value, list):
+                rows.extend([row for row in value if isinstance(row, dict)])
+    titles: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        title = str(row.get("title_es") or row.get("title") or row.get("summary_es") or row.get("summary") or "").strip()
+        folded = _fold_prompt(title)
+        if not title or folded in seen:
+            continue
+        seen.add(folded)
+        ticker = str(row.get("ticker") or "").upper()
+        titles.append(f"{ticker}: {title}"[:120] if ticker else title[:120])
+        if len(titles) >= limit:
+            break
+    return titles
+
+
+def _is_weak_market_payload(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    if payload.get("intent") != "market_overview" and payload.get("response_type") not in {"market_summary", "market_briefing"}:
+        return False
+    text = json.dumps(payload, ensure_ascii=False).casefold()
+    weak_tokens = (
+        "panorama no concluyente",
+        "0 titulares",
+        "0 eventos",
+        "sin liderazgo confirmado",
+        "sin riesgo destacado",
+        "no hay evidencia reciente suficiente",
+    )
+    return any(token in text for token in weak_tokens)
+
+
+def _market_outlook_payload(message: str, body: dict | None = None, base_payload: dict | None = None) -> dict:
+    rows = _market_outlook_rows()
+    valid_rows = [row for row in rows if _safe_num(row.get("price")) is not None]
+    positive = sum(1 for row in valid_rows if (_safe_num(row.get("change_pct")) or 0) > 0.15)
+    negative = sum(1 for row in valid_rows if (_safe_num(row.get("change_pct")) or 0) < -0.15)
+    tone = "comprador" if positive > negative else "presionado" if negative > positive else "mixto"
+    confidence = "media" if len(valid_rows) >= 3 else "baja"
+    folded = f" {_fold_prompt(message)} "
+    horizon = "manana" if any(token in folded for token in (" manana ", " apertura ", " premercado ")) else "hoy"
+    context = _market_latest_context()
+    news_titles = _market_context_titles(context.get("news") or {})
+    alert_titles = _market_alert_titles(context.get("alerts") or {})
+    movers = sorted(
+        valid_rows,
+        key=lambda row: abs(_safe_num(row.get("change_pct")) or 0),
+        reverse=True,
+    )
+    if valid_rows:
+        snapshot = " | ".join(
+            f"{row['label']} {row['formatted_price']} {row['formatted_change_pct']}"
+            for row in valid_rows[:5]
+        )
+        leader = movers[0]["label"] if movers else "mercado"
+        answer = (
+            f"Lectura para {horizon}: mercado {tone}, confianza {confidence}. "
+            f"Base viva: {snapshot}. El activo que mas mueve la lectura ahora es {leader}. "
+            "Genesis no lo trata como orden: espera confirmacion de apertura, volumen relativo y ruptura de rango."
+        )
+    else:
+        answer = (
+            f"Lectura para {horizon}: no tengo precios live suficientes en este segundo, asi que no voy a inventar. "
+            "La lectura util es esperar confirmacion en SPY, QQQ, Bitcoin y Brent antes de operar."
+        )
+    watch_points = [
+        "Primera hora: SPY y QQQ deben confirmar direccion con volumen, no solo vela inicial.",
+        "Bitcoin sirve como termometro de apetito por riesgo fuera de horario.",
+        "Brent Crude Oil puede mover energia e inflacion; vigila si rompe su rango diario.",
+        "Si NVDA lidera con volumen, tecnologia puede sostener el sesgo comprador; si falla, baja la conviccion.",
+    ]
+    sections = [
+        {"title": "Lectura rapida", "bullets": [answer]},
+        {
+            "title": "Escenario base",
+            "bullets": [
+                "Operar con paciencia: sesgo solo si indices y volumen confirman juntos.",
+                f"Confianza actual: {confidence}; sube si hay precio, volumen y titulares alineados.",
+            ],
+        },
+        {
+            "title": "Que confirma",
+            "bullets": [
+                "SPY/QQQ sostienen maximos intradia despues de la apertura.",
+                "Volumen relativo arriba de lo normal en lideres.",
+                "Noticias relevantes no contradicen el movimiento de precio.",
+            ],
+        },
+        {"title": "Que vigilar", "bullets": watch_points[:4]},
+    ]
+    if news_titles:
+        sections.insert(2, {"title": "Noticias que pesan", "bullets": news_titles})
+    if alert_titles:
+        sections.insert(3, {"title": "Alertas vivas", "bullets": alert_titles})
+    return {
+        "ok": True,
+        "status": "genesis_market_outlook_ready",
+        "intent": "market_overview",
+        "response_type": "market_summary",
+        "kind": "market_summary",
+        "answer": answer,
+        "tickers": [],
+        "market": {
+            "tone": tone,
+            "confidence": confidence,
+            "horizon": horizon,
+            "items": rows,
+            "news_titles": news_titles,
+            "alert_titles": alert_titles,
+        },
+        "structured": {
+            "kind": "market_summary",
+            "title": "Pulso de mercado",
+            "summary": answer,
+            "tone": tone,
+            "confidence": confidence,
+            "items": rows,
+            "metrics": [
+                {"label": "Tono", "value": tone},
+                {"label": "Confianza", "value": confidence},
+                {"label": "Precios vivos", "value": str(len(valid_rows))},
+                {"label": "Horizonte", "value": horizon},
+            ],
+            "sections": sections,
+        },
+        "source_status": {
+            "provider": "FMP/backend/yahoo fallback",
+            "quote_count": len(valid_rows),
+            "news_count": len(news_titles),
+            "alert_count": len(alert_titles),
+            "base_payload_replaced": bool(base_payload),
+        },
+    }
+
+
 def _remember_genesis_turn(body: dict, message: str, result: dict) -> None:
     if not str(message or "").strip() or not isinstance(result, dict):
         return
@@ -1597,6 +1863,15 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
             return _comparison_prompt_payload(message, body)
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local comparison prompt correction failed", exc_info=True)
+    if _is_market_genesis_prompt(message) and (
+        payload.get("intent") == "market_overview"
+        or payload.get("response_type") in {"market_summary", "market_briefing"}
+        or _is_weak_market_payload(payload)
+    ):
+        try:
+            return _market_outlook_payload(message, body, payload)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local market outlook correction failed", exc_info=True)
     if _is_market_genesis_prompt(message) and payload.get("intent") in {"ticker_analysis", "technical_indicators", "chart_request"}:
         try:
             local = ask_genesis(
@@ -1607,9 +1882,12 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
                 conversation_id=str(body.get("conversation_id") or "default"),
             )
             if isinstance(local, dict) and local.get("intent") == "market_overview":
+                if _is_weak_market_payload(local):
+                    return _market_outlook_payload(message, body, local)
                 return local
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local market prompt correction failed", exc_info=True)
+        return _market_outlook_payload(message, body, payload)
         return {
             "ok": True,
             "status": "genesis_intelligence_ready",
@@ -2826,7 +3104,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
-            if _is_news_genesis_prompt(message) or _is_market_genesis_prompt(message):
+            if _is_news_genesis_prompt(message):
                 if _local_live_sources_missing() and self._try_proxy_to_production(parsed, method="POST", body=body):
                     return
                 result = ask_genesis(
@@ -2842,6 +3120,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 result = _correct_genesis_proxy_payload(result, body)
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
+            if _is_market_genesis_prompt(message):
+                result = _market_outlook_payload(message, body)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK)
                 return
             if _is_asset_genesis_prompt(message, panel_context):
                 result = _local_asset_genesis_payload(body, message)

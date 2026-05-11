@@ -121,6 +121,70 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertFalse(_is_asset_genesis_prompt("que hicimos el viernes pasado?"))
         self.assertTrue(_is_comparison_genesis_prompt("compara nvda vs bno"))
 
+    @patch("api.main.get_dashboard_alerts")
+    @patch("api.main.get_dashboard_news")
+    @patch("api.main._market_search_for_proxy")
+    def test_local_proxy_replaces_empty_market_overview_with_live_briefing(self, mock_search, mock_news, mock_alerts) -> None:
+        prices = {
+            "SPY": (737.62, 0.42, 58_000_000),
+            "QQQ": (711.23, 0.61, 42_000_000),
+            "BTC-USD": (80_354.12, -0.18, 30_000_000_000),
+            "BZ=F": (53.11, -1.04, 4_016_556),
+            "NVDA": (215.20, 1.75, 134_128_204),
+        }
+
+        def fake_search(query: str) -> dict:
+            price, change_pct, volume = prices.get(query, (100.0, 0.0, 1_000_000))
+            return {
+                "results": [
+                    {
+                        "ticker": query,
+                        "asset_name": query,
+                        "current_price": price,
+                        "daily_change_pct": change_pct,
+                        "volume": volume,
+                    }
+                ],
+                "provider_used": "test",
+            }
+
+        mock_search.side_effect = fake_search
+        mock_news.return_value = {
+            "important": [
+                {"title_es": "Futuros de tecnologia suben antes de la apertura", "source": "test"},
+            ],
+            "latest": [],
+        }
+        mock_alerts.return_value = {
+            "items": [
+                {"ticker": "NVDA", "title_es": "NVDA lidera con volumen visible"},
+            ]
+        }
+        stale_payload = {
+            "ok": True,
+            "intent": "market_overview",
+            "response_type": "market_summary",
+            "answer": "Panorama no concluyente: No hay evidencia reciente suficiente para elevar activos en prioridad",
+            "structured": {"metrics": {"news": 0, "alerts": 0}},
+        }
+
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "como ves el mercado para manana?", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "market_overview")
+        self.assertEqual(fixed["response_type"], "market_summary")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertIn("Lectura para manana", fixed["answer"])
+        self.assertIn("SPY", fixed["answer"])
+        self.assertNotIn("Panorama no concluyente", fixed["answer"])
+        self.assertEqual(fixed["source_status"]["quote_count"], 5)
+        self.assertTrue(fixed["structured"]["sections"])
+
     @patch("api.main._market_search_for_proxy")
     def test_local_proxy_corrects_comparison_prompt_before_asset(self, mock_search) -> None:
         def fake_search(query: str) -> dict:
