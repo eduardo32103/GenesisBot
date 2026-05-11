@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -444,21 +445,89 @@ def _enrich_items_with_fmp(items: list[dict[str, Any]], settings: Any) -> None:
     if not items or not _fmp_live_ready(settings):
         return
 
-    client = FmpClient(settings.fmp_api_key, logger=logging.getLogger("genesis.dashboard"))
-    quoted = 0
-    profiled = 0
+    logger = logging.getLogger("genesis.dashboard")
+    tickers: list[str] = []
+    seen: set[str] = set()
     for item in items:
         ticker = str(item.get("ticker") or "").strip().upper()
-        if not ticker or quoted >= _MAX_LIVE_QUOTES:
+        if not ticker or ticker in seen:
             continue
-        quote = client.get_quote(ticker) or {}
-        quoted += 1
+        seen.add(ticker)
+        tickers.append(ticker)
+        if len(tickers) >= _MAX_LIVE_QUOTES:
+            break
+
+    def _fetch_quote(ticker: str) -> tuple[str, dict[str, Any]]:
+        try:
+            client = FmpClient(settings.fmp_api_key, logger=logger)
+            quote = client.get_quote(ticker) or {}
+            return ticker, quote if isinstance(quote, dict) else {}
+        except Exception as exc:
+            logger.debug("FMP quote paralelo fallo para %s: %s", ticker, exc)
+            return ticker, {}
+
+    quotes_by_ticker: dict[str, dict[str, Any]] = {}
+    if tickers:
+        executor = ThreadPoolExecutor(max_workers=min(8, len(tickers)))
+        try:
+            futures = {executor.submit(_fetch_quote, ticker): ticker for ticker in tickers}
+            try:
+                for future in as_completed(futures, timeout=5.0):
+                    ticker, quote = future.result(timeout=0)
+                    if quote:
+                        quotes_by_ticker[ticker] = quote
+            except FuturesTimeout:
+                logger.warning("FMP quote paralelo excedio timeout seguro; continuo con datos disponibles")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    for item in items:
+        ticker = str(item.get("ticker") or "").strip().upper()
+        quote = quotes_by_ticker.get(ticker)
         if isinstance(quote, dict) and quote:
             _apply_live_quote(item, quote)
 
-        if item.get("is_investment") and profiled < _MAX_LIVE_PROFILES:
+    profile_tickers: list[str] = []
+    seen_profiles: set[str] = set()
+    for item in items:
+        if not item.get("is_investment"):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker or ticker in seen_profiles:
+            continue
+        seen_profiles.add(ticker)
+        profile_tickers.append(ticker)
+        if len(profile_tickers) >= _MAX_LIVE_PROFILES:
+            break
+
+    def _fetch_profile(ticker: str) -> tuple[str, dict[str, Any]]:
+        try:
+            client = FmpClient(settings.fmp_api_key, logger=logger)
             profile = client.get_profile(ticker) or {}
-            profiled += 1
+            return ticker, profile if isinstance(profile, dict) else {}
+        except Exception as exc:
+            logger.debug("FMP profile paralelo fallo para %s: %s", ticker, exc)
+            return ticker, {}
+
+    profiles_by_ticker: dict[str, dict[str, Any]] = {}
+    if profile_tickers:
+        executor = ThreadPoolExecutor(max_workers=min(4, len(profile_tickers)))
+        try:
+            futures = {executor.submit(_fetch_profile, ticker): ticker for ticker in profile_tickers}
+            try:
+                for future in as_completed(futures, timeout=4.0):
+                    ticker, profile = future.result(timeout=0)
+                    if profile:
+                        profiles_by_ticker[ticker] = profile
+            except FuturesTimeout:
+                logger.debug("FMP profile paralelo excedio timeout seguro; continuo sin bloquear cartera")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    for item in items:
+        ticker = str(item.get("ticker") or "").strip().upper()
+        profile = profiles_by_ticker.get(ticker)
+        if isinstance(profile, dict) and profile:
             _apply_live_profile(item, profile)
 
 

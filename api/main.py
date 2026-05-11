@@ -8,6 +8,7 @@ import threading
 import time
 import unicodedata
 import errno
+import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import partial
@@ -82,6 +83,10 @@ _PROXY_GET_PATHS = {
 _PROXY_GET_PREFIXES = ("/api/genesis/memory/ticker/",)
 _PROXY_OPPORTUNITY_TICKERS = ("NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQQ", "BTC-USD")
 _YAHOO_CHART_CACHE: dict[str, tuple[float, dict]] = {}
+_MARKET_SEARCH_CACHE: dict[str, tuple[float, dict]] = {}
+_LIVE_QUOTE_CACHE: dict[str, tuple[float, dict]] = {}
+_MARKET_SEARCH_TTL_SECONDS = 20
+_LIVE_QUOTE_TTL_SECONDS = 20
 _YAHOO_TIMEFRAMES = {
     "1D": ("1d", "5m"),
     "1W": ("5d", "15m"),
@@ -123,6 +128,14 @@ def _local_live_sources_missing() -> bool:
     llm_needed = _truthy(os.getenv("GENESIS_LLM_ENABLED"))
     llm_ready = bool(os.getenv("OPENAI_API_KEY", "").strip())
     return not fmp_ready or (llm_needed and not llm_ready)
+
+
+def _production_proxy_allowed() -> bool:
+    if _running_on_hosted_runtime():
+        return False
+    if _truthy(os.getenv("GENESIS_DISABLE_PROD_PROXY")):
+        return False
+    return bool(_PRODUCTION_API_ORIGIN)
 
 
 def _is_proxy_path(path: str, method: str) -> bool:
@@ -737,6 +750,8 @@ def _local_asset_genesis_payload(body: dict, message: str) -> dict:
 
 
 def _production_get_json(path: str, *, timeout: float = 6) -> dict:
+    if not _production_proxy_allowed():
+        return {}
     try:
         target = f"{_PRODUCTION_API_ORIGIN}{path}"
         request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
@@ -1010,6 +1025,17 @@ def _call_json_with_timeout(fn, timeout: float, fallback: dict) -> dict:
 
 
 def _production_whale_snapshot() -> dict:
+    if not _production_proxy_allowed():
+        return {
+            "ok": True,
+            "items": [],
+            "events": [],
+            "source_status": {
+                "status": "hosted_no_self_proxy",
+                "provider_used": "local",
+                "last_error_safe": "self proxy desactivado en Railway para evitar timeouts",
+            },
+        }
     paths = {
         "whales": "/api/dashboard/whales",
         "detection": "/api/dashboard/money-flow/detection",
@@ -2832,30 +2858,51 @@ def _enrich_genesis_trade_decision(result: dict, message: str) -> dict:
 
 def _market_search_for_proxy(ticker: str) -> dict:
     normalized_query = str(ticker or "").strip().upper()
+    if not normalized_query:
+        return {}
+    now = time.time()
+    cached = _MARKET_SEARCH_CACHE.get(normalized_query)
+    if cached and now - cached[0] <= _MARKET_SEARCH_TTL_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        if isinstance(payload, dict):
+            payload["cache_hit"] = True
+        return payload if isinstance(payload, dict) else {}
+
+    def _remember(payload: dict) -> dict:
+        safe_payload = payload if isinstance(payload, dict) else {}
+        _MARKET_SEARCH_CACHE[normalized_query] = (time.time(), copy.deepcopy(safe_payload))
+        return safe_payload
+
     try:
         local = search_dashboard_market_ticker(normalized_query)
         if isinstance(local, dict):
             _normalize_market_payload(local)
         rows = local.get("results") if isinstance(local, dict) else []
         if isinstance(rows, list) and rows and _safe_num(rows[0].get("current_price")) is not None:
-            return local
+            local["provider_used"] = local.get("provider_used") or "local_fmp"
+            local["cache_hit"] = False
+            return _remember(local)
     except Exception:
         pass
-    try:
-        target = f"{_PRODUCTION_API_ORIGIN}/api/dashboard/market/search?q={quote(normalized_query)}"
-        request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
-        with urlopen(request, timeout=4) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            payload = _normalize_market_payload(payload) if isinstance(payload, dict) else {}
-            rows = payload.get("results") if isinstance(payload, dict) else []
-            if isinstance(rows, list) and rows:
-                return payload
-    except Exception:
-        pass
+    if _production_proxy_allowed():
+        try:
+            target = f"{_PRODUCTION_API_ORIGIN}/api/dashboard/market/search?q={quote(normalized_query)}"
+            request = Request(target, headers={"Accept": "application/json", "User-Agent": "GenesisLocalProxy/1.0"}, method="GET")
+            with urlopen(request, timeout=4) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                payload = _normalize_market_payload(payload) if isinstance(payload, dict) else {}
+                rows = payload.get("results") if isinstance(payload, dict) else []
+                if isinstance(rows, list) and rows:
+                    payload["provider_used"] = payload.get("provider_used") or "production_proxy"
+                    payload["cache_hit"] = False
+                    return _remember(payload)
+        except Exception:
+            pass
     yahoo_payload = _yahoo_market_search_payload(normalized_query)
     yahoo_rows = yahoo_payload.get("results") if isinstance(yahoo_payload, dict) else []
     if isinstance(yahoo_rows, list) and yahoo_rows:
-        return yahoo_payload
+        yahoo_payload["cache_hit"] = False
+        return _remember(yahoo_payload)
     if normalized_query.endswith("-USD"):
         base_query = normalized_query.removesuffix("-USD")
         if base_query and base_query != normalized_query:
@@ -2866,18 +2913,20 @@ def _market_search_for_proxy(ticker: str) -> dict:
                     if isinstance(row, dict):
                         row.setdefault("provider_symbol", row.get("ticker"))
                         row["ticker"] = normalized_query
-            return payload
-    return {}
+            return _remember(payload if isinstance(payload, dict) else {})
+    return _remember({})
 
 
 def _search_market_with_live_fallback(query: str) -> dict:
-    fallback = _normalize_market_payload(search_dashboard_market_ticker(query))
     live = _market_search_for_proxy(query)
     rows = live.get("results") if isinstance(live, dict) else []
     if isinstance(rows, list) and any(_safe_num(row.get("current_price")) is not None for row in rows if isinstance(row, dict)):
         live["provider_used"] = live.get("provider_used") or "railway_fmp_proxy"
         live["cache_hit"] = bool(live.get("cache_hit", False))
         return _normalize_market_payload(live)
+    if isinstance(rows, list) and rows:
+        return _normalize_market_payload(live)
+    fallback = _normalize_market_payload(search_dashboard_market_ticker(query))
     return fallback
 
 
@@ -3024,8 +3073,15 @@ def _live_quote_for_snapshot_ticker(ticker: str) -> dict | None:
     normalized = str(ticker or "").strip().upper()
     if not normalized:
         return None
+    cached = _LIVE_QUOTE_CACHE.get(normalized)
+    now = time.time()
+    if cached and now - cached[0] <= _LIVE_QUOTE_TTL_SECONDS:
+        return copy.deepcopy(cached[1])
     rows = _quote_rows_from_payload(_market_search_for_proxy(normalized))
-    return next((row for row in rows if str(row.get("ticker") or "").strip().upper() == normalized), rows[0] if rows else None)
+    row = next((row for row in rows if str(row.get("ticker") or "").strip().upper() == normalized), rows[0] if rows else None)
+    if isinstance(row, dict) and row:
+        _LIVE_QUOTE_CACHE[normalized] = (now, copy.deepcopy(row))
+    return row
 
 
 def _merge_live_quote_into_snapshot_item(item: dict, quote_row: dict) -> bool:
@@ -3722,7 +3778,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/dashboard/source-health":
             payload_data = _call_json_with_timeout(
                 get_dashboard_source_health,
-                6,
+                2.2,
                 {
                     "ok": True,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
