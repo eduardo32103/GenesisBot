@@ -1921,6 +1921,22 @@ def _remember_genesis_turn(body: dict, message: str, result: dict) -> None:
     if not str(message or "").strip() or not isinstance(result, dict):
         return
     try:
+        safe_body = dict(body or {})
+        safe_result = copy.deepcopy(result)
+        worker = threading.Thread(
+            target=_remember_genesis_turn_sync,
+            args=(safe_body, str(message or ""), safe_result),
+            daemon=True,
+        )
+        worker.start()
+    except Exception:
+        logging.getLogger("genesis.dashboard").debug("Genesis memory async dispatch failed", exc_info=True)
+
+
+def _remember_genesis_turn_sync(body: dict, message: str, result: dict) -> None:
+    if not str(message or "").strip() or not isinstance(result, dict):
+        return
+    try:
         conversation_id = str(body.get("conversation_id") or "default")
         store = MemoryStore()
         intent = str(result.get("intent") or result.get("response_type") or "general")
