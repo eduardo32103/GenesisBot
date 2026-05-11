@@ -64,6 +64,10 @@ const appState = {
     alerts: false,
     whales: false,
   },
+  searchDiscoveryOpen: {
+    tracking: false,
+    portfolio: false,
+  },
   chartCache: {},
   assetChartRanges: {},
   refreshTimer: null,
@@ -605,7 +609,7 @@ function delay(ms) {
 function networkErrorMessage(error) {
   const text = String(error?.message || error || "").trim();
   if (error?.name === "AbortError" || text.toLowerCase().includes("abort")) {
-    return "La API tardo demasiado. Genesis mantiene la pantalla viva y reintenta con datos en cache.";
+    return "La fuente tardo mas de lo esperado. Genesis mantiene la pantalla viva y reintenta con datos en cache.";
   }
   if (text.toLowerCase().includes("failed to fetch")) {
     return "No pude conectar con Genesis API. Revisa que el backend local o Railway siga respondiendo.";
@@ -1521,6 +1525,8 @@ async function searchTrackingOnly() {
   const input = document.getElementById("portfolio-search-input");
   try {
     await searchMarket(input?.value || appState.trackingSearchQuery || "", "tracking");
+    appState.searchDiscoveryOpen.tracking = false;
+    renderTrackingScreen();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -1530,6 +1536,8 @@ async function searchPortfolioBuyTicker() {
   const input = document.getElementById("portfolio-buy-search-input");
   try {
     await searchMarket(input?.value || appState.portfolioSearchQuery || "", "portfolio");
+    appState.searchDiscoveryOpen.portfolio = false;
+    renderPortfolioScreen();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -3158,7 +3166,7 @@ async function submitGenesisQuestion(event) {
     const payload = await postJson(
       "/api/genesis/ask",
       { message: question, context: appState.activeScreen, conversation_id: appState.currentConversationId },
-      { timeoutMs: 9000, attempts: 1, localOnly: true }
+      { timeoutMs: 18000, attempts: 1, localOnly: true }
     );
     const correctedPayload = await correctGenesisIntentPayload(payload, question);
     const enrichedPayload = await enrichGenesisPayloadWithLocalQuote(correctedPayload, question);
@@ -4211,7 +4219,7 @@ function renderTrackingScreen() {
           <input id="portfolio-search-input" placeholder="Buscar activos, empresas o ETFs..." autocomplete="off" value="${escapeHtml(appState.trackingSearchQuery)}">
           <button class="round-button icon-submit" id="portfolio-search-button" type="button" aria-label="Confirmar busqueda">${iconSvg("check")}</button>
         </form>
-        ${searchDiscoveryRail("tracking")}
+        ${appState.searchDiscoveryOpen.tracking ? searchDiscoveryRail("tracking") : ""}
       ` : ""}
       <div class="market-filters" aria-label="Filtros de seguimiento">
         ${trackingFilterMarkup()}
@@ -4230,8 +4238,26 @@ function renderTrackingScreen() {
   if (searchButton) searchButton.addEventListener("click", searchAndAddPortfolioTicker);
   const searchInput = document.getElementById("portfolio-search-input");
   if (searchInput) {
+    searchInput.addEventListener("focus", () => {
+      if (!appState.searchDiscoveryOpen.tracking) {
+        appState.searchDiscoveryOpen.tracking = true;
+        renderTrackingScreen();
+        window.requestAnimationFrame(() => document.getElementById("portfolio-search-input")?.focus());
+      }
+    });
     searchInput.addEventListener("input", (event) => {
       appState.trackingSearchQuery = event.target.value;
+      appState.searchDiscoveryOpen.tracking = true;
+      if (!appState.trackingSearchQuery.trim()) appState.marketSearchResults.tracking = [];
+    });
+    searchInput.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        const active = document.activeElement;
+        if (active?.closest?.("#tracking-search-form, .search-discovery, #portfolio-search-result")) return;
+        appState.searchDiscoveryOpen.tracking = false;
+        if (!appState.trackingSearchQuery.trim() && !appState.marketSearchResults.tracking.length) appState.searchOpen.tracking = false;
+        renderTrackingScreen();
+      }, 120);
     });
   }
   const searchForm = document.getElementById("tracking-search-form");
@@ -4340,7 +4366,7 @@ function renderPortfolioScreen() {
           <input id="portfolio-buy-search-input" placeholder="Buscar ticker o empresa para simular compra" autocomplete="off" value="${escapeHtml(appState.portfolioSearchQuery)}">
           <button class="round-button icon-submit" type="button" id="portfolio-sim-buy-button" aria-label="Confirmar busqueda">${iconSvg("check")}</button>
         </form>
-        ${appState.portfolioSearchQuery.trim() ? searchDiscoveryRail("portfolio") : ""}
+        ${appState.searchDiscoveryOpen.portfolio && appState.portfolioSearchQuery.trim() ? searchDiscoveryRail("portfolio") : ""}
       ` : ""}
       <div class="search-results" id="portfolio-buy-search-result" ${appState.searchOpen.portfolio && appState.marketSearchResults.portfolio.length ? "" : "hidden"}>
         ${appState.searchOpen.portfolio ? appState.marketSearchResults.portfolio.map((item) => searchResultMarkup(item, "portfolio")).join("") : ""}
@@ -4376,8 +4402,16 @@ function renderPortfolioScreen() {
   if (buyButton) buyButton.addEventListener("click", searchPortfolioBuyTicker);
   const buyInput = document.getElementById("portfolio-buy-search-input");
   if (buyInput) {
+    buyInput.addEventListener("focus", () => {
+      if (!appState.searchDiscoveryOpen.portfolio && appState.portfolioSearchQuery.trim()) {
+        appState.searchDiscoveryOpen.portfolio = true;
+        renderPortfolioScreen();
+        window.requestAnimationFrame(() => document.getElementById("portfolio-buy-search-input")?.focus());
+      }
+    });
     buyInput.addEventListener("input", (event) => {
       appState.portfolioSearchQuery = event.target.value;
+      appState.searchDiscoveryOpen.portfolio = Boolean(appState.portfolioSearchQuery.trim());
       if (!appState.portfolioSearchQuery.trim()) {
         appState.marketSearchResults.portfolio = [];
         renderPortfolioScreen();
@@ -4387,10 +4421,9 @@ function renderPortfolioScreen() {
       window.setTimeout(() => {
         const active = document.activeElement;
         if (active?.closest?.("#portfolio-buy-search-form, .search-discovery, #portfolio-buy-search-result")) return;
-        if (!appState.portfolioSearchQuery.trim() && !appState.marketSearchResults.portfolio.length) {
-          appState.searchOpen.portfolio = false;
-          renderPortfolioScreen();
-        }
+        appState.searchDiscoveryOpen.portfolio = false;
+        if (!appState.portfolioSearchQuery.trim() && !appState.marketSearchResults.portfolio.length) appState.searchOpen.portfolio = false;
+        renderPortfolioScreen();
       }, 120);
     });
   }
@@ -6374,6 +6407,9 @@ function bindGlobalEvents() {
       const key = searchToggle.dataset.toggleSearch;
       if (key && Object.prototype.hasOwnProperty.call(appState.searchOpen, key)) {
         appState.searchOpen[key] = !appState.searchOpen[key];
+        if (Object.prototype.hasOwnProperty.call(appState.searchDiscoveryOpen, key)) {
+          appState.searchDiscoveryOpen[key] = appState.searchOpen[key];
+        }
         if (key === "tracking") renderTrackingScreen();
         if (key === "portfolio") renderPortfolioScreen();
         if (key === "whales" || key === "alerts") renderAlertsScreen();
@@ -6436,8 +6472,13 @@ function bindGlobalEvents() {
       event.preventDefault();
       const ticker = normalizeTicker(searchPick.dataset.searchPick);
       const mode = searchPick.dataset.searchMode || "tracking";
-      if (mode === "portfolio") appState.portfolioSearchQuery = ticker;
-      else appState.trackingSearchQuery = ticker;
+      if (mode === "portfolio") {
+        appState.portfolioSearchQuery = ticker;
+        appState.searchDiscoveryOpen.portfolio = false;
+      } else {
+        appState.trackingSearchQuery = ticker;
+        appState.searchDiscoveryOpen.tracking = false;
+      }
       try {
         await searchMarket(ticker, mode);
       } catch (error) {
