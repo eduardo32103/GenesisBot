@@ -50,6 +50,8 @@ class AgentRouter:
             return "greeting"
         if _mentions_personal_support(text):
             return "general_question"
+        if _mentions_performance_review(text):
+            return "performance_review"
         if _mentions_casual_chat(text):
             return "greeting"
         if detect_time_request(message):
@@ -102,6 +104,7 @@ _AGENT_BY_INTENT = {
     "portfolio_summary": "portfolio_agent",
     "tracking_summary": "tracking_agent",
     "memory_query": "memory_agent",
+    "performance_review": "memory_agent",
     "whale_activity": "whale_agent",
     "alerts": "alerts_agent",
     "macro_news": "news_macro_agent",
@@ -184,6 +187,31 @@ def _mentions_tracking(text: str) -> bool:
 
 def _mentions_memory(text: str) -> bool:
     return any(token in text for token in ("recuerdame", "que vimos", "que hicimos", "que sabes", "aprendiste", "consultas recientes", "activos reviso"))
+
+
+def _mentions_performance_review(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "acertando",
+            "aciertos",
+            "fallos",
+            "fallaste",
+            "equivocaste",
+            "equivocaciones",
+            "precision de genesis",
+            "rendimiento de genesis",
+            "score de genesis",
+            "que tanto aciertas",
+            "que tan bien vas",
+            "alertas funcionaron",
+            "senales funcionaron",
+            "aprende de tus errores",
+            "aprendiendo de tus errores",
+            "como va genesis",
+            "como vamos genesis",
+        )
+    )
 
 
 def _mentions_whales(text: str) -> bool:

@@ -9,6 +9,7 @@ from services.genesis.llm_orchestrator import get_llm_orchestrator
 from services.genesis.market_format import format_signed_money, format_signed_percent
 from services.genesis.memory_store import MemoryStore
 from services.genesis.news_macro_agent import get_news_macro_agent
+from services.genesis.performance_tracker import build_genesis_performance_report
 from services.genesis.portfolio_agent import get_portfolio_agent
 from services.genesis.price_agent import get_price_agent
 from services.genesis.response_composer import get_response_composer
@@ -97,6 +98,19 @@ def route_message(
         tracking = get_tracking_agent().summary()
         store.save_event("tracking_summary", {"count": len(tracking.get("items", []))}, "tracking", "media")
         return _payload("tracking_summary", tracking["answer"], tickers, extra={"tracking": tracking}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
+
+    if route.intent == "performance_review":
+        report = build_genesis_performance_report(clean, memory=store)
+        structured = composer.performance_review(report)
+        return _payload(
+            "performance_review",
+            report["answer"],
+            [report["ticker"]] if report.get("ticker") else [],
+            extra={"performance": report, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
 
     if route.intent == "memory_query":
         memory_summary = store.get_asset_learning_summary(explicit_ticker) if explicit_ticker else store.get_memory_summary(clean)
@@ -409,6 +423,7 @@ def _response_type_for_intent(intent: str) -> str:
         "macro_news": "news_brief",
         "portfolio_summary": "general_assistant",
         "tracking_summary": "general_assistant",
+        "performance_review": "performance_review",
         "image_chart_analysis": "chart_analysis",
     }.get(intent, "general_assistant")
 

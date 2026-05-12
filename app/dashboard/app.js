@@ -1987,6 +1987,9 @@ function genesisVisualFromPayload(payload, answer = "") {
   if (responseType === "whale_flow" || intent === "whale_activity" || intent === "money_flow") {
     return whaleFlowVisual(payload, answer);
   }
+  if (responseType === "performance_review" || intent === "performance_review" || payload?.structured?.kind === "performance_review") {
+    return performanceReviewVisual(payload, answer);
+  }
   if (intent === "memory_query" || payload?.structured?.kind === "memory_digest") return memoryDigestVisual(payload, answer);
   if (responseType === "general_assistant" && payload?.structured?.kind === "general_assistant") return generalAssistantVisual(payload, answer);
   if (intent === "portfolio_summary") return summaryVisual("Cartera", answer);
@@ -2559,6 +2562,34 @@ function memoryDigestVisual(payload, answer = "") {
   };
 }
 
+function performanceReviewVisual(payload, answer = "") {
+  const structured = payload?.structured || {};
+  const report = payload?.performance || {};
+  const metrics = {
+    ...(report.metrics || {}),
+    ...(structured.metrics || {}),
+  };
+  const today = {
+    ...(report.today || {}),
+    ...(structured.today || {}),
+  };
+  const recent = Array.isArray(structured.recent) ? structured.recent : (Array.isArray(report.recent) ? report.recent : []);
+  const learning = Array.isArray(report.learning)
+    ? report.learning
+    : (Array.isArray(structured.sections)
+      ? structured.sections.flatMap((section) => Array.isArray(section?.bullets) ? section.bullets : [])
+      : []);
+  return {
+    kind: "performance_review",
+    title: structured.title || "Precision Genesis",
+    thesis: cleanSentenceList(structured.summary || report.answer || answer, 1)[0] || "Genesis mide aciertos, fallos y tesis abiertas para aprender de sus propias lecturas.",
+    metrics,
+    today,
+    recent: recent.slice(0, 6),
+    learning: learning.map(stripMarkdownCopy).filter(Boolean).slice(0, 5),
+  };
+}
+
 function feedVisual(title, rows, answer = "") {
   return {
     kind: "feed",
@@ -2649,6 +2680,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "opportunity_radar") return opportunityRadarVisualMarkup(visual);
   if (visual.kind === "alerts_digest") return alertsDigestVisualMarkup(visual);
   if (visual.kind === "whale_flow") return whaleFlowVisualMarkup(visual);
+  if (visual.kind === "performance_review") return performanceReviewVisualMarkup(visual);
   if (visual.kind === "memory_digest") return memoryDigestVisualMarkup(visual);
   if (visual.kind === "general_assistant") return generalAssistantVisualMarkup(visual);
   if (visual.kind === "chart_image_analysis") return imageChartVisualMarkup(visual);
@@ -3187,6 +3219,60 @@ function memoryDigestVisualMarkup(visual) {
       <div class="scenario-card">
         <strong>Como se usara</strong>
         <p>La memoria apoya contexto historico; los precios, volumenes y cambios siguen viniendo de FMP/backend antes de cualquier lectura operativa.</p>
+      </div>
+    </section>
+  `;
+}
+
+function performanceReviewVisualMarkup(visual) {
+  const metrics = visual.metrics || {};
+  const today = visual.today || {};
+  const recent = Array.isArray(visual.recent) ? visual.recent.slice(0, 4) : [];
+  const learning = Array.isArray(visual.learning) ? visual.learning.slice(0, 4) : [];
+  const accuracy = numberOrNull(metrics.accuracy);
+  const accuracyPct = accuracy === null ? 12 : Math.max(4, Math.min(100, accuracy));
+  const scored = (numberOrNull(metrics.hits) || 0) + (numberOrNull(metrics.misses) || 0);
+  const scoreLabel = accuracy === null ? "Midiendo" : `${accuracy.toFixed(1)}%`;
+  return `
+    <section class="visual-response performance-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Score Genesis</span>
+          <strong>${escapeHtml(visual.title || "Precision Genesis")}</strong>
+        </div>
+        <span class="conviction-pill ${accuracy !== null && accuracy >= 60 ? "bullish" : "neutral"}">${escapeHtml(scoreLabel)}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="memory-orbit performance-orbit">
+        <div class="jarvis-orb memory-orb" aria-hidden="true">
+          <span style="--meter:${accuracyPct}%"></span>
+          <b>${escapeHtml(scoreLabel)}</b>
+          <small>precision</small>
+        </div>
+        <div class="holo-metrics">
+          ${holoMeterMarkup("Hoy aciertos", String(today.hits || 0), Math.max(8, (today.hits || 0) * 28), "up")}
+          ${holoMeterMarkup("Hoy fallos", String(today.misses || 0), Math.max(8, (today.misses || 0) * 28), "down")}
+          ${holoMeterMarkup("Abiertas", String(metrics.watching || 0), Math.max(8, (metrics.watching || 0) * 16), "flat")}
+          ${holoMeterMarkup("Evaluadas", String(scored || 0), Math.max(8, scored * 14), "flat")}
+        </div>
+      </div>
+      <div class="visual-feed-cards performance-feed">
+        ${(recent.length ? recent : [{ ticker: "Genesis", outcome_label: "watching", genesis_reading: "Aun falta historial evaluable; cada decision nueva se guardara para medir resultado." }]).map((item) => {
+          const outcome = String(item.outcome_label || "watching");
+          const tone = outcome === "hit" ? "up" : outcome === "miss" ? "down" : "flat";
+          const label = outcome === "hit" ? "Acierto" : outcome === "miss" ? "Fallo" : "Vigilando";
+          return `
+            <article>
+              <strong>${escapeHtml(cleanCopy(item.ticker || item.asset_name || "Genesis"))}</strong>
+              <p>${escapeHtml(cleanCopy(item.genesis_reading || `${label}: resultado en seguimiento.`))}</p>
+              <div class="mini-flow-bar tone-${tone}"><i style="width:${Math.max(12, Math.min(100, Math.abs(numberOrNull(item.return_pct) || 8) * 12 + 18))}%"></i></div>
+              <small>${escapeHtml(label)} | ${escapeHtml(formatPercentSigned(item.return_pct, "pendiente"))}</small>
+            </article>
+          `;
+        }).join("")}
+      </div>
+      <div class="visual-sections memory-lines">
+        ${(learning.length ? learning : ["Genesis guardara aciertos, fallos y tesis abiertas para ajustar filtros diarios."]).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
       </div>
     </section>
   `;

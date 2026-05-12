@@ -49,6 +49,8 @@ from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
 from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.intelligence_core import ask_genesis
 from services.genesis.memory_store import MemoryStore
+from services.genesis.performance_tracker import build_genesis_performance_report
+from services.genesis.response_composer import get_response_composer
 from services.genesis.trading_strategy import build_signal_strategy
 from services.genesis.weather_tool import detect_weather_request, get_weather_answer
 
@@ -603,6 +605,33 @@ def _is_memory_genesis_prompt(message: str) -> bool:
             " mis consultas recientes ",
             " alertas funcionaron ",
             " noticias movieron ",
+        )
+    )
+
+
+def _is_performance_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " que tanto estas acertando ",
+            " que tanto esta acertando ",
+            " que tanto aciertas ",
+            " que tan bien vas ",
+            " como va genesis ",
+            " como vamos genesis ",
+            " precision de genesis ",
+            " rendimiento de genesis ",
+            " score de genesis ",
+            " aciertos ",
+            " fallos ",
+            " fallaste ",
+            " equivocaste ",
+            " equivocaciones ",
+            " alertas funcionaron ",
+            " senales funcionaron ",
+            " aprende de tus errores ",
+            " aprendiendo de tus errores ",
         )
     )
 
@@ -1797,6 +1826,28 @@ def _memory_prompt_payload(message: str, body: dict) -> dict:
     }
 
 
+def _performance_prompt_payload(message: str, body: dict | None = None) -> dict:
+    report = build_genesis_performance_report(message)
+    structured = get_response_composer().performance_review(report)
+    ticker = str(report.get("ticker") or "").strip()
+    return {
+        "ok": True,
+        "status": "genesis_performance_ready",
+        "intent": "performance_review",
+        "response_type": "performance_review",
+        "answer": report.get("answer") or structured.get("summary") or "Genesis ya mide sus aciertos, fallos y tesis abiertas.",
+        "tickers": [ticker] if ticker else [],
+        "kind": "performance_review",
+        "performance": report,
+        "structured": structured,
+        "source_status": {
+            "memory": "ok",
+            "provider_used": "memory_store + price_truth",
+            "cache_hit": False,
+        },
+    }
+
+
 def _comparison_prompt_payload(message: str, body: dict) -> dict:
     panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
     tickers = _prompt_tickers(message, context=panel_context)[:2]
@@ -2229,6 +2280,11 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
     if _is_weather_genesis_prompt(message):
         return _weather_prompt_payload(message)
+    if _is_performance_genesis_prompt(message):
+        try:
+            return _performance_prompt_payload(message, body)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local performance prompt correction failed", exc_info=True)
     if _is_opportunity_genesis_prompt(message):
         try:
             return _opportunity_prompt_payload(message, body)
@@ -3604,6 +3660,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/ask":
             if _is_weather_genesis_prompt(message):
                 result = _weather_prompt_payload(message)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK)
+                return
+            if _is_performance_genesis_prompt(message):
+                result = _performance_prompt_payload(message, body)
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK)
                 return

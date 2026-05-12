@@ -190,6 +190,40 @@ class ResponseComposer:
             ],
         }
 
+    def performance_review(self, report: dict[str, Any]) -> dict[str, Any]:
+        metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
+        today = report.get("today") if isinstance(report.get("today"), dict) else {}
+        recent = report.get("recent") if isinstance(report.get("recent"), list) else []
+        learning = report.get("learning") if isinstance(report.get("learning"), list) else []
+        accuracy = metrics.get("accuracy")
+        accuracy_text = f"{accuracy}%" if accuracy is not None else "pendiente"
+        return {
+            "kind": "performance_review",
+            "title": "Precision Genesis",
+            "summary": report.get("answer") or "Genesis mide aciertos, fallos y tesis abiertas desde su memoria.",
+            "metrics": {
+                "hits": metrics.get("hits") or 0,
+                "misses": metrics.get("misses") or 0,
+                "watching": metrics.get("watching") or 0,
+                "accuracy": accuracy,
+                "missing_price": metrics.get("missing_price") or 0,
+                "priced_decisions": metrics.get("priced_decisions") or 0,
+            },
+            "today": {
+                "hits": today.get("hits") or 0,
+                "misses": today.get("misses") or 0,
+                "watching": today.get("watching") or 0,
+            },
+            "recent": recent[:6],
+            "best": report.get("best"),
+            "worst": report.get("worst"),
+            "sections": [
+                {"title": "Hoy", "bullets": [f"{today.get('hits') or 0} aciertos, {today.get('misses') or 0} fallos, {today.get('watching') or 0} en vigilancia."]},
+                {"title": "Precision", "bullets": [f"Precision medida: {accuracy_text}.", f"Decisiones con precio: {metrics.get('priced_decisions') or 0}."]},
+                {"title": "Aprendizaje", "bullets": learning[:4] or ["Aun falta historial; Genesis seguira midiendo outcomes."]},
+            ],
+        }
+
     def general_answer(self, answer: str) -> dict[str, Any]:
         return {"kind": "general_answer", "answer": answer, "sections": [{"title": "Respuesta", "bullets": [answer]}]}
 
