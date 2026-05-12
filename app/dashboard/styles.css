@@ -130,18 +130,40 @@ input:focus-visible {
 }
 
 .bottom-nav {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 5px;
   padding: 10px 10px 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.11);
   background:
-    radial-gradient(circle at 50% -26%, rgba(255, 255, 255, 0.08), transparent 40%),
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.07), transparent) 50% 0 / 62% 1px no-repeat,
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.026) 0 1px, transparent 1px 76px),
     linear-gradient(180deg, rgba(14, 14, 14, 0.97), rgba(0, 0, 0, 0.96));
   backdrop-filter: blur(22px);
+  overflow: hidden;
+}
+
+.bottom-nav::before {
+  content: "";
+  position: absolute;
+  inset: 0 10px auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(245, 245, 240, 0.7), transparent);
+  opacity: 0.28;
+  transform: translateX(-68%);
+  animation: navSignalSweep 4.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes navSignalSweep {
+  0%, 18% { transform: translateX(-68%); opacity: 0; }
+  36%, 62% { opacity: 0.28; }
+  82%, 100% { transform: translateX(68%); opacity: 0; }
 }
 
 .nav-link {
+  position: relative;
   min-width: 0;
   min-height: 52px;
   display: grid;
@@ -156,6 +178,20 @@ input:focus-visible {
   font-weight: 800;
   line-height: 1;
   transition: color 160ms ease, background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0;
+  transform: translateX(-50%) scaleX(0.35);
+  transition: opacity 160ms ease, transform 160ms ease;
 }
 
 .nav-icon {
@@ -193,8 +229,15 @@ input:focus-visible {
 
 .nav-link.is-active {
   color: var(--text);
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(255, 255, 255, 0.13);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.026)),
+    rgba(255, 255, 255, 0.035);
+}
+
+.nav-link.is-active::after {
+  opacity: 0.62;
+  transform: translateX(-50%) scaleX(1);
 }
 
 .nav-genesis {
@@ -229,6 +272,20 @@ input:focus-visible {
 .nav-genesis.is-active {
   border-color: transparent;
   background: transparent;
+}
+
+.nav-genesis::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  transform: translateX(-50%);
+  opacity: 0.58;
+  pointer-events: none;
 }
 
 .nav-genesis.is-active .nav-label {
@@ -3380,16 +3437,30 @@ input:focus-visible {
 }
 
 .chat-news-card {
+  width: 100%;
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
   border: 1px solid rgba(255, 255, 255, 0.095);
   border-radius: 14px;
   padding: 10px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.048), rgba(255, 255, 255, 0.018)),
     #080808;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.chat-news-card:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.024)),
+    #0a0a0a;
+  transform: translateY(-1px);
 }
 
 .chat-news-thumb {

@@ -2838,11 +2838,12 @@ function newsBriefVisualMarkup(visual) {
       </div>
       <div class="visual-feed-cards news-brief-cards">
         ${(rows.length ? rows : [{ title: "Sin titular externo confirmado", summary: "Genesis mantiene lectura con precio, volumen y alertas disponibles.", impact: "neutral", category: "macro" }]).map((row) => {
+          const id = cacheNewsItemForDetail(row);
           const image = newsImageForItem(row);
           const category = cleanCopy(row.category || row.placeholder_key || "macro").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
           const tone = newsImpactTone(row.impact);
           return `
-            <article class="chat-news-card">
+            <button class="chat-news-card" type="button" data-news-id="${escapeHtml(id)}" data-news-open="${escapeHtml(id)}">
               <span class="chat-news-thumb ${image ? "" : `is-placeholder placeholder-${escapeHtml(category)}`}">
                 ${newsImageTag(row)}
               </span>
@@ -2854,7 +2855,7 @@ function newsBriefVisualMarkup(visual) {
                   <span class="${tone}">${escapeHtml(cleanCopy(row.impact || "Neutral"))}</span>
                 </div>
               </div>
-            </article>
+            </button>
           `;
         }).join("")}
       </div>
@@ -4192,11 +4193,17 @@ function newsItemId(item) {
   return `news-${simpleHash(raw)}`;
 }
 
+function cacheNewsItemForDetail(item) {
+  const id = newsItemId(item || {});
+  appState.newsItemsById = appState.newsItemsById || {};
+  appState.newsItemsById[id] = { ...(appState.newsItemsById[id] || {}), ...(item || {}), id };
+  return id;
+}
+
 function indexNewsItems(items) {
   appState.newsItemsById = {};
   (items || []).forEach((item) => {
-    const id = newsItemId(item);
-    appState.newsItemsById[id] = { ...item, id };
+    cacheNewsItemForDetail(item);
   });
 }
 
