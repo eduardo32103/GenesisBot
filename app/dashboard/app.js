@@ -1,13 +1,13 @@
 const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
-const GENESIS_LOGO_SRC = "./assets/genesis-logo-white.png?v=genesis-g-white-ink";
+const GENESIS_LOGO_SRC = "./assets/genesis-logo-white.png?v=genesis-intel-guard";
 
 function initialChatMessage() {
   return {
     id: `welcome-${Date.now()}`,
     role: "assistant",
-    text: "Hola. ¿Qué quieres revisar hoy?",
+    text: "Hola. \u00bfQu\u00e9 quieres revisar hoy?",
   };
 }
 
@@ -105,8 +105,44 @@ const NEWS_FALLBACK_IMAGES = {
   gold: "https://images.unsplash.com/photo-1610375461246-83df859d849d?auto=format&fit=crop&w=640&q=80",
 };
 
+const MOJIBAKE_REPLACEMENTS = Object.freeze([
+  ["\u00c2\u00bf", "\u00bf"],
+  ["\u00c2\u00a1", "\u00a1"],
+  ["\u00c3\u00a1", "\u00e1"],
+  ["\u00c3\u00a9", "\u00e9"],
+  ["\u00c3\u00ad", "\u00ed"],
+  ["\u00c3\u00b3", "\u00f3"],
+  ["\u00c3\u00ba", "\u00fa"],
+  ["\u00c3\u00bc", "\u00fc"],
+  ["\u00c3\u00b1", "\u00f1"],
+  ["\u00c3\u0081", "\u00c1"],
+  ["\u00c3\u0089", "\u00c9"],
+  ["\u00c3\u008d", "\u00cd"],
+  ["\u00c3\u0093", "\u00d3"],
+  ["\u00c3\u009a", "\u00da"],
+  ["\u00c3\u009c", "\u00dc"],
+  ["\u00c3\u0091", "\u00d1"],
+  ["\u00c2\u00b7", "\u00b7"],
+  ["\u00c3\u0097", "\u00d7"],
+  ["\u00e2\u0080\u0094", "-"],
+  ["\u00e2\u0080\u0093", "-"],
+  ["\u00e2\u0080\u0098", "'"],
+  ["\u00e2\u0080\u0099", "'"],
+  ["\u00e2\u0080\u009c", "\""],
+  ["\u00e2\u0080\u009d", "\""],
+  ["\u00e2\u0080\u00a6", "..."],
+]);
+
+function repairMojibake(value) {
+  let text = String(value ?? "");
+  MOJIBAKE_REPLACEMENTS.forEach(([bad, good]) => {
+    text = text.replaceAll(bad, good);
+  });
+  return text;
+}
+
 function escapeHtml(value) {
-  return String(value ?? "")
+  return repairMojibake(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -219,6 +255,19 @@ function itemPrice(item) {
     ?? positiveOrNull(item?.price)
     ?? positiveOrNull(item?.reference_price)
     ?? positiveOrNull(item?.entry_price);
+}
+
+function rowLivePrice(item = {}) {
+  const direct = positiveOrNull(item?.price ?? item?.current_price ?? item?.currentPrice ?? item?.reference_price);
+  if (direct !== null) return direct;
+  const ticker = itemTicker(item);
+  if (!ticker) return null;
+  return itemPrice(findAsset(ticker) || appState.opportunityQuotes?.[ticker] || {});
+}
+
+function rowPriceLabel(item = {}, empty = "No aplica") {
+  const price = rowLivePrice(item);
+  return price === null ? empty : money(price, empty);
 }
 
 function itemValue(item) {
@@ -347,28 +396,28 @@ function formatDate(value) {
 }
 
 function cleanCopy(value) {
-  return String(value ?? "")
-    .replace(/\bsenales\b/gi, "señales")
-    .replace(/\bsenal\b/gi, "señal")
-    .replace(/\bdireccion\b/gi, "dirección")
-    .replace(/\bdistribucion\b/gi, "distribución")
-    .replace(/\bacumulacion\b/gi, "acumulación")
-    .replace(/\bconfirmacion\b/gi, "confirmación")
-    .replace(/\bpresion\b/gi, "presión")
-    .replace(/\batencion\b/gi, "atención")
-    .replace(/\bsesion\b/gi, "sesión")
-    .replace(/\binstitucion\b/gi, "institución")
-    .replace(/\bperdida\b/gi, "pérdida")
-    .replace(/\bminimo\b/gi, "mínimo")
-    .replace(/\bintradia\b/gi, "intradía")
-    .replace(/\bcaida\b/gi, "caída")
-    .replace(/\brecuperacion\b/gi, "recuperación")
-    .replace(/\bautomatica\b/gi, "automática")
-    .replace(/\bautomatico\b/gi, "automático")
-    .replace(/\bcontinua\b/gi, "continúa")
-    .replace(/\btecnicas\b/gi, "técnicas")
-    .replace(/\bhistorico\b/gi, "histórico")
-    .replace(/\baun\b/gi, "aún")
+  return repairMojibake(value)
+    .replace(/\bsenales\b/gi, "se\u00f1ales")
+    .replace(/\bsenal\b/gi, "se\u00f1al")
+    .replace(/\bdireccion\b/gi, "direcci\u00f3n")
+    .replace(/\bdistribucion\b/gi, "distribuci\u00f3n")
+    .replace(/\bacumulacion\b/gi, "acumulaci\u00f3n")
+    .replace(/\bconfirmacion\b/gi, "confirmaci\u00f3n")
+    .replace(/\bpresion\b/gi, "presi\u00f3n")
+    .replace(/\batencion\b/gi, "atenci\u00f3n")
+    .replace(/\bsesion\b/gi, "sesi\u00f3n")
+    .replace(/\binstitucion\b/gi, "instituci\u00f3n")
+    .replace(/\bperdida\b/gi, "p\u00e9rdida")
+    .replace(/\bminimo\b/gi, "m\u00ednimo")
+    .replace(/\bintradia\b/gi, "intrad\u00eda")
+    .replace(/\bcaida\b/gi, "ca\u00edda")
+    .replace(/\brecuperacion\b/gi, "recuperaci\u00f3n")
+    .replace(/\bautomatica\b/gi, "autom\u00e1tica")
+    .replace(/\bautomatico\b/gi, "autom\u00e1tico")
+    .replace(/\bcontinua\b/gi, "contin\u00faa")
+    .replace(/\btecnicas\b/gi, "t\u00e9cnicas")
+    .replace(/\bhistorico\b/gi, "hist\u00f3rico")
+    .replace(/\baun\b/gi, "a\u00fan")
     .replace(/\bFMP_API_KEY\b/gi, "fuente privada")
     .replace(/\bapikey\b/gi, "credencial")
     .replace(/\bendpoint\b/gi, "consulta")
@@ -1531,7 +1580,7 @@ async function loadOpportunityQuotes(options = {}) {
       radarItems.forEach((item) => {
         const ticker = itemTicker(item);
         if (!ticker) return;
-        const price = numberOrNull(item.price ?? item.current_price);
+        const price = positiveOrNull(item.price ?? item.current_price);
         const change = numberOrNull(item.change ?? item.daily_change);
         const changePct = numberOrNull(item.change_pct ?? item.daily_change_pct);
         const support = numberOrNull(item.support ?? item.day_low ?? item.dayLow);
@@ -1876,7 +1925,7 @@ function chatHistoryPanelMarkup() {
     : appState.chatMessages
       .filter((message) => {
         const text = cleanCopy(message.text);
-        return String(text || "").trim() && !["Hola. Que quieres revisar hoy?", "Hola. ¿Qué quieres revisar hoy?"].includes(text);
+        return String(text || "").trim() && !["Hola. Que quieres revisar hoy?", "Hola. \u00bfQu\u00e9 quieres revisar hoy?"].includes(text);
       })
       .slice(-8)
       .reverse()
@@ -2976,7 +3025,7 @@ function opportunityRadarVisualMarkup(visual) {
       </div>
       <div class="visual-feed-cards opportunity-cards">
         ${(rows.length ? rows : [{ ticker: "Mercado", decision_label_es: "Esperar", genesis_reading_es: emptyText }]).map((row) => {
-          const price = numberOrNull(row.price);
+          const price = rowLivePrice(row);
           const score = numberOrNull(row.opportunity_score ?? row.score);
           const relVol = numberOrNull(row.relative_volume ?? row.relativeVolume);
           const tone = score !== null && score >= 76 ? "bullish" : score !== null && score >= 62 ? "neutral" : "flat";
@@ -3022,7 +3071,7 @@ function alertsDigestVisualMarkup(visual) {
             <strong>${escapeHtml(cleanCopy(row.ticker || row.title || "Alerta"))}</strong>
             <p>${escapeHtml(stripMarkdownCopy(cleanCopy(row.genesis_reading || row.what_it_means || row.summary || "Evento en vigilancia.")))}</p>
             <div class="visual-market-strip compact">
-              <span><small>Precio</small><strong>${escapeHtml(row.price === null || row.price === undefined ? "No aplica" : money(row.price, "No aplica"))}</strong></span>
+              <span><small>Precio</small><strong>${escapeHtml(rowPriceLabel(row, "No aplica"))}</strong></span>
               <span><small>Cambio</small><strong>${escapeHtml(formatPercent(row.change_pct, "Sin dato"))}</strong></span>
               <span><small>Vol. rel</small><strong>${escapeHtml(row.relative_volume ? `${compactNumber(row.relative_volume)}x` : "Sin dato")}</strong></span>
             </div>
@@ -5571,7 +5620,8 @@ function normalizeAlertRowForUi(item = {}) {
   const ticker = itemTicker(item);
   if (!ticker || ticker === "MERCADO") return item;
   const asset = findAsset(ticker) || {};
-  const price = numberOrNull(item.price ?? asset.current_price ?? asset.price ?? asset.reference_price);
+  const price = positiveOrNull(item.price ?? item.current_price ?? item.currentPrice)
+    ?? itemPrice(asset);
   const changePct = numberOrNull(item.change_pct ?? item.daily_change_pct ?? asset.daily_change_pct ?? asset.change_pct);
   const change = numberOrNull(item.change ?? item.daily_change ?? asset.daily_change ?? asset.change);
   const volume = numberOrNull(item.volume ?? asset.volume);
@@ -5887,7 +5937,7 @@ function alertMarkup(item) {
   const tone = newsImpactTone(impact);
   const alertId = alertItemId(item);
   rememberAlertItem(item, alertId);
-  const priceLabel = item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica");
+  const priceLabel = rowPriceLabel(item, "No aplica");
   const changeLabel = formatPercent(item.change_pct, "Sin dato");
   return `
     <article class="whale-row feed-row alert-event investing-event-card tone-${tone}" data-alert-id="${escapeHtml(alertId)}">
@@ -5910,7 +5960,7 @@ function alertMarkup(item) {
       </div>
       <div class="asset-meta investing-meta">
         <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact || "Por confirmar"))}</span>
-        <span>Precio: ${escapeHtml(item.price === null || item.price === undefined ? "No aplica a precio directo" : money(item.price, "No aplica a precio directo"))}</span>
+        <span>Precio: ${escapeHtml(rowPriceLabel(item, "No aplica a precio directo"))}</span>
         <span>Cambio: ${escapeHtml(changeLabel)}</span>
         <span>Volumen: ${escapeHtml(item.volume ? compactNumber(item.volume) : "Sin volumen")}</span>
         <span>Vol. rel: ${escapeHtml(item.relative_volume ? `${compactNumber(item.relative_volume)}x` : "Sin dato")}</span>
@@ -5958,7 +6008,7 @@ function alertMarkupV2(item) {
   const tone = newsImpactTone(impact);
   const alertId = alertItemId(item);
   rememberAlertItem(item, alertId);
-  const priceText = item.price === null || item.price === undefined ? "No aplica" : money(item.price, "No aplica");
+  const priceText = rowPriceLabel(item, "No aplica");
   const changeText = formatPercent(item.change_pct, "Sin dato");
   const flowText = item.dollar_volume ? formatMoneyCompact(item.dollar_volume) : item.volume ? formatVolumeCompact(item.volume) : "Pendiente";
   const strategy = item.strategy || {};
@@ -6001,13 +6051,14 @@ function alertMarkupV2(item) {
 
 function alertVisualDigest(item = {}) {
   const ticker = itemTicker(item) || "Mercado";
-  const price = item.price === null || item.price === undefined ? "precio directo no aplica" : money(item.price);
+  const livePrice = rowLivePrice(item);
+  const price = livePrice === null ? "precio directo no aplica" : money(livePrice);
   const pct = formatPercent(item.change_pct, "0.00%");
   const flow = item.dollar_volume ? formatMoneyCompact(item.dollar_volume) : item.volume ? formatVolumeCompact(item.volume) : "volumen pendiente";
   const support = money(item.support, "soporte pendiente");
   const resistance = money(item.resistance, "resistencia pendiente");
   const strategy = item.strategy?.summary ? ` Estrategia: ${cleanCopy(item.strategy.summary)}` : "";
-  if (item.price === null || item.price === undefined) {
+  if (livePrice === null) {
     return `${ticker}: alerta macro/mercado. No aplica a precio directo; vigilar impacto en activos relacionados, noticias y volatilidad.`;
   }
   return `${ticker}: ${price} (${pct}). Flujo visible ${flow}; zona ${support} - ${resistance}. Genesis lo usa como vigilancia operativa, no como orden.${strategy}`;
@@ -6172,7 +6223,7 @@ function openAlertDetail(alertId) {
     ${eventMetricGridMarkup([
       ["Activo", ticker],
       ["Veredicto", cleanCopy(item.decision_label_es || item.action_verdict || item.strategy?.decision_label_es || "vigilar")],
-      ["Precio", item.price === null || item.price === undefined ? "No aplica a precio directo" : money(item.price, "No aplica")],
+      ["Precio", rowPriceLabel(item, "No aplica a precio directo")],
       ["Cambio", `${formatChange(item.change, "Sin dato")} ${formatPercent(item.change_pct, "")}`],
       ["Volumen", item.volume ? compactNumber(item.volume) : "Sin volumen"],
       ["Vol. rel", item.relative_volume ? `${compactNumber(item.relative_volume)}x` : "Sin dato"],
