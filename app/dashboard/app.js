@@ -815,6 +815,44 @@ function isWeatherQuestion(text) {
   ].some((needle) => normalized.includes(needle));
 }
 
+function isOpportunityQuestion(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  return [
+    " oportunidad ",
+    " oportunidades ",
+    " buen precio ",
+    " buenos precios ",
+    " acciones buenas ",
+    " que compro ",
+    " que comprar ",
+    " que deberia comprar ",
+    " comprar con cautela ",
+    " compra con cautela ",
+    " lista de compra ",
+    " watchlist de compra ",
+    " oportunidades para comprar ",
+    " comprar hoy ",
+    " compra hoy ",
+    " que compro hoy ",
+    " que acciones compro ",
+    " que activo compro ",
+    " buena validacion ",
+    " con buena validacion ",
+    " entrada validada ",
+    " entradas validas ",
+    " buenas entradas ",
+    " buen setup ",
+    " setups de compra ",
+    " oportunidad de entrada ",
+    " cazar ",
+    " caza ",
+    " cazame ",
+    " aguila ",
+    " setup ",
+    " setups ",
+  ].some((needle) => normalized.includes(needle));
+}
+
 function tickerFromText(text) {
   const normalized = String(text || "")
     .normalize("NFD")
@@ -823,11 +861,12 @@ function tickerFromText(text) {
   if (isMarketOverviewQuestion(normalized)) return "";
   if (isNewsQuestion(normalized)) return "";
   if (isWeatherQuestion(normalized)) return "";
+  if (isOpportunityQuestion(normalized)) return "";
   if (isWhaleQuestion(normalized)) {
     const whaleTicker = normalized.match(/\b(BTC|BITCOIN|ETH|SOL|NVDA|MSFT|META|NFLX|TSLA|SPY|QQQ|BNO|BZ=F|IAU|SLV|MARA)\b/);
     if (!whaleTicker) return "";
   }
-  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "EN", "LA", "EL", "LAS", "LOS", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "NOTICIA", "NOTICIAS", "TITULAR", "TITULARES", "CATALIZADOR", "CATALIZADORES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTA", "ESTAN", "ESTAS", "ESTOY", "ESTAMOS", "PASANDO", "PASA", "PASO", "DIME", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS", "BALLENA", "BALLENAS", "SMART", "MONEY", "DINERO", "GRANDE", "FLUJO", "FLUJOS", "INSTITUCIONAL", "INSTITUCIONALES", "CLIMA", "TEMPERATURA", "LLUVIA", "LLUEVE", "TIEMPO", "VIENTO", "PRONOSTICO", "HUMEDAD", "CALOR", "FRIO", "MOCHIS", "WEATHER"]);
+  const stop = new Set(["ANALIZA", "ANALIZAR", "OPINAS", "OPINA", "COMPRAR", "COMPRA", "DEBERIA", "QUIERO", "REVISA", "REVISAR", "VER", "HAZME", "UNA", "UN", "GRAFICA", "GRAFICAS", "GRAFICO", "GRAFICOS", "CHART", "MUESTRAME", "MOSTRAME", "MUESTRA", "DE", "DEL", "EN", "LA", "EL", "LAS", "LOS", "POR", "FAVOR", "CON", "VELAS", "VELA", "HORA", "FECHA", "QUE", "RESUMEN", "DIA", "HOY", "OYE", "GENESIS", "MERCADO", "ACCION", "ACCIONES", "NOTICIA", "NOTICIAS", "TITULAR", "TITULARES", "CATALIZADOR", "CATALIZADORES", "SI", "BAJA", "SUBE", "ENTRA", "ENTRAR", "VENDER", "PUEDE", "PUEDO", "COMO", "ESTA", "ESTAN", "ESTAS", "ESTOY", "ESTAMOS", "PASANDO", "PASA", "PASO", "DIME", "BIEN", "TAL", "TODO", "LISTO", "GRACIAS", "VA", "VAS", "VOY", "HOLA", "BUENAS", "BALLENA", "BALLENAS", "SMART", "MONEY", "DINERO", "GRANDE", "FLUJO", "FLUJOS", "INSTITUCIONAL", "INSTITUCIONALES", "CLIMA", "TEMPERATURA", "LLUVIA", "LLUEVE", "TIEMPO", "VIENTO", "PRONOSTICO", "HUMEDAD", "CALOR", "FRIO", "MOCHIS", "WEATHER", "OPORTUNIDAD", "OPORTUNIDADES", "CAUTELA", "VALIDACION", "VALIDACIONES", "VALIDAR", "VALIDADO", "VALIDADOS", "VALIDADA", "VALIDADAS", "CAZA", "CAZAR", "CAZAME", "CAZANDO", "CAZADOR", "PRECIOS", "SETUP", "SETUPS", "ENTRADA", "ENTRADAS", "RUPTURA", "RUPTURAS", "AGUILA", "CONVIENE", "CONVENDRIA"]);
   const aliases = { BTC: "BTC-USD", BITCOIN: "BTC-USD", ETH: "ETH-USD", SOL: "SOL-USD", BRENT: "BZ=F", PETROLEO: "BZ=F", ORO: "IAU", PLATA: "SLV" };
   const tokens = normalized.match(/\b[A-Z0-9]{1,12}(?:[.\-=][A-Z0-9]{1,8})?\b/g) || [];
   const rawTicker = tokens.find((token) => !stop.has(token) && /[A-Z0-9]/.test(token));
@@ -2002,6 +2041,52 @@ function forcedNewsPayloadFromState(question = "", sourcePayload = {}) {
   };
 }
 
+function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
+  const selected = marketOpportunityRowsForUi([]).slice(0, 5);
+  const top = selected[0] || null;
+  const topTicker = top ? itemTicker(top) : "";
+  const watchedVolume = selected.reduce((sum, row) => sum + (numberOrNull(row?.dollar_volume ?? row?.dollarVolume) || 0), 0);
+  const answer = top
+    ? `Radar de oportunidades: ${topTicker} lidera con ${top.decision_label_es || top.decision || "vigilar"} y score ${top.opportunity_score || top.score || "medio"}. No es orden real: Genesis exige precio, volumen, entrada e invalidacion antes de comprar con cautela.`
+    : "Radar de oportunidades sin setup fuerte ahora. Genesis no inventa compras: espera precio, volumen, catalizador y nivel de invalidacion antes de elevar una idea.";
+  return {
+    ...sourcePayload,
+    ok: true,
+    status: "genesis_intelligence_ready",
+    intent: "opportunities",
+    response_type: "alerts_digest",
+    kind: "opportunity_radar",
+    answer,
+    assistant_narrative: answer,
+    tickers: [],
+    quote: null,
+    chart: null,
+    technical: null,
+    items: selected,
+    opportunities: selected,
+    summary: {
+      count: selected.length,
+      watched_volume: watchedVolume || null,
+      top_ticker: topTicker,
+    },
+    structured: {
+      kind: "alerts_digest",
+      title: "Radar de oportunidades",
+      summary: answer,
+      alerts: selected,
+      opportunities: selected,
+      metrics: {
+        opportunities: selected.length,
+        watched_volume: watchedVolume || null,
+      },
+      sections: [
+        { title: "Lectura rapida", bullets: [answer] },
+        { title: "Regla Genesis", bullets: ["No convierto palabras como cautela o validacion en ticker.", "Solo subo conviccion con fuente viva, precio, volumen y riesgo definido."] },
+      ],
+    },
+  };
+}
+
 async function correctGenesisIntentPayload(payload = {}, question = "") {
   if (isWeatherQuestion(question)) {
     return {
@@ -2011,6 +2096,12 @@ async function correctGenesisIntentPayload(payload = {}, question = "") {
       chart: null,
       technical: null,
     };
+  }
+  if (isOpportunityQuestion(question)) {
+    if (!Object.keys(appState.opportunityQuotes || {}).length && !appState.opportunityQuotesLoading) {
+      await loadOpportunityQuotes({ force: false }).catch(() => null);
+    }
+    return forcedOpportunityPayloadFromState(question, payload);
   }
   if (isWhaleQuestion(question)) {
     if (isWhalePayload(payload)) {
@@ -3239,6 +3330,9 @@ async function submitGenesisQuestion(event) {
   if (normalizedQuestion.includes("ballena") || normalizedQuestion.includes("smart money")) {
     await loadWhalesData().catch(() => null);
   }
+  if (isOpportunityQuestion(question)) {
+    await loadOpportunityQuotes({ force: false }).catch(() => null);
+  }
   try {
     const payload = await postJson(
       "/api/genesis/ask",
@@ -3282,6 +3376,7 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
   if (isNewsQuestion(question) || isNewsPayload(payload)) return payload;
   if (isWhaleQuestion(question) || isWhalePayload(payload)) return payload;
   if (isWeatherQuestion(question)) return payload;
+  if (isOpportunityQuestion(question)) return payload;
   const responseType = String(payload?.response_type || "");
   const intent = String(payload?.intent || "");
   if (!(["asset_analysis", "chart_analysis"].includes(responseType) || ["ticker_analysis", "technical_indicators", "chart_request"].includes(intent))) {
@@ -3333,6 +3428,10 @@ async function localAssetFallbackMessage(question, error) {
   }
   if (isWhaleQuestion(question)) {
     return genesisAssistantMessageFromPayload(forcedWhalePayloadFromState(question), question);
+  }
+  if (isOpportunityQuestion(question)) {
+    await loadOpportunityQuotes({ force: false }).catch(() => null);
+    return genesisAssistantMessageFromPayload(forcedOpportunityPayloadFromState(question), question);
   }
   const ticker = tickerFromText(question);
   if (!ticker) return null;

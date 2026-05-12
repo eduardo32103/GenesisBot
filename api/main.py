@@ -634,6 +634,21 @@ def _is_opportunity_genesis_prompt(message: str) -> bool:
             " compra con cautela ",
             " lista de compra ",
             " watchlist de compra ",
+            " oportunidades para comprar ",
+            " comprar hoy ",
+            " compra hoy ",
+            " que compro hoy ",
+            " que acciones compro ",
+            " que activo compro ",
+            " buena validacion ",
+            " con buena validacion ",
+            " entrada validada ",
+            " entradas validas ",
+            " buenas entradas ",
+            " buen setup ",
+            " setups de compra ",
+            " oportunidad de entrada ",
+            " cazame ",
         )
     )
 
@@ -1541,6 +1556,11 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         "response_type": "alerts_digest",
         "kind": "opportunity_radar",
         "answer": answer,
+        "assistant_narrative": answer,
+        "tickers": [],
+        "quote": None,
+        "chart": None,
+        "technical": None,
         "items": top_items,
         "opportunities": top_items,
         "summary": snapshot.get("summary") if isinstance(snapshot, dict) else {},
@@ -2162,6 +2182,11 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
     panel_context = body.get("panel_context") if isinstance(body.get("panel_context"), dict) else None
     if _is_weather_genesis_prompt(message):
         return _weather_prompt_payload(message)
+    if _is_opportunity_genesis_prompt(message):
+        try:
+            return _opportunity_prompt_payload(message, body)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local opportunity prompt correction failed", exc_info=True)
     if _is_casual_genesis_prompt(message):
         return _general_assistant_payload(message)
     if _is_whale_genesis_prompt(message) and not (
@@ -2187,11 +2212,6 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
             return _comparison_prompt_payload(message, body)
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local comparison prompt correction failed", exc_info=True)
-    if _is_opportunity_genesis_prompt(message):
-        try:
-            return _opportunity_prompt_payload(message, body)
-        except Exception:
-            logging.getLogger("genesis.dashboard").warning("Local opportunity prompt correction failed", exc_info=True)
     if _is_market_genesis_prompt(message) and (
         payload.get("intent") == "market_overview"
         or payload.get("response_type") in {"market_summary", "market_briefing"}
@@ -3540,6 +3560,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK)
                 return
+            if _is_opportunity_genesis_prompt(message):
+                result = _opportunity_prompt_payload(message, body)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
             if _is_casual_genesis_prompt(message):
                 result = _general_assistant_payload(message)
                 _remember_genesis_turn(body, message, result)
@@ -3558,11 +3583,6 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 return
             if _is_comparison_genesis_prompt(message):
                 result = _comparison_prompt_payload(message, body)
-                _remember_genesis_turn(body, message, result)
-                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
-                return
-            if _is_opportunity_genesis_prompt(message):
-                result = _opportunity_prompt_payload(message, body)
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
@@ -3831,8 +3851,14 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             context = (query.get("context") or ["general"])[0]
             ticker = (query.get("ticker") or [""])[0]
             panel_context = (query.get("panel_context") or [""])[0]
+            correction_body = {"message": question, "context": context, "ticker": ticker}
+            if panel_context:
+                correction_body["panel_context"] = panel_context
             try:
-                payload_data = get_dashboard_genesis(question, context=context, ticker=ticker, panel_context=panel_context)
+                if _is_opportunity_genesis_prompt(question):
+                    payload_data = _opportunity_prompt_payload(question, correction_body)
+                else:
+                    payload_data = get_dashboard_genesis(question, context=context, ticker=ticker, panel_context=panel_context)
             except Exception:
                 logging.getLogger("genesis.dashboard").exception("DASHBOARD GENESIS fallback activated")
                 payload_data = get_genesis_fallback_answer(
@@ -3842,6 +3868,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                     panel_context=panel_context,
                     reason="snapshot_failure",
                 )
+            payload_data = _correct_genesis_proxy_payload(payload_data, correction_body)
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")

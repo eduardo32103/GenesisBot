@@ -151,14 +151,15 @@ def get_genesis_answer(
     clean_question = str(question or "").strip()
     clean_panel_context = _normalize_panel_context(panel_context)
     is_market_question = _is_market_overview_question(clean_question)
-    detected_tickers = [] if is_market_question else _detect_tickers_from_question(clean_question)
+    is_opportunity_question = _is_opportunity_question(clean_question)
+    detected_tickers = [] if (is_market_question or is_opportunity_question) else _detect_tickers_from_question(clean_question)
     detected_ticker = detected_tickers[0] if detected_tickers else ""
     requested_context = _normalize_context(context or "general")
     panel_scope = _normalize_context(clean_panel_context.get("scope") or "general")
     clean_context = panel_scope if requested_context == "general" and panel_scope != "general" else requested_context
     if detected_ticker and clean_context == "general":
         clean_context = "ticker"
-    clean_ticker = "" if is_market_question else str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
+    clean_ticker = "" if (is_market_question or is_opportunity_question) else str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
     intent = _resolve_intent(clean_question, clean_context)
     is_comparison = intent == "asset_priority" and _is_comparison_question(clean_question) and len(detected_tickers) >= 2
 
@@ -253,14 +254,15 @@ def get_genesis_fallback_answer(
     clean_question = str(question or "").strip()
     clean_panel_context = _normalize_panel_context(panel_context)
     is_market_question = _is_market_overview_question(clean_question)
-    detected_tickers = [] if is_market_question else _detect_tickers_from_question(clean_question)
+    is_opportunity_question = _is_opportunity_question(clean_question)
+    detected_tickers = [] if (is_market_question or is_opportunity_question) else _detect_tickers_from_question(clean_question)
     detected_ticker = detected_tickers[0] if detected_tickers else ""
     requested_context = _normalize_context(context or "general")
     panel_scope = _normalize_context(clean_panel_context.get("scope") or "general")
     clean_context = panel_scope if requested_context == "general" and panel_scope != "general" else requested_context
     if detected_ticker and clean_context == "general":
         clean_context = "ticker"
-    clean_ticker = "" if is_market_question else str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
+    clean_ticker = "" if (is_market_question or is_opportunity_question) else str(detected_ticker or ticker or clean_panel_context.get("ticker") or "").strip().upper()
     intent = _resolve_intent(clean_question, clean_context)
     answer = _fallback_answer_for_reason(reason, clean_ticker)
     evidence = _compact_evidence(
@@ -371,6 +373,47 @@ def _normalize_context(value: str) -> str:
     return "general"
 
 
+def _is_opportunity_question(question: str) -> bool:
+    text = f" {_normalize(question)} "
+    return any(
+        token in text
+        for token in (
+            " oportunidad ",
+            " oportunidades ",
+            " buen precio ",
+            " buenos precios ",
+            " acciones buenas ",
+            " que compro ",
+            " que comprar ",
+            " que deberia comprar ",
+            " comprar con cautela ",
+            " compra con cautela ",
+            " lista de compra ",
+            " watchlist de compra ",
+            " oportunidades para comprar ",
+            " comprar hoy ",
+            " compra hoy ",
+            " que compro hoy ",
+            " que acciones compro ",
+            " que activo compro ",
+            " buena validacion ",
+            " con buena validacion ",
+            " entrada validada ",
+            " entradas validas ",
+            " buenas entradas ",
+            " buen setup ",
+            " setups de compra ",
+            " oportunidad de entrada ",
+            " cazar ",
+            " caza ",
+            " cazame ",
+            " aguila ",
+            " setup ",
+            " setups ",
+        )
+    )
+
+
 def _resolve_intent(question: str, context: str = "general") -> str:
     text = _normalize(question)
     if _is_market_overview_question(question):
@@ -381,24 +424,7 @@ def _resolve_intent(question: str, context: str = "general") -> str:
         return "alerts"
     if any(token in text for token in ("macro", "mundo", "noticia", "noticias", "geopolit", "geopolitica")):
         return "macro"
-    if any(
-        token in text
-        for token in (
-            "oportunidad",
-            "oportunidades",
-            "buen precio",
-            "buenos precios",
-            "acciones buenas",
-            "que compro",
-            "que comprar",
-            "comprar con cautela",
-            "cazar",
-            "caza",
-            "aguila",
-            "setup",
-            "setups",
-        )
-    ):
+    if _is_opportunity_question(question):
         return "opportunities"
     if any(token in text for token in ("confiable", "confiabilidad", "confianza", "fiable")):
         return "reliability"

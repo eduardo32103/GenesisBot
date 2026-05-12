@@ -261,6 +261,38 @@ _STOPWORDS.update(
     }
 )
 
+_STOPWORDS.update(
+    {
+        "AGUILA",
+        "ALCISTA",
+        "BAJISTA",
+        "CAUTELA",
+        "CAZA",
+        "CAZADOR",
+        "CAZANDO",
+        "CAZAR",
+        "CAZAME",
+        "CONVIENE",
+        "CONVENDRIA",
+        "ENTRADA",
+        "ENTRADAS",
+        "OPORTUNIDAD",
+        "OPORTUNIDADES",
+        "PRECIOS",
+        "RUPTURA",
+        "RUPTURAS",
+        "SETUP",
+        "SETUPS",
+        "VALIDACION",
+        "VALIDACIONES",
+        "VALIDADA",
+        "VALIDADAS",
+        "VALIDADO",
+        "VALIDADOS",
+        "VALIDAR",
+    }
+)
+
 _ALIASES = {
     "BTC": "BTC-USD",
     "BITCOIN": "BTC-USD",
