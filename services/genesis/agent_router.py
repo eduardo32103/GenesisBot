@@ -80,6 +80,8 @@ class AgentRouter:
             return "comparison"
         if chart.get("is_chart"):
             return "chart_request"
+        if tickers and _mentions_trade_decision(text):
+            return "trade_decision"
         if _mentions_technical(text) and tickers:
             return "technical_indicators"
         if tickers:
@@ -105,6 +107,7 @@ _AGENT_BY_INTENT = {
     "macro_news": "news_macro_agent",
     "comparison": "price_agent",
     "technical_indicators": "technical_agent",
+    "trade_decision": "asset_analysis_agent",
     "general_question": "response_composer",
 }
 
@@ -213,6 +216,27 @@ def _mentions_macro(text: str) -> bool:
 
 def _mentions_comparison(text: str) -> bool:
     return any(token in text for token in ("contra", "versus", " vs ", "compara", "comparar"))
+
+
+def _mentions_trade_decision(text: str) -> bool:
+    decision_tokens = (
+        "deberia comprar",
+        "debo comprar",
+        "conviene comprar",
+        "comprar con",
+        "buena idea comprar",
+        "seria buena idea comprar",
+        "vale la pena comprar",
+        "entro a",
+        "entrada en",
+        "compro",
+        "compraria",
+        "vender",
+        "vendo",
+        "salirme",
+        "tomar ganancia",
+    )
+    return any(token in text for token in decision_tokens)
 
 
 def _mentions_technical(text: str) -> bool:

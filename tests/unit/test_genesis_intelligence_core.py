@@ -221,6 +221,9 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(router.route("que hicimos ayer").intent, "memory_query")
         self.assertEqual(router.route("dame rsi y macd de nvda").intent, "technical_indicators")
         self.assertEqual(router.route("dame una grafica de nvda con sma 50").intent, "chart_request")
+        self.assertEqual(router.route("deberia comprar nvda?").intent, "trade_decision")
+        self.assertEqual(router.route("crees que seria buena idea comprar bip?").intent, "trade_decision")
+        self.assertEqual(router.route("crees que seria buena idea comprar?").intent, "general_question")
         self.assertEqual(router.route("que noticias afectan mis activos").intent, "macro_news")
         news_route = router.route("que esta pasando en noticias", ticker="ENH")
         self.assertEqual(news_route.intent, "macro_news")
@@ -348,6 +351,60 @@ class GenesisToolRouterTests(unittest.TestCase):
         self.assertEqual(summary["counts"]["decisions"], 1)
         self.assertEqual(summary["counts"]["hypotheses"], 1)
         self.assertEqual(summary["decisions"][0]["payload"]["price_at_decision"], 215.2)
+
+    @patch("services.genesis.tool_router.get_llm_orchestrator")
+    @patch("services.genesis.tool_router.get_technical_agent")
+    @patch("services.genesis.price_agent.get_verified_market_quote")
+    def test_trade_decision_returns_verdict_and_learning_payload(
+        self,
+        mock_quote: Mock,
+        mock_technical_agent: Mock,
+        mock_llm: Mock,
+    ) -> None:
+        mock_llm.return_value.compose.side_effect = lambda _prompt, _ctx, fallback: {
+            "used_llm": False,
+            "answer": fallback,
+            "reason": "test",
+        }
+        mock_quote.return_value = {
+            "ticker": "NVDA",
+            "name": "NVIDIA Corporation",
+            "current_price": 215.2,
+            "formatted_price": "$215.20",
+            "daily_change": 3.7,
+            "daily_change_pct": 1.75,
+            "source_label": "Precio confirmado",
+            "is_live": True,
+            "source": "datos_directos",
+            "previous_close": 211.5,
+            "volume": 134_128_204,
+            "sanity": {"ok": True},
+        }
+        mock_technical_agent.return_value.for_ticker.return_value = {
+            "ok": True,
+            "indicators": {
+                "support": 211.0,
+                "resistance": 218.0,
+                "rsi": 58.0,
+                "trend": "alcista intradia",
+                "volume": 134_128_204,
+                "relative_volume": 1.4,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            payload = route_message("deberia comprar nvda?", memory=store)
+            summary = store.get_asset_learning_summary("NVDA")
+
+        self.assertEqual(payload["intent"], "trade_decision")
+        self.assertEqual(payload["response_type"], "asset_analysis")
+        self.assertEqual(payload["decision"]["action"], "buy_cautious")
+        self.assertEqual(payload["structured"]["decision"]["label_es"], "Comprar con cautela")
+        self.assertIn("Entrada:", payload["answer"])
+        self.assertGreaterEqual(summary["counts"]["decisions"], 1)
+        self.assertGreaterEqual(summary["counts"]["signals"], 1)
+        self.assertGreaterEqual(summary["counts"]["hypotheses"], 1)
+        self.assertGreaterEqual(summary["counts"]["outcomes"], 1)
 
     @patch("services.genesis.tool_router.get_news_macro_agent")
     def test_news_question_uses_news_brief_visual_payload(self, mock_news_agent: Mock) -> None:

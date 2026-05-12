@@ -163,6 +163,58 @@ def route_message(
         extra = {"chart": chart, "quote": quote, "technical": technical, "structured": structured, "kind": structured["kind"]}
         return _payload("chart_request", answer, [chart["ticker"], *[item for item in tickers if item != chart["ticker"]]], extra=extra, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
+    if route.intent == "trade_decision" and explicit_ticker:
+        quote = price_agent.quote(explicit_ticker)
+        technical = get_technical_agent().for_ticker(explicit_ticker, "1Y")
+        memory_summary = store.get_asset_learning_summary(explicit_ticker, limit=8)
+        store.save_event(
+            "trade_decision_request",
+            {"ticker": explicit_ticker, "quote": _safe_quote_memory(quote), "memory_counts": memory_summary.get("counts")},
+            "genesis",
+            "alta" if quote.get("current_price") else "baja",
+        )
+        store.track_entity(explicit_ticker, "asset", {"reason": "trade_decision"})
+        store.save_learned_context(
+            f"asset_interest:{explicit_ticker}",
+            {"ticker": explicit_ticker, "last_intent": route.intent, "last_question": clean[:240]},
+            "genesis",
+            "media",
+        )
+        decision = _trade_decision(explicit_ticker, quote, technical, memory_summary, clean)
+        structured = composer.asset_analysis(explicit_ticker, quote=quote, technical=technical)
+        structured["decision"] = decision
+        structured["thesis"] = decision["reason_es"]
+        structured["scenario"] = {
+            "probable": decision["entry_condition_es"],
+            "invalidacion": decision["invalidation_es"],
+        }
+        structured.setdefault("sections", [])
+        structured["sections"] = [
+            {"title": "Veredicto", "bullets": [decision["label_es"], decision["reason_es"]]},
+            {"title": "Entrada condicional", "bullets": [decision["entry_condition_es"]]},
+            {"title": "Invalidacion", "bullets": [decision["invalidation_es"]]},
+            {"title": "Que vigilar", "bullets": decision["what_to_watch_es"]},
+        ]
+        _remember_asset_analysis(store, explicit_ticker, quote, technical, structured, route.intent)
+        _remember_trade_decision(store, explicit_ticker, quote, technical, decision, memory_summary)
+        extra = {
+            "quote": quote,
+            "technical": technical,
+            "decision": decision,
+            "memory_summary": memory_summary,
+            "structured": structured,
+            "kind": structured["kind"],
+        }
+        return _payload(
+            "trade_decision",
+            _trade_decision_answer(explicit_ticker, quote, decision),
+            tickers or [explicit_ticker],
+            extra=extra,
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
     if route.intent in {"ticker_analysis", "technical_indicators"} and explicit_ticker:
         quote = price_agent.quote(explicit_ticker)
         technical = get_technical_agent().for_ticker(explicit_ticker, "1Y")
@@ -347,6 +399,7 @@ def _response_type_for_intent(intent: str) -> str:
         "daily_briefing": "market_summary",
         "market_overview": "market_summary",
         "ticker_analysis": "asset_analysis",
+        "trade_decision": "asset_analysis",
         "technical_indicators": "asset_analysis",
         "chart_request": "chart_analysis",
         "comparison": "comparison",
@@ -396,6 +449,133 @@ def _ticker_answer(ticker: str, quote: dict[str, Any], technical: dict[str, Any]
             f"golden pocket {indicators.get('golden_pocket')}."
         )
     return answer
+
+
+def _trade_decision_answer(ticker: str, quote: dict[str, Any], decision: dict[str, Any]) -> str:
+    if not quote.get("current_price"):
+        return (
+            f"{ticker}: veredicto {decision['label_es']}. "
+            f"{decision['reason_es']} {decision['entry_condition_es']}"
+        )
+    return (
+        f"{ticker}: {decision['label_es']}. "
+        f"Precio {quote.get('formatted_price')}; {decision['reason_es']} "
+        f"Entrada: {decision['entry_condition_es']} Invalidacion: {decision['invalidation_es']}"
+    )
+
+
+def _trade_decision(
+    ticker: str,
+    quote: dict[str, Any],
+    technical: dict[str, Any] | None,
+    memory_summary: dict[str, Any],
+    prompt: str,
+) -> dict[str, Any]:
+    indicators = (technical or {}).get("indicators") if isinstance((technical or {}).get("indicators"), dict) else {}
+    price = _number(quote.get("current_price"))
+    pct = _number(quote.get("daily_change_pct"))
+    rsi = _number(indicators.get("rsi"))
+    rel_volume = _number(indicators.get("relative_volume"))
+    support = _number(indicators.get("support"))
+    resistance = _number(indicators.get("resistance"))
+    volume = _number(indicators.get("volume") or quote.get("volume"))
+    direction = _expected_direction_from_quote(quote, indicators)
+    wants_exit = any(token in _fold_prompt(prompt) for token in ("vender", "vendo", "salirme", "tomar ganancia"))
+    counts = memory_summary.get("counts") if isinstance(memory_summary.get("counts"), dict) else {}
+    memory_hint = (
+        f"Memoria: {counts.get('decisions', 0)} decisiones, "
+        f"{counts.get('signals', 0) + counts.get('alerts', 0)} senales y "
+        f"{counts.get('news', 0)} noticias previas guardadas para {ticker}."
+    )
+
+    if not price:
+        action = "wait_source"
+        label = "Esperar fuente"
+        tone = "neutral"
+        confidence = 0.25
+        reason = "No hay precio actual confirmado; Genesis no recomienda operar con datos incompletos."
+        entry = "Reintentar cuando FMP/backend confirme precio, volumen, soporte y resistencia."
+        invalidation = "La lectura no es valida hasta tener precio vivo y grafica reciente."
+        risk = "Riesgo principal: actuar con un dato que podria estar vencido o incompleto."
+    elif wants_exit:
+        action = "manage_risk"
+        label = "Gestionar salida con niveles"
+        tone = "watching"
+        confidence = 0.64
+        reason = (
+            f"Precio confirmado {quote.get('formatted_price')}; la decision de salida depende de soporte "
+            f"{_fmt_level(support)} y resistencia {_fmt_level(resistance)}."
+        )
+        entry = "Reducir solo si pierde soporte con volumen o si tu tesis original ya se invalido."
+        invalidation = f"Recuperar/defender soporte {_fmt_level(support)} con volumen mejora la lectura."
+        risk = "Riesgo principal: vender por ruido si el nivel clave sigue intacto."
+    elif direction == "bullish" and (rsi is None or rsi < 72) and (rel_volume is None or rel_volume >= 0.9):
+        action = "buy_cautious"
+        label = "Comprar con cautela"
+        tone = "bullish"
+        confidence = 0.72
+        reason = (
+            f"{ticker} trae sesgo comprador: {format_signed_percent(pct)} diario, "
+            f"RSI {_fmt_level(rsi)} y volumen {_fmt_volume(volume)}."
+        )
+        entry = f"Entrada parcial solo si respeta soporte {_fmt_level(support)} y confirma cierre arriba de {_fmt_level(resistance)}."
+        invalidation = f"Perder soporte {_fmt_level(support)} o caer con volumen invalida la entrada."
+        risk = "Riesgo principal: comprar tarde si el movimiento ya esta extendido."
+    elif direction == "bullish" and rsi is not None and rsi >= 72:
+        action = "wait_pullback"
+        label = "Esperar retroceso"
+        tone = "watching"
+        confidence = 0.68
+        reason = f"Hay fuerza, pero RSI {_fmt_level(rsi)} sugiere extension; Genesis prefiere mejor entrada."
+        entry = f"Esperar retroceso hacia soporte {_fmt_level(support)} o nueva ruptura con volumen relativo mayor a 1x."
+        invalidation = f"Si rompe {_fmt_level(resistance)} con volumen alto, se vuelve continuacion vigilable."
+        risk = "Riesgo principal: perseguir precio en zona extendida."
+    elif direction == "bearish":
+        action = "avoid_or_wait"
+        label = "No comprar todavia"
+        tone = "bearish"
+        confidence = 0.70
+        reason = (
+            f"La lectura esta presionada: {format_signed_percent(pct)} diario, "
+            f"soporte {_fmt_level(support)} y resistencia {_fmt_level(resistance)}."
+        )
+        entry = f"Esperar recuperacion de {_fmt_level(resistance)} con volumen antes de pensar entrada."
+        invalidation = f"Perder {_fmt_level(support)} confirma riesgo y mantiene la idea en espera."
+        risk = "Riesgo principal: entrar contra tendencia sin confirmacion."
+    else:
+        action = "watch_confirmation"
+        label = "Vigilar confirmacion"
+        tone = "neutral"
+        confidence = 0.58
+        reason = (
+            f"{ticker} no tiene senal suficiente: precio {quote.get('formatted_price')}, "
+            f"volumen {_fmt_volume(volume)} y direccion {direction}."
+        )
+        entry = f"Esperar ruptura de {_fmt_level(resistance)} o rebote claro en {_fmt_level(support)} con volumen."
+        invalidation = "Si el volumen no confirma, la lectura se queda en vigilancia."
+        risk = "Riesgo principal: operar una zona lateral como si fuera tendencia."
+
+    watch = [
+        f"Precio contra soporte {_fmt_level(support)} y resistencia {_fmt_level(resistance)}.",
+        f"Volumen {_fmt_volume(volume)} y volumen relativo {_fmt_level(rel_volume)}.",
+        "Noticias, alertas y flujo institucional que cambien la tesis.",
+    ]
+    if memory_hint:
+        watch.append(memory_hint)
+    return {
+        "action": action,
+        "label_es": label,
+        "tone": tone,
+        "reason_es": reason,
+        "entry_condition_es": entry,
+        "invalidation_es": invalidation,
+        "risk_es": risk,
+        "what_to_watch_es": watch,
+        "expected_direction": direction,
+        "confidence": confidence,
+        "source": "genesis_trade_decision",
+        "memory_hint_es": memory_hint,
+    }
 
 
 def _comparison_answer(quotes: list[dict[str, Any]]) -> str:
@@ -519,6 +699,90 @@ def _remember_asset_analysis(
         "genesis",
         confidence,
     )
+    store.save_outcome_tracking(
+        normalized,
+        {
+            **base,
+            "event_type": "outcome_tracking",
+            "decision_timestamp": None,
+            "status": "open" if price else "waiting_for_source",
+            "review_windows": ["1h", "24h", "7d"],
+            "actual_outcome_1h": None,
+            "actual_outcome_24h": None,
+            "actual_outcome_7d": None,
+        },
+        "genesis",
+        confidence,
+    )
+
+
+def _remember_trade_decision(
+    store: MemoryStore,
+    ticker: str,
+    quote: dict[str, Any],
+    technical: dict[str, Any] | None,
+    decision: dict[str, Any],
+    memory_summary: dict[str, Any],
+) -> None:
+    normalized = normalize_ticker(ticker)
+    if not normalized:
+        return
+    indicators = (technical or {}).get("indicators") if isinstance((technical or {}).get("indicators"), dict) else {}
+    payload = {
+        "ticker": normalized,
+        "event_type": "trade_decision",
+        "verdict": decision.get("label_es"),
+        "action": decision.get("action"),
+        "reason": decision.get("reason_es"),
+        "price_at_decision": quote.get("current_price"),
+        "support": indicators.get("support"),
+        "resistance": indicators.get("resistance"),
+        "expected_direction": decision.get("expected_direction"),
+        "expected_impact": decision.get("label_es"),
+        "confidence": decision.get("confidence"),
+        "invalidation": decision.get("invalidation_es"),
+        "memory_counts": memory_summary.get("counts"),
+        "status": "open" if quote.get("current_price") else "waiting_for_source",
+    }
+    store.save_decision_note(
+        normalized,
+        str(decision.get("label_es") or "vigilar"),
+        {
+            **payload,
+            "event_type": "decision_note",
+            "reason": decision.get("reason_es"),
+            "entry_condition": decision.get("entry_condition_es"),
+            "risk": decision.get("risk_es"),
+        },
+        "genesis_trade_decision",
+        decision.get("confidence") or "media",
+    )
+    store.save_signal_event(normalized, payload, "genesis_trade_decision", decision.get("confidence") or "media")
+    store.save_hypothesis(
+        normalized,
+        {
+            **payload,
+            "hypothesis": decision.get("entry_condition_es"),
+            "actual_outcome_1h": None,
+            "actual_outcome_24h": None,
+            "actual_outcome_7d": None,
+        },
+        "genesis_trade_decision",
+        decision.get("confidence") or "media",
+    )
+    store.save_outcome_tracking(
+        normalized,
+        {
+            **payload,
+            "event_type": "outcome_tracking",
+            "review_windows": ["1h", "24h", "7d"],
+            "actual_outcome_1h": None,
+            "actual_outcome_24h": None,
+            "actual_outcome_7d": None,
+        },
+        "genesis_trade_decision",
+        decision.get("confidence") or "media",
+    )
 
 
 def _remember_news_events(store: MemoryStore, overview: dict[str, Any]) -> None:
@@ -589,6 +853,37 @@ def _expected_direction_from_quote(quote: dict[str, Any], indicators: dict[str, 
     if "bajista" in trend or "presion" in trend:
         return "bearish"
     return "neutral"
+
+
+def _number(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_level(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return "pendiente"
+    if abs(number) >= 100:
+        return f"${number:,.2f}"
+    return f"{number:,.2f}"
+
+
+def _fmt_volume(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return "pendiente"
+    if number >= 1_000_000_000:
+        return f"{number / 1_000_000_000:.1f}B"
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M"
+    if number >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return f"{number:,.0f}"
 
 
 def _verdict_from_direction(direction: str, price: Any) -> str:

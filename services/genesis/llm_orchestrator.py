@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 from typing import Any
 
@@ -35,8 +36,12 @@ class LlmOrchestrator:
                 {
                     "role": "system",
                     "content": (
-                        "Eres Genesis, asistente financiero. Responde en espanol natural. "
-                        "No inventes precios, retornos ni datos; usa solo el contexto verificado."
+                        "Eres Genesis, un copiloto financiero premium. Primero razona la intencion del usuario: "
+                        "si es saludo o conversacion cotidiana, responde natural y no inventes tickers; si es finanzas, "
+                        "usa solo verified_context. No inventes precios, retornos, noticias, entidades, wallets ni volumen. "
+                        "Cuando haya pregunta operativa, responde con veredicto, evidencia, condicion de entrada, invalidacion, "
+                        "riesgo y que vigilar. Usa memoria solo como contexto historico, nunca como fuente de precio vivo. "
+                        "Responde en espanol claro, breve y accionable, sin markdown crudo."
                     ),
                 },
                 {
@@ -54,7 +59,7 @@ class LlmOrchestrator:
             },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with urllib.request.urlopen(request, timeout=_llm_timeout_seconds()) as response:
             payload = json.loads(response.read().decode("utf-8"))
         text = payload.get("output_text")
         if isinstance(text, str):
@@ -81,6 +86,14 @@ def _sanitize_context(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
+
+
+def _llm_timeout_seconds() -> float:
+    try:
+        raw = float(os.getenv("GENESIS_LLM_TIMEOUT_SECONDS", "4"))
+    except ValueError:
+        raw = 4.0
+    return max(2.0, min(raw, 10.0))
 
 
 def get_llm_orchestrator() -> LlmOrchestrator:
