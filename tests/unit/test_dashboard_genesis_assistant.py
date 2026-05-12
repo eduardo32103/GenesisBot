@@ -130,6 +130,69 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertFalse(_is_asset_genesis_prompt("que compro hoy con buena validacion"))
         self.assertEqual(_prompt_tickers("que compro hoy con buena validacion"), [])
 
+    @patch("api.main.get_dashboard_opportunities")
+    def test_local_proxy_routes_opportunity_prompt_to_radar(self, mock_opportunities) -> None:
+        mock_opportunities.return_value = {
+            "ok": True,
+            "items": [
+                {
+                    "ticker": "NVDA",
+                    "asset_name": "NVIDIA Corporation",
+                    "price": 215.2,
+                    "opportunity_score": 82,
+                    "decision": "buy_cautiously",
+                    "decision_label_es": "Comprar con cautela",
+                    "dollar_volume": 1200000000,
+                    "genesis_reading_es": "NVDA queda en radar, no orden real.",
+                }
+            ],
+            "summary": {"top_ticker": "NVDA", "top_score": 82},
+            "source_status": {"provider_used": "unit"},
+        }
+        stale_payload = {
+            "intent": "ticker_analysis",
+            "response_type": "asset_analysis",
+            "tickers": ["CAUTELA"],
+            "answer": "CAUTELA no tiene precio confirmado.",
+        }
+
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "que oportunidades hay para comprar con cautela", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "opportunities")
+        self.assertEqual(fixed["response_type"], "opportunity_radar")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertEqual(fixed["structured"]["kind"], "opportunity_radar")
+        self.assertEqual(fixed["opportunities"][0]["ticker"], "NVDA")
+        self.assertNotIn("CAUTELA", json.dumps(fixed))
+
+    @patch("services.dashboard.get_genesis_answer.get_opportunity_radar_snapshot")
+    def test_service_routes_caza_buenos_precios_to_opportunities(self, mock_snapshot) -> None:
+        mock_snapshot.return_value = {
+            "ok": True,
+            "items": [
+                {
+                    "ticker": "NVDA",
+                    "opportunity_score": 78,
+                    "decision_label_es": "Comprar con cautela",
+                    "genesis_reading_es": "NVDA en radar paper.",
+                    "what_to_watch_es": "Confirmar ruptura con volumen.",
+                }
+            ],
+            "summary": {"top_ticker": "NVDA"},
+        }
+
+        payload = get_genesis_answer("genesis, caza buenos precios")
+
+        self.assertEqual(payload["intent"], "opportunities")
+        self.assertEqual(payload["context"]["tickers"], [])
+        self.assertIn("Oportunidad principal", payload["answer"])
+
     @patch("api.main.get_weather_answer")
     def test_local_proxy_routes_weather_before_market_or_asset(self, mock_weather) -> None:
         mock_weather.return_value = {

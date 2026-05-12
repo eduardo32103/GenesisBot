@@ -1890,6 +1890,7 @@ function genesisVisualFromPayload(payload, answer = "") {
   if (responseType === "news_brief" || intent === "macro_news") return newsBriefVisual(payload, answer);
   if (responseType === "market_summary" || intent === "daily_briefing" || intent === "market_overview") return briefingVisual(payload, answer);
   if (responseType === "weather" || intent === "weather") return weatherVisual(payload, answer);
+  if (responseType === "opportunity_radar" || intent === "opportunities" || payload?.structured?.kind === "opportunity_radar") return opportunityRadarVisual(payload, answer);
   if (responseType === "alerts_digest" || intent === "alerts") return alertsDigestVisual(payload, answer);
   if (responseType === "whale_flow" || intent === "whale_activity" || intent === "money_flow") {
     return whaleFlowVisual(payload, answer);
@@ -2046,6 +2047,8 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
   const top = selected[0] || null;
   const topTicker = top ? itemTicker(top) : "";
   const watchedVolume = selected.reduce((sum, row) => sum + (numberOrNull(row?.dollar_volume ?? row?.dollarVolume) || 0), 0);
+  const actionable = selected.filter((row) => ["buy_cautiously", "watch_confirmation"].includes(String(row?.decision || ""))).length;
+  const defensive = selected.filter((row) => String(row?.decision || "") === "reduce_or_sell_risk").length;
   const answer = top
     ? `Radar de oportunidades: ${topTicker} lidera con ${top.decision_label_es || top.decision || "vigilar"} y score ${top.opportunity_score || top.score || "medio"}. No es orden real: Genesis exige precio, volumen, entrada e invalidacion antes de comprar con cautela.`
     : "Radar de oportunidades sin setup fuerte ahora. Genesis no inventa compras: espera precio, volumen, catalizador y nivel de invalidacion antes de elevar una idea.";
@@ -2054,7 +2057,7 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
     ok: true,
     status: "genesis_intelligence_ready",
     intent: "opportunities",
-    response_type: "alerts_digest",
+    response_type: "opportunity_radar",
     kind: "opportunity_radar",
     answer,
     assistant_narrative: answer,
@@ -2067,17 +2070,25 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
     summary: {
       count: selected.length,
       watched_volume: watchedVolume || null,
+      actionable,
+      defensive,
       top_ticker: topTicker,
+      top_score: top?.opportunity_score || top?.score || null,
     },
     structured: {
-      kind: "alerts_digest",
-      title: "Radar de oportunidades",
+      kind: "opportunity_radar",
+      title: "Cazador de buenos precios",
       summary: answer,
       alerts: selected,
       opportunities: selected,
       metrics: {
+        total: selected.length,
         opportunities: selected.length,
+        actionable,
+        defensive,
         watched_volume: watchedVolume || null,
+        top_ticker: topTicker,
+        top_score: top?.opportunity_score || top?.score || null,
       },
       sections: [
         { title: "Lectura rapida", bullets: [answer] },
@@ -2467,6 +2478,23 @@ function alertsDigestVisual(payload, answer = "") {
   };
 }
 
+function opportunityRadarVisual(payload, answer = "") {
+  const structured = payload?.structured || {};
+  const rows = structured.opportunities || payload?.opportunities || payload?.items || [];
+  const metrics = {
+    ...(payload?.summary || {}),
+    ...(structured.metrics || {}),
+  };
+  return {
+    kind: "opportunity_radar",
+    title: structured.title || "Cazador de buenos precios",
+    thesis: cleanSentenceList(structured.summary || answer, 1)[0] || "Genesis busca setups con precio, volumen, nivel e invalidacion antes de elevar conviccion.",
+    rows: Array.isArray(rows) ? rows.slice(0, 5) : [],
+    metrics,
+    sections: structured.sections || [],
+  };
+}
+
 function whaleFlowVisual(payload, answer = "") {
   const structured = payload?.structured || {};
   const whales = payload?.whales || {};
@@ -2513,6 +2541,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "weather") return weatherVisualMarkup(visual);
   if (visual.kind === "comparison") return comparisonVisualMarkup(visual);
   if (visual.kind === "news_brief") return newsBriefVisualMarkup(visual);
+  if (visual.kind === "opportunity_radar") return opportunityRadarVisualMarkup(visual);
   if (visual.kind === "alerts_digest") return alertsDigestVisualMarkup(visual);
   if (visual.kind === "whale_flow") return whaleFlowVisualMarkup(visual);
   if (visual.kind === "memory_digest") return memoryDigestVisualMarkup(visual);
@@ -2856,6 +2885,50 @@ function newsBriefVisualMarkup(visual) {
                 </div>
               </div>
             </button>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function opportunityRadarVisualMarkup(visual) {
+  const rows = Array.isArray(visual.rows) ? visual.rows.slice(0, 5) : [];
+  const metrics = visual.metrics || {};
+  const watchedVolume = numberOrNull(metrics.watched_volume || metrics.watchedVolume);
+  return `
+    <section class="visual-response feed-visual opportunity-radar-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">Radar Genesis</span>
+          <strong>${escapeHtml(visual.title || "Cazador de buenos precios")}</strong>
+        </div>
+        <span class="conviction-pill bullish">${escapeHtml(cleanCopy(metrics.top_score ? `${metrics.top_score}/100` : "activo"))}</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <div class="visual-grid briefing-grid">
+        ${visualTextMetricMarkup("En radar", String(metrics.total ?? metrics.opportunities ?? rows.length))}
+        ${visualTextMetricMarkup("Accionables", String(metrics.actionable ?? rows.filter((row) => ["buy_cautiously", "watch_confirmation"].includes(String(row.decision || ""))).length))}
+        ${visualTextMetricMarkup("Volumen", watchedVolume ? money(watchedVolume) : "Vigilando")}
+      </div>
+      <div class="visual-feed-cards opportunity-cards">
+        ${(rows.length ? rows : [{ ticker: "Mercado", decision_label_es: "Esperar", genesis_reading_es: "Sin setup fuerte ahora; Genesis espera fuente viva, precio, volumen y nivel claro." }]).map((row) => {
+          const price = numberOrNull(row.price);
+          const score = numberOrNull(row.opportunity_score ?? row.score);
+          const relVol = numberOrNull(row.relative_volume ?? row.relativeVolume);
+          const tone = score !== null && score >= 76 ? "bullish" : score !== null && score >= 62 ? "neutral" : "flat";
+          return `
+            <article>
+              <strong>${escapeHtml(cleanCopy(row.ticker || "Mercado"))} · ${escapeHtml(cleanCopy(row.decision_label_es || row.decision || "Vigilar"))}</strong>
+              <p>${escapeHtml(stripMarkdownCopy(cleanCopy(row.genesis_reading_es || row.genesis_reading || row.summary || "Setup en vigilancia; no es orden real.")))}</p>
+              <div class="visual-market-strip compact">
+                <span><small>Precio</small><strong>${escapeHtml(price === null ? "Pendiente" : money(price))}</strong></span>
+                <span><small>Score</small><strong class="${tone}">${escapeHtml(score === null ? "Medio" : `${compactNumber(score)}/100`)}</strong></span>
+                <span><small>Vol. rel</small><strong>${escapeHtml(relVol === null ? "Pendiente" : `${compactNumber(relVol)}x`)}</strong></span>
+              </div>
+              <div class="mini-flow-bar"><i style="width:${Math.max(12, Math.min(100, score || 28))}%"></i></div>
+              <small>${escapeHtml(cleanCopy(row.entry_condition || "Entrada solo con confirmacion"))} · ${escapeHtml(cleanCopy(row.invalidation || "invalidacion pendiente"))}</small>
+            </article>
           `;
         }).join("")}
       </div>

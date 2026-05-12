@@ -1526,6 +1526,19 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
             "No elevo oportunidades ahora porque no tengo precio/volumen/catalizador suficiente. "
             "Genesis no inventa setups: mantiene el radar vivo hasta que FMP confirme evidencia."
         )
+    summary = snapshot.get("summary") if isinstance(snapshot, dict) and isinstance(snapshot.get("summary"), dict) else {}
+    actionable = sum(1 for item in top_items if str(item.get("decision") or "") in {"buy_cautiously", "watch_confirmation"})
+    defensive = sum(1 for item in top_items if str(item.get("decision") or "") == "reduce_or_sell_risk")
+    watched_volume = sum(_safe_num(item.get("dollar_volume")) or 0 for item in top_items)
+    metrics = {
+        "total": len(top_items),
+        "opportunities": len(top_items),
+        "actionable": actionable,
+        "defensive": defensive,
+        "watched_volume": watched_volume or None,
+        "top_ticker": summary.get("top_ticker") or (top_items[0].get("ticker") if top_items else ""),
+        "top_score": summary.get("top_score") or (top_items[0].get("opportunity_score") if top_items else None),
+    }
     sections = [
         {
             "title": "Top oportunidades",
@@ -1553,7 +1566,7 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         "ok": True,
         "status": "genesis_intelligence_ready",
         "intent": "opportunities",
-        "response_type": "alerts_digest",
+        "response_type": "opportunity_radar",
         "kind": "opportunity_radar",
         "answer": answer,
         "assistant_narrative": answer,
@@ -1563,14 +1576,15 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         "technical": None,
         "items": top_items,
         "opportunities": top_items,
-        "summary": snapshot.get("summary") if isinstance(snapshot, dict) else {},
+        "summary": {**summary, **metrics},
         "source_status": snapshot.get("source_status") if isinstance(snapshot, dict) else {},
         "structured": {
-            "kind": "alerts_digest",
-            "title": "Radar de oportunidades",
+            "kind": "opportunity_radar",
+            "title": "Cazador de buenos precios",
             "summary": answer,
             "alerts": top_items,
             "opportunities": top_items,
+            "metrics": metrics,
             "sections": sections,
         },
     }
