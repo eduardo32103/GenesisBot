@@ -777,7 +777,7 @@ def _enrich_alert_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         ticker = str(item.get("ticker") or "").strip().upper()
         market = radar_by_ticker.get(ticker, {}) if ticker else {}
-        price = _first_num(item.get("price"), market.get("current_price"), market.get("price"))
+        price = _price_num(item.get("price"), market.get("current_price"), market.get("price"), market.get("reference_price"))
         change = _first_num(item.get("change"), item.get("daily_change"), market.get("daily_change"), market.get("change"))
         change_pct = _first_num(item.get("change_pct"), item.get("daily_change_pct"), market.get("daily_change_pct"), market.get("changesPercentage"))
         volume = _first_num(item.get("volume"), market.get("volume"))
@@ -938,16 +938,11 @@ def _first_num(*values: object) -> float | None:
 
 
 def _price_num(*values: object) -> float | None:
-    fallback_zero: float | None = None
     for value in values:
         numeric = _num(value)
-        if numeric is None:
-            continue
-        if numeric > 0:
+        if numeric is not None and numeric > 0:
             return numeric
-        if fallback_zero is None:
-            fallback_zero = numeric
-    return fallback_zero
+    return None
 
 
 def _alert_reading(ticker: str, impact: str, title: object) -> str:

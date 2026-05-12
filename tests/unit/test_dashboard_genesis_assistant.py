@@ -160,7 +160,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
             _massage_proxy_payload(
                 "/api/genesis/ask",
                 json.dumps(stale_payload).encode("utf-8"),
-                body={"message": "que oportunidades hay para comprar con cautela", "context": "genesis"},
+                body={"message": "que hay para comprar con cautela?", "context": "genesis"},
             ).decode("utf-8")
         )
 

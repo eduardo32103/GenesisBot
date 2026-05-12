@@ -130,6 +130,37 @@ class DashboardAlertsEnrichedTests(unittest.TestCase):
         self.assertEqual(alert["title_es"], "Ruptura en vigilancia")
         self.assertIn("what_happened_es", alert)
 
+    @patch("services.dashboard.get_alerts_snapshot._radar_by_ticker")
+    def test_zero_price_alert_uses_live_market_price(self, mock_radar_by_ticker: Mock) -> None:
+        mock_radar_by_ticker.return_value = {
+            "BIP": {
+                "ticker": "BIP",
+                "name": "Brookfield Infrastructure Partners L.P.",
+                "current_price": 36.77,
+                "daily_change": -0.2,
+                "daily_change_pct": -0.54,
+                "volume": 765_653,
+                "avg_volume": 900_000,
+            }
+        }
+
+        rows = alerts_module._enrich_alert_items(
+            [
+                {
+                    "alert_id": "db-alert-bip",
+                    "ticker": "BIP",
+                    "price": 0,
+                    "title": "BIP en vigilancia",
+                    "summary": "Alerta persistida con precio viejo en cero.",
+                    "source": "database",
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["price"], 36.77)
+        self.assertEqual(rows[0]["change_pct"], -0.54)
+        self.assertGreater(rows[0]["dollar_volume"], 0)
+
     @patch("services.dashboard.get_alerts_snapshot._fetch_opportunity_quotes_bulk")
     @patch("services.dashboard.get_alerts_snapshot.load_settings")
     def test_external_market_opportunities_use_fmp_quotes_and_strategy(

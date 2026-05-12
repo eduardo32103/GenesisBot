@@ -44,6 +44,14 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertNotIn("[data-alert-open]", script)
         self.assertNotIn("[data-whale-open]", script)
 
+    def test_dashboard_script_has_clean_spanish_encoding(self) -> None:
+        script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("Hola. ¿Qué quieres revisar hoy?", script)
+        self.assertNotIn("Ã", script)
+        self.assertNotIn("Â", script)
+        self.assertNotIn("â", script)
+
     def test_news_feed_does_not_promote_internal_placeholders_as_real_news(self) -> None:
         script = Path("app/dashboard/app.js").read_text(encoding="utf-8")
 
@@ -72,6 +80,7 @@ class DashboardNewsUiContractTests(unittest.TestCase):
         self.assertIn("function localStrategyForOpportunity", script)
         self.assertIn("function flowVolumeVisualMarkup", script)
         self.assertIn("function strategyChecklistMarkup", script)
+        self.assertIn('.replace(/[^a-z0-9]+/g, " ")', script)
         self.assertIn("is_opportunity: true", script)
         self.assertIn("Oportunidad ·", script)
         self.assertNotIn("senal de actividad", script)
