@@ -15,6 +15,7 @@ from services.dashboard.get_macro_activity_snapshot import get_macro_activity_sn
 from services.dashboard.get_money_flow_jarvis_answer import get_money_flow_jarvis_answer
 from services.dashboard.get_operational_health import get_operational_health
 from services.dashboard.get_operational_reliability_snapshot import get_operational_reliability_snapshot
+from services.dashboard.get_opportunity_radar import get_opportunity_radar_snapshot
 from services.dashboard.get_radar_snapshot import get_radar_snapshot
 from services.dashboard.get_radar_ticker_drilldown import get_dashboard_radar_ticker_drilldown
 from services.genesis.ticker_parser import extract_tickers_from_prompt
@@ -173,6 +174,8 @@ def get_genesis_answer(
             answer, evidence, source_status = _answer_money_flow(clean_question, clean_ticker)
         elif intent == "alerts":
             answer, evidence, source_status = _answer_alerts()
+        elif intent == "opportunities":
+            answer, evidence, source_status = _answer_opportunities()
         elif intent == "macro":
             answer, evidence, source_status = _answer_macro()
         elif intent == "reliability":
@@ -378,6 +381,25 @@ def _resolve_intent(question: str, context: str = "general") -> str:
         return "alerts"
     if any(token in text for token in ("macro", "mundo", "noticia", "noticias", "geopolit", "geopolitica")):
         return "macro"
+    if any(
+        token in text
+        for token in (
+            "oportunidad",
+            "oportunidades",
+            "buen precio",
+            "buenos precios",
+            "acciones buenas",
+            "que compro",
+            "que comprar",
+            "comprar con cautela",
+            "cazar",
+            "caza",
+            "aguila",
+            "setup",
+            "setups",
+        )
+    ):
+        return "opportunities"
     if any(token in text for token in ("confiable", "confiabilidad", "confianza", "fiable")):
         return "reliability"
     if _is_comparison_question(question):
@@ -1017,6 +1039,42 @@ def _answer_alerts() -> tuple[str, list[str], dict[str, str]]:
         "alerts_origin": str(summary.get("data_origin") or "unknown"),
         "total_recent": str(summary.get("total_recent", 0)),
         "snapshots": _snapshot_status(alerts),
+    }
+
+
+def _answer_opportunities() -> tuple[str, list[str], dict[str, str]]:
+    payload = _safe_dashboard_snapshot(
+        lambda: get_opportunity_radar_snapshot(force_refresh=False),
+        lambda: {"ok": True, "items": [], "summary": {}, "source_status": {"status": "fallback"}},
+        "opportunities",
+    )
+    items = [item for item in payload.get("items") or [] if isinstance(item, dict)]
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    if not items:
+        answer = (
+            "Radar de oportunidades sin setup fuerte ahora. Genesis no inventa entradas: espera precio, "
+            "volumen, catalizador y nivel de invalidacion antes de decir comprar con cautela."
+        )
+        evidence = [str(summary.get("engine_summary") or "Sin oportunidades elevadas por FMP/memoria.")]
+    else:
+        first = items[0]
+        ticker = str(first.get("ticker") or "mercado")
+        action = str(first.get("decision_label_es") or "vigilar")
+        score = first.get("opportunity_score")
+        answer = (
+            f"Oportunidad principal: {ticker} queda en {action} con score {score}/100. "
+            "Es radar paper: no compra real, no broker. Sube conviccion solo si rompe nivel con volumen y noticia/catalizador no contradice."
+        )
+        evidence = [
+            str(first.get("genesis_reading_es") or ""),
+            str(first.get("what_to_watch_es") or ""),
+            *(str((item or {}).get("genesis_reading_es") or "") for item in items[1:3]),
+        ]
+    return answer, _compact_evidence(evidence), {
+        "reliability": "media" if items else "no concluyente",
+        "opportunities": str(len(items)),
+        "top_ticker": str(summary.get("top_ticker") or (items[0].get("ticker") if items else "")),
+        "snapshots": _snapshot_status(payload),
     }
 
 

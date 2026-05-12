@@ -1438,6 +1438,50 @@ async function loadOpportunityQuotes(options = {}) {
   appState.opportunityQuotesLoading = true;
   setLiveRefreshIndicator(true);
   try {
+    const query = options.force ? "?force=1" : "";
+    const radarPayload = await getJson(
+      `/api/dashboard/opportunities${query}`,
+      { timeoutMs: 8500, attempts: 1, localOnly: true }
+    ).catch(() => null);
+    const radarItems = Array.isArray(radarPayload?.items) ? radarPayload.items : [];
+    if (radarItems.length) {
+      const mapped = {};
+      radarItems.forEach((item) => {
+        const ticker = itemTicker(item);
+        if (!ticker) return;
+        const price = numberOrNull(item.price ?? item.current_price);
+        const change = numberOrNull(item.change ?? item.daily_change);
+        const changePct = numberOrNull(item.change_pct ?? item.daily_change_pct);
+        const support = numberOrNull(item.support ?? item.day_low ?? item.dayLow);
+        const resistance = numberOrNull(item.resistance ?? item.day_high ?? item.dayHigh);
+        mapped[ticker] = {
+          ...item,
+          ticker,
+          symbol: ticker,
+          name: item.asset_name || item.name || ticker,
+          current_price: price,
+          price,
+          daily_change: change,
+          change,
+          daily_change_pct: changePct,
+          change_pct: changePct,
+          volume: numberOrNull(item.volume),
+          avg_volume: numberOrNull(item.avg_volume),
+          relative_volume: numberOrNull(item.relative_volume),
+          dollar_volume: numberOrNull(item.dollar_volume),
+          day_low: support,
+          dayLow: support,
+          day_high: resistance,
+          dayHigh: resistance,
+          source: item.source || "fmp_opportunity_engine",
+        };
+      });
+      if (Object.keys(mapped).length) {
+        appState.opportunityQuotes = mapped;
+        appState.opportunityQuotesLoadedAt = Date.now();
+        return appState.opportunityQuotes;
+      }
+    }
     const results = await Promise.allSettled(OPPORTUNITY_TICKERS.map(async (ticker) => {
       const payload = await getJson(
         `/api/dashboard/market/search?q=${encodeURIComponent(ticker)}`,

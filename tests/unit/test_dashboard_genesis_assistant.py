@@ -9,6 +9,7 @@ from api.main import (
     _enrich_genesis_trade_decision,
     _is_asset_genesis_prompt,
     _is_comparison_genesis_prompt,
+    _is_opportunity_genesis_prompt,
     _is_weather_genesis_prompt,
     _massage_proxy_payload,
     _prompt_tickers,
@@ -122,6 +123,12 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertFalse(_is_asset_genesis_prompt("que esta pasando en noticias?"))
         self.assertFalse(_is_asset_genesis_prompt("que hicimos el viernes pasado?"))
         self.assertTrue(_is_comparison_genesis_prompt("compara nvda vs bno"))
+
+    def test_genesis_intent_router_keeps_opportunities_out_of_fake_tickers(self) -> None:
+        self.assertTrue(_is_opportunity_genesis_prompt("que oportunidades hay para comprar con cautela"))
+        self.assertTrue(_is_opportunity_genesis_prompt("Genesis, caza buenos precios"))
+        self.assertFalse(_is_asset_genesis_prompt("que compro hoy con buena validacion"))
+        self.assertEqual(_prompt_tickers("que compro hoy con buena validacion"), [])
 
     @patch("api.main.get_weather_answer")
     def test_local_proxy_routes_weather_before_market_or_asset(self, mock_weather) -> None:

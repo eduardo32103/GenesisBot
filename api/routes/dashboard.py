@@ -13,6 +13,7 @@ from services.dashboard.get_money_flow_jarvis_answer import get_money_flow_jarvi
 from services.dashboard.get_money_flow_signal_model import get_money_flow_signal_model
 from services.dashboard.get_news_snapshot import get_news_snapshot
 from services.dashboard.get_operational_reliability_snapshot import get_operational_reliability_snapshot
+from services.dashboard.get_opportunity_radar import get_opportunity_radar_snapshot
 from services.dashboard.get_radar_ticker_drilldown import get_dashboard_portfolio, get_dashboard_radar_ticker_drilldown
 from services.dashboard.get_source_health import get_source_health
 from services.dashboard.get_whales_snapshot import get_whales_snapshot
@@ -106,6 +107,10 @@ def get_dashboard_alerts() -> dict:
 
 def get_dashboard_alert_drilldown(alert_id: str) -> dict:
     return get_alert_drilldown(alert_id)
+
+
+def get_dashboard_opportunities(force_refresh: bool = False) -> dict:
+    return get_opportunity_radar_snapshot(force_refresh=force_refresh)
 
 
 def get_dashboard_fmp_dependencies() -> dict:

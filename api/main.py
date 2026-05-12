@@ -34,6 +34,7 @@ from api.routes.dashboard import (
     get_dashboard_money_flow_jarvis,
     get_dashboard_money_flow_model,
     get_dashboard_news,
+    get_dashboard_opportunities,
     get_dashboard_reliability,
     get_dashboard_radar_drilldown,
     get_dashboard_radar,
@@ -67,6 +68,7 @@ _PROXY_GET_PATHS = {
     "/api/dashboard/macro-activity",
     "/api/dashboard/market/search",
     "/api/dashboard/news",
+    "/api/dashboard/opportunities",
     "/api/dashboard/money-flow/causal",
     "/api/dashboard/money-flow/detection",
     "/api/dashboard/money-flow/jarvis",
@@ -179,6 +181,7 @@ def create_app() -> dict[str, str]:
         "alerts_endpoint": "/api/dashboard/alerts",
         "alerts_drilldown_endpoint": "/api/dashboard/alerts/drilldown?alert_id={id}",
         "news_endpoint": "/api/dashboard/news",
+        "opportunities_endpoint": "/api/dashboard/opportunities",
         "whales_endpoint": "/api/dashboard/whales",
         "fmp_endpoint": "/api/dashboard/fmp",
         "source_health_endpoint": "/api/dashboard/source-health",
@@ -609,6 +612,32 @@ def _is_comparison_genesis_prompt(message: str) -> bool:
     return any(token in text for token in (" compara ", " comparar ", " vs ", " versus ", " contra "))
 
 
+def _is_opportunity_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " oportunidad ",
+            " oportunidades ",
+            " buen precio ",
+            " buenos precios ",
+            " acciones buenas ",
+            " que compro ",
+            " que comprar ",
+            " que deberia comprar ",
+            " cazar ",
+            " caza ",
+            " aguila ",
+            " setups ",
+            " setup ",
+            " comprar con cautela ",
+            " compra con cautela ",
+            " lista de compra ",
+            " watchlist de compra ",
+        )
+    )
+
+
 def _is_whale_genesis_prompt(message: str) -> bool:
     text = f" {_fold_prompt(message)} "
     return any(
@@ -651,6 +680,8 @@ def _is_weather_genesis_prompt(message: str) -> bool:
 
 
 def _prompt_tickers(message: str, context: object | None = None) -> list[str]:
+    if _is_opportunity_genesis_prompt(message) and not _is_comparison_genesis_prompt(message):
+        return []
     try:
         from services.genesis.ticker_parser import extract_tickers_from_prompt, normalize_ticker
 
@@ -675,6 +706,7 @@ def _is_asset_genesis_prompt(message: str, context: object | None = None) -> boo
         or _is_weather_genesis_prompt(message)
         or _is_memory_genesis_prompt(message)
         or _is_comparison_genesis_prompt(message)
+        or _is_opportunity_genesis_prompt(message)
         or _is_market_genesis_prompt(message)
     ):
         return False
@@ -1451,6 +1483,79 @@ def _news_prompt_fallback_payload(message: str) -> dict:
     }
 
 
+def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
+    snapshot = _call_json_with_timeout(
+        lambda: get_dashboard_opportunities(force_refresh=False),
+        5,
+        {
+            "ok": True,
+            "items": [],
+            "summary": {"engine_summary": "Radar de oportunidades en timeout seguro."},
+            "source_status": {"status": "timeout", "provider_used": "local_safe_timeout"},
+        },
+    )
+    items = [item for item in snapshot.get("items") or [] if isinstance(item, dict)] if isinstance(snapshot, dict) else []
+    top_items = items[:5]
+    if top_items:
+        first = top_items[0]
+        first_ticker = str(first.get("ticker") or "mercado")
+        first_action = str(first.get("decision_label_es") or "vigilar")
+        first_score = first.get("opportunity_score")
+        answer = (
+            f"Radar de oportunidades: {first_ticker} queda primero en {first_action} "
+            f"con score {first_score}/100. No es orden real: Genesis exige precio, volumen, "
+            "nivel de entrada e invalidacion antes de elevar conviccion."
+        )
+    else:
+        answer = (
+            "No elevo oportunidades ahora porque no tengo precio/volumen/catalizador suficiente. "
+            "Genesis no inventa setups: mantiene el radar vivo hasta que FMP confirme evidencia."
+        )
+    sections = [
+        {
+            "title": "Top oportunidades",
+            "bullets": [
+                (
+                    f"{item.get('ticker')}: {item.get('decision_label_es') or 'vigilar'} "
+                    f"score {item.get('opportunity_score')}/100; "
+                    f"precio {_money_short(item.get('price')) if item.get('price') is not None else 'pendiente'}; "
+                    f"volumen {_money_short(item.get('dollar_volume')) if item.get('dollar_volume') is not None else 'pendiente'}"
+                )
+                for item in top_items[:4]
+            ]
+            or [answer],
+        },
+        {
+            "title": "Regla Genesis",
+            "bullets": [
+                "Comprar con cautela solo si rompe nivel con volumen relativo y riesgo definido.",
+                "Si falta fuente viva, queda en espera; no se convierte en recomendacion operativa.",
+                "Cada senal queda guardada para revisar resultado posterior y aprender.",
+            ],
+        },
+    ]
+    return {
+        "ok": True,
+        "status": "genesis_intelligence_ready",
+        "intent": "opportunities",
+        "response_type": "alerts_digest",
+        "kind": "opportunity_radar",
+        "answer": answer,
+        "items": top_items,
+        "opportunities": top_items,
+        "summary": snapshot.get("summary") if isinstance(snapshot, dict) else {},
+        "source_status": snapshot.get("source_status") if isinstance(snapshot, dict) else {},
+        "structured": {
+            "kind": "alerts_digest",
+            "title": "Radar de oportunidades",
+            "summary": answer,
+            "alerts": top_items,
+            "opportunities": top_items,
+            "sections": sections,
+        },
+    }
+
+
 def _general_assistant_payload(message: str) -> dict:
     personal = _is_personal_genesis_prompt(message)
     answer = (
@@ -2082,6 +2187,11 @@ def _correct_genesis_proxy_payload(payload: dict, body: dict) -> dict:
             return _comparison_prompt_payload(message, body)
         except Exception:
             logging.getLogger("genesis.dashboard").warning("Local comparison prompt correction failed", exc_info=True)
+    if _is_opportunity_genesis_prompt(message):
+        try:
+            return _opportunity_prompt_payload(message, body)
+        except Exception:
+            logging.getLogger("genesis.dashboard").warning("Local opportunity prompt correction failed", exc_info=True)
     if _is_market_genesis_prompt(message) and (
         payload.get("intent") == "market_overview"
         or payload.get("response_type") in {"market_summary", "market_briefing"}
@@ -3451,6 +3561,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
+            if _is_opportunity_genesis_prompt(message):
+                result = _opportunity_prompt_payload(message, body)
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
             if _is_news_genesis_prompt(message):
                 result = _news_prompt_fallback_payload(message)
                 _remember_genesis_turn(body, message, result)
@@ -3653,6 +3768,30 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 },
             )
             _massage_source_health_payload(payload_data)
+            self._write_json(payload_data, HTTPStatus.OK)
+            return
+
+        if parsed.path == "/api/dashboard/opportunities":
+            if _local_live_sources_missing() and self._try_proxy_to_production(parsed, method="GET"):
+                return
+            query = parse_qs(parsed.query)
+            refresh_keys = {"refresh", "force", "force_refresh", "no_cache", "_"}
+            force_refresh = any(key in query for key in refresh_keys) or any(
+                str(value).lower() in {"1", "true", "yes", "now"}
+                for key in refresh_keys
+                for value in query.get(key, [])
+            )
+            payload_data = _call_json_with_timeout(
+                lambda: get_dashboard_opportunities(force_refresh=force_refresh),
+                5.5,
+                {
+                    "ok": True,
+                    "kind": "opportunity_radar",
+                    "items": [],
+                    "summary": {"engine_summary": "Radar de oportunidades lento; Genesis no inventa setups."},
+                    "source_status": {"status": "timeout", "provider_used": "local_safe_timeout"},
+                },
+            )
             self._write_json(payload_data, HTTPStatus.OK)
             return
 

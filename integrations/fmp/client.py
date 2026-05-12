@@ -4,7 +4,7 @@ import logging
 import math
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -205,6 +205,186 @@ class FmpClient:
 
         self.last_error_by_ticker[tk] = "Activo no encontrado en FMP"
         return None
+
+    def get_batch_quotes(self, symbols: list[str], symbol_map: dict[str, str] | None = None) -> list[dict]:
+        clean_symbols: list[str] = []
+        seen: set[str] = set()
+        for raw in symbols or []:
+            tk = str(raw or "").strip().upper()
+            if not tk or tk in seen:
+                continue
+            seen.add(tk)
+            clean_symbols.append(tk)
+        if not self.api_key or not clean_symbols:
+            return []
+
+        resolved_symbols = [self.resolve_symbol(symbol, symbol_map) for symbol in clean_symbols]
+        csv = urllib.parse.quote(",".join(resolved_symbols), safe=",")
+        urls = [
+            f"https://financialmodelingprep.com/stable/batch-quote?symbols={csv}&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/stable/batch-quote-short?symbols={csv}&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/api/v3/quote/{csv}?apikey={self.api_key}",
+        ]
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=5)
+                if status in (401, 403):
+                    for symbol in clean_symbols:
+                        self.last_error_by_ticker[symbol] = f"{status} - Key rechazada o plan insuficiente"
+                    return []
+                if status != 200 or not isinstance(payload, list):
+                    continue
+                quotes = [row for row in payload if isinstance(row, dict)]
+                if quotes:
+                    return quotes
+            except Exception as exc:
+                self.logger.debug("FMP batch quote error: %s", exc)
+        return []
+
+    def get_market_movers(self, kind: str = "gainers", limit: int = 20) -> list[dict]:
+        if not self.api_key:
+            return []
+        normalized = str(kind or "gainers").strip().lower()
+        stable_map = {
+            "gainers": "biggest-gainers",
+            "losers": "biggest-losers",
+            "actives": "most-actives",
+            "active": "most-actives",
+        }
+        legacy_map = {
+            "gainers": "gainers",
+            "losers": "losers",
+            "actives": "actives",
+            "active": "actives",
+        }
+        safe_limit = max(1, min(int(limit or 20), 50))
+        stable_endpoint = stable_map.get(normalized, "biggest-gainers")
+        legacy_endpoint = legacy_map.get(normalized, "gainers")
+        urls = [
+            f"https://financialmodelingprep.com/stable/{stable_endpoint}?apikey={self.api_key}",
+            f"https://financialmodelingprep.com/api/v3/stock_market/{legacy_endpoint}?apikey={self.api_key}",
+        ]
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=5)
+                if status != 200 or not isinstance(payload, list):
+                    continue
+                rows = [row for row in payload if isinstance(row, dict)]
+                if rows:
+                    return rows[:safe_limit]
+            except Exception as exc:
+                self.logger.debug("FMP market movers %s error: %s", kind, exc)
+        return []
+
+    def get_company_screener(
+        self,
+        limit: int = 30,
+        min_market_cap: int = 1_000_000_000,
+        exchange: str = "NASDAQ,NYSE",
+    ) -> list[dict]:
+        if not self.api_key:
+            return []
+        safe_limit = max(1, min(int(limit or 30), 100))
+        safe_exchange = urllib.parse.quote(str(exchange or "NASDAQ,NYSE"), safe=",")
+        urls = [
+            (
+                "https://financialmodelingprep.com/stable/company-screener"
+                f"?marketCapMoreThan={int(min_market_cap)}&exchange={safe_exchange}&limit={safe_limit}&apikey={self.api_key}"
+            ),
+            (
+                "https://financialmodelingprep.com/api/v3/stock-screener"
+                f"?marketCapMoreThan={int(min_market_cap)}&exchange={safe_exchange}&limit={safe_limit}&apikey={self.api_key}"
+            ),
+        ]
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=6)
+                if status != 200 or not isinstance(payload, list):
+                    continue
+                rows = [row for row in payload if isinstance(row, dict)]
+                if rows:
+                    return rows[:safe_limit]
+            except Exception as exc:
+                self.logger.debug("FMP company screener error: %s", exc)
+        return []
+
+    def get_analyst_signal(self, ticker: str, symbol_map: dict[str, str] | None = None) -> dict:
+        tk = str(ticker or "").strip().upper()
+        if not self.api_key or not tk or self.is_profile_excluded(tk):
+            return {}
+        symbol = urllib.parse.quote(self.resolve_symbol(tk, symbol_map))
+        urls = [
+            f"https://financialmodelingprep.com/stable/price-target-summary?symbol={symbol}&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/api/v4/price-target-summary?symbol={symbol}&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/stable/analyst-estimates?symbol={symbol}&period=annual&limit=1&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/api/v3/analyst-estimates/{symbol}?period=annual&limit=1&apikey={self.api_key}",
+        ]
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=5)
+                if status != 200 or payload is None:
+                    continue
+                row = payload[0] if isinstance(payload, list) and payload else payload if isinstance(payload, dict) else None
+                if isinstance(row, dict) and row:
+                    return row
+            except Exception as exc:
+                self.logger.debug("FMP analyst signal error para %s: %s", tk, exc)
+        return {}
+
+    def get_earnings_calendar(self, from_date: str | None = None, to_date: str | None = None, limit: int = 100) -> list[dict]:
+        if not self.api_key:
+            return []
+        start = from_date or date.today().isoformat()
+        end = to_date or (date.today() + timedelta(days=14)).isoformat()
+        safe_limit = max(1, min(int(limit or 100), 500))
+        urls = [
+            f"https://financialmodelingprep.com/stable/earnings-calendar?from={start}&to={end}&apikey={self.api_key}",
+            f"https://financialmodelingprep.com/api/v3/earning_calendar?from={start}&to={end}&apikey={self.api_key}",
+        ]
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=6)
+                if status != 200 or not isinstance(payload, list):
+                    continue
+                rows = [row for row in payload if isinstance(row, dict)]
+                if rows:
+                    return rows[:safe_limit]
+            except Exception as exc:
+                self.logger.debug("FMP earnings calendar error: %s", exc)
+        return []
+
+    def get_technical_indicator(
+        self,
+        ticker: str,
+        indicator: str,
+        period: int = 14,
+        interval: str = "1day",
+        symbol_map: dict[str, str] | None = None,
+    ) -> list[dict]:
+        tk = str(ticker or "").strip().upper()
+        kind = str(indicator or "").strip().lower()
+        if not self.api_key or not tk or not kind:
+            return []
+        symbol = urllib.parse.quote(self.resolve_symbol(tk, symbol_map))
+        safe_interval = urllib.parse.quote(str(interval or "1day"))
+        safe_period = max(1, int(period or 14))
+        urls = [
+            (
+                f"https://financialmodelingprep.com/api/v3/technical_indicator/{safe_interval}/{symbol}"
+                f"?period={safe_period}&type={urllib.parse.quote(kind)}&apikey={self.api_key}"
+            ),
+        ]
+        for url in urls:
+            try:
+                status, payload = self._request_json(url, timeout=5)
+                if status != 200 or not isinstance(payload, list):
+                    continue
+                rows = [row for row in payload if isinstance(row, dict)]
+                if rows:
+                    return rows
+            except Exception as exc:
+                self.logger.debug("FMP technical indicator %s error para %s: %s", kind, tk, exc)
+        return []
 
     def search_symbols(self, query: str, limit: int = 6) -> list[dict]:
         text = str(query or "").strip()
