@@ -168,8 +168,40 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["response_type"], "opportunity_radar")
         self.assertEqual(fixed["tickers"], [])
         self.assertEqual(fixed["structured"]["kind"], "opportunity_radar")
+        self.assertEqual(fixed["structured"]["title"], "Compra con cautela")
+        self.assertEqual(fixed["structured"]["metrics"]["mode"], "cautious_buy")
         self.assertEqual(fixed["opportunities"][0]["ticker"], "NVDA")
         self.assertNotIn("CAUTELA", json.dumps(fixed))
+
+    @patch("api.main.get_dashboard_opportunities")
+    def test_local_proxy_differentiates_opportunity_modes(self, mock_opportunities) -> None:
+        mock_opportunities.return_value = {
+            "ok": True,
+            "items": [],
+            "summary": {},
+            "source_status": {"provider_used": "unit"},
+        }
+
+        hunter = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps({"intent": "ticker_analysis", "response_type": "asset_analysis"}).encode("utf-8"),
+                body={"message": "genesis, caza buenos precios", "context": "genesis"},
+            ).decode("utf-8")
+        )
+        validation = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps({"intent": "ticker_analysis", "response_type": "asset_analysis"}).encode("utf-8"),
+                body={"message": "que compro hoy con buena validacion", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(hunter["structured"]["title"], "Cazador de buenos precios")
+        self.assertEqual(hunter["structured"]["metrics"]["mode"], "hunter")
+        self.assertEqual(validation["structured"]["title"], "Validador de entradas")
+        self.assertEqual(validation["structured"]["metrics"]["mode"], "validation")
+        self.assertNotEqual(hunter["answer"], validation["answer"])
 
     @patch("services.dashboard.get_genesis_answer.get_opportunity_radar_snapshot")
     def test_service_routes_caza_buenos_precios_to_opportunities(self, mock_snapshot) -> None:

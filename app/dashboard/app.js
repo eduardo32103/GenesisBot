@@ -1,4 +1,4 @@
-const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
+﻿const PORTFOLIO_ENDPOINT = "/api/dashboard/portfolio";
 const RADAR_ENDPOINT = "/api/dashboard/radar";
 const API_FALLBACK_ORIGIN = "https://genesisbot-production.up.railway.app";
 const GENESIS_LOGO_SRC = "./assets/genesis-logo-white.png?v=genesis-g-white-ink";
@@ -7,7 +7,7 @@ function initialChatMessage() {
   return {
     id: `welcome-${Date.now()}`,
     role: "assistant",
-    text: "Hola. ¿Qué quieres revisar hoy?",
+    text: "Hola. Â¿QuÃ© quieres revisar hoy?",
   };
 }
 
@@ -348,27 +348,27 @@ function formatDate(value) {
 
 function cleanCopy(value) {
   return String(value ?? "")
-    .replace(/\bsenales\b/gi, "señales")
-    .replace(/\bsenal\b/gi, "señal")
-    .replace(/\bdireccion\b/gi, "dirección")
-    .replace(/\bdistribucion\b/gi, "distribución")
-    .replace(/\bacumulacion\b/gi, "acumulación")
-    .replace(/\bconfirmacion\b/gi, "confirmación")
-    .replace(/\bpresion\b/gi, "presión")
-    .replace(/\batencion\b/gi, "atención")
-    .replace(/\bsesion\b/gi, "sesión")
-    .replace(/\binstitucion\b/gi, "institución")
-    .replace(/\bperdida\b/gi, "pérdida")
-    .replace(/\bminimo\b/gi, "mínimo")
-    .replace(/\bintradia\b/gi, "intradía")
-    .replace(/\bcaida\b/gi, "caída")
-    .replace(/\brecuperacion\b/gi, "recuperación")
-    .replace(/\bautomatica\b/gi, "automática")
-    .replace(/\bautomatico\b/gi, "automático")
-    .replace(/\bcontinua\b/gi, "continúa")
-    .replace(/\btecnicas\b/gi, "técnicas")
-    .replace(/\bhistorico\b/gi, "histórico")
-    .replace(/\baun\b/gi, "aún")
+    .replace(/\bsenales\b/gi, "seÃ±ales")
+    .replace(/\bsenal\b/gi, "seÃ±al")
+    .replace(/\bdireccion\b/gi, "direcciÃ³n")
+    .replace(/\bdistribucion\b/gi, "distribuciÃ³n")
+    .replace(/\bacumulacion\b/gi, "acumulaciÃ³n")
+    .replace(/\bconfirmacion\b/gi, "confirmaciÃ³n")
+    .replace(/\bpresion\b/gi, "presiÃ³n")
+    .replace(/\batencion\b/gi, "atenciÃ³n")
+    .replace(/\bsesion\b/gi, "sesiÃ³n")
+    .replace(/\binstitucion\b/gi, "instituciÃ³n")
+    .replace(/\bperdida\b/gi, "pÃ©rdida")
+    .replace(/\bminimo\b/gi, "mÃ­nimo")
+    .replace(/\bintradia\b/gi, "intradÃ­a")
+    .replace(/\bcaida\b/gi, "caÃ­da")
+    .replace(/\brecuperacion\b/gi, "recuperaciÃ³n")
+    .replace(/\bautomatica\b/gi, "automÃ¡tica")
+    .replace(/\bautomatico\b/gi, "automÃ¡tico")
+    .replace(/\bcontinua\b/gi, "continÃºa")
+    .replace(/\btecnicas\b/gi, "tÃ©cnicas")
+    .replace(/\bhistorico\b/gi, "histÃ³rico")
+    .replace(/\baun\b/gi, "aÃºn")
     .replace(/\bFMP_API_KEY\b/gi, "fuente privada")
     .replace(/\bapikey\b/gi, "credencial")
     .replace(/\bendpoint\b/gi, "consulta")
@@ -851,6 +851,48 @@ function isOpportunityQuestion(text) {
     " setup ",
     " setups ",
   ].some((needle) => normalized.includes(needle));
+}
+
+function opportunityQuestionMode(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  if ([
+    " buena validacion ",
+    " con buena validacion ",
+    " entrada validada ",
+    " entradas validas ",
+    " validacion ",
+  ].some((needle) => normalized.includes(needle))) {
+    return {
+      mode: "validation",
+      title: "Validador de entradas",
+      empty: "No valido ninguna entrada limpia ahora. Genesis espera precio vivo, volumen, nivel e invalidacion antes de elevar conviccion.",
+      rule: "Solo pasa a accionable si tiene precio vivo, volumen sostenido, nivel claro y riesgo definido.",
+    };
+  }
+  if ([
+    " comprar con cautela ",
+    " compra con cautela ",
+    " que compro ",
+    " que comprar ",
+    " que deberia comprar ",
+    " comprar hoy ",
+    " compra hoy ",
+    " que acciones compro ",
+    " que activo compro ",
+  ].some((needle) => normalized.includes(needle))) {
+    return {
+      mode: "cautious_buy",
+      title: "Compra con cautela",
+      empty: "No hay compra cautelosa de calidad ahora. Genesis no fuerza entradas: espera confirmacion de precio, volumen y soporte de catalizador.",
+      rule: "Comprar con cautela requiere entrada, stop mental, volumen relativo y una razon que no sea perseguir precio.",
+    };
+  }
+  return {
+    mode: "hunter",
+    title: "Cazador de buenos precios",
+    empty: "No hay presa limpia ahora. Genesis mantiene el radar abierto buscando descuentos, rupturas con volumen y activos con asimetria real.",
+    rule: "Cazar precio no es comprar ya: primero detecto asimetria, luego confirmo volumen, nivel e invalidacion.",
+  };
 }
 
 function tickerFromText(text) {
@@ -1833,7 +1875,7 @@ function chatHistoryPanelMarkup() {
     : appState.chatMessages
       .filter((message) => {
         const text = cleanCopy(message.text);
-        return String(text || "").trim() && !["Hola. Que quieres revisar hoy?", "Hola. ¿Qué quieres revisar hoy?"].includes(text);
+        return String(text || "").trim() && !["Hola. Que quieres revisar hoy?", "Hola. Â¿QuÃ© quieres revisar hoy?"].includes(text);
       })
       .slice(-8)
       .reverse()
@@ -2043,15 +2085,24 @@ function forcedNewsPayloadFromState(question = "", sourcePayload = {}) {
 }
 
 function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
+  const mode = opportunityQuestionMode(question);
   const selected = marketOpportunityRowsForUi([]).slice(0, 5);
   const top = selected[0] || null;
   const topTicker = top ? itemTicker(top) : "";
   const watchedVolume = selected.reduce((sum, row) => sum + (numberOrNull(row?.dollar_volume ?? row?.dollarVolume) || 0), 0);
   const actionable = selected.filter((row) => ["buy_cautiously", "watch_confirmation"].includes(String(row?.decision || ""))).length;
   const defensive = selected.filter((row) => String(row?.decision || "") === "reduce_or_sell_risk").length;
-  const answer = top
-    ? `Radar de oportunidades: ${topTicker} lidera con ${top.decision_label_es || top.decision || "vigilar"} y score ${top.opportunity_score || top.score || "medio"}. No es orden real: Genesis exige precio, volumen, entrada e invalidacion antes de comprar con cautela.`
-    : "Radar de oportunidades sin setup fuerte ahora. Genesis no inventa compras: espera precio, volumen, catalizador y nivel de invalidacion antes de elevar una idea.";
+  const topScore = top?.opportunity_score || top?.score || "medio";
+  let answer = mode.empty;
+  if (top) {
+    if (mode.mode === "validation") {
+      answer = `Validacion de entrada: ${topTicker} lidera el filtro con score ${topScore}. Genesis revisa precio, volumen, nivel e invalidacion antes de elevarlo a compra paper.`;
+    } else if (mode.mode === "cautious_buy") {
+      answer = `Compra con cautela: ${topTicker} es la primera idea en radar con ${top.decision_label_es || top.decision || "vigilar"} y score ${topScore}. Solo sirve si confirma entrada, volumen relativo e invalidacion.`;
+    } else {
+      answer = `Cazador activo: ${topTicker} muestra la mejor asimetria del radar con ${top.decision_label_es || top.decision || "vigilar"} y score ${topScore}. Genesis caza precio; todavia valida volumen, nivel y catalizador.`;
+    }
+  }
   return {
     ...sourcePayload,
     ok: true,
@@ -2074,10 +2125,11 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
       defensive,
       top_ticker: topTicker,
       top_score: top?.opportunity_score || top?.score || null,
+      mode: mode.mode,
     },
     structured: {
       kind: "opportunity_radar",
-      title: "Cazador de buenos precios",
+      title: mode.title,
       summary: answer,
       alerts: selected,
       opportunities: selected,
@@ -2089,10 +2141,11 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
         watched_volume: watchedVolume || null,
         top_ticker: topTicker,
         top_score: top?.opportunity_score || top?.score || null,
+        mode: mode.mode,
       },
       sections: [
         { title: "Lectura rapida", bullets: [answer] },
-        { title: "Regla Genesis", bullets: ["No convierto palabras como cautela o validacion en ticker.", "Solo subo conviccion con fuente viva, precio, volumen y riesgo definido."] },
+        { title: "Regla Genesis", bullets: ["No convierto palabras como cautela o validacion en ticker.", mode.rule] },
       ],
     },
   };
@@ -2204,7 +2257,7 @@ function assetAnalysisVisual(payload, answer = "") {
   const hasConfirmedPrice = price !== null && price !== undefined;
   let thesis = structured.thesis || sections[0] || `${ticker || "El activo"} queda en vigilancia con datos confirmados por backend.`;
   if (hasConfirmedPrice && /no (tiene|tengo) precio confirmado/i.test(String(thesis))) {
-    thesis = `${ticker || "El activo"} tiene precio confirmado en ${money(price)}. Genesis evalúa volumen, niveles, noticias y riesgo antes de convertirlo en señal operativa.`;
+    thesis = `${ticker || "El activo"} tiene precio confirmado en ${money(price)}. Genesis evalÃºa volumen, niveles, noticias y riesgo antes de convertirlo en seÃ±al operativa.`;
   }
   const confidence = Math.max(numberOrNull(structured.confidence) ?? confidenceFromQuote(quote), hasConfirmedPrice ? 0.82 : 0);
   const volatility = firstKnownValue(technical.volatility?.annualized_pct, technical.volatility?.pct, technical.volatility);
@@ -2256,12 +2309,12 @@ function assetAnalysisVisual(payload, answer = "") {
     },
     decision: decisionSource && Object.keys(decisionSource).length ? {
       action: cleanCopy(decisionSource.action || "watch_confirmation"),
-      label: cleanCopy(decisionSource.label_es || decisionSource.label || "Vigilar confirmación"),
+      label: cleanCopy(decisionSource.label_es || decisionSource.label || "Vigilar confirmaciÃ³n"),
       tone: cleanCopy(decisionSource.tone || bias),
-      reason: cleanCopy(decisionSource.reason_es || decisionSource.reason || "Genesis espera confirmación de precio, volumen y niveles."),
+      reason: cleanCopy(decisionSource.reason_es || decisionSource.reason || "Genesis espera confirmaciÃ³n de precio, volumen y niveles."),
       entry: cleanCopy(decisionSource.entry_condition_es || decisionSource.entry_condition || "Paper solo si confirma ruptura/retest con volumen."),
       invalidation: cleanCopy(decisionSource.invalidation_es || decisionSource.invalidation || "Pierde soporte o falla volumen."),
-      risk: cleanCopy(decisionSource.risk_es || decisionSource.risk || "No perseguir precio sin confirmación."),
+      risk: cleanCopy(decisionSource.risk_es || decisionSource.risk || "No perseguir precio sin confirmaciÃ³n."),
       watch: decisionWatch.map(cleanCopy).filter(Boolean).slice(0, 4),
       confidence: numberOrNull(decisionSource.confidence),
       source: cleanCopy(decisionSource.source || quoteSourceLabel(quote)),
@@ -2349,7 +2402,7 @@ function weatherVisual(payload, answer = "") {
     kind: "weather",
     title: weather.city ? `Clima en ${weather.city}` : "Clima",
     thesis: stripMarkdownCopy(weather.answer || answer || "No pude confirmar clima con la fuente activa."),
-    icon: weather.icon || data.icon || "☁️",
+    icon: weather.icon || data.icon || "â˜ï¸",
     temperature: firstKnownValue(weather.temperature, weather.temp, data.temperature, data.temp),
     feelsLike: firstKnownValue(weather.feels_like, data.feels_like),
     minTemp: firstKnownValue(weather.min_temp, data.min_temp),
@@ -2485,12 +2538,14 @@ function opportunityRadarVisual(payload, answer = "") {
     ...(payload?.summary || {}),
     ...(structured.metrics || {}),
   };
+  const mode = metrics.mode || structured.mode || payload?.mode || "hunter";
   return {
     kind: "opportunity_radar",
     title: structured.title || "Cazador de buenos precios",
     thesis: cleanSentenceList(structured.summary || answer, 1)[0] || "Genesis busca setups con precio, volumen, nivel e invalidacion antes de elevar conviccion.",
     rows: Array.isArray(rows) ? rows.slice(0, 5) : [],
     metrics,
+    mode,
     sections: structured.sections || [],
   };
 }
@@ -2526,7 +2581,7 @@ function whaleFlowVisual(payload, answer = "") {
     title: structured.title || "Ballenas / Smart money",
     thesis: cleanSentenceList(structured.summary || whales.answer || answer, 1)[0]
       || (rows.length
-        ? "Genesis detecta flujo vigilado: muestra volumen y dirección, sin venderlo como compra confirmada."
+        ? "Genesis detecta flujo vigilado: muestra volumen y direcciÃ³n, sin venderlo como compra confirmada."
         : "No hay ballena confirmada con entidad y monto; Genesis vigila volumen y precio sin inventar comprador."),
     rows: Array.isArray(rows) ? rows.slice(0, 5) : [],
     metrics,
@@ -2592,7 +2647,7 @@ function assetAnalysisVisualMarkup(visual) {
           <small>score</small>
         </div>
         <div class="holo-metrics">
-          ${holoMeterMarkup("Dirección", directionLabel, Math.max(12, Math.min(100, Math.abs(numberOrNull(visual.price?.changePct) || 0) * 20 + 18)), changeTone)}
+          ${holoMeterMarkup("DirecciÃ³n", directionLabel, Math.max(12, Math.min(100, Math.abs(numberOrNull(visual.price?.changePct) || 0) * 20 + 18)), changeTone)}
           ${holoMeterMarkup("Volumen", visual.indicators?.volume ? compactNumber(visual.indicators.volume) : "Sin volumen", volumePressure, relVol !== null && relVol >= 1.2 ? "up" : "flat")}
           ${holoMeterMarkup("RSI", rsi === null ? "Sin dato" : compactNumber(rsi), rsiPct, rsiPct >= 70 ? "down" : rsiPct <= 35 ? "up" : "flat")}
           ${holoMeterMarkup("Momentum", cleanCopy(visual.indicators?.momentum || "Confirmacion pendiente"), momentumScore, changeTone)}
@@ -2649,24 +2704,24 @@ function assetDecisionCardMarkup(visual) {
     <div class="asset-decision-card ${tone}">
       <div class="asset-decision-head">
         <span>Veredicto Genesis</span>
-        <strong>${escapeHtml(decision.label || "Vigilar confirmación")}</strong>
+        <strong>${escapeHtml(decision.label || "Vigilar confirmaciÃ³n")}</strong>
         <em>${escapeHtml(`${confidence}% confianza`)}</em>
       </div>
-      <p>${escapeHtml(decision.reason || "Genesis espera confirmación antes de actuar.")}</p>
+      <p>${escapeHtml(decision.reason || "Genesis espera confirmaciÃ³n antes de actuar.")}</p>
       <div class="decision-checks">
         <span>
           <small>Entrada condicional</small>
           <b>${escapeHtml(decision.entry || "Paper solo si confirma con volumen.")}</b>
         </span>
         <span>
-          <small>Invalidación</small>
+          <small>InvalidaciÃ³n</small>
           <b>${escapeHtml(decision.invalidation || "Pierde soporte o falla volumen.")}</b>
         </span>
       </div>
       <div class="decision-watch">
         ${watch.map((item) => `<i>${escapeHtml(item)}</i>`).join("")}
       </div>
-      <small class="decision-risk">${escapeHtml(decision.risk || "No es orden real ni broker; es radar para validación.")}</small>
+      <small class="decision-risk">${escapeHtml(decision.risk || "No es orden real ni broker; es radar para validaciÃ³n.")}</small>
     </div>
   `;
 }
@@ -2811,7 +2866,7 @@ function weatherVisualMarkup(visual) {
       </div>
       <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
       <div class="weather-hero-metric">
-        <span class="weather-icon">${escapeHtml(visual.icon || "☁️")}</span>
+        <span class="weather-icon">${escapeHtml(visual.icon || "â˜ï¸")}</span>
         <div>
           <strong>${escapeHtml(visual.temperature === null || visual.temperature === undefined ? "Sin dato" : `${compactNumber(visual.temperature)} C`)}</strong>
           <small>${escapeHtml(visual.condition || "Condicion no confirmada")}</small>
@@ -2895,6 +2950,13 @@ function newsBriefVisualMarkup(visual) {
 function opportunityRadarVisualMarkup(visual) {
   const rows = Array.isArray(visual.rows) ? visual.rows.slice(0, 5) : [];
   const metrics = visual.metrics || {};
+  const mode = visual.mode || metrics.mode || "hunter";
+  const modeLabel = mode === "validation" ? "validando" : mode === "cautious_buy" ? "cautela" : "cazando";
+  const emptyText = mode === "validation"
+    ? "Sin entrada validada ahora; espero precio vivo, volumen y nivel claro."
+    : mode === "cautious_buy"
+      ? "Sin compra cautelosa limpia ahora; no fuerzo entradas sin confirmacion."
+      : "Sin presa limpia ahora; sigo buscando asimetria y ruptura con volumen.";
   const watchedVolume = numberOrNull(metrics.watched_volume || metrics.watchedVolume);
   return `
     <section class="visual-response feed-visual opportunity-radar-visual">
@@ -2903,7 +2965,7 @@ function opportunityRadarVisualMarkup(visual) {
           <span class="visual-kicker">Radar Genesis</span>
           <strong>${escapeHtml(visual.title || "Cazador de buenos precios")}</strong>
         </div>
-        <span class="conviction-pill bullish">${escapeHtml(cleanCopy(metrics.top_score ? `${metrics.top_score}/100` : "activo"))}</span>
+        <span class="conviction-pill bullish">${escapeHtml(cleanCopy(metrics.top_score ? `${metrics.top_score}/100` : modeLabel))}</span>
       </div>
       <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
       <div class="visual-grid briefing-grid">
@@ -2912,14 +2974,14 @@ function opportunityRadarVisualMarkup(visual) {
         ${visualTextMetricMarkup("Volumen", watchedVolume ? money(watchedVolume) : "Vigilando")}
       </div>
       <div class="visual-feed-cards opportunity-cards">
-        ${(rows.length ? rows : [{ ticker: "Mercado", decision_label_es: "Esperar", genesis_reading_es: "Sin setup fuerte ahora; Genesis espera fuente viva, precio, volumen y nivel claro." }]).map((row) => {
+        ${(rows.length ? rows : [{ ticker: "Mercado", decision_label_es: "Esperar", genesis_reading_es: emptyText }]).map((row) => {
           const price = numberOrNull(row.price);
           const score = numberOrNull(row.opportunity_score ?? row.score);
           const relVol = numberOrNull(row.relative_volume ?? row.relativeVolume);
           const tone = score !== null && score >= 76 ? "bullish" : score !== null && score >= 62 ? "neutral" : "flat";
           return `
             <article>
-              <strong>${escapeHtml(cleanCopy(row.ticker || "Mercado"))} · ${escapeHtml(cleanCopy(row.decision_label_es || row.decision || "Vigilar"))}</strong>
+              <strong>${escapeHtml(cleanCopy(row.ticker || "Mercado"))} - ${escapeHtml(cleanCopy(row.decision_label_es || row.decision || "Vigilar"))}</strong>
               <p>${escapeHtml(stripMarkdownCopy(cleanCopy(row.genesis_reading_es || row.genesis_reading || row.summary || "Setup en vigilancia; no es orden real.")))}</p>
               <div class="visual-market-strip compact">
                 <span><small>Precio</small><strong>${escapeHtml(price === null ? "Pendiente" : money(price))}</strong></span>
@@ -2927,7 +2989,7 @@ function opportunityRadarVisualMarkup(visual) {
                 <span><small>Vol. rel</small><strong>${escapeHtml(relVol === null ? "Pendiente" : `${compactNumber(relVol)}x`)}</strong></span>
               </div>
               <div class="mini-flow-bar"><i style="width:${Math.max(12, Math.min(100, score || 28))}%"></i></div>
-              <small>${escapeHtml(cleanCopy(row.entry_condition || "Entrada solo con confirmacion"))} · ${escapeHtml(cleanCopy(row.invalidation || "invalidacion pendiente"))}</small>
+              <small>${escapeHtml(cleanCopy(row.entry_condition || "Entrada solo con confirmacion"))} - ${escapeHtml(cleanCopy(row.invalidation || "invalidacion pendiente"))}</small>
             </article>
           `;
         }).join("")}
@@ -3923,7 +3985,7 @@ function newsItemsFromSnapshotSection(snapshot = {}, section = "important") {
 function newsSectionConfig(filter = "important", count = 0, newsSnapshot = {}) {
   const windows = newsSnapshot.recency_windows || newsSnapshot.recencyWindows || {};
   const latestLabel = windows["24h"] || windows["7d"] || windows["30d"]
-    ? `${Number(windows["24h"] || 0)} en 24h · ${Number(windows["7d"] || 0)} en 7d · ${Number(windows["30d"] || 0)} en 30d`
+    ? `${Number(windows["24h"] || 0)} en 24h - ${Number(windows["7d"] || 0)} en 7d - ${Number(windows["30d"] || 0)} en 30d`
     : "24h / 7d / 30d";
   const configs = {
     important: {
@@ -3993,9 +4055,9 @@ function newsTickerAliases(ticker) {
   const map = {
     "BTC": ["bitcoin", "btc", "crypto"],
     "BTC-USD": ["bitcoin", "btc", "crypto"],
-    "BZ=F": ["brent", "petroleo", "petróleo", "oil", "crude", "energia", "energy"],
-    BNO: ["brent", "petroleo", "petróleo", "oil", "crude", "energia", "energy"],
-    IXC: ["energia", "energy", "oil", "petroleo", "petróleo", "crude"],
+    "BZ=F": ["brent", "petroleo", "petrÃ³leo", "oil", "crude", "energia", "energy"],
+    BNO: ["brent", "petroleo", "petrÃ³leo", "oil", "crude", "energia", "energy"],
+    IXC: ["energia", "energy", "oil", "petroleo", "petrÃ³leo", "crude"],
     IAU: ["gold", "oro", "metales", "refugio"],
     NVDA: ["nvidia", "nvda", "ia", "ai", "chip", "semiconductor", "blackwell"],
     MSFT: ["microsoft", "msft", "nube", "cloud", "ai", "ia"],
@@ -4295,7 +4357,7 @@ function newsCardMarkup(item) {
           ${newsImageTag(item)}
         </span>
       <div class="news-card-copy">
-        <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))} · ${escapeHtml(cleanCopy(item.source || "Fuente"))}</span>
+        <span class="feed-kicker">${escapeHtml(cleanCopy(item.category || "Contexto"))} - ${escapeHtml(cleanCopy(item.source || "Fuente"))}</span>
         <strong>${escapeHtml(newsDisplayTitle(item))}</strong>
         <p>${escapeHtml(spanishUiCopy(item.genesisTakeaway || item.genesis_takeaway || item.summary || "Sin lectura adicional."))}</p>
         <div class="news-card-bottom">
@@ -4369,10 +4431,10 @@ function openNewsDetail(newsId) {
     <p class="detail-lead">${escapeHtml(spanishUiCopy(item.summary || "Sin resumen disponible."))}</p>
     <section class="genesis-mini investing-detail-block">
       <strong>Lectura Genesis</strong>
-      <p>${escapeHtml(spanishUiCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como señal aislada."))}</p>
+      <p>${escapeHtml(spanishUiCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como seÃ±al aislada."))}</p>
       <p>Por que importa: ${escapeHtml(spanishUiCopy(item.whyItMatters || item.why_it_matters || "Puede afectar apetito de riesgo, momentum o niveles de los activos relacionados."))}</p>
       <p>Riesgo: ${escapeHtml(spanishUiCopy(item.risk || "Impacto aun depende de confirmacion por precio y volumen."))}</p>
-      <p>Qué vigilar: ${escapeHtml(watchPoints.length ? watchPoints.map(spanishUiCopy).join(" | ") : "reacción de precio, volumen y confirmación en la siguiente vela relevante.")}</p>
+      <p>QuÃ© vigilar: ${escapeHtml(watchPoints.length ? watchPoints.map(spanishUiCopy).join(" | ") : "reacciÃ³n de precio, volumen y confirmaciÃ³n en la siguiente vela relevante.")}</p>
       ${item.watch ? `<p>${escapeHtml(spanishUiCopy(item.watch))}</p>` : ""}
     </section>
     ${assets.length ? `<div class="news-meta">${assets.map((asset) => `<span>${escapeHtml(displayAssetLabel(asset))}</span>`).join("")}</div>` : ""}
@@ -4412,7 +4474,7 @@ function marketPulseHeroMarkup(context = "tracking") {
     : null;
   const tone = positiveClass(avgMove);
   const confidence = priced.length >= 4 ? "alta" : priced.length >= 2 ? "media" : "pendiente";
-  const title = tone === "up" ? "Mercado con sesgo comprador" : tone === "down" ? "Mercado bajo presión" : "Mercado en vigilancia";
+  const title = tone === "up" ? "Mercado con sesgo comprador" : tone === "down" ? "Mercado bajo presiÃ³n" : "Mercado en vigilancia";
   const subtitle = context === "alerts"
     ? "Precio, volumen y riesgo conectados a tus activos."
     : "";
@@ -5043,7 +5105,7 @@ function normalizeWhaleEventForUi(item = {}) {
       : "Flujo estimado por volumen/precio; no confirma entidad ni compra directa."),
     missing: confirmed
       ? "Vigilar continuidad de precio, volumen y catalizador."
-      : "No confirma compra directa ni entidad; sirve como señal secundaria.",
+      : "No confirma compra directa ni entidad; sirve como seÃ±al secundaria.",
     eventType,
     confirmed,
     raw: item,
@@ -5400,7 +5462,7 @@ function marketOpportunityRowsForUi(existingRows = []) {
     confidence: strategy.score >= 65 ? "medium" : "low",
     impact: changePct > 0 ? "bullish" : changePct < 0 ? "bearish" : "neutral",
     direction: changePct > 0 ? "bullish" : changePct < 0 ? "bearish" : "neutral",
-    trend: changePct > 0 ? "alcista en validación" : changePct < 0 ? "bajista en vigilancia" : "rango en validación",
+    trend: changePct > 0 ? "alcista en validaciÃ³n" : changePct < 0 ? "bajista en vigilancia" : "rango en validaciÃ³n",
     momentum: strategy.label,
     risk: strategy.invalidation,
     strategy,
@@ -5426,7 +5488,7 @@ function localStrategyForOpportunity(ticker, fields = {}) {
     + (volume && volume > 10_000_000 ? 8 : 0)
   ));
   const grade = score >= 72 ? "A" : score >= 60 ? "B" : score >= 50 ? "C" : "D";
-  const label = grade === "A" ? "oportunidad fuerte en validación" : grade === "B" ? "oportunidad importante" : "radar activo";
+  const label = grade === "A" ? "oportunidad fuerte en validaciÃ³n" : grade === "B" ? "oportunidad importante" : "radar activo";
   const bias = changePct > 0 ? "bullish" : changePct < 0 ? "bearish" : "neutral";
   const decision = bias === "bearish" && score >= 56
     ? "reduce_or_sell_risk"
@@ -5442,18 +5504,18 @@ function localStrategyForOpportunity(ticker, fields = {}) {
     : decision === "reduce_or_sell_risk"
       ? "vender / reducir riesgo"
       : decision === "watch_confirmation"
-        ? "vigilar confirmación"
+        ? "vigilar confirmaciÃ³n"
         : decision === "wait_for_setup"
           ? "esperar ruptura"
           : "esperar";
   const validation = [
     fields.resistance ? `cierre arriba de ${money(fields.resistance)}` : "ruptura de rango con vela firme",
-    "volumen sosteniéndose",
+    "volumen sosteniÃ©ndose",
     "catalizador/noticia alineado",
   ];
-  const invalidation = fields.support ? `pierde ${money(fields.support)}` : "pierde estructura intradía";
+  const invalidation = fields.support ? `pierde ${money(fields.support)}` : "pierde estructura intradÃ­a";
   return {
-    name: "Genesis 10% mensual - validación por precio, volumen y catalizador",
+    name: "Genesis 10% mensual - validaciÃ³n por precio, volumen y catalizador",
     grade,
     score: Math.round(score),
     label,
@@ -5521,7 +5583,7 @@ function normalizeAlertRowForUi(item = {}) {
     item.dollar_volume ?? item.dollarVolume ?? item.quoteVolume ?? item.quote_volume
   ).value;
   const display = getAssetDisplayName(ticker).displayName;
-  const direction = changePct === null ? "vigilancia de precio" : changePct > 0.2 ? "presión compradora" : changePct < -0.2 ? "presión vendedora" : "rango lateral";
+  const direction = changePct === null ? "vigilancia de precio" : changePct > 0.2 ? "presiÃ³n compradora" : changePct < -0.2 ? "presiÃ³n vendedora" : "rango lateral";
   const generatedTitle = `${display}: ${direction}`;
   const generatedSummary = `${ticker}: ${price !== null ? money(price) : "precio pendiente"} ${changePct !== null ? formatPercent(changePct) : ""}. ${volume ? `Volumen ${compactNumber(volume)}` : "Volumen live pendiente"}.`;
   const title = cleanCopy(item.title_es || item.title || generatedTitle);
@@ -5547,9 +5609,9 @@ function normalizeAlertRowForUi(item = {}) {
     decision_label_es: item.decision_label_es || strategy.decision_label_es,
     decision_reason_es: item.decision_reason_es || strategy.decision_reason_es,
     action_verdict: item.action_verdict || strategy.decision_label_es,
-    what_it_means: item.what_it_means || `${display} queda en ${direction}; Genesis mira precio, volumen y soporte antes de subir convicción.`,
-    what_to_watch: item.what_to_watch || "Confirmar volumen relativo, ruptura de rango y reacción en soporte/resistencia.",
-    genesis_reading: item.genesis_reading || "Señal derivada de mercado live; no es orden, es radar operativo.",
+    what_it_means: item.what_it_means || `${display} queda en ${direction}; Genesis mira precio, volumen y soporte antes de subir convicciÃ³n.`,
+    what_to_watch: item.what_to_watch || "Confirmar volumen relativo, ruptura de rango y reacciÃ³n en soporte/resistencia.",
+    genesis_reading: item.genesis_reading || "SeÃ±al derivada de mercado live; no es orden, es radar operativo.",
   };
 }
 
@@ -5571,13 +5633,13 @@ function derivedAlertRows() {
       volume: null,
       relative_volume: null,
       dollar_volume: null,
-      trend: "sin dirección confirmada",
+      trend: "sin direcciÃ³n confirmada",
       momentum: "esperando fuente live",
-      risk: "riesgo de operar sin confirmación",
-      what_it_means: "No hay activo de seguimiento cargado; Genesis no inventa señales.",
+      risk: "riesgo de operar sin confirmaciÃ³n",
+      what_it_means: "No hay activo de seguimiento cargado; Genesis no inventa seÃ±ales.",
       what_to_watch: "Agregar activos a Seguimiento y confirmar FMP live.",
       mini_series: [1, 2, 1],
-      genesis_reading: "Alerta de sistema limpia: sin activos no hay señal operable.",
+      genesis_reading: "Alerta de sistema limpia: sin activos no hay seÃ±al operable.",
       created_at: appState.lastUpdated || new Date().toISOString(),
       context: "Mercado",
       status: "En vigilancia",
@@ -5651,13 +5713,13 @@ function alertsPanelMarkup(items) {
     const move = formatPercent(item.change_pct, "");
     const volume = item.volume || item.relative_volume || item.dollar_volume ? "con volumen" : "sin volumen live";
     return `${ticker}${move ? ` ${move}` : ""} ${volume}`;
-  }).join(" · ");
+  }).join(" - ");
   return `
     <section class="market-pulse-card alert-pulse alert-summary-card">
       <div>
         <span>Resumen de alertas</span>
-        <strong>${escapeHtml(`${rows.length} señales · ${high} alta prioridad`)}</strong>
-        <p>${escapeHtml(summary || `${withPrice} con precio directo, ${withVolume} con volumen/flujo. Genesis espera señal real antes de gritar alerta.`)}</p>
+        <strong>${escapeHtml(`${rows.length} seÃ±ales - ${high} alta prioridad`)}</strong>
+        <p>${escapeHtml(summary || `${withPrice} con precio directo, ${withVolume} con volumen/flujo. Genesis espera seÃ±al real antes de gritar alerta.`)}</p>
       </div>
     </section>
     <div class="asset-list investing-event-list">
@@ -5877,7 +5939,7 @@ function alertsPanelMarkupV2(items) {
     <section class="market-pulse-card alert-pulse alert-summary-card">
       <div>
         <span>Resumen de alertas</span>
-        <strong>${escapeHtml(`${rows.length} señales vivas / ${high} alta prioridad / ${opportunities} oportunidades`)}</strong>
+        <strong>${escapeHtml(`${rows.length} seÃ±ales vivas / ${high} alta prioridad / ${opportunities} oportunidades`)}</strong>
         <p>${escapeHtml(summary || "Genesis espera ruptura, volumen inusual o noticia confirmada para elevar urgencia.")}</p>
       </div>
       <div class="alert-summary-bars" aria-hidden="true">${miniSeriesBars(rows.map((item) => item.dollar_volume || item.volume || item.change_pct), 34)}</div>
@@ -5925,7 +5987,7 @@ function alertMarkupV2(item) {
         <div class="asset-meta investing-meta">
           <span>Veredicto: ${escapeHtml(decisionLabel)}</span>
           <span class="${tone}">Impacto: ${escapeHtml(cleanCopy(impact))}</span>
-          ${strategy.grade ? `<span>Estrategia: ${escapeHtml(cleanCopy(`${strategy.grade} · ${strategy.label || "Validación"}`))}</span>` : ""}
+          ${strategy.grade ? `<span>Estrategia: ${escapeHtml(cleanCopy(`${strategy.grade} - ${strategy.label || "ValidaciÃ³n"}`))}</span>` : ""}
           <span>Soporte: ${escapeHtml(money(item.support, "Pendiente"))}</span>
           <span>Resistencia: ${escapeHtml(money(item.resistance, "Pendiente"))}</span>
           <span>Tendencia: ${escapeHtml(cleanCopy(item.trend || "Vigilancia"))}</span>
@@ -5967,13 +6029,13 @@ function whaleRowMarkupV2(row) {
   const amountLabel = confirmed ? formatMoneyCompact(row.amount || row.amountUsd, "Monto pendiente") : formatMoneyCompact(monitored, "Esperando volumen FMP");
   const priceLabel = money(row.price || row.currentPrice, "Precio pendiente");
   const volumeLabel = row.volume ? compactNumber(row.volume) : "Volumen pendiente";
-  const directionLabel = directionTone === "down" ? "Salida / distribución" : directionTone === "up" ? "Entrada / acumulación" : "Flujo vigilado";
+  const directionLabel = directionTone === "down" ? "Salida / distribuciÃ³n" : directionTone === "up" ? "Entrada / acumulaciÃ³n" : "Flujo vigilado";
   const gaugeLabel = confirmed ? "monto reportado" : "volumen vigilado";
   const rowRead = confirmed
     ? cleanCopy(row.read || `${directionLabel}: ${amountLabel} reportados por ${row.entity || "fuente activa"}.`)
     : monitored !== null
-      ? `${directionLabel}: ${amountLabel} de volumen vigilado en ${display.displayName}. Es señal de actividad, no compra confirmada.`
-      : `${directionLabel}: FMP aún no entregó volumen suficiente para cuantificar. Genesis no inventa monto.`;
+      ? `${directionLabel}: ${amountLabel} de volumen vigilado en ${display.displayName}. Es seÃ±al de actividad, no compra confirmada.`
+      : `${directionLabel}: FMP aÃºn no entregÃ³ volumen suficiente para cuantificar. Genesis no inventa monto.`;
   const stripValue = confirmed ? amountLabel : (monitored !== null ? amountLabel : "Monto confirmado pendiente");
   return `
     <article class="whale-row feed-row investing-event-card flow-${directionTone}" data-whale-id="${escapeHtml(whaleId)}">
@@ -6064,14 +6126,14 @@ function strategyChecklistMarkup(strategy = {}) {
     <section class="strategy-card">
       <div>
         <span>Estrategia Genesis</span>
-        <strong>${escapeHtml(cleanCopy(strategy.decision_label_es || strategy.label || strategy.name || "Validación activa"))}</strong>
-        <em>${escapeHtml(`Score ${strategy.score ?? "pendiente"} · ${strategy.grade || "radar"}`)}</em>
+        <strong>${escapeHtml(cleanCopy(strategy.decision_label_es || strategy.label || strategy.name || "ValidaciÃ³n activa"))}</strong>
+        <em>${escapeHtml(`Score ${strategy.score ?? "pendiente"} - ${strategy.grade || "radar"}`)}</em>
       </div>
       <ul>
         ${validation.slice(0, 3).map((item) => `<li>${escapeHtml(cleanCopy(item))}</li>`).join("")}
       </ul>
-      <p>Entrada paper: ${escapeHtml(cleanCopy(strategy.entry_condition || "esperar confirmación de precio y volumen."))}</p>
-      <p>Invalidación: ${escapeHtml(cleanCopy(strategy.invalidation || "si pierde estructura o falla el volumen."))}</p>
+      <p>Entrada paper: ${escapeHtml(cleanCopy(strategy.entry_condition || "esperar confirmaciÃ³n de precio y volumen."))}</p>
+      <p>InvalidaciÃ³n: ${escapeHtml(cleanCopy(strategy.invalidation || "si pierde estructura o falla el volumen."))}</p>
       ${strategy.decision_reason_es ? `<p>Motivo: ${escapeHtml(cleanCopy(strategy.decision_reason_es))}</p>` : ""}
     </section>
   `;
@@ -6125,9 +6187,9 @@ function openAlertDetail(alertId) {
     ${flowVolumeVisualMarkup(item, false)}
     <section class="genesis-mini">
       <strong>Lectura Genesis</strong>
-      <p>${escapeHtml(cleanCopy(item.genesis_reading_es || item.genesis_reading || "No es orden; sirve para decidir si esperar confirmación o reducir riesgo."))}</p>
-      <p>Qué significa: ${escapeHtml(cleanCopy(item.why_it_matters_es || item.what_it_means || alertVisualDigest(item)))}</p>
-      <p>Qué vigilar: ${escapeHtml(cleanCopy(item.what_to_watch_es || item.what_to_watch || "Confirmación en volumen, soporte/resistencia y noticias relacionadas."))}</p>
+      <p>${escapeHtml(cleanCopy(item.genesis_reading_es || item.genesis_reading || "No es orden; sirve para decidir si esperar confirmaciÃ³n o reducir riesgo."))}</p>
+      <p>QuÃ© significa: ${escapeHtml(cleanCopy(item.why_it_matters_es || item.what_it_means || alertVisualDigest(item)))}</p>
+      <p>QuÃ© vigilar: ${escapeHtml(cleanCopy(item.what_to_watch_es || item.what_to_watch || "ConfirmaciÃ³n en volumen, soporte/resistencia y noticias relacionadas."))}</p>
       ${(item.affected_portfolio_assets || []).length ? `<p>Afecta vigilancia/cartera: ${escapeHtml((item.affected_portfolio_assets || []).join(", "))}</p>` : ""}
     </section>
     ${strategyChecklistMarkup(item.strategy)}
@@ -6155,15 +6217,15 @@ function openWhaleDetail(whaleId) {
   const watchedValue = numberOrNull(row.monitoredDollarVolume ?? row.dollarVolume);
   const watchedVolume = formatMoneyCompact(watchedValue, "No confirmado");
   const flowAmount = confirmed ? confirmedAmount : watchedVolume;
-  const directionText = row.direction === "outflow" ? "salida / distribución" : row.direction === "inflow" ? "entrada / acumulación" : "flujo bajo vigilancia";
+  const directionText = row.direction === "outflow" ? "salida / distribuciÃ³n" : row.direction === "inflow" ? "entrada / acumulaciÃ³n" : "flujo bajo vigilancia";
   const meaningText = confirmed
-    ? `${flowAmount} reportados por fuente activa. Genesis lo trata como evidencia de flujo, no como orden automática.`
-    : `${flowAmount} de volumen vigilado a ${money(row.price || row.currentPrice, "precio pendiente")}. No confirma comprador, wallet ni institución; sirve para medir atención y presión del mercado.`;
+    ? `${flowAmount} reportados por fuente activa. Genesis lo trata como evidencia de flujo, no como orden automÃ¡tica.`
+    : `${flowAmount} de volumen vigilado a ${money(row.price || row.currentPrice, "precio pendiente")}. No confirma comprador, wallet ni instituciÃ³n; sirve para medir atenciÃ³n y presiÃ³n del mercado.`;
   const impactText = row.direction === "outflow"
-    ? "Si el precio no recupera nivel, puede actuar como presión de distribución."
+    ? "Si el precio no recupera nivel, puede actuar como presiÃ³n de distribuciÃ³n."
     : row.direction === "inflow"
-      ? "Si el precio sostiene soporte y el volumen continúa, puede apoyar acumulación."
-      : "Sin dirección clara: solo sube a prioridad si rompe rango con volumen relativo.";
+      ? "Si el precio sostiene soporte y el volumen continÃºa, puede apoyar acumulaciÃ³n."
+      : "Sin direcciÃ³n clara: solo sube a prioridad si rompe rango con volumen relativo.";
   body.innerHTML = `
     <span class="app-kicker">Ballenas / smart money</span>
     <h2>${escapeHtml(row.assetName || getAssetDisplayName(row.ticker).displayName)}</h2>
@@ -6171,7 +6233,7 @@ function openWhaleDetail(whaleId) {
     ${eventMetricGridMarkup([
       ["Tipo", movementLabel],
       ["Movimiento", cleanCopy(row.event || "Flujo")],
-      ["Dirección", cleanCopy(row.direction || "neutral")],
+      ["DirecciÃ³n", cleanCopy(row.direction || "neutral")],
       ["Entidad", cleanCopy(row.entity || "Sin entidad confirmada")],
       ["Cantidad", row.units ? compactNumber(row.units) : "No confirmada"],
       ["Monto confirmado", row.amountSuspicious ? "No confirmado" : confirmedAmount],
@@ -6187,10 +6249,10 @@ function openWhaleDetail(whaleId) {
     <section class="genesis-mini">
       <strong>Lectura Genesis</strong>
       <p>Movimiento: ${escapeHtml(cleanCopy(directionText))}.</p>
-      <p>Qué significa: ${escapeHtml(cleanCopy(meaningText))}</p>
-      <p>Qué NO significa: ${escapeHtml(confirmed ? "no garantiza continuidad ni entrada inmediata." : "no es compra confirmada ni monto institucional confirmado.")}</p>
+      <p>QuÃ© significa: ${escapeHtml(cleanCopy(meaningText))}</p>
+      <p>QuÃ© NO significa: ${escapeHtml(confirmed ? "no garantiza continuidad ni entrada inmediata." : "no es compra confirmada ni monto institucional confirmado.")}</p>
       <p>Impacto probable: ${escapeHtml(cleanCopy(impactText))}</p>
-      <p>Qué vigilar: volumen relativo, ruptura de rango, reacción de precio y exposición de tu cartera/watchlist a ${escapeHtml(row.ticker || "este activo")}.</p>
+      <p>QuÃ© vigilar: volumen relativo, ruptura de rango, reacciÃ³n de precio y exposiciÃ³n de tu cartera/watchlist a ${escapeHtml(row.ticker || "este activo")}.</p>
     </section>
     ${strategyChecklistMarkup(row.strategy)}
     ${row.ticker && row.ticker !== "MERCADO" ? `<button class="secondary-button full" type="button" data-open-asset="${escapeHtml(row.ticker)}">Ver activo</button>` : ""}
@@ -6290,7 +6352,7 @@ function renderAssetDetailScreen() {
       <section class="detail-hero">
         <div>
           <strong>${escapeHtml(display.displayName)}</strong>
-          <p>${escapeHtml(display.subtitle ? `${display.subtitle} · ${normalized}` : normalized)}</p>
+          <p>${escapeHtml(display.subtitle ? `${display.subtitle} - ${normalized}` : normalized)}</p>
         </div>
         <div class="detail-price">
           <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
@@ -6430,7 +6492,7 @@ function openAssetSheet(ticker) {
   body.innerHTML = `
     <span class="app-kicker">${isPaper ? "Paper" : isTracked ? "Seguimiento" : "No agregado"}</span>
     <h2>${escapeHtml(display.displayName)}</h2>
-    <p class="asset-name">${escapeHtml(display.subtitle ? `${display.subtitle} · ${normalized}` : normalized)}</p>
+    <p class="asset-name">${escapeHtml(display.subtitle ? `${display.subtitle} - ${normalized}` : normalized)}</p>
     <div class="sheet-price ${movementTone(item)}">
       <strong class="${marketToneClass(item)}">${escapeHtml(priceLabel(item))}</strong>
       <span>${escapeHtml(dailyMoveLabel(item))}</span>

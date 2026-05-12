@@ -653,6 +653,30 @@ def _is_opportunity_genesis_prompt(message: str) -> bool:
     )
 
 
+def _opportunity_prompt_mode(message: str) -> dict[str, str]:
+    text = f" {_fold_prompt(message)} "
+    if any(token in text for token in (" buena validacion ", " con buena validacion ", " entrada validada ", " entradas validas ", " validacion ")):
+        return {
+            "mode": "validation",
+            "title": "Validador de entradas",
+            "empty": "No valido ninguna entrada limpia ahora. Genesis espera precio vivo, volumen, nivel de entrada e invalidacion antes de elevar conviccion.",
+            "rule": "Solo pasa a accionable si tiene precio vivo, volumen sostenido, nivel claro y riesgo definido.",
+        }
+    if any(token in text for token in (" comprar con cautela ", " compra con cautela ", " que compro ", " que comprar ", " comprar hoy ", " compra hoy ", " que acciones compro ", " que activo compro ")):
+        return {
+            "mode": "cautious_buy",
+            "title": "Compra con cautela",
+            "empty": "No hay compra cautelosa de calidad ahora. Genesis no fuerza entradas: espera confirmacion de precio, volumen y soporte de catalizador.",
+            "rule": "Comprar con cautela requiere entrada, stop mental, volumen relativo y una razon que no sea perseguir precio.",
+        }
+    return {
+        "mode": "hunter",
+        "title": "Cazador de buenos precios",
+        "empty": "No hay presa limpia ahora. Genesis mantiene el radar abierto buscando descuentos, rupturas con volumen y activos con asimetria real.",
+        "rule": "Cazar precio no es comprar ya: primero detecto asimetria, luego confirmo volumen, nivel e invalidacion.",
+    }
+
+
 def _is_whale_genesis_prompt(message: str) -> bool:
     text = f" {_fold_prompt(message)} "
     return any(
@@ -1499,6 +1523,7 @@ def _news_prompt_fallback_payload(message: str) -> dict:
 
 
 def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
+    mode = _opportunity_prompt_mode(message)
     snapshot = _call_json_with_timeout(
         lambda: get_dashboard_opportunities(force_refresh=False),
         5,
@@ -1516,16 +1541,24 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         first_ticker = str(first.get("ticker") or "mercado")
         first_action = str(first.get("decision_label_es") or "vigilar")
         first_score = first.get("opportunity_score")
-        answer = (
-            f"Radar de oportunidades: {first_ticker} queda primero en {first_action} "
-            f"con score {first_score}/100. No es orden real: Genesis exige precio, volumen, "
-            "nivel de entrada e invalidacion antes de elevar conviccion."
-        )
+        if mode["mode"] == "validation":
+            answer = (
+                f"Validacion de entrada: {first_ticker} lidera el filtro con {first_score}/100. "
+                f"Lectura: {first_action}. No es orden real; falta confirmar que el precio respete nivel, "
+                "volumen y riesgo antes de elevarlo a compra paper."
+            )
+        elif mode["mode"] == "cautious_buy":
+            answer = (
+                f"Compra con cautela: {first_ticker} es la primera idea en radar con {first_action} "
+                f"y score {first_score}/100. Solo sirve si confirma entrada, volumen relativo e invalidacion."
+            )
+        else:
+            answer = (
+                f"Cazador activo: {first_ticker} muestra la mejor asimetria del radar con {first_action} "
+                f"y score {first_score}/100. Genesis caza precio; todavia valida volumen, nivel y catalizador."
+            )
     else:
-        answer = (
-            "No elevo oportunidades ahora porque no tengo precio/volumen/catalizador suficiente. "
-            "Genesis no inventa setups: mantiene el radar vivo hasta que FMP confirme evidencia."
-        )
+        answer = mode["empty"]
     summary = snapshot.get("summary") if isinstance(snapshot, dict) and isinstance(snapshot.get("summary"), dict) else {}
     actionable = sum(1 for item in top_items if str(item.get("decision") or "") in {"buy_cautiously", "watch_confirmation"})
     defensive = sum(1 for item in top_items if str(item.get("decision") or "") == "reduce_or_sell_risk")
@@ -1556,7 +1589,7 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         {
             "title": "Regla Genesis",
             "bullets": [
-                "Comprar con cautela solo si rompe nivel con volumen relativo y riesgo definido.",
+                mode["rule"],
                 "Si falta fuente viva, queda en espera; no se convierte en recomendacion operativa.",
                 "Cada senal queda guardada para revisar resultado posterior y aprender.",
             ],
@@ -1580,11 +1613,11 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         "source_status": snapshot.get("source_status") if isinstance(snapshot, dict) else {},
         "structured": {
             "kind": "opportunity_radar",
-            "title": "Cazador de buenos precios",
+            "title": mode["title"],
             "summary": answer,
             "alerts": top_items,
             "opportunities": top_items,
-            "metrics": metrics,
+            "metrics": {**metrics, "mode": mode["mode"]},
             "sections": sections,
         },
     }
