@@ -10,6 +10,25 @@ from services.genesis.ticker_parser import normalize_ticker
 
 QuoteLoader = Callable[[str], dict[str, Any]]
 
+_NON_ASSET_TICKERS = {
+    "CAUTELA",
+    "VALIDACION",
+    "VALIDADO",
+    "VALIDADA",
+    "VALIDADOS",
+    "VALIDADAS",
+    "OPORTUNIDAD",
+    "OPORTUNIDADES",
+    "PRECIOS",
+    "CREE",
+    "CREES",
+    "DIME",
+    "ESTA",
+    "ESTAS",
+    "HOLA",
+    "GENESIS",
+}
+
 
 def build_genesis_performance_report(
     message: str = "",
@@ -36,13 +55,15 @@ def build_genesis_performance_report(
     quote_cache: dict[str, dict[str, Any]] = {}
     evaluated: list[dict[str, Any]] = []
     missing_price = 0
+    ignored_rows = 0
 
     for row in decisions[:40]:
         payload = _payload(row)
         ticker = normalize_ticker(row.get("ticker") or payload.get("ticker"))
-        if not ticker:
+        if not ticker or _is_non_asset_ticker(ticker):
+            ignored_rows += 1
             continue
-        entry_price = _number(payload.get("price_at_decision") or payload.get("price") or payload.get("current_price"))
+        entry_price = _entry_price(payload)
         if entry_price is None or entry_price <= 0:
             missing_price += 1
             continue
@@ -57,6 +78,7 @@ def build_genesis_performance_report(
         status = "resolved" if outcome in {"hit", "miss"} else "watching"
         created_at = _parse_dt(payload.get("created_at") or row.get("created_at")) or clock
         evaluated_item = {
+            "id": f"outcome:{row.get('event_id') or payload.get('event_id') or _semantic_decision_key(row)}",
             "event_type": "decision_outcome",
             "decision_event_id": row.get("event_id") or payload.get("event_id"),
             "ticker": ticker,
@@ -93,7 +115,7 @@ def build_genesis_performance_report(
     best = max(evaluated, key=lambda item: item["return_pct"], default=None)
     worst = min(evaluated, key=lambda item: item["return_pct"], default=None)
     learning = _learning_lines(len(hits), len(misses), len(watching), missing_price, accuracy)
-    answer = _answer(today_hits, today_misses, today_watching, len(hits), len(misses), len(watching), accuracy, missing_price)
+    answer = _answer(today_hits, today_misses, today_watching, len(hits), len(misses), len(watching), accuracy, missing_price, ignored_rows)
     report = {
         "answer": answer,
         "ticker": ticker_filter,
@@ -104,6 +126,7 @@ def build_genesis_performance_report(
             "misses": len(misses),
             "watching": len(watching),
             "missing_price": missing_price,
+            "ignored_rows": ignored_rows,
             "accuracy": accuracy,
         },
         "today": {
@@ -153,23 +176,68 @@ def _dedupe_decisions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for row in rows:
-        payload = _payload(row)
-        key = str(row.get("event_id") or payload.get("event_id") or "")
-        if not key:
-            key = "|".join(
-                str(part or "")
-                for part in (
-                    normalize_ticker(row.get("ticker") or payload.get("ticker")),
-                    payload.get("verdict") or payload.get("decision"),
-                    payload.get("price_at_decision"),
-                    payload.get("created_at") or row.get("created_at"),
-                )
-            )
+        key = _semantic_decision_key(row)
         if key in seen:
             continue
         seen.add(key)
         unique.append(row)
     return unique
+
+
+def _semantic_decision_key(row: dict[str, Any]) -> str:
+    payload = _payload(row)
+    ticker = normalize_ticker(row.get("ticker") or payload.get("ticker"))
+    entry_price = _entry_price(payload)
+    if entry_price is not None and entry_price > 0:
+        price_bucket = f"{entry_price:.2f}"
+    else:
+        price_bucket = "no-price"
+    return "|".join(
+        str(part or "").strip().casefold()
+        for part in (
+            ticker,
+            payload.get("verdict") or payload.get("decision") or payload.get("action"),
+            _expected_direction(payload),
+            payload.get("support"),
+            payload.get("resistance"),
+            price_bucket,
+        )
+    )
+
+
+def _entry_price(payload: dict[str, Any]) -> float | None:
+    direct_candidates = (
+        payload.get("price_at_decision"),
+        payload.get("decision_price"),
+        payload.get("entry_price"),
+        payload.get("price"),
+        payload.get("current_price"),
+        payload.get("confirmed_price"),
+    )
+    for candidate in direct_candidates:
+        parsed = _number(candidate)
+        if parsed is not None and parsed > 0:
+            return parsed
+    for key in ("quote", "snapshot", "metrics", "market"):
+        nested = payload.get(key)
+        if not isinstance(nested, dict):
+            continue
+        for nested_key in ("price_at_decision", "current_price", "price", "close", "last_price"):
+            parsed = _number(nested.get(nested_key))
+            if parsed is not None and parsed > 0:
+                return parsed
+    return None
+
+
+def _is_non_asset_ticker(ticker: str) -> bool:
+    normalized = normalize_ticker(ticker)
+    if not normalized:
+        return True
+    if normalized in _NON_ASSET_TICKERS:
+        return True
+    if len(normalized) > 10 and "-" not in normalized and "=" not in normalized and "." not in normalized:
+        return True
+    return False
 
 
 def _quote_for(ticker: str, loader: QuoteLoader, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -255,7 +323,7 @@ def _learning_lines(hits: int, misses: int, watching: int, missing_price: int, a
     if watching:
         lines.append(f"{watching} tesis siguen abiertas; no se cuentan como ganadas ni perdidas todavia.")
     if missing_price:
-        lines.append(f"{missing_price} decisiones no se evaluaron por falta de precio base o precio actual.")
+        lines.append(f"{missing_price} tesis validas quedaron sin score porque no guardaban precio base o precio actual.")
     return lines or ["Aun falta historial suficiente; Genesis seguira guardando decisiones y resultados."]
 
 
@@ -268,12 +336,14 @@ def _answer(
     watching: int,
     accuracy: float | None,
     missing_price: int,
+    ignored_rows: int,
 ) -> str:
     accuracy_text = f"{accuracy:.1f}%" if accuracy is not None else "pendiente"
+    ignored_text = f" Ignoro {ignored_rows} registros que no eran activos reales." if ignored_rows else ""
     return (
         f"Genesis ya mide su precision. Hoy: {today_hits} aciertos, {today_misses} fallos y {today_watching} en vigilancia. "
         f"Historial evaluado: {hits} aciertos, {misses} fallos, {watching} abiertas; precision {accuracy_text}. "
-        f"{missing_price} lecturas quedaron fuera por falta de precio confirmado. Lo guardo en memoria para ajustar los filtros diarios."
+        f"{missing_price} lecturas quedaron fuera por falta de precio confirmado.{ignored_text} Lo guardo en memoria para ajustar los filtros diarios."
     )
 
 

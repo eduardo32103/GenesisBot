@@ -41,6 +41,55 @@ class GenesisPerformanceTrackerTests(unittest.TestCase):
             self.assertEqual(store.get_outcome_tracking("NVDA", limit=5)[0]["payload"]["outcome_label"], "hit")
             self.assertTrue(store.get_learned_context(5))
 
+    def test_collapses_repeated_same_setup_and_ignores_non_asset_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            for index in range(3):
+                store.save_decision_note(
+                    "NVDA",
+                    "vigilar confirmacion",
+                    {
+                        "event_id": f"decision-nvda-repeat-{index}",
+                        "ticker": "NVDA",
+                        "asset_name": "NVIDIA Corporation",
+                        "price_at_decision": 215.217,
+                        "current_price": 215.217,
+                        "expected_direction": "watch",
+                        "verdict": "vigilar confirmacion",
+                        "created_at": f"2026-05-12T12:0{index}:00+00:00",
+                    },
+                    "test",
+                    "media",
+                )
+            store.save_decision_note(
+                "CAUTELA",
+                "esperar fuente",
+                {
+                    "event_id": "decision-not-asset",
+                    "ticker": "CAUTELA",
+                    "price_at_decision": None,
+                    "expected_direction": "watch",
+                    "verdict": "esperar fuente",
+                    "created_at": "2026-05-12T12:05:00+00:00",
+                },
+                "test",
+                "baja",
+            )
+
+            report = build_genesis_performance_report(
+                "que tanto esta acertando genesis",
+                memory=store,
+                quote_loader=lambda ticker: {"ticker": ticker, "current_price": 215.217, "name": "NVIDIA Corporation"},
+                now=datetime(2026, 5, 12, 15, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(report["metrics"]["priced_decisions"], 1)
+            self.assertEqual(report["metrics"]["watching"], 1)
+            self.assertEqual(report["metrics"]["missing_price"], 0)
+            self.assertEqual(report["metrics"]["ignored_rows"], 1)
+            self.assertEqual(len(report["recent"]), 1)
+            self.assertEqual(report["recent"][0]["ticker"], "NVDA")
+
     def test_router_exposes_performance_review_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
