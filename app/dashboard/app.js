@@ -92,7 +92,7 @@ const MARKET_PULSE_TICKERS = ["SPY", "QQQ", "BTC-USD", "NVDA", "BZ=F"];
 const OPPORTUNITY_TICKERS = ["NVDA", "MSFT", "NFLX", "META", "TSLA", "SPY", "QQQ", "BTC-USD"];
 const CHART_RANGES = ["1D", "1W", "1M", "1Y", "5Y", "MAX"];
 const CHART_CACHE_TTL_MS = 2 * 60 * 1000;
-const CHART_FAILURE_RETRY_MS = 8000;
+const CHART_FAILURE_RETRY_MS = 1200;
 const MONEY_COLORS = ["#7be0ad", "#91a7ff", "#efbd6f", "#ec7f77", "#7fd9df", "#d7c27f", "#b7c5d9"];
 const NEWS_FALLBACK_IMAGES = {
   market: "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=640&q=80",
@@ -788,6 +788,96 @@ function chartCacheKey(ticker, range) {
   return `${normalizeTicker(ticker)}:${String(range || "1Y").toUpperCase()}`;
 }
 
+function technicalIndicatorsFromPayload(payload = {}) {
+  return payload?.technical?.indicators
+    || payload?.structured?.indicators
+    || payload?.indicators
+    || payload?.chart?.indicators
+    || {};
+}
+
+function hasUsefulTechnicalIndicators(payload = {}) {
+  const indicators = technicalIndicatorsFromPayload(payload);
+  const ema = indicators?.ema || {};
+  const macd = indicators?.macd || {};
+  const fib = indicators?.fibonacci || {};
+  const golden = indicators?.golden_pocket || {};
+  return [
+    indicators.rsi,
+    indicators.support,
+    indicators.resistance,
+    indicators.relative_volume,
+    indicators.volume,
+    indicators.volatility,
+    indicators.ema_20,
+    indicators.ema_50,
+    indicators.ema_200,
+    ema["20"],
+    ema["50"],
+    ema["200"],
+    macd.line,
+    fib["0.618"],
+    golden.from,
+    golden.to,
+  ].some((value) => numberOrNull(value) !== null);
+}
+
+function embeddedChartFromGenesisPayload(payload = {}, fallbackTicker = "", fallbackRange = "1Y") {
+  const candidates = [
+    payload?.chart,
+    payload?.technical?.chart,
+    payload?.structured?.chart,
+    payload?.structured?.technical?.chart,
+  ];
+  const fallback = normalizeTicker(fallbackTicker || payload?.quote?.ticker || payload?.tickers?.[0] || payload?.technical?.ticker);
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== "object") continue;
+    const candles = Array.isArray(raw.ohlc) ? raw.ohlc : Array.isArray(raw.points) ? raw.points : [];
+    if (candles.length < 2) continue;
+    const ticker = normalizeTicker(raw.ticker || raw.symbol || fallback);
+    if (!ticker) continue;
+    const rawRange = String(raw.range || raw.timeframe || fallbackRange || "1Y").toUpperCase();
+    const range = CHART_RANGES.includes(rawRange) ? rawRange : "1Y";
+    return {
+      ...raw,
+      ok: raw.ok !== false,
+      ticker,
+      symbol: ticker,
+      name: raw.name || payload?.quote?.name || payload?.name || ticker,
+      range,
+      timeframe: range,
+      points: candles,
+      ohlc: Array.isArray(raw.ohlc) ? raw.ohlc : candles,
+      returns: raw.returns || {},
+      return_details: raw.return_details || raw.returnDetails || {},
+      indicators: {
+        ...technicalIndicatorsFromPayload(payload),
+        ...(raw.indicators || {}),
+      },
+      quote: {
+        ...(payload?.quote || {}),
+        ...(raw.quote || {}),
+      },
+      summary: raw.summary || {},
+      source: raw.source || payload?.source || {},
+    };
+  }
+  return null;
+}
+
+function seedChartCacheFromGenesisPayload(payload = {}, fallbackTicker = "", fallbackRange = "1Y") {
+  const chartPayload = embeddedChartFromGenesisPayload(payload, fallbackTicker, fallbackRange);
+  if (!chartPayload) return null;
+  const key = chartCacheKey(chartPayload.ticker, chartPayload.range);
+  appState.chartCache[key] = {
+    loading: false,
+    payload: chartPayload,
+    promise: null,
+    loadedAt: Date.now(),
+  };
+  return chartPayload;
+}
+
 function chartIntentFromText(text) {
   const raw = String(text || "");
   const normalized = raw
@@ -999,6 +1089,7 @@ async function loadChartSeries(ticker, range = "1Y") {
   const normalizedRange = CHART_RANGES.includes(String(range).toUpperCase()) ? String(range).toUpperCase() : "1Y";
   const key = chartCacheKey(normalizedTicker, normalizedRange);
   const cached = appState.chartCache[key] || {};
+  const staleValidPayload = cached.payload?.ok !== false ? cached.payload : null;
   const now = Date.now();
   const age = now - (cached.loadedAt || 0);
   if (cached.loading && cached.promise) return cached.promise;
@@ -1013,7 +1104,7 @@ async function loadChartSeries(ticker, range = "1Y") {
       appState.chartCache[key] = { loading: false, payload, promise: null, loadedAt: Date.now() };
       return payload;
     } catch (error) {
-      const payload = {
+      const payload = staleValidPayload || {
         ok: false,
         ticker: normalizedTicker,
         timeframe: normalizedRange,
@@ -1977,6 +2068,7 @@ function chatHistoryPanelMarkup() {
 
 function genesisAssistantMessageFromPayload(payload, fallbackText = "") {
   const answer = stripMarkdownCopy(payload?.assistant_narrative || payload?.answer || fallbackText || "No tengo lectura suficiente.");
+  seedChartCacheFromGenesisPayload(payload);
   const visual = genesisVisualFromPayload(payload, answer);
   const chart = genesisChartFromPayload(payload, fallbackText);
   return {
@@ -1990,6 +2082,8 @@ function genesisAssistantMessageFromPayload(payload, fallbackText = "") {
 
 function genesisChartFromPayload(payload, prompt = "") {
   const intent = String(payload?.intent || "");
+  const embeddedChart = embeddedChartFromGenesisPayload(payload);
+  if (embeddedChart?.ticker) return { ticker: embeddedChart.ticker, range: embeddedChart.range || "1Y" };
   const chart = payload?.chart || {};
   const chartTicker = normalizeTicker(chart.ticker || chart.symbol);
   if (chartTicker) return { ticker: chartTicker, range: String(chart.range || "1Y").toUpperCase() };
@@ -3698,8 +3792,20 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
   if (!(["asset_analysis", "chart_analysis"].includes(responseType) || ["ticker_analysis", "technical_indicators", "chart_request"].includes(intent))) {
     return payload;
   }
-  const ticker = normalizeTicker(payload?.quote?.ticker || payload?.tickers?.[0] || payload?.chart?.ticker || tickerFromText(question));
-  if (!ticker || quotePrice(payload?.quote || {}) !== null) return payload;
+  const embeddedChart = seedChartCacheFromGenesisPayload(payload);
+  const ticker = normalizeTicker(
+    payload?.quote?.ticker
+    || payload?.tickers?.[0]
+    || payload?.chart?.ticker
+    || payload?.technical?.ticker
+    || embeddedChart?.ticker
+    || tickerFromText(question)
+  );
+  if (!ticker) return payload;
+  const hasPrice = quotePrice(payload?.quote || {}) !== null;
+  const hasIndicators = hasUsefulTechnicalIndicators(payload);
+  const hasChart = Boolean(embeddedChart);
+  if (hasPrice && hasIndicators && hasChart) return payload;
   let asset = findAsset(ticker);
   if (!asset) {
     try {
@@ -3716,23 +3822,29 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
       asset = null;
     }
   }
-  if (!asset || itemPrice(asset) === null) return payload;
-  const chartPayload = await loadChartSeries(itemTicker(asset) || ticker, "1Y").catch(() => null);
+  const chartPayload = (!hasIndicators || !hasChart)
+    ? await loadChartSeries(itemTicker(asset) || ticker, "1Y").catch(() => null)
+    : embeddedChart;
+  const assetQuote = asset && itemPrice(asset) !== null ? quoteFromAsset(asset) : {};
+  const chartQuote = chartPayload ? chartQuoteAsset(ticker, "1Y") || {} : {};
+  const chartTicker = itemTicker(asset) || chartPayload?.ticker || ticker;
   return {
     ...payload,
     quote: {
       ...(payload.quote || {}),
-      ...quoteFromAsset(asset),
+      ...chartQuote,
+      ...assetQuote,
+      ticker: chartTicker,
     },
     technical: {
       ...(payload.technical || {}),
-      ticker: itemTicker(asset) || ticker,
+      ticker: chartTicker,
       indicators: {
         ...((payload.technical || {}).indicators || {}),
         ...(chartPayload?.indicators || {}),
       },
     },
-    chart: payload.chart || { ticker: itemTicker(asset) || ticker, range: "1Y" },
+    chart: chartPayload || payload.chart || { ticker: chartTicker, range: "1Y" },
   };
 }
 
