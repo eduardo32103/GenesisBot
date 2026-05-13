@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import unicodedata
@@ -641,70 +642,102 @@ def _is_comparison_genesis_prompt(message: str) -> bool:
     return any(token in text for token in (" compara ", " comparar ", " vs ", " versus ", " contra "))
 
 
-def _is_opportunity_genesis_prompt(message: str) -> bool:
+def _opportunity_intent_flags(message: str) -> dict[str, object]:
     text = f" {_fold_prompt(message)} "
-    return any(
-        token in text
-        for token in (
-            " oportunidad ",
-            " oportunidades ",
-            " buen precio ",
-            " buenos precios ",
-            " acciones buenas ",
-            " que hay para comprar ",
-            " que puedo comprar ",
-            " que podemos comprar ",
-            " que podria comprar ",
-            " que podria comprar hoy ",
-            " que hay bueno para comprar ",
-            " que compro ",
-            " que comprar ",
-            " que comprar ahora ",
-            " que compro ahora ",
-            " que deberia comprar ",
-            " cazar ",
-            " caza ",
-            " aguila ",
-            " setups ",
-            " setup ",
-            " comprar con cautela ",
-            " compra con cautela ",
-            " ideas de compra ",
-            " ideas para comprar ",
-            " lista de compra ",
-            " watchlist de compra ",
-            " oportunidades de compra ",
-            " oportunidades para comprar ",
-            " donde hay compra ",
-            " donde hay entrada ",
-            " comprar hoy ",
-            " compra hoy ",
-            " que compro hoy ",
-            " que acciones compro ",
-            " que activo compro ",
-            " buena validacion ",
-            " con buena validacion ",
-            " entrada validada ",
-            " entradas validas ",
-            " buenas entradas ",
-            " buen setup ",
-            " setups de compra ",
-            " oportunidad de entrada ",
-            " cazame ",
-        )
+    compact = " ".join(text.split())
+    direct = (
+        " oportunidad ",
+        " oportunidades ",
+        " buen precio ",
+        " buenos precios ",
+        " acciones buenas ",
+        " que hay para comprar ",
+        " que puedo comprar ",
+        " que podemos comprar ",
+        " que podria comprar ",
+        " que podria comprar hoy ",
+        " que hay bueno para comprar ",
+        " que compro ",
+        " que comprar ",
+        " que comprar ahora ",
+        " que compro ahora ",
+        " que deberia comprar ",
+        " comprar con cautela ",
+        " compra con cautela ",
+        " ideas de compra ",
+        " ideas para comprar ",
+        " lista de compra ",
+        " watchlist de compra ",
+        " oportunidades de compra ",
+        " oportunidades para comprar ",
+        " donde hay compra ",
+        " donde hay entrada ",
+        " comprar hoy ",
+        " compra hoy ",
+        " que compro hoy ",
+        " que acciones compro ",
+        " que activo compro ",
+        " buena validacion ",
+        " con buena validacion ",
+        " entrada validada ",
+        " entradas validas ",
+        " buenas entradas ",
+        " buen setup ",
+        " setups de compra ",
+        " oportunidad de entrada ",
+        " cazar ",
+        " caza ",
+        " cazame ",
+        " cazador ",
+        " aguila ",
+        " setup ",
+        " setups ",
+        " radar de compra ",
+        " compra buena ",
+        " compras buenas ",
+        " presa limpia ",
+        " entrada limpia ",
+        " asimetria ",
+        " asimetrias ",
+        " descuento ",
+        " descuentos ",
     )
+    has_direct = any(token in text for token in direct)
+    has_buy = any(token in text for token in (" comprar", " compra", " compro", " compraria", " compramos", " entrada", " entrar", " idea"))
+    has_opportunity = any(token in text for token in (" oportunidad", " caza", " cazar", " cazame", " cazador", " buenos precios", " buen precio", " radar", " setup", " asimetria", " descuento", " presa limpia"))
+    has_question = any(token in text for token in (" que hay", " que puedo", " que podemos", " que deberia", " que conviene", " que compro", " que comprar", " donde hay", " ideas de", " opciones de", " dame ideas", " busca", " buscame"))
+    wants_validation = any(token in text for token in (" validacion", " validar", " validada", " validado", " entrada limpia", " buena entrada", " buena validacion"))
+    asks_buy = has_buy or " ideas de compra " in text or " oportunidades de compra " in text or (" que hay " in text and " compr" in text) or " que comprar " in text or " que compro " in text
+    wants_hunter = has_opportunity
+    buy_question = bool(
+        re.search(r"\b(que hay|que puedo|que podemos|que conviene|que deberia|que debo|que compro|que comprar|que hay bueno|donde hay|ideas? de|opciones? de|dame ideas|busca|buscame)\b.*\b(comprar|compra|compro|entrada|oportunidad|setup|precio|precios|caza|cazar)\b", compact)
+        or re.search(r"\b(comprar|compra|compro|entrada|oportunidad|setup|precio|precios|caza|cazar)\b.*\b(que hay|que puedo|que podemos|que conviene|que deberia|que debo|que compro|que comprar|donde hay|ideas? de|opciones? de)\b", compact)
+        or (" que " in text and " compr" in text)
+    )
+    return {
+        "text": text,
+        "is_opportunity": bool(has_direct or buy_question or wants_validation or (has_question and (asks_buy or wants_hunter)) or (asks_buy and wants_hunter)),
+        "wants_validation": wants_validation,
+        "asks_buy": asks_buy,
+        "wants_hunter": wants_hunter,
+    }
+
+
+def _is_opportunity_genesis_prompt(message: str) -> bool:
+    return bool(_opportunity_intent_flags(message)["is_opportunity"])
 
 
 def _opportunity_prompt_mode(message: str) -> dict[str, str]:
-    text = f" {_fold_prompt(message)} "
-    if any(token in text for token in (" buena validacion ", " con buena validacion ", " entrada validada ", " entradas validas ", " validacion ")):
+    flags = _opportunity_intent_flags(message)
+    text = str(flags.get("text") or "")
+    if flags.get("wants_validation") or any(token in text for token in (" buena validacion ", " con buena validacion ", " entrada validada ", " entradas validas ", " validacion ")):
         return {
             "mode": "validation",
             "title": "Validador de entradas",
             "empty": "No valido ninguna entrada limpia ahora. Genesis espera precio vivo, volumen, nivel de entrada e invalidacion antes de elevar conviccion.",
             "rule": "Solo pasa a accionable si tiene precio vivo, volumen sostenido, nivel claro y riesgo definido.",
         }
-    if any(
+    if flags.get("asks_buy") or any(
         token in text
         for token in (
             " comprar con cautela ",
@@ -743,6 +776,128 @@ def _opportunity_prompt_mode(message: str) -> dict[str, str]:
         "empty": "No hay presa limpia ahora. Genesis mantiene el radar abierto buscando descuentos, rupturas con volumen y activos con asimetria real.",
         "rule": "Cazar precio no es comprar ya: primero detecto asimetria, luego confirmo volumen, nivel e invalidacion.",
     }
+
+
+def _opportunity_decision_kind(item: dict) -> str:
+    strategy = item.get("strategy")
+    if isinstance(strategy, dict):
+        strategy_text = " ".join(
+            str(strategy.get(key) or "")
+            for key in (
+                "action",
+                "decision",
+                "decision_label_es",
+                "decisionLabel",
+                "verdict",
+                "summary",
+                "genesis_reading_es",
+                "thesis",
+            )
+        )
+    else:
+        strategy_text = str(strategy or "")
+    compact = " ".join(
+        str(value or "")
+        for value in (
+            item.get("decision"),
+            item.get("decision_label_es") or item.get("decisionLabel"),
+            item.get("action_verdict"),
+            item.get("genesis_reading_es") or item.get("genesis_reading"),
+            item.get("summary"),
+            strategy_text,
+            item.get("verdict") or item.get("thesis"),
+            item.get("what_it_means") or item.get("expected_direction"),
+            item.get("risk") or item.get("momentum"),
+        )
+    )
+    compact = _fold_prompt(compact)
+    if any(token in compact for token in ("reduce", "sell", "vender", "venta", "reducir", "evitar", "defensiv")):
+        return "defensive"
+    if any(token in compact for token in ("buy_cautiously", "buy", "comprar", "compra")):
+        return "buy"
+    if any(token in compact for token in ("watch", "vigilar", "confirm", "ruptura", "validar", "validacion", "entrada")):
+        return "watch"
+    return "neutral"
+
+
+def _opportunity_rows_for_mode(items: list[dict], mode: dict[str, str]) -> list[dict]:
+    rows = [item for item in items if isinstance(item, dict)]
+    current = str(mode.get("mode") or "hunter")
+    with_kind = [(item, _opportunity_decision_kind(item)) for item in rows]
+
+    def pick(*kinds: str) -> list[dict]:
+        return [item for item, kind in with_kind if kind in kinds]
+
+    if current == "cautious_buy":
+        preferred = pick("buy", "watch")
+        return preferred or pick("neutral", "defensive")
+    if current == "validation":
+        preferred = pick("buy", "watch", "neutral")
+        return preferred or pick("defensive")
+    return rows
+
+
+def _opportunity_title_for_mode(mode: dict[str, str], top: dict | None) -> str:
+    current = str(mode.get("mode") or "hunter")
+    if top:
+        top_kind = _opportunity_decision_kind(top)
+        if current == "cautious_buy" and top_kind == "defensive":
+            return "Sin compra limpia"
+        if current == "cautious_buy" and top_kind == "watch":
+            return "Vigilar, no comprar todavia"
+        if current == "validation" and top_kind == "defensive":
+            return "Entrada rechazada"
+        return mode.get("title") or "Radar Genesis"
+    if current == "cautious_buy":
+        return "Sin compra limpia"
+    if current == "validation":
+        return "Sin entrada validada"
+    return mode.get("title") or "Cazador de buenos precios"
+
+
+def _opportunity_item_narrative(item: dict | None, mode: dict[str, str]) -> str:
+    current = str(mode.get("mode") or "hunter")
+    if not item:
+        if current == "cautious_buy":
+            return "No hay compra limpia ahora. Genesis ve el radar, pero no eleva ventas defensivas ni datos incompletos como compra."
+        if current == "validation":
+            return "No hay entrada validada ahora. Falta una combinacion limpia de precio vivo, volumen, nivel e invalidacion."
+        return str(mode.get("empty") or "No hay oportunidad limpia ahora.")
+    ticker = str(item.get("ticker") or "Mercado")
+    label = str(item.get("decision_label_es") or item.get("decision") or "vigilar")
+    score = item.get("opportunity_score") or item.get("score") or "medio"
+    entry = str(item.get("entry_condition") or "confirmar entrada con precio y volumen")
+    invalidation = str(item.get("invalidation") or "perder el nivel de invalidacion")
+    kind = _opportunity_decision_kind(item)
+    if kind == "defensive":
+        return (
+            f"{ticker}: no comprar ahora. Lectura defensiva ({label}); "
+            "sirve para reducir riesgo, vender parcial o esperar nueva validacion."
+        )
+    if kind == "buy":
+        return (
+            f"{ticker}: compra con cautela solo si confirma {entry}; score {score}/100. "
+            f"Si falla {invalidation}, Genesis cancela la idea."
+        )
+    if kind == "watch":
+        return (
+            f"{ticker}: vigilar, no comprar todavia. Hay algo en radar, pero necesito {entry}; "
+            f"se invalida si {invalidation}."
+        )
+    if current == "cautious_buy":
+        return (
+            f"{ticker}: posible compra con cautela, score {score}/100. "
+            f"Solo interesa si confirma {entry}; se invalida si {invalidation}."
+        )
+    if current == "validation":
+        return (
+            f"{ticker}: entrada en validacion, score {score}/100. "
+            f"Genesis espera confirmacion de {entry}; se cancela si {invalidation}."
+        )
+    return (
+        f"{ticker}: mejor presa del radar con {label} y score {score}/100. "
+        f"No es orden: Genesis espera {entry} y respeta invalidacion en {invalidation}."
+    )
 
 
 def _is_whale_genesis_prompt(message: str) -> bool:
@@ -1602,56 +1757,28 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
             "source_status": {"status": "timeout", "provider_used": "local_safe_timeout"},
         },
     )
-    items = [item for item in snapshot.get("items") or [] if isinstance(item, dict)] if isinstance(snapshot, dict) else []
-    top_items = items[:5]
-    if top_items:
-        first = top_items[0]
-        first_ticker = str(first.get("ticker") or "mercado")
-        first_action = str(first.get("decision_label_es") or "vigilar")
-        first_score = first.get("opportunity_score")
-        if mode["mode"] == "validation":
-            answer = (
-                f"Validacion de entrada: {first_ticker} lidera el filtro con {first_score}/100. "
-                f"Lectura: {first_action}. No es orden real; falta confirmar que el precio respete nivel, "
-                "volumen y riesgo antes de elevarlo a compra paper."
-            )
-        elif mode["mode"] == "cautious_buy":
-            answer = (
-                f"Compra con cautela: {first_ticker} es la primera idea en radar con {first_action} "
-                f"y score {first_score}/100. Solo sirve si confirma entrada, volumen relativo e invalidacion."
-            )
-        else:
-            answer = (
-                f"Cazador activo: {first_ticker} muestra la mejor asimetria del radar con {first_action} "
-                f"y score {first_score}/100. Genesis caza precio; todavia valida volumen, nivel y catalizador."
-            )
-    else:
-        answer = mode["empty"]
+    raw_items = [item for item in snapshot.get("items") or [] if isinstance(item, dict)] if isinstance(snapshot, dict) else []
+    top_items = _opportunity_rows_for_mode(raw_items[:8], mode)[:5]
+    first = top_items[0] if top_items else None
+    answer = _opportunity_item_narrative(first, mode) if first else str(mode.get("empty") or "No hay oportunidad limpia ahora.")
     summary = snapshot.get("summary") if isinstance(snapshot, dict) and isinstance(snapshot.get("summary"), dict) else {}
-    actionable = sum(1 for item in top_items if str(item.get("decision") or "") in {"buy_cautiously", "watch_confirmation"})
-    defensive = sum(1 for item in top_items if str(item.get("decision") or "") == "reduce_or_sell_risk")
-    watched_volume = sum(_safe_num(item.get("dollar_volume")) or 0 for item in top_items)
+    actionable = sum(1 for item in raw_items[:8] if _opportunity_decision_kind(item) in {"buy", "watch"})
+    defensive = sum(1 for item in raw_items[:8] if _opportunity_decision_kind(item) == "defensive")
+    watched_volume = sum(_safe_num(item.get("dollar_volume")) or 0 for item in raw_items[:8])
+    title = _opportunity_title_for_mode(mode, first)
     metrics = {
-        "total": len(top_items),
+        "total": len(raw_items[:8]),
         "opportunities": len(top_items),
         "actionable": actionable,
         "defensive": defensive,
         "watched_volume": watched_volume or None,
-        "top_ticker": summary.get("top_ticker") or (top_items[0].get("ticker") if top_items else ""),
-        "top_score": summary.get("top_score") or (top_items[0].get("opportunity_score") if top_items else None),
+        "top_ticker": summary.get("top_ticker") or (first.get("ticker") if first else ""),
+        "top_score": summary.get("top_score") or (first.get("opportunity_score") if first else None),
     }
     sections = [
         {
             "title": "Top oportunidades",
-            "bullets": [
-                (
-                    f"{item.get('ticker')}: {item.get('decision_label_es') or 'vigilar'} "
-                    f"score {item.get('opportunity_score')}/100; "
-                    f"precio {_money_short(item.get('price')) if item.get('price') is not None else 'pendiente'}; "
-                    f"volumen {_money_short(item.get('dollar_volume')) if item.get('dollar_volume') is not None else 'pendiente'}"
-                )
-                for item in top_items[:4]
-            ]
+            "bullets": [_opportunity_item_narrative(item, mode) for item in top_items[:4]]
             or [answer],
         },
         {
@@ -1681,7 +1808,7 @@ def _opportunity_prompt_payload(message: str, body: dict | None = None) -> dict:
         "source_status": snapshot.get("source_status") if isinstance(snapshot, dict) else {},
         "structured": {
             "kind": "opportunity_radar",
-            "title": mode["title"],
+            "title": title,
             "summary": answer,
             "alerts": top_items,
             "opportunities": top_items,
@@ -3567,6 +3694,16 @@ def _enrich_portfolio_snapshot_with_live_quotes(snapshot: dict) -> dict:
 
 
 class DashboardRequestHandler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".html": "text/html; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+    }
+
     def __init__(self, *args, directory: str | None = None, **kwargs):
         super().__init__(*args, directory=directory or str(_DASHBOARD_DIR), **kwargs)
 

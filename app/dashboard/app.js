@@ -106,6 +106,16 @@ const NEWS_FALLBACK_IMAGES = {
 };
 
 const MOJIBAKE_REPLACEMENTS = Object.freeze([
+  ["\u00c3\u0192\u00c2\u00a1", "\u00e1"],
+  ["\u00c3\u0192\u00c2\u00a9", "\u00e9"],
+  ["\u00c3\u0192\u00c2\u00ad", "\u00ed"],
+  ["\u00c3\u0192\u00c2\u00b3", "\u00f3"],
+  ["\u00c3\u0192\u00c2\u00ba", "\u00fa"],
+  ["\u00c3\u0192\u00c2\u00bc", "\u00fc"],
+  ["\u00c3\u0192\u00c2\u00b1", "\u00f1"],
+  ["\u00c3\u0192\u00e2\u20ac\u02dc", "\u00d1"],
+  ["\u00c3\u201a\u00c2\u00bf", "\u00bf"],
+  ["\u00c3\u201a\u00c2\u00a1", "\u00a1"],
   ["\u00c2\u00bf", "\u00bf"],
   ["\u00c2\u00a1", "\u00a1"],
   ["\u00c3\u00a1", "\u00e1"],
@@ -955,9 +965,10 @@ function isWeatherQuestion(text) {
   ].some((needle) => normalized.includes(needle));
 }
 
-function isOpportunityQuestion(text) {
-  const normalized = ` ${plainQuestionText(text)} `;
-  return [
+function opportunityIntentSignals(text) {
+  const normalized = ` ${plainQuestionText(text)} `.replace(/\s+/g, " ");
+  const compact = normalized.trim();
+  const directNeedles = [
     " oportunidad ",
     " oportunidades ",
     " buen precio ",
@@ -1003,7 +1014,39 @@ function isOpportunityQuestion(text) {
     " aguila ",
     " setup ",
     " setups ",
-  ].some((needle) => normalized.includes(needle));
+    " radar de compra ",
+    " compras buenas ",
+    " compra buena ",
+    " presa limpia ",
+    " entrada limpia ",
+    " asimetria ",
+    " asimetrias ",
+    " descuento ",
+    " descuentos ",
+  ];
+  const hasDirectNeedle = directNeedles.some((needle) => normalized.includes(needle));
+  const hasBuyLanguage = /\b(comprar|compra|compro|compraria|compramos|entrada|entrar|ideas?)\b/.test(normalized);
+  const hasOpportunityLanguage = /\b(oportunidad(?:es)?|caza(?:r|me|dor|ndo)?|buen(?:os)? precio(?:s)?|radar|setup(?:s)?|asimetria|descuento(?:s)?|presa limpia)\b/.test(normalized);
+  const hasQuestionShape = /\b(que hay|que puedo|que podemos|que deberia|que conviene|que compro|que comprar|donde hay|ideas? de|opciones? de|dame ideas|busca|buscame)\b/.test(normalized);
+  const wantsValidation = /\b(validacion|validar|validada|validado|entrada limpia|buena entrada|buena validacion)\b/.test(normalized);
+  const asksBuy = hasBuyLanguage
+    || /\b(ideas? de compra|oportunidades? de compra|que hay .*compr|que puedo .*compr|que podemos .*compr|que comprar|que compro)\b/.test(normalized);
+  const wantsHunter = hasOpportunityLanguage
+    || /\b(caza|cazar|cazame|cazador|buenos precios|buen precio|aguila|presa limpia)\b/.test(normalized);
+  const buyQuestionPattern = /\b(?:que hay|que puedo|que podemos|que conviene|que deberia|que debo|que compro|que comprar|que hay bueno|donde hay|ideas? de|opciones? de|dame ideas|busca|buscame)\b.*\b(?:comprar|compra|compro|entrada|oportunidad|setup|precio|precios|caza|cazar)\b/.test(compact)
+    || /\b(?:comprar|compra|compro|entrada|oportunidad|setup|precio|precios|caza|cazar)\b.*\b(?:que hay|que puedo|que podemos|que conviene|que deberia|que debo|que compro|que comprar|donde hay|ideas? de|opciones? de)\b/.test(compact)
+    || /\bque\b.*\b(?:comprar|compro|compra)\b/.test(compact);
+  return {
+    normalized,
+    isOpportunity: hasDirectNeedle || buyQuestionPattern || wantsValidation || (hasQuestionShape && (asksBuy || wantsHunter)) || (asksBuy && wantsHunter),
+    wantsValidation,
+    asksBuy,
+    wantsHunter,
+  };
+}
+
+function isOpportunityQuestion(text) {
+  return opportunityIntentSignals(text).isOpportunity;
 }
 
 function isPerformanceQuestion(text) {
@@ -1036,8 +1079,9 @@ function isPerformanceQuestion(text) {
 }
 
 function opportunityQuestionMode(text) {
-  const normalized = ` ${plainQuestionText(text)} `;
-  if ([
+  const signals = opportunityIntentSignals(text);
+  const normalized = signals.normalized;
+  if (signals.wantsValidation || [
     " buena validacion ",
     " con buena validacion ",
     " entrada validada ",
@@ -1051,9 +1095,10 @@ function opportunityQuestionMode(text) {
       rule: "Solo pasa a accionable si tiene precio vivo, volumen sostenido, nivel claro y riesgo definido.",
     };
   }
-  if ([
+  if (signals.asksBuy || [
     " comprar con cautela ",
     " compra con cautela ",
+    " que hay para comprar con cautela ",
     " que hay para comprar ",
     " que puedo comprar ",
     " que podemos comprar ",
@@ -1074,6 +1119,7 @@ function opportunityQuestionMode(text) {
     " compra hoy ",
     " que acciones compro ",
     " que activo compro ",
+    " que compro hoy con buena validacion ",
   ].some((needle) => normalized.includes(needle))) {
     return {
       mode: "cautious_buy",
@@ -1088,6 +1134,102 @@ function opportunityQuestionMode(text) {
     empty: "No hay presa limpia ahora. Genesis mantiene el radar abierto buscando descuentos, rupturas con volumen y activos con asimetria real.",
     rule: "Cazar precio no es comprar ya: primero detecto asimetria, luego confirmo volumen, nivel e invalidacion.",
   };
+}
+
+function opportunityDecisionKind(row = {}) {
+  const strategy = row?.strategy;
+  const strategyText = strategy && typeof strategy === "object"
+    ? [
+      strategy.action,
+      strategy.decision,
+      strategy.decision_label_es,
+      strategy.decisionLabel,
+      strategy.verdict,
+      strategy.summary,
+      strategy.genesis_reading_es,
+      strategy.thesis,
+    ].filter(Boolean).join(" ")
+    : strategy;
+  const compact = plainQuestionText([
+    row?.decision,
+    row?.decision_label_es,
+    row?.decisionLabel,
+    row?.action_verdict,
+    row?.genesis_reading_es,
+    row?.genesis_reading,
+    row?.summary,
+    strategyText,
+    row?.verdict,
+    row?.thesis,
+    row?.what_it_means,
+    row?.expected_direction,
+    row?.risk,
+    row?.momentum,
+  ].filter(Boolean).join(" "));
+  if (/(reduce|sell|vender|venta|reducir|evitar|defensiv)/.test(compact)) return "defensive";
+  if (/(buy_cautiously|buy|comprar|compra)/.test(compact)) return "buy";
+  if (/(watch|vigilar|confirm|ruptura|validar|validacion|entrada)/.test(compact)) return "watch";
+  return "neutral";
+}
+
+function opportunityRowsForMode(rows = [], mode = {}) {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const currentMode = typeof mode === "string" ? mode : (mode?.mode || "hunter");
+  const withKind = list.map((row) => ({ row, kind: opportunityDecisionKind(row) }));
+  const pickKinds = (...kinds) => withKind.filter((entry) => kinds.includes(entry.kind)).map((entry) => entry.row);
+  if (currentMode === "cautious_buy") {
+    const preferred = pickKinds("buy", "watch");
+    return preferred.length ? preferred : pickKinds("neutral", "defensive");
+  }
+  if (currentMode === "validation") {
+    const preferred = pickKinds("buy", "watch", "neutral");
+    return preferred.length ? preferred : pickKinds("defensive");
+  }
+  return list;
+}
+
+function opportunityTitleForMode(mode = {}, top = null) {
+  const currentMode = typeof mode === "string" ? mode : (mode?.mode || "hunter");
+  const baseTitle = typeof mode === "object" ? mode.title : "";
+  const topKind = top ? opportunityDecisionKind(top) : "";
+  if (currentMode === "cautious_buy" && !top) return "Sin compra limpia";
+  if (currentMode === "cautious_buy" && topKind === "defensive") return "Sin compra limpia";
+  if (currentMode === "cautious_buy" && topKind === "watch") return "Vigilar, no comprar todav\u00eda";
+  if (currentMode === "validation" && !top) return "Sin entrada validada";
+  if (currentMode === "validation" && topKind === "defensive") return "Entrada rechazada";
+  return baseTitle || (currentMode === "validation" ? "Validador de entradas" : currentMode === "cautious_buy" ? "Compra con cautela" : "Cazador de buenos precios");
+}
+
+function opportunityNarrative(row = null, mode = {}, sourceRows = []) {
+  const currentMode = typeof mode === "string" ? mode : (mode?.mode || "hunter");
+  const empty = typeof mode === "object" ? mode.empty : "";
+  if (!row) {
+    if (currentMode === "cautious_buy") return "No compro por comprar: no hay entrada limpia con precio, volumen, nivel e invalidacion alineados. Genesis sigue cazando, pero hoy manda esperar.";
+    if (currentMode === "validation") return "No hay entrada validada: falta precio vivo, volumen sostenido y nivel claro. Genesis mantiene el radar activo sin forzar operacion.";
+    return empty || "Sin presa limpia ahora; sigo buscando asimetria real y confirmacion de volumen.";
+  }
+  const ticker = cleanCopy(itemTicker(row) || row?.ticker || "Mercado");
+  const label = cleanCopy(row?.decision_label_es || row?.decision || "vigilar");
+  const score = row?.opportunity_score || row?.score || "medio";
+  const entry = cleanCopy(row?.entry_condition || row?.entryCondition || "confirmar entrada con precio y volumen");
+  const invalidation = cleanCopy(row?.invalidation || "perder el nivel de invalidacion");
+  const kind = opportunityDecisionKind(row);
+  if (kind === "defensive") {
+    return `${ticker}: no comprar ahora. La lectura es defensiva (${label}); sirve para reducir riesgo, vender parcial o esperar una nueva validaci\u00f3n.`;
+  }
+  if (kind === "buy") {
+    return `${ticker}: compra con cautela solo si confirma ${entry}; score ${score}. Si falla ${invalidation}, Genesis cancela la idea.`;
+  }
+  if (kind === "watch") {
+    return `${ticker}: vigilar, no comprar todav\u00eda. Hay algo en radar, pero necesito ${entry}; se invalida si ${invalidation}.`;
+  }
+  if (currentMode === "cautious_buy") {
+    return `${ticker}: posible compra con cautela, score ${score}. Solo me interesa si confirma ${entry}; se invalida si ${invalidation}.`;
+  }
+  if (currentMode === "validation") {
+    return `${ticker}: entrada en validacion, score ${score}. Genesis exige precio vivo, volumen sostenido y riesgo definido antes de elevar conviccion.`;
+  }
+  return `${ticker}: oportunidad en radar con ${label} y score ${score}. Genesis caza buen precio, pero valida volumen, nivel y catalizador antes de actuar.`;
 }
 
 function tickerFromText(text) {
@@ -2224,7 +2366,7 @@ function forcedWhalePayloadFromState(question = "", sourcePayload = {}) {
       },
       sections: [
         { title: "Que significa", bullets: ["Volumen vigilado no es compra confirmada.", "Solo sube a ballena confirmada cuando hay entidad, monto y fuente."] },
-        { title: "Que vigilar", bullets: ["Direccion del precio despues del flujo.", "Volumen relativo, soporte/resistencia y noticias relacionadas."] },
+        { title: "Qu\u00e9 vigilar", bullets: ["Direcci\u00f3n del precio despu\u00e9s del flujo.", "Volumen relativo, soporte/resistencia y noticias relacionadas."] },
       ],
     },
   };
@@ -2280,7 +2422,7 @@ function forcedNewsPayloadFromState(question = "", sourcePayload = {}) {
       },
       sections: [
         { title: "Lectura rapida", bullets: [answer] },
-        { title: "Que vigilar", bullets: ["Titulares que mueven precio.", "Volumen despues de la noticia.", "Impacto en tus activos y cartera."] },
+        { title: "Qu\u00e9 vigilar", bullets: ["Titulares que mueven precio.", "Volumen despu\u00e9s de la noticia.", "Impacto en tus activos y cartera."] },
       ],
     },
   };
@@ -2288,23 +2430,15 @@ function forcedNewsPayloadFromState(question = "", sourcePayload = {}) {
 
 function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
   const mode = opportunityQuestionMode(question);
-  const selected = marketOpportunityRowsForUi([]).slice(0, 5);
+  const rawRows = marketOpportunityRowsForUi([]).slice(0, 8);
+  const selected = opportunityRowsForMode(rawRows, mode).slice(0, 5);
   const top = selected[0] || null;
   const topTicker = top ? itemTicker(top) : "";
-  const watchedVolume = selected.reduce((sum, row) => sum + (numberOrNull(row?.dollar_volume ?? row?.dollarVolume) || 0), 0);
-  const actionable = selected.filter((row) => ["buy_cautiously", "watch_confirmation"].includes(String(row?.decision || ""))).length;
-  const defensive = selected.filter((row) => String(row?.decision || "") === "reduce_or_sell_risk").length;
-  const topScore = top?.opportunity_score || top?.score || "medio";
-  let answer = mode.empty;
-  if (top) {
-    if (mode.mode === "validation") {
-      answer = `Validacion de entrada: ${topTicker} lidera el filtro con score ${topScore}. Genesis revisa precio, volumen, nivel e invalidacion antes de elevarlo a compra paper.`;
-    } else if (mode.mode === "cautious_buy") {
-      answer = `Compra con cautela: ${topTicker} es la primera idea en radar con ${top.decision_label_es || top.decision || "vigilar"} y score ${topScore}. Solo sirve si confirma entrada, volumen relativo e invalidacion.`;
-    } else {
-      answer = `Cazador activo: ${topTicker} muestra la mejor asimetria del radar con ${top.decision_label_es || top.decision || "vigilar"} y score ${topScore}. Genesis caza precio; todavia valida volumen, nivel y catalizador.`;
-    }
-  }
+  const watchedVolume = rawRows.reduce((sum, row) => sum + (numberOrNull(row?.dollar_volume ?? row?.dollarVolume) || 0), 0);
+  const actionable = rawRows.filter((row) => ["buy", "watch"].includes(opportunityDecisionKind(row))).length;
+  const defensive = rawRows.filter((row) => opportunityDecisionKind(row) === "defensive").length;
+  const title = opportunityTitleForMode(mode, top);
+  const answer = opportunityNarrative(top, mode, rawRows);
   return {
     ...sourcePayload,
     ok: true,
@@ -2322,6 +2456,7 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
     opportunities: selected,
     summary: {
       count: selected.length,
+      scanned: rawRows.length,
       watched_volume: watchedVolume || null,
       actionable,
       defensive,
@@ -2331,12 +2466,12 @@ function forcedOpportunityPayloadFromState(question = "", sourcePayload = {}) {
     },
     structured: {
       kind: "opportunity_radar",
-      title: mode.title,
+      title,
       summary: answer,
       alerts: selected,
       opportunities: selected,
       metrics: {
-        total: selected.length,
+        total: rawRows.length,
         opportunities: selected.length,
         actionable,
         defensive,
@@ -2651,7 +2786,7 @@ function imageChartVisual(payload, answer = "") {
       })).filter((section) => section.bullets.length)
     : [
         { title: "Lectura rapida", bullets: lines.slice(0, 2) },
-        { title: "Que vigilar", bullets: lines.slice(2, 5) },
+        { title: "Qu\u00e9 vigilar", bullets: lines.slice(2, 5) },
       ];
   return {
     kind: "chart_image_analysis",
@@ -3179,9 +3314,12 @@ function newsBriefVisualMarkup(visual) {
 }
 
 function opportunityRadarVisualMarkup(visual) {
-  const rows = Array.isArray(visual.rows) ? visual.rows.slice(0, 5) : [];
+  const sourceRows = Array.isArray(visual.rows)
+    ? visual.rows
+    : (Array.isArray(visual.opportunities) ? visual.opportunities : []);
   const metrics = visual.metrics || {};
   const mode = visual.mode || metrics.mode || "hunter";
+  const rows = opportunityRowsForMode(sourceRows, { mode }).slice(0, 5);
   const modeLabel = mode === "validation" ? "validando" : mode === "cautious_buy" ? "cautela" : "cazando";
   const emptyText = mode === "validation"
     ? "Sin entrada validada ahora; espero precio vivo, volumen y nivel claro."
@@ -3189,19 +3327,21 @@ function opportunityRadarVisualMarkup(visual) {
       ? "Sin compra cautelosa limpia ahora; no fuerzo entradas sin confirmacion."
       : "Sin presa limpia ahora; sigo buscando asimetria y ruptura con volumen.";
   const watchedVolume = numberOrNull(metrics.watched_volume || metrics.watchedVolume);
+  const title = opportunityTitleForMode({ mode, title: visual.title }, rows[0] || null);
+  const thesis = rows[0] ? opportunityNarrative(rows[0], { mode }, sourceRows) : (visual.thesis || emptyText);
   return `
     <section class="visual-response feed-visual opportunity-radar-visual">
       <div class="visual-hero">
         <div>
           <span class="visual-kicker">Radar Genesis</span>
-          <strong>${escapeHtml(visual.title || "Cazador de buenos precios")}</strong>
+          <strong>${escapeHtml(title)}</strong>
         </div>
         <span class="conviction-pill bullish">${escapeHtml(cleanCopy(metrics.top_score ? `${metrics.top_score}/100` : modeLabel))}</span>
       </div>
-      <p class="visual-thesis">${escapeHtml(visual.thesis)}</p>
+      <p class="visual-thesis">${escapeHtml(thesis)}</p>
       <div class="visual-grid briefing-grid">
-        ${visualTextMetricMarkup("En radar", String(metrics.total ?? metrics.opportunities ?? rows.length))}
-        ${visualTextMetricMarkup("Accionables", String(metrics.actionable ?? rows.filter((row) => ["buy_cautiously", "watch_confirmation"].includes(String(row.decision || ""))).length))}
+        ${visualTextMetricMarkup("En radar", String(metrics.total ?? sourceRows.length ?? rows.length))}
+        ${visualTextMetricMarkup("Accionables", String(metrics.actionable ?? sourceRows.filter((row) => ["buy", "watch"].includes(opportunityDecisionKind(row))).length))}
         ${visualTextMetricMarkup("Volumen", watchedVolume ? money(watchedVolume) : "Vigilando")}
       </div>
       <div class="visual-feed-cards opportunity-cards">
@@ -3210,10 +3350,11 @@ function opportunityRadarVisualMarkup(visual) {
           const score = numberOrNull(row.opportunity_score ?? row.score);
           const relVol = numberOrNull(row.relative_volume ?? row.relativeVolume);
           const tone = score !== null && score >= 76 ? "bullish" : score !== null && score >= 62 ? "neutral" : "flat";
+          const rowText = opportunityNarrative(row, { mode }, sourceRows);
           return `
             <article>
               <strong>${escapeHtml(cleanCopy(row.ticker || "Mercado"))} - ${escapeHtml(cleanCopy(row.decision_label_es || row.decision || "Vigilar"))}</strong>
-              <p>${escapeHtml(stripMarkdownCopy(cleanCopy(row.genesis_reading_es || row.genesis_reading || row.summary || "Setup en vigilancia; no es orden real.")))}</p>
+              <p>${escapeHtml(stripMarkdownCopy(cleanCopy(rowText || row.genesis_reading_es || row.genesis_reading || row.summary || "Setup en vigilancia; no es orden real.")))}</p>
               <div class="visual-market-strip compact">
                 <span><small>Precio</small><strong>${escapeHtml(price === null ? "Pendiente" : money(price))}</strong></span>
                 <span><small>Score</small><strong class="${tone}">${escapeHtml(score === null ? "Medio" : `${compactNumber(score)}/100`)}</strong></span>
@@ -3753,6 +3894,9 @@ async function submitGenesisQuestion(event) {
   }
   if (isOpportunityQuestion(question)) {
     await loadOpportunityQuotes({ force: false }).catch(() => null);
+    pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(forcedOpportunityPayloadFromState(question), question));
+    renderGenesisScreen();
+    return;
   }
   if (isPerformanceQuestion(question)) {
     try {
@@ -3787,6 +3931,12 @@ async function submitGenesisQuestion(event) {
     }
     return;
   } catch (error) {
+    if (isOpportunityQuestion(question)) {
+      await loadOpportunityQuotes({ force: false }).catch(() => null);
+      pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(forcedOpportunityPayloadFromState(question), question));
+      renderGenesisScreen();
+      return;
+    }
     const localAsset = await localAssetFallbackMessage(question, error);
     if (localAsset) {
       pushGenesisAssistantMessage(localAsset);
@@ -4550,37 +4700,67 @@ function newsRecencyRank(item = {}) {
 function spanishUiCopy(value) {
   let text = humanizeInternalTickerText(cleanCopy(value || ""));
   if (!text) return "";
+
+  text = repairMojibake(text);
+  const lower = text.toLowerCase();
+  const folded = plainQuestionText(text);
+  if ((lower.includes("real estate vs") || folded.includes("real estate vs")) && (lower.includes("financial experts") || folded.includes("better investment"))) {
+    return "Bienes ra\u00edces frente al mercado accionario: qu\u00e9 inversi\u00f3n luce mejor ahora, seg\u00fan expertos financieros";
+  }
+  if ((lower.includes("bitcoin price news") || folded.includes("bitcoin price news")) && (lower.includes("76,000") || folded.includes("76 000") || folded.includes("76000") || folded.includes("tom lee"))) {
+    return "Bitcoin: cierre de mayo por encima de $76,000 confirmar\u00eda mercado alcista, seg\u00fan Tom Lee";
+  }
+
   const replacements = [
-    [/The Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell - Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
-    [/The Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock mercado Closing Bell Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
+    [/Real Estate vs\.\s*(?:stock market|mercado accionario):\s*Which Is the Better Investment Right Now, According to Financial Experts\??/gi, "Bienes ra\u00edces frente al mercado accionario: qu\u00e9 inversi\u00f3n luce mejor ahora, seg\u00fan expertos financieros"],
+    [/Real Estate vs\.\s*mercado accionario:\s*Which Is the Better Investment Right Now, According to Financial Experts\??/gi, "Bienes ra\u00edces frente al mercado accionario: qu\u00e9 inversi\u00f3n luce mejor ahora, seg\u00fan expertos financieros"],
+    [/Which Is the Better Investment Right Now, According to Financial Experts\??/gi, "qu\u00e9 inversi\u00f3n luce mejor ahora, seg\u00fan expertos financieros"],
+    [/Better Investment Right Now/gi, "mejor inversi\u00f3n ahora"],
+    [/Financial Experts/gi, "expertos financieros"],
+    [/Bitcoin price news:\s*BTC\s+cierre\s+mayo\s+over\s*(\$[\d,.]+)\s+confirmaria\s+mercado\s+alcista,?\s*dice\s+Tom Lee/gi, (_match, level) => `Bitcoin: cierre de mayo por encima de ${level} confirmar\u00eda mercado alcista, seg\u00fan Tom Lee`],
+    [/Bitcoin price news:\s*BTC\s*(?:close|closing|cierre|ending)?\s*(?:May|mayo)?\s*(?:over|por encima de)\s*(\$[\d,.]+)\s*(?:would confirm|confirmaria|confirmar\u00eda)\s*(?:new\s*)?(?:bull market|mercado alcista|bull mercado),?\s*(?:says|dice|segun|seg\u00fan)\s*([^,]+)/gi, (_match, level, person) => `Bitcoin: cierre de mayo por encima de ${level} confirmar\u00eda mercado alcista, seg\u00fan ${person}`],
     [/The Minister of Finance of Chile Jorge Quiroz.*Closing Bell.*Nasdaq/gi, "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"],
-    [/\bWhy Is\b/gi, "Por que"],
-    [/\bWhy\b/gi, "Por que"],
+    [/\bWhy Is\b/gi, "Por qu\u00e9"],
+    [/\bWhy\b/gi, "Por qu\u00e9"],
     [/\bToday\b/gi, "hoy"],
     [/\bFutures\b/gi, "futuros"],
-    [/\bHits? Records?\b/gi, "marca maximos"],
-    [/\bOil Prices?\b/gi, "precios del petroleo"],
-    [/\bCrude Oil\b/gi, "petroleo crudo"],
-    [/\bBitcoin\b/gi, "Bitcoin"],
-    [/\bNasdaq\b/gi, "Nasdaq"],
+    [/\bHits? Records?\b/gi, "marca m\u00e1ximos"],
+    [/\bOil Prices?\b/gi, "precios del petr\u00f3leo"],
+    [/\bCrude Oil\b/gi, "petr\u00f3leo crudo"],
     [/\bStock Market Closing Bell\b/gi, "campana de cierre del mercado accionario"],
     [/\bClosing Bell\b/gi, "campana de cierre"],
-    [/\bStock market today\b/gi, "Mercado accionario hoy"],
+    [/\bStock market today\b/gi, "mercado accionario hoy"],
     [/\bstock market\b/gi, "mercado accionario"],
-    [/\bmarket\b/gi, "mercado"],
     [/\bstocks\b/gi, "acciones"],
-    [/\bstock\b/gi, "accion"],
+    [/\bstock\b/gi, "acci\u00f3n"],
     [/\binvestors\b/gi, "inversionistas"],
     [/\btraders\b/gi, "operadores"],
     [/\brisk\b/gi, "riesgo"],
-    [/\bwhy it matters\b/gi, "por que importa"],
-    [/\bwhat to watch\b/gi, "que vigilar"],
+    [/\bwhy it matters\b/gi, "por qu\u00e9 importa"],
+    [/\bwhat to watch\b/gi, "qu\u00e9 vigilar"],
+    [/\bwould confirm\b/gi, "confirmar\u00eda"],
+    [/\bprice news\b/gi, "noticia de precio"],
+    [/\bover\s+(\$[\d,.]+)/gi, "por encima de $1"],
+    [/\bbull market\b/gi, "mercado alcista"],
+    [/\bbull mercado\b/gi, "mercado alcista"],
+    [/\bcierre mayo\b/gi, "cierre de mayo"],
+    [/\bwould\b/gi, "podr\u00eda"],
+    [/\bsays\b/gi, "seg\u00fan"],
+    [/\baccording to\b/gi, "seg\u00fan"],
+    [/\bmarket\b/gi, "mercado"],
+    [/\bprice\b/gi, "precio"],
+    [/\bnews\b/gi, "noticia"],
     [/\bclosing\b/gi, "cierre"],
   ];
+
   replacements.forEach(([pattern, replacement]) => {
     text = text.replace(pattern, replacement);
   });
-  return text.replace(/\s+/g, " ").trim();
+
+  return repairMojibake(text)
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isInternalNewsPlaceholder(item) {
@@ -4758,6 +4938,32 @@ function newsPlaceholderMarkup(category, item = {}) {
   return `${symbols[key] || symbols.ticker}<small>${escapeHtml(label || "Market")}</small>`;
 }
 
+function newsGenesisDetailCopy(item = {}, assets = []) {
+  const title = newsDisplayTitle(item);
+  const affected = assets.map((asset) => displayAssetLabel(asset)).filter(Boolean).join(", ") || "mercado";
+  const impact = cleanCopy(item?.impact || "neutral").toLowerCase();
+  const impactCopy = impact.includes("bull")
+    ? "presi\u00f3n positiva si precio y volumen confirman"
+    : impact.includes("bear")
+      ? "presi\u00f3n negativa si el precio pierde niveles"
+      : "contexto relevante, no se\u00f1al operativa por s\u00ed solo";
+  const generic = /la nota pone en foco|aporta contexto|contexto relevante|genesis revisa|puede afectar apetito|puede mejorar apetito|puede presionar|impacto todavia no confirmado|la noticia apunta|genesis busca confirmacion|vigilancia hasta ver|vigilar reaccion/i;
+  const pick = (...values) => {
+    const candidate = values.map((value) => spanishUiCopy(value)).find((value) => value && !generic.test(value));
+    return candidate || "";
+  };
+  return {
+    takeaway: pick(item.genesisTakeaway, item.genesis_takeaway, item.takeaway)
+      || `Esto est\u00e1 pasando: ${title}. Si tienes exposici\u00f3n a ${affected}, Genesis lo usa como contexto: espero reacci\u00f3n de precio, volumen y una segunda se\u00f1al antes de cambiar el plan.`,
+    why: pick(item.whyItMatters, item.why_it_matters)
+      || `Te importa porque puede mover apetito de riesgo, volumen y niveles de ${affected}. Si el mercado acompa\u00f1a, puede cambiar el tono de alertas y cartera.`,
+    risk: pick(item.risk)
+      || "El riesgo es perseguir el titular sin confirmaci\u00f3n de precio y volumen.",
+    watch: pick(item.watch, item.whatToWatch, item.what_to_watch)
+      || `Vigila reacci\u00f3n de precio, volumen y si ${affected} confirma direcci\u00f3n en la siguiente vela relevante.`,
+  };
+}
+
 function openNewsDetail(newsId) {
   const items = newsFeedItems(appState.newsSnapshot || {});
   if (!Object.keys(appState.newsItemsById || {}).length) indexNewsItems(items);
@@ -4778,12 +4984,15 @@ function openNewsDetail(newsId) {
   const image = newsImageForItem(item);
   const assets = Array.isArray(item.tickersAffected) ? item.tickersAffected.filter(Boolean).slice(0, 5) : Array.isArray(item.assets) ? item.assets.filter(Boolean).slice(0, 5) : [];
   const watchPoints = Array.isArray(item.watchPoints) ? item.watchPoints.filter(Boolean).slice(0, 4) : [];
+  const detailTitle = newsDisplayTitle(item);
+  const detailSummary = spanishUiCopy(item.summary_es || item.summary || item.description || "Sin resumen disponible.");
+  const genesisCopy = newsGenesisDetailCopy(item, assets);
   body.innerHTML = `
     <section class="sheet-hero news-hero">
       ${newsImageTag(item, "news-detail-image")}
       <div>
         <span class="app-kicker">${escapeHtml(cleanCopy(item.category || "Noticias"))}</span>
-        <h2>${escapeHtml(newsDisplayTitle(item))}</h2>
+        <h2>${escapeHtml(detailTitle)}</h2>
       </div>
     </section>
     <div class="news-detail-meta">
@@ -4792,14 +5001,13 @@ function openNewsDetail(newsId) {
       <span class="${newsImpactTone(item.impact)}">${escapeHtml(cleanCopy(item.impact || "Neutral"))}</span>
       ${item.confidence ? `<span>${escapeHtml(`Confianza ${cleanCopy(item.confidence)}`)}</span>` : ""}
     </div>
-    <p class="detail-lead">${escapeHtml(spanishUiCopy(item.summary || "Sin resumen disponible."))}</p>
+    <p class="detail-lead">${escapeHtml(detailSummary)}</p>
     <section class="genesis-mini investing-detail-block">
       <strong>Lectura Genesis</strong>
-      <p>${escapeHtml(spanishUiCopy(item.genesisTakeaway || item.genesis_takeaway || "Genesis usa esta nota como contexto, no como señal aislada."))}</p>
-      <p>Por que importa: ${escapeHtml(spanishUiCopy(item.whyItMatters || item.why_it_matters || "Puede afectar apetito de riesgo, momentum o niveles de los activos relacionados."))}</p>
-      <p>Riesgo: ${escapeHtml(spanishUiCopy(item.risk || "Impacto aun depende de confirmacion por precio y volumen."))}</p>
-      <p>Qué vigilar: ${escapeHtml(watchPoints.length ? watchPoints.map(spanishUiCopy).join(" | ") : "reacción de precio, volumen y confirmación en la siguiente vela relevante.")}</p>
-      ${item.watch ? `<p>${escapeHtml(spanishUiCopy(item.watch))}</p>` : ""}
+      <p>${escapeHtml(genesisCopy.takeaway)}</p>
+      <p>Por qu\u00e9 importa: ${escapeHtml(genesisCopy.why)}</p>
+      <p>Riesgo: ${escapeHtml(genesisCopy.risk)}</p>
+      <p>Qu\u00e9 vigilar: ${escapeHtml(watchPoints.length ? watchPoints.map(spanishUiCopy).join(" | ") : genesisCopy.watch)}</p>
     </section>
     ${assets.length ? `<div class="news-meta">${assets.map((asset) => `<span>${escapeHtml(displayAssetLabel(asset))}</span>`).join("")}</div>` : ""}
     ${item.url ? `<a class="secondary-button full" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Abrir fuente original</a>` : ""}
@@ -4808,7 +5016,7 @@ function openNewsDetail(newsId) {
 }
 
 function newsDisplayTitle(item = {}) {
-  return spanishUiCopy(item.title_es || item.title || item.headline || item.originalTitle || "Noticia");
+  return spanishUiCopy(item.title_es || item.title || item.headline || item.original_title || item.originalTitle || "Noticia");
 }
 
 function closeNewsDetail() {
@@ -4900,7 +5108,7 @@ function watchTodayMarkup(items = []) {
   const leader = [...rows].sort((a, b) => (itemDailyPct(b) || 0) - (itemDailyPct(a) || 0))[0];
   return `
     <section class="watch-today-card">
-      <strong>Que vigilar hoy</strong>
+      <strong>Qu\u00e9 vigilar hoy</strong>
       <div>
         ${renderMetricCard("Nivel clave", leader ? `${itemTicker(leader)} ${formatPercent(itemDailyPct(leader), "0.00%")}` : "Sin liderazgo", movementTone(leader))}
         ${renderMetricCard("Volumen inusual", unusual ? `${itemTicker(unusual)} ${formatVolumeCompact(unusual.volume)}` : "Sin ruptura", unusual ? "up" : "flat")}

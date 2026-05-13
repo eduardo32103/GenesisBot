@@ -214,7 +214,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["response_type"], "opportunity_radar")
         self.assertEqual(fixed["tickers"], [])
         self.assertEqual(fixed["structured"]["kind"], "opportunity_radar")
-        self.assertEqual(fixed["structured"]["title"], "Compra con cautela")
+        self.assertEqual(fixed["structured"]["title"], "Vigilar, no comprar todavia")
         self.assertEqual(fixed["structured"]["metrics"]["mode"], "cautious_buy")
         self.assertEqual(fixed["opportunities"][0]["ticker"], "TSLA")
         self.assertNotIn("ASISTENTE COMPLETO", json.dumps(fixed))
@@ -245,7 +245,7 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
 
         self.assertEqual(hunter["structured"]["title"], "Cazador de buenos precios")
         self.assertEqual(hunter["structured"]["metrics"]["mode"], "hunter")
-        self.assertEqual(validation["structured"]["title"], "Validador de entradas")
+        self.assertEqual(validation["structured"]["title"], "Sin entrada validada")
         self.assertEqual(validation["structured"]["metrics"]["mode"], "validation")
         self.assertNotEqual(hunter["answer"], validation["answer"])
 
