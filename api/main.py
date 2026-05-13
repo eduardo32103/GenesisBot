@@ -1196,6 +1196,47 @@ def _simple_return(first: object, last: object) -> float | None:
     return (end - start) / start * 100
 
 
+def _yahoo_point_date(point: dict) -> datetime | None:
+    raw = str(point.get("date") or point.get("time") or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw[:10])
+    except Exception:
+        return None
+
+
+def _yahoo_points_span_days(points: list[dict]) -> int:
+    if len(points) < 2:
+        return 0
+    first = _yahoo_point_date(points[0])
+    last = _yahoo_point_date(points[-1])
+    if first is None or last is None:
+        return max(len(points) - 1, 0)
+    return max((last - first).days, 0)
+
+
+def _yahoo_points_cover_return_range(points: list[dict], range_name: str) -> bool:
+    if len(points) < 2:
+        return False
+    normalized = str(range_name or "").upper()
+    if normalized == "1Y":
+        return _yahoo_points_span_days(points) >= 320
+    if normalized == "5Y":
+        return _yahoo_points_span_days(points) >= 365 * 4
+    return True
+
+
+def _yahoo_fetch_return_points(ticker: str, range_name: str, selected_range: str, selected_points: list[dict]) -> list[dict]:
+    normalized_range = str(range_name or "").upper()
+    if normalized_range == selected_range:
+        return selected_points
+    try:
+        return _yahoo_shape_points(_yahoo_fetch_chart(ticker, normalized_range))
+    except Exception:
+        return []
+
+
 def _yahoo_return_maps(
     ticker: str,
     timeframe: str,
@@ -1203,42 +1244,36 @@ def _yahoo_return_maps(
     quote_row: dict,
 ) -> tuple[dict, dict]:
     try:
-        from services.genesis.returns_engine import calculate_returns, flatten_return_details
+        from services.genesis.returns_engine import calculate_return_detail, calculate_returns, flatten_return_details
     except Exception:
         return ({range_name: None for range_name in _YAHOO_TIMEFRAMES}, {})
 
     normalized_timeframe = str(timeframe or "1Y").strip().upper()
-    base_points = points
-    if normalized_timeframe in {"1D", "1W", "1M"}:
-        broader_points = _yahoo_shape_points(_yahoo_fetch_chart(ticker, "5Y"))
-        if len(broader_points) >= 2:
-            base_points = broader_points
-
-    intraday_points = points if normalized_timeframe == "1D" else []
-    details = calculate_returns(
-        base_points,
-        intraday_points,
+    range_points = {
+        range_name: _yahoo_fetch_return_points(ticker, range_name, normalized_timeframe, points)
+        for range_name in _YAHOO_TIMEFRAMES
+    }
+    eod_base = (
+        range_points.get("MAX")
+        or range_points.get("5Y")
+        or range_points.get("1Y")
+        or points
+    )
+    one_day_detail = calculate_returns(
+        eod_base,
+        range_points.get("1D") or [],
         source="Yahoo Chart fallback",
         current_price=quote_row.get("price") or quote_row.get("current_price"),
         previous_close=quote_row.get("previous_close") or quote_row.get("previousClose"),
         current_date=str(quote_row.get("quote_timestamp") or "live"),
-    )
+    )["1D"]
+    details = {"1D": one_day_detail}
+    for range_name in ("1W", "1M", "1Y", "5Y", "MAX"):
+        candidate_points = range_points.get(range_name) or []
+        if not _yahoo_points_cover_return_range(candidate_points, range_name):
+            candidate_points = []
+        details[range_name] = calculate_return_detail(candidate_points, range_name, source="Yahoo Chart fallback")
     returns = flatten_return_details(details)
-    selected_return = _simple_return((points[0] if points else {}).get("close"), (points[-1] if points else {}).get("close"))
-    if selected_return is not None:
-        returns[normalized_timeframe] = round(selected_return, 4)
-        details[normalized_timeframe] = {
-            **(details.get(normalized_timeframe) or {}),
-            "range": normalized_timeframe,
-            "first_date": (points[0] if points else {}).get("date") or "",
-            "last_date": (points[-1] if points else {}).get("date") or "",
-            "first_close": (points[0] if points else {}).get("close"),
-            "last_close": (points[-1] if points else {}).get("close"),
-            "return_pct": round(selected_return, 4),
-            "source": "Yahoo Chart fallback",
-            "points_used": len(points),
-            "confidence": "medium",
-        }
     return returns, details
 
 

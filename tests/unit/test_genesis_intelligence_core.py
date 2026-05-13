@@ -851,6 +851,20 @@ class GenesisReturnsEngineTests(unittest.TestCase):
         self.assertFalse(details["MAX"]["used_live_quote_as_last"])
         self.assertEqual(details["MAX"]["confidence"], "high")
 
+    def test_long_return_tiles_require_matching_history_window(self) -> None:
+        points = [
+            {"date": "2025-01-01", "close": 100},
+            {"date": "2026-01-01", "close": 80},
+        ]
+
+        details = calculate_returns(points, [])
+        returns = flatten_return_details(details)
+
+        self.assertEqual(returns["1Y"], -20.0)
+        self.assertIsNone(returns["5Y"])
+        self.assertEqual(returns["MAX"], -20.0)
+        self.assertEqual(details["5Y"]["points_used"], 0)
+
     def test_one_day_return_can_use_verified_live_quote_with_metadata(self) -> None:
         points = [
             {"date": "2026-01-01", "close": 100},

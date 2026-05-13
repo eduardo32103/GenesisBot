@@ -78,8 +78,8 @@ def calculate_returns(
         ),
         "1W": calculate_return_detail(slice_points_for_range(eod, "1W"), "1W", source=source),
         "1M": calculate_return_detail(slice_points_for_range(eod, "1M"), "1M", source=source),
-        "1Y": calculate_return_detail(slice_points_for_range(eod, "1Y"), "1Y", source=source),
-        "5Y": calculate_return_detail(slice_points_for_range(eod, "5Y"), "5Y", source=source),
+        "1Y": calculate_return_detail(slice_points_for_range(eod, "1Y", require_full_window=True), "1Y", source=source),
+        "5Y": calculate_return_detail(slice_points_for_range(eod, "5Y", require_full_window=True), "5Y", source=source),
         "MAX": calculate_return_detail(eod, "MAX", source=source),
     }
 
@@ -88,28 +88,39 @@ def flatten_return_details(details: dict[str, dict[str, Any]]) -> dict[str, floa
     return {range_name: details.get(range_name, {}).get("return_pct") for range_name in _RANGES}
 
 
-def slice_points_for_range(points: list[dict[str, Any]], range_name: str) -> list[dict[str, Any]]:
+def slice_points_for_range(points: list[dict[str, Any]], range_name: str, *, require_full_window: bool = False) -> list[dict[str, Any]]:
     if not points:
         return []
     normalized = str(range_name or "").upper()
     if normalized == "MAX":
         return points
     if normalized == "1W":
-        return _slice_since(points, days=7, fallback_count=7)
+        return _slice_since(points, days=7, fallback_count=7, require_full_window=require_full_window)
     if normalized == "1M":
-        return _slice_since(points, days=31, fallback_count=23)
+        return _slice_since(points, days=31, fallback_count=23, require_full_window=require_full_window)
     if normalized == "1Y":
-        return _slice_since(points, days=366, fallback_count=260)
+        return _slice_since(points, days=366, fallback_count=260, require_full_window=require_full_window)
     if normalized == "5Y":
-        return _slice_since(points, days=366 * 5, fallback_count=1260)
+        return _slice_since(points, days=366 * 5, fallback_count=1260, require_full_window=require_full_window)
     return points
 
 
-def _slice_since(points: list[dict[str, Any]], *, days: int, fallback_count: int) -> list[dict[str, Any]]:
+def _slice_since(
+    points: list[dict[str, Any]],
+    *,
+    days: int,
+    fallback_count: int,
+    require_full_window: bool = False,
+) -> list[dict[str, Any]]:
     last_date = _parse_date(points[-1].get("date") or points[-1].get("time"))
     if last_date is None:
         return points[-fallback_count:]
     cutoff = last_date - timedelta(days=days)
+    if require_full_window:
+        first_date = _parse_date(points[0].get("date") or points[0].get("time"))
+        tolerance_days = max(3, int(days * 0.08))
+        if first_date is not None and first_date > cutoff + timedelta(days=tolerance_days):
+            return []
     sliced = [point for point in points if (_parse_date(point.get("date") or point.get("time")) or last_date) >= cutoff]
     return sliced if len(sliced) >= 2 else points[-fallback_count:]
 

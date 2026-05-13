@@ -227,7 +227,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
     def test_yahoo_fallback_populates_return_tiles_from_broader_series(self, mock_fetch: Mock, mock_quote: Mock) -> None:
         start = datetime(2025, 1, 1, tzinfo=timezone.utc)
 
-        def chart_payload(days: int, start_price: float, step: float) -> dict:
+        def chart_payload(days: int, start_price: float, step: float, start_date: datetime = start) -> dict:
             timestamps = []
             opens = []
             highs = []
@@ -235,7 +235,7 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
             closes = []
             volumes = []
             for index in range(days):
-                stamp = start + timedelta(days=index)
+                stamp = start_date + timedelta(days=index)
                 close = start_price + index * step
                 timestamps.append(int(stamp.timestamp()))
                 opens.append(close - 0.5)
@@ -246,8 +246,18 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
             return {"timestamp": timestamps, "indicators": {"quote": [{"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}]}}
 
         def fake_fetch(ticker: str, timeframe: str = "1D") -> dict:
+            if timeframe == "1D":
+                return chart_payload(2, 228, 1)
+            if timeframe == "1W":
+                return chart_payload(7, 210, 2)
+            if timeframe == "1M":
+                return chart_payload(30, 200, 1)
+            if timeframe == "1Y":
+                return chart_payload(366, 100, 0.2)
             if timeframe == "5Y":
-                return chart_payload(520, 100, 0.5)
+                return chart_payload(1826, 40, 0.1)
+            if timeframe == "MAX":
+                return chart_payload(2600, 20, 0.1)
             return chart_payload(30, 200, 1)
 
         mock_fetch.side_effect = fake_fetch
@@ -261,6 +271,57 @@ class DashboardAssetChartSeriesTests(unittest.TestCase):
         self.assertIsNotNone(payload["returns"]["1Y"])
         self.assertIsNotNone(payload["returns"]["MAX"])
         self.assertEqual(payload["return_details"]["1M"]["points_used"], 30)
+
+    @patch("api.main._yahoo_quote_row")
+    @patch("api.main._yahoo_fetch_chart")
+    def test_yahoo_fallback_keeps_long_returns_independent_from_selected_range(self, mock_fetch: Mock, mock_quote: Mock) -> None:
+        start = datetime(2018, 1, 1, tzinfo=timezone.utc)
+
+        def chart_payload(days: int, start_price: float, end_price: float) -> dict:
+            timestamps = []
+            opens = []
+            highs = []
+            lows = []
+            closes = []
+            volumes = []
+            step = (end_price - start_price) / max(days - 1, 1)
+            for index in range(days):
+                stamp = start + timedelta(days=index)
+                close = start_price + index * step
+                timestamps.append(int(stamp.timestamp()))
+                opens.append(close - 0.5)
+                highs.append(close + 1)
+                lows.append(close - 1)
+                closes.append(close)
+                volumes.append(10_000 + index)
+            return {"timestamp": timestamps, "indicators": {"quote": [{"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}]}}
+
+        def fake_fetch(ticker: str, timeframe: str = "1D") -> dict:
+            if timeframe == "1D":
+                return chart_payload(2, 80_000, 81_000)
+            if timeframe == "1W":
+                return chart_payload(7, 79_000, 81_000)
+            if timeframe == "1M":
+                return chart_payload(30, 70_000, 81_000)
+            if timeframe == "1Y":
+                return chart_payload(366, 104_000, 81_000)
+            if timeframe == "5Y":
+                return chart_payload(1826, 20_000, 81_000)
+            if timeframe == "MAX":
+                return chart_payload(3000, 1_000, 81_000)
+            return chart_payload(30, 70_000, 81_000)
+
+        mock_fetch.side_effect = fake_fetch
+        mock_quote.return_value = {"price": 81_000, "previous_close": 80_000, "quote_timestamp": "2026-05-11T00:00:00+00:00"}
+
+        payload = _yahoo_asset_chart_payload("BTC-USD", "1Y")
+
+        self.assertTrue(payload["ok"])
+        self.assertLess(payload["returns"]["1Y"], 0)
+        self.assertGreater(payload["returns"]["5Y"], 0)
+        self.assertGreater(payload["returns"]["MAX"], 0)
+        self.assertNotEqual(payload["returns"]["MAX"], payload["returns"]["1Y"])
+        self.assertGreater(payload["return_details"]["MAX"]["points_used"], payload["return_details"]["1Y"]["points_used"])
 
 
 if __name__ == "__main__":
