@@ -29,7 +29,7 @@ class AgentRouter:
         if intent == "memory_query":
             tickers = [item for item in tickers if item not in {"CONSULTAS", "RECIENTES", "ACTIVOS", "MEMORIA", "APRENDISTE"}]
             primary_ticker = normalize_ticker(tickers[0] if tickers else ticker)
-        if intent in {"greeting", "time", "date", "weather", "daily_briefing", "market_overview", "general_question"}:
+        if intent in {"greeting", "time", "date", "weather", "daily_briefing", "market_overview", "opportunities", "general_question"}:
             tickers = []
             primary_ticker = ""
         if intent in {"whale_activity", "alerts", "macro_news"} and not tickers:
@@ -78,6 +78,8 @@ class AgentRouter:
             return "alerts"
         if _mentions_macro(text):
             return "macro_news"
+        if _mentions_opportunities(text) and not tickers:
+            return "opportunities"
         if len(tickers) >= 2 and _mentions_comparison(text):
             return "comparison"
         if chart.get("is_chart"):
@@ -108,6 +110,7 @@ _AGENT_BY_INTENT = {
     "whale_activity": "whale_agent",
     "alerts": "alerts_agent",
     "macro_news": "news_macro_agent",
+    "opportunities": "opportunity_agent",
     "comparison": "price_agent",
     "technical_indicators": "technical_agent",
     "trade_decision": "asset_analysis_agent",
@@ -240,6 +243,53 @@ def _mentions_alerts(text: str) -> bool:
 
 def _mentions_macro(text: str) -> bool:
     return any(token in text for token in ("macro", "noticia", "noticias"))
+
+
+def _mentions_opportunities(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "oportunidad",
+            "oportunidades",
+            "buen precio",
+            "buenos precios",
+            "acciones buenas",
+            "que hay para comprar",
+            "que puedo comprar",
+            "que podemos comprar",
+            "que podria comprar",
+            "que hay bueno para comprar",
+            "que compro",
+            "que comprar",
+            "que deberia comprar",
+            "comprar con cautela",
+            "compra con cautela",
+            "ideas de compra",
+            "ideas para comprar",
+            "lista de compra",
+            "watchlist de compra",
+            "oportunidades de compra",
+            "oportunidades para comprar",
+            "donde hay compra",
+            "donde hay entrada",
+            "comprar hoy",
+            "compra hoy",
+            "que acciones compro",
+            "que activo compro",
+            "buena validacion",
+            "entrada validada",
+            "entradas validas",
+            "buen setup",
+            "setups de compra",
+            "oportunidad de entrada",
+            "cazar",
+            "caza",
+            "cazame",
+            "aguila",
+            "setup",
+            "setups",
+        )
+    )
 
 
 def _mentions_comparison(text: str) -> bool:

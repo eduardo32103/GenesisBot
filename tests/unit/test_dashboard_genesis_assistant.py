@@ -126,8 +126,12 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
 
     def test_genesis_intent_router_keeps_opportunities_out_of_fake_tickers(self) -> None:
         self.assertTrue(_is_opportunity_genesis_prompt("que oportunidades hay para comprar con cautela"))
+        self.assertTrue(_is_opportunity_genesis_prompt("que hay para comprar?"))
+        self.assertTrue(_is_opportunity_genesis_prompt("que puedo comprar hoy?"))
         self.assertTrue(_is_opportunity_genesis_prompt("Genesis, caza buenos precios"))
+        self.assertFalse(_is_asset_genesis_prompt("que hay para comprar?"))
         self.assertFalse(_is_asset_genesis_prompt("que compro hoy con buena validacion"))
+        self.assertEqual(_prompt_tickers("que hay para comprar?"), [])
         self.assertEqual(_prompt_tickers("que compro hoy con buena validacion"), [])
 
     @patch("api.main.get_dashboard_opportunities")
@@ -172,6 +176,48 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["structured"]["metrics"]["mode"], "cautious_buy")
         self.assertEqual(fixed["opportunities"][0]["ticker"], "NVDA")
         self.assertNotIn("CAUTELA", json.dumps(fixed))
+
+    @patch("api.main.get_dashboard_opportunities")
+    def test_local_proxy_routes_plain_buy_prompt_to_opportunity_radar(self, mock_opportunities) -> None:
+        mock_opportunities.return_value = {
+            "ok": True,
+            "items": [
+                {
+                    "ticker": "TSLA",
+                    "asset_name": "Tesla, Inc.",
+                    "price": 433.45,
+                    "opportunity_score": 85,
+                    "decision": "watch_breakout",
+                    "decision_label_es": "Vigilar ruptura",
+                    "dollar_volume": 2400000000,
+                    "genesis_reading_es": "TSLA es idea, no orden real.",
+                }
+            ],
+            "summary": {"top_ticker": "TSLA", "top_score": 85},
+            "source_status": {"provider_used": "unit"},
+        }
+        stale_payload = {
+            "intent": "general",
+            "response_type": "general_assistant",
+            "answer": "Te sigo. Puedo razonar esa pregunta como asistente general.",
+        }
+
+        fixed = json.loads(
+            _massage_proxy_payload(
+                "/api/genesis/ask",
+                json.dumps(stale_payload).encode("utf-8"),
+                body={"message": "que hay para comprar?", "context": "genesis"},
+            ).decode("utf-8")
+        )
+
+        self.assertEqual(fixed["intent"], "opportunities")
+        self.assertEqual(fixed["response_type"], "opportunity_radar")
+        self.assertEqual(fixed["tickers"], [])
+        self.assertEqual(fixed["structured"]["kind"], "opportunity_radar")
+        self.assertEqual(fixed["structured"]["title"], "Compra con cautela")
+        self.assertEqual(fixed["structured"]["metrics"]["mode"], "cautious_buy")
+        self.assertEqual(fixed["opportunities"][0]["ticker"], "TSLA")
+        self.assertNotIn("ASISTENTE COMPLETO", json.dumps(fixed))
 
     @patch("api.main.get_dashboard_opportunities")
     def test_local_proxy_differentiates_opportunity_modes(self, mock_opportunities) -> None:

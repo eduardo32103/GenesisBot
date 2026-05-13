@@ -3,6 +3,7 @@ from __future__ import annotations
 import unicodedata
 from typing import Any
 
+from services.dashboard.get_opportunity_radar import get_opportunity_radar_snapshot
 from services.genesis.agent_router import AgentRouter
 from services.genesis.alerts_agent import get_alerts_agent
 from services.genesis.llm_orchestrator import get_llm_orchestrator
@@ -150,6 +151,57 @@ def route_message(
             alerts["answer"],
             [],
             extra={"alerts": alerts, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
+    if route.intent == "opportunities":
+        radar = get_opportunity_radar_snapshot(force_refresh=False)
+        items = radar.get("items") if isinstance(radar.get("items"), list) else []
+        mode = _opportunity_mode_from_prompt(clean)
+        answer = _opportunity_radar_answer(items, mode)
+        structured = _opportunity_radar_structured(radar, items, mode, answer)
+        store.save_event(
+            "opportunity_radar",
+            {
+                "mode": mode["mode"],
+                "count": len(items),
+                "top_ticker": (items[0] or {}).get("ticker") if items else "",
+                "source_status": radar.get("source_status"),
+            },
+            "opportunity_agent",
+            "media",
+        )
+        for item in items[:5]:
+            ticker_item = normalize_ticker(item.get("ticker"))
+            if ticker_item:
+                store.save_signal_event(
+                    ticker_item,
+                    {
+                        "ticker": ticker_item,
+                        "event_type": "opportunity_radar",
+                        "price_at_decision": item.get("price"),
+                        "expected_direction": item.get("expected_direction") or item.get("direction") or "watching",
+                        "expected_impact": item.get("decision_label_es") or item.get("decision") or "vigilar",
+                        "confidence": item.get("confidence") or item.get("opportunity_score"),
+                        "genesis_reading": item.get("genesis_reading_es") or item.get("summary_es") or answer,
+                        "status": "watching",
+                    },
+                    "opportunity_agent",
+                    item.get("confidence") or "media",
+                )
+        return _payload(
+            "opportunities",
+            answer,
+            [],
+            extra={
+                "opportunities": items,
+                "radar": radar,
+                "structured": structured,
+                "kind": structured["kind"],
+                "source_status": radar.get("source_status") or {},
+            },
             memory=store,
             prompt=clean,
             conversation_id=clean_conversation_id,
@@ -359,6 +411,104 @@ def _fold_prompt(value: object) -> str:
     return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
 
 
+def _opportunity_mode_from_prompt(message: str) -> dict[str, str]:
+    text = f" {_fold_prompt(message)} "
+    if any(token in text for token in (" buena validacion ", " con buena validacion ", " entrada validada ", " entradas validas ", " validacion ")):
+        return {
+            "mode": "validation",
+            "title": "Validador de entradas",
+            "tag": "validando",
+            "empty": "No valido ninguna entrada limpia ahora. Espero precio vivo, volumen, nivel e invalidacion antes de elevar conviccion.",
+        }
+    if any(
+        token in text
+        for token in (
+            " comprar con cautela ",
+            " compra con cautela ",
+            " que hay para comprar ",
+            " que puedo comprar ",
+            " que podemos comprar ",
+            " que podria comprar ",
+            " que hay bueno para comprar ",
+            " que compro ",
+            " que comprar ",
+            " que deberia comprar ",
+            " ideas de compra ",
+            " ideas para comprar ",
+            " oportunidades de compra ",
+            " donde hay compra ",
+            " donde hay entrada ",
+            " comprar hoy ",
+            " compra hoy ",
+            " que acciones compro ",
+            " que activo compro ",
+        )
+    ):
+        return {
+            "mode": "cautious_buy",
+            "title": "Compra con cautela",
+            "tag": "cautela",
+            "empty": "No hay compra cautelosa de calidad ahora. No fuerzo entradas: espero precio vivo, volumen y soporte de catalizador.",
+        }
+    return {
+        "mode": "hunter",
+        "title": "Cazador de buenos precios",
+        "tag": "cazando",
+        "empty": "No hay presa limpia ahora. Mantengo el radar abierto buscando descuento, ruptura con volumen y asimetria real.",
+    }
+
+
+def _opportunity_radar_answer(items: list[dict[str, Any]], mode: dict[str, str]) -> str:
+    if not items:
+        return f"{mode['title']}: {mode['empty']}"
+    top = items[0] or {}
+    ticker = top.get("ticker") or "Mercado"
+    label = top.get("decision_label_es") or top.get("decision") or "vigilar"
+    score = top.get("opportunity_score") or top.get("score") or "medio"
+    price = top.get("price")
+    level = top.get("entry_level") or top.get("resistance") or top.get("support")
+    price_text = f" en {format_signed_money(price)}" if isinstance(price, (int, float)) else ""
+    level_text = f" Validar nivel {format_signed_money(level)}." if isinstance(level, (int, float)) else " Validar nivel, volumen y cierre antes de actuar."
+    return (
+        f"{mode['title']}: {ticker} lidera el radar con {label} y score {score}{price_text}. "
+        f"No es orden real; es idea para validar con precio, volumen relativo y riesgo.{level_text}"
+    )
+
+
+def _opportunity_radar_structured(
+    radar: dict[str, Any],
+    items: list[dict[str, Any]],
+    mode: dict[str, str],
+    answer: str,
+) -> dict[str, Any]:
+    total_volume = sum(float(item.get("dollar_volume") or 0) for item in items if isinstance(item.get("dollar_volume"), (int, float)))
+    summary = radar.get("summary") if isinstance(radar.get("summary"), dict) else {}
+    return {
+        "kind": "opportunity_radar",
+        "title": mode["title"],
+        "summary": answer,
+        "tag": mode["tag"],
+        "metrics": {
+            "mode": mode["mode"],
+            "total": len(items),
+            "actionables": len([item for item in items if str(item.get("decision") or "").lower() in {"buy_cautiously", "watch_breakout", "opportunity"}]),
+            "volume": total_volume or summary.get("total_dollar_volume") or "Vigilando",
+            "top_ticker": summary.get("top_ticker") or ((items[0] or {}).get("ticker") if items else ""),
+            "top_score": summary.get("top_score") or ((items[0] or {}).get("opportunity_score") if items else None),
+        },
+        "opportunities": items[:5],
+        "sections": [
+            {
+                "title": "Regla Genesis",
+                "bullets": [
+                    "Solo elevo ideas con precio vivo, volumen y nivel de invalidacion.",
+                    "No es compra real ni broker; es radar para decidir mejor.",
+                ],
+            }
+        ],
+    }
+
+
 def _payload(
     intent: str,
     answer: str,
@@ -420,6 +570,7 @@ def _response_type_for_intent(intent: str) -> str:
         "weather": "weather",
         "alerts": "alerts_digest",
         "whale_activity": "whale_flow",
+        "opportunities": "opportunity_radar",
         "macro_news": "news_brief",
         "portfolio_summary": "general_assistant",
         "tracking_summary": "general_assistant",
