@@ -3923,6 +3923,19 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(payload_data, HTTPStatus.OK)
             return
 
+        if parsed.path == "/api/dashboard/genesis":
+            query = parse_qs(parsed.query)
+            question = (query.get("q") or [""])[0]
+            context = (query.get("context") or ["general"])[0]
+            ticker = (query.get("ticker") or [""])[0]
+            correction_body = {"message": question, "context": context, "ticker": ticker}
+            if _is_performance_genesis_prompt(question):
+                self._write_json(_performance_prompt_payload(question, correction_body), HTTPStatus.OK)
+                return
+            if _is_opportunity_genesis_prompt(question):
+                self._write_json(_opportunity_prompt_payload(question, correction_body), HTTPStatus.OK)
+                return
+
         if self._try_proxy_to_production(parsed, method="GET"):
             return
 
@@ -3963,7 +3976,9 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             if panel_context:
                 correction_body["panel_context"] = panel_context
             try:
-                if _is_opportunity_genesis_prompt(question):
+                if _is_performance_genesis_prompt(question):
+                    payload_data = _performance_prompt_payload(question, correction_body)
+                elif _is_opportunity_genesis_prompt(question):
                     payload_data = _opportunity_prompt_payload(question, correction_body)
                 else:
                     payload_data = get_dashboard_genesis(question, context=context, ticker=ticker, panel_context=panel_context)
@@ -3977,6 +3992,17 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                     reason="snapshot_failure",
                 )
             payload_data = _correct_genesis_proxy_payload(payload_data, correction_body)
+            payload = json.dumps(payload_data).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/genesis/performance":
+            question = (parse_qs(parsed.query).get("q") or ["que tanto esta acertando genesis"])[0]
+            payload_data = _performance_prompt_payload(question, {"message": question})
             payload = json.dumps(payload_data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")

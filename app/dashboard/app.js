@@ -903,6 +903,35 @@ function isOpportunityQuestion(text) {
   ].some((needle) => normalized.includes(needle));
 }
 
+function isPerformanceQuestion(text) {
+  const normalized = ` ${plainQuestionText(text)} `;
+  return [
+    " que tanto esta acertando ",
+    " que tanto estas acertando ",
+    " esta acertando genesis ",
+    " estas acertando genesis ",
+    " que tanto aciertas ",
+    " que tan bien vas ",
+    " como va genesis ",
+    " como vamos genesis ",
+    " precision genesis ",
+    " precision de genesis ",
+    " rendimiento genesis ",
+    " rendimiento de genesis ",
+    " score genesis ",
+    " score de genesis ",
+    " aciertos ",
+    " fallos ",
+    " fallaste ",
+    " equivocaste ",
+    " equivocaciones ",
+    " alertas funcionaron ",
+    " senales funcionaron ",
+    " aprende de tus errores ",
+    " aprendiendo de tus errores ",
+  ].some((needle) => normalized.includes(needle));
+}
+
 function opportunityQuestionMode(text) {
   const normalized = ` ${plainQuestionText(text)} `;
   if ([
@@ -3605,6 +3634,21 @@ async function submitGenesisQuestion(event) {
   if (isOpportunityQuestion(question)) {
     await loadOpportunityQuotes({ force: false }).catch(() => null);
   }
+  if (isPerformanceQuestion(question)) {
+    try {
+      const payload = await getJson(
+        `/api/genesis/performance?q=${encodeURIComponent(question)}`,
+        { timeoutMs: 5000, attempts: 1, localOnly: true }
+      );
+      pushGenesisAssistantMessage(genesisAssistantMessageFromPayload(payload, payload.answer || question));
+      renderGenesisScreen();
+      return;
+    } catch (error) {
+      pushGenesisAssistantMessage(localPerformanceFallbackMessage(question, error));
+      renderGenesisScreen();
+      return;
+    }
+  }
   try {
     const payload = await postJson(
       "/api/genesis/ask",
@@ -3695,6 +3739,17 @@ async function enrichGenesisPayloadWithLocalQuote(payload = {}, question = "") {
 async function localAssetFallbackMessage(question, error) {
   if (isMarketOverviewQuestion(question)) return null;
   if (isWeatherQuestion(question)) return null;
+  if (isPerformanceQuestion(question)) {
+    try {
+      const payload = await getJson(
+        `/api/genesis/performance?q=${encodeURIComponent(question)}`,
+        { timeoutMs: 5000, attempts: 1, localOnly: true }
+      );
+      return genesisAssistantMessageFromPayload(payload, payload.answer || question);
+    } catch (_) {
+      return localPerformanceFallbackMessage(question, error);
+    }
+  }
   if (isNewsQuestion(question)) {
     return genesisAssistantMessageFromPayload(forcedNewsPayloadFromState(question), question);
   }
@@ -3760,6 +3815,41 @@ function quoteFromAsset(asset = {}) {
     volume: asset.volume,
     source_label: priceSourceLabel(asset),
   };
+}
+
+function localPerformanceFallbackMessage(question, error) {
+  const issue = cleanCopy(networkErrorMessage(error));
+  const answer = "Genesis esta midiendo precision, pero no pude leer MemoryStore en este intento. Mantengo el panel de seguimiento y reintento cuando la API responda.";
+  const payload = {
+    ok: true,
+    intent: "performance_review",
+    response_type: "performance_review",
+    kind: "performance_review",
+    answer,
+    performance: {
+      answer,
+      metrics: { accuracy: null, hits: 0, misses: 0, watching: 0 },
+      today: { hits: 0, misses: 0 },
+      recent: [],
+      learning: [
+        "Las tesis abiertas no cuentan como acierto ni fallo hasta tener precio posterior.",
+        "MemoryStore guarda las decisiones y resultados cuando la API responde.",
+        issue,
+      ],
+    },
+    structured: {
+      kind: "performance_review",
+      title: "Precision Genesis",
+      summary: answer,
+      metrics: { accuracy: null, hits: 0, misses: 0, watching: 0 },
+      today: { hits: 0, misses: 0 },
+      recent: [],
+      sections: [
+        { title: "Estado", bullets: ["No muestro texto plano; mantengo el panel visual de precision."] },
+      ],
+    },
+  };
+  return genesisAssistantMessageFromPayload(payload, answer);
 }
 
 function offlineGenesisFallback(question, error) {
