@@ -538,8 +538,76 @@ def _summary(raw: dict[str, Any], title: str) -> str:
     return " ".join(text.split())[:320]
 
 
+def _polish_spanish_copy(text: str) -> str:
+    text = _strip_html(text)
+    if not text:
+        return ""
+    direct_patterns = (
+        (
+            r"^Bitcoin price news:\s*BTC\s+(?:close|closing|cierre|ending)\s+May\s+over\s+(\$[\d,.]+)\s+would confirm\s+(?:new\s+)?bull market,?\s*(?:says|dice)\s+(.+)$",
+            r"Bitcoin: cierre de mayo por encima de \1 confirmaria mercado alcista, segun \2",
+        ),
+        (
+            r"^Real Estate vs\.\s*(?:stock market|mercado accionario):\s*Which Is the Better Investment Right Now, According to Financial Experts\??$",
+            "Bienes raices frente al mercado accionario: cual es mejor inversion ahora, segun expertos financieros",
+        ),
+    )
+    for pattern, replacement in direct_patterns:
+        text = re.sub(pattern, replacement, text, flags=re.I)
+    replacements = (
+        (r"\bprice news\b", "noticias de precio"),
+        (r"\bwould confirm\b", "confirmaria"),
+        (r"\bwould\b", "podria"),
+        (r"\bover\s+(\$[\d,.]+)", r"por encima de \1"),
+        (r"\babove\s+(\$[\d,.]+)", r"por encima de \1"),
+        (r"\bclose May\b", "cierre de mayo"),
+        (r"\bclosing May\b", "cierre de mayo"),
+        (r"\bending May\b", "cierre de mayo"),
+        (r"\bmay over\b", "mayo por encima de"),
+        (r"\bbull market\b", "mercado alcista"),
+        (r"\bbear market\b", "mercado bajista"),
+        (r"\bbull mercado\b", "mercado alcista"),
+        (r"\bbear mercado\b", "mercado bajista"),
+        (r"\bsays\b", "segun"),
+        (r"\bReal Estate\b", "bienes raices"),
+        (r"\bWhich Is\b", "cual es"),
+        (r"\bBetter Investment\b", "mejor inversion"),
+        (r"\bRight Now\b", "ahora"),
+        (r"\bAccording to\b", "segun"),
+        (r"\bFinancial Experts\b", "expertos financieros"),
+        (r"\bvs\.\b", "frente a"),
+        (r"\bStock Market\b", "mercado accionario"),
+        (r"\bstock market\b", "mercado accionario"),
+        (r"\bmarket\b", "mercado"),
+        (r"\bBitcoin price\b", "precio de Bitcoin"),
+        (r"\bprice\b", "precio"),
+        (r"\bnews\b", "noticia"),
+        (r"\bMay\b", "mayo"),
+        (r"\bconfirmaria\b", "confirmaría"),
+        (r"\bcual\b", "cuál"),
+        (r"\binversion\b", "inversión"),
+        (r"\bsegun\b", "según"),
+        (r"\braices\b", "raíces"),
+        (r"\baccion\b", "acción"),
+        (r"\bmaximos\b", "máximos"),
+        (r"\bpetroleo\b", "petróleo"),
+        (r"\binflacion\b", "inflación"),
+        (r"\bpresion\b", "presión"),
+        (r"\bconfirmacion\b", "confirmación"),
+        (r"\bvalidacion\b", "validación"),
+        (r"\binvalidacion\b", "invalidación"),
+        (r"\bsenal\b", "señal"),
+        (r"\btecnologia\b", "tecnología"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.I)
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    return " ".join(text.split())
+
+
 def _spanish_title(title: str, tickers: list[str], category: str) -> str:
     text = _strip_html(title)
+    text = _polish_spanish_copy(text)
     text = re.sub(r"\s+-\s+(Reuters|CNBC|MarketWatch|Yahoo Finance|CoinDesk|CoinTelegraph|WSJ|Wall Street Journal|The Wall Street Journal|Investing News Network|Fortune|AP News|CBS News|LancasterOnline)\s*$", "", text, flags=re.I)
     replacements = (
         (r"\bThe Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell\b", "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"),
@@ -661,6 +729,7 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
     )
     for pattern, replacement in replacements:
         text = re.sub(pattern, replacement, text, flags=re.I)
+    text = _polish_spanish_copy(text)
     text = " ".join(text.split())
     if not text:
         asset = ", ".join(tickers[:2]) or category
@@ -669,7 +738,7 @@ def _spanish_title(title: str, tickers: list[str], category: str) -> str:
 
 
 def _spanish_summary(summary: str) -> str:
-    text = _strip_html(summary)
+    text = _polish_spanish_copy(summary)
     replacements = (
         (r"\bThe Minister of Finance of Chile Jorge Quiroz Rings the Nasdaq Stock Market Closing Bell\b", "El ministro de Finanzas de Chile Jorge Quiroz toca la campana de cierre del Nasdaq"),
         (r"\bStock Market Closing Bell\b", "campana de cierre del mercado accionario"),
@@ -691,6 +760,7 @@ def _spanish_summary(summary: str) -> str:
     )
     for pattern, replacement in replacements:
         text = re.sub(pattern, replacement, text, flags=re.I)
+    text = _polish_spanish_copy(text)
     return " ".join(text.split())[:320] or "Resumen no disponible; revisar la fuente original."
 
 
