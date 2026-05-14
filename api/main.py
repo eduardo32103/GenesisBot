@@ -254,6 +254,13 @@ def _money_short(value: object) -> str:
     return f"{sign}${absolute:.0f}"
 
 
+def _money_price(value: object) -> str:
+    number = _safe_num(value)
+    if number is None:
+        return "precio pendiente"
+    return f"${number:,.2f}"
+
+
 def _is_crypto_ticker(ticker: str) -> bool:
     symbol = str(ticker or "").upper()
     return symbol.endswith("-USD") or symbol in {"BTC", "ETH", "SOL", "DOGE", "XRP"}
@@ -302,10 +309,32 @@ def _copy_strategy_decision(row: dict, strategy: dict | None = None) -> None:
     strategy = strategy if isinstance(strategy, dict) else row.get("strategy")
     if not isinstance(strategy, dict):
         return
+    row.setdefault("strategy", strategy)
     row.setdefault("decision", strategy.get("decision"))
     row.setdefault("decision_label_es", strategy.get("decision_label_es"))
     row.setdefault("decision_reason_es", strategy.get("decision_reason_es"))
     row.setdefault("action_verdict", strategy.get("decision_label_es"))
+    for key in (
+        "entry_condition",
+        "invalidation",
+        "entry_level",
+        "confirmation_price",
+        "invalidation_level",
+        "required_volume",
+        "required_relative_volume",
+        "validation",
+        "indicator_stack",
+        "grade",
+        "bias",
+        "score",
+        "thesis_es",
+    ):
+        if strategy.get(key) is not None:
+            row.setdefault(key, strategy.get(key))
+    if strategy.get("summary"):
+        row["summary"] = strategy.get("summary")
+        row["summary_es"] = strategy.get("summary")
+        row["genesis_reading_es"] = strategy.get("summary")
 
 
 def _massage_source_health_payload(payload: dict) -> None:
@@ -866,37 +895,51 @@ def _opportunity_item_narrative(item: dict | None, mode: dict[str, str]) -> str:
     ticker = str(item.get("ticker") or "Mercado")
     label = str(item.get("decision_label_es") or item.get("decision") or "vigilar")
     score = item.get("opportunity_score") or item.get("score") or "medio"
-    entry = str(item.get("entry_condition") or "confirmar entrada con precio y volumen")
-    invalidation = str(item.get("invalidation") or "perder el nivel de invalidacion")
+    strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else {}
+    entry_level = _safe_num(item.get("entry_level") or item.get("confirmation_price") or strategy.get("entry_level") or strategy.get("confirmation_price"))
+    invalidation_level = _safe_num(item.get("invalidation_level") or strategy.get("invalidation_level"))
+    required_volume = _safe_num(item.get("required_volume") or strategy.get("required_volume"))
+    required_rel = _safe_num(item.get("required_relative_volume") or strategy.get("required_relative_volume"))
+    entry = str(item.get("entry_condition") or strategy.get("entry_condition") or "confirmar entrada con precio y volumen")
+    invalidation = str(item.get("invalidation") or strategy.get("invalidation") or "perder el nivel de invalidacion")
     kind = _opportunity_decision_kind(item)
+    entry_price_text = _money_price(entry_level) if entry_level is not None else entry
+    invalidation_price_text = _money_price(invalidation_level) if invalidation_level is not None else invalidation
+    volume_text = _money_short(required_volume) if required_volume is not None else "volumen relativo 1.2x+"
+    if required_volume is not None:
+        volume_text = f"{required_volume / 1_000_000_000:.1f}B" if required_volume >= 1_000_000_000 else f"{required_volume / 1_000_000:.1f}M" if required_volume >= 1_000_000 else f"{required_volume:,.0f}"
+    if required_rel is not None and required_volume is None:
+        volume_text = f"volumen relativo {required_rel:.1f}x+"
     if kind == "defensive":
         return (
-            f"{ticker}: no comprar ahora. Lectura defensiva ({label}); "
-            "sirve para reducir riesgo, vender parcial o esperar nueva validacion."
+            f"{ticker}: no comprar ahora. Lectura defensiva ({label}). "
+            f"Solo vuelve a interesar si recupera {entry_price_text} con volumen minimo {volume_text}; "
+            f"si pierde {invalidation_price_text}, Genesis prioriza reducir riesgo."
         )
     if kind == "buy":
         return (
-            f"{ticker}: compra con cautela solo si confirma {entry}; score {score}/100. "
-            f"Si falla {invalidation}, Genesis cancela la idea."
+            f"{ticker}: compra con cautela solo si cierra arriba de {entry_price_text} "
+            f"con volumen minimo {volume_text}; score {score}/100. "
+            f"Se invalida debajo de {invalidation_price_text}. no es orden real."
         )
     if kind == "watch":
         return (
-            f"{ticker}: vigilar, no comprar todavia. Hay algo en radar, pero necesito {entry}; "
-            f"se invalida si {invalidation}."
+            f"{ticker}: vigilar, no comprar todavia. Entrada solo arriba de {entry_price_text} "
+            f"con volumen minimo {volume_text}; se invalida bajo {invalidation_price_text}."
         )
     if current == "cautious_buy":
         return (
             f"{ticker}: posible compra con cautela, score {score}/100. "
-            f"Solo interesa si confirma {entry}; se invalida si {invalidation}."
+            f"Necesita romper {entry_price_text} con volumen minimo {volume_text}; invalida bajo {invalidation_price_text}."
         )
     if current == "validation":
         return (
             f"{ticker}: entrada en validacion, score {score}/100. "
-            f"Genesis espera confirmacion de {entry}; se cancela si {invalidation}."
+            f"Genesis espera {entry_price_text} + volumen minimo {volume_text}; cancela si pierde {invalidation_price_text}."
         )
     return (
         f"{ticker}: mejor presa del radar con {label} y score {score}/100. "
-        f"No es orden: Genesis espera {entry} y respeta invalidacion en {invalidation}."
+        f"No es orden: Genesis espera {entry_price_text}, volumen minimo {volume_text} y respeta invalidacion en {invalidation_price_text}."
     )
 
 

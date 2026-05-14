@@ -6,12 +6,14 @@ import unittest
 from unittest.mock import patch
 
 from api.main import (
+    _copy_strategy_decision,
     _enrich_genesis_trade_decision,
     _is_asset_genesis_prompt,
     _is_comparison_genesis_prompt,
     _is_opportunity_genesis_prompt,
     _is_weather_genesis_prompt,
     _massage_proxy_payload,
+    _opportunity_item_narrative,
     _prompt_tickers,
     _resolve_dashboard_host,
     _resolve_dashboard_port,
@@ -218,6 +220,29 @@ class DashboardGenesisAssistantTests(unittest.TestCase):
         self.assertEqual(fixed["structured"]["metrics"]["mode"], "cautious_buy")
         self.assertEqual(fixed["opportunities"][0]["ticker"], "TSLA")
         self.assertNotIn("ASISTENTE COMPLETO", json.dumps(fixed))
+
+    def test_opportunity_narrative_uses_strategy_levels(self) -> None:
+        row = {
+            "ticker": "TSLA",
+            "decision": "buy_cautiously",
+            "decision_label_es": "comprar con cautela",
+            "opportunity_score": 85,
+            "strategy": {
+                "decision": "buy_cautiously",
+                "decision_label_es": "comprar con cautela",
+                "entry_level": 447.80,
+                "invalidation_level": 422.26,
+                "required_volume": 123_500_000,
+            },
+        }
+
+        _copy_strategy_decision(row)
+        text = _opportunity_item_narrative(row, {"mode": "cautious_buy"})
+
+        self.assertIn("$447.80", text)
+        self.assertIn("123.5M", text)
+        self.assertIn("$422.26", text)
+        self.assertIn("no es orden real", text)
 
     @patch("api.main.get_dashboard_opportunities")
     def test_local_proxy_differentiates_opportunity_modes(self, mock_opportunities) -> None:

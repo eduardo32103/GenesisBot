@@ -1200,6 +1200,39 @@ function opportunityTitleForMode(mode = {}, top = null) {
   return baseTitle || (currentMode === "validation" ? "Validador de entradas" : currentMode === "cautious_buy" ? "Compra con cautela" : "Cazador de buenos precios");
 }
 
+function strategyField(row = {}, key) {
+  const strategy = row?.strategy && typeof row.strategy === "object" ? row.strategy : {};
+  const value = row?.[key];
+  return value !== undefined && value !== null && value !== "" ? value : strategy?.[key];
+}
+
+function strategyPriceText(value, fallback = "") {
+  const numeric = numberOrNull(value);
+  if (numeric !== null) return money(numeric);
+  return cleanCopy(fallback || "");
+}
+
+function strategyVolumeText(value, relFallback = null) {
+  const numeric = numberOrNull(value);
+  if (numeric !== null) return compactNumber(numeric);
+  const rel = numberOrNull(relFallback);
+  if (rel !== null) return `vol. relativo ${compactNumber(rel)}x+`;
+  return "vol. relativo 1.2x+";
+}
+
+function opportunityValidationParts(row = {}) {
+  const entryText = strategyPriceText(
+    strategyField(row, "entry_level") ?? strategyField(row, "confirmation_price"),
+    strategyField(row, "entry_condition") || "confirmar ruptura"
+  );
+  const invalidText = strategyPriceText(
+    strategyField(row, "invalidation_level"),
+    strategyField(row, "invalidation") || "nivel de invalidacion"
+  );
+  const volumeText = strategyVolumeText(strategyField(row, "required_volume"), strategyField(row, "required_relative_volume"));
+  return { entryText, invalidText, volumeText };
+}
+
 function opportunityNarrative(row = null, mode = {}, sourceRows = []) {
   const currentMode = typeof mode === "string" ? mode : (mode?.mode || "hunter");
   const empty = typeof mode === "object" ? mode.empty : "";
@@ -1211,25 +1244,24 @@ function opportunityNarrative(row = null, mode = {}, sourceRows = []) {
   const ticker = cleanCopy(itemTicker(row) || row?.ticker || "Mercado");
   const label = cleanCopy(row?.decision_label_es || row?.decision || "vigilar");
   const score = row?.opportunity_score || row?.score || "medio";
-  const entry = cleanCopy(row?.entry_condition || row?.entryCondition || "confirmar entrada con precio y volumen");
-  const invalidation = cleanCopy(row?.invalidation || "perder el nivel de invalidacion");
+  const { entryText, invalidText, volumeText } = opportunityValidationParts(row);
   const kind = opportunityDecisionKind(row);
   if (kind === "defensive") {
-    return `${ticker}: no comprar ahora. La lectura es defensiva (${label}); sirve para reducir riesgo, vender parcial o esperar una nueva validaci\u00f3n.`;
+    return `${ticker}: no comprar ahora. Lectura defensiva (${label}). Solo vuelve a interesar si recupera ${entryText} con volumen m\u00ednimo ${volumeText}; si pierde ${invalidText}, Genesis prioriza reducir riesgo.`;
   }
   if (kind === "buy") {
-    return `${ticker}: compra con cautela solo si confirma ${entry}; score ${score}. Si falla ${invalidation}, Genesis cancela la idea.`;
+    return `${ticker}: compra con cautela solo si cierra arriba de ${entryText} con volumen m\u00ednimo ${volumeText}; score ${score}. Se invalida debajo de ${invalidText}.`;
   }
   if (kind === "watch") {
-    return `${ticker}: vigilar, no comprar todav\u00eda. Hay algo en radar, pero necesito ${entry}; se invalida si ${invalidation}.`;
+    return `${ticker}: vigilar, no comprar todav\u00eda. Entrada solo arriba de ${entryText} con volumen m\u00ednimo ${volumeText}; se invalida bajo ${invalidText}.`;
   }
   if (currentMode === "cautious_buy") {
-    return `${ticker}: posible compra con cautela, score ${score}. Solo me interesa si confirma ${entry}; se invalida si ${invalidation}.`;
+    return `${ticker}: posible compra con cautela, score ${score}. Necesita romper ${entryText} con volumen m\u00ednimo ${volumeText}; invalida bajo ${invalidText}.`;
   }
   if (currentMode === "validation") {
-    return `${ticker}: entrada en validacion, score ${score}. Genesis exige precio vivo, volumen sostenido y riesgo definido antes de elevar conviccion.`;
+    return `${ticker}: entrada en validacion, score ${score}. Genesis espera ${entryText} + volumen m\u00ednimo ${volumeText}; cancela si pierde ${invalidText}.`;
   }
-  return `${ticker}: oportunidad en radar con ${label} y score ${score}. Genesis caza buen precio, pero valida volumen, nivel y catalizador antes de actuar.`;
+  return `${ticker}: oportunidad en radar con ${label} y score ${score}. No es orden: Genesis espera ${entryText}, volumen m\u00ednimo ${volumeText} e invalidaci\u00f3n en ${invalidText}.`;
 }
 
 function tickerFromText(text) {
@@ -3351,6 +3383,9 @@ function opportunityRadarVisualMarkup(visual) {
           const relVol = numberOrNull(row.relative_volume ?? row.relativeVolume);
           const tone = score !== null && score >= 76 ? "bullish" : score !== null && score >= 62 ? "neutral" : "flat";
           const rowText = opportunityNarrative(row, { mode }, sourceRows);
+          const { entryText, invalidText, volumeText } = opportunityValidationParts(row);
+          const rawIndicators = strategyField(row, "indicator_stack") || strategyField(row, "indicatorStack") || [];
+          const indicators = Array.isArray(rawIndicators) ? rawIndicators.slice(0, 4) : [];
           return `
             <article>
               <strong>${escapeHtml(cleanCopy(row.ticker || "Mercado"))} - ${escapeHtml(cleanCopy(row.decision_label_es || row.decision || "Vigilar"))}</strong>
@@ -3361,7 +3396,20 @@ function opportunityRadarVisualMarkup(visual) {
                 <span><small>Vol. rel</small><strong>${escapeHtml(relVol === null ? "Pendiente" : `${compactNumber(relVol)}x`)}</strong></span>
               </div>
               <div class="mini-flow-bar"><i style="width:${Math.max(12, Math.min(100, score || 28))}%"></i></div>
-              <small>${escapeHtml(cleanCopy(row.entry_condition || "Entrada solo con confirmacion"))} - ${escapeHtml(cleanCopy(row.invalidation || "invalidacion pendiente"))}</small>
+              <div class="opportunity-playbook" aria-label="Plan de validacion">
+                <span><small>Entrada</small><strong>${escapeHtml(entryText)}</strong></span>
+                <span><small>Volumen</small><strong>${escapeHtml(volumeText)}</strong></span>
+                <span><small>Invalida</small><strong>${escapeHtml(invalidText)}</strong></span>
+              </div>
+              ${indicators.length ? `
+                <div class="indicator-chips">
+                  ${indicators.map((item) => {
+                    const label = typeof item === "string" ? item : (item.label || item.name || item.detail || "Indicador");
+                    const status = typeof item === "object" ? (item.status || item.tone || "neutral") : "neutral";
+                    return `<span class="indicator-chip ${escapeHtml(String(status).toLowerCase())}">${escapeHtml(cleanCopy(label))}</span>`;
+                  }).join("")}
+                </div>
+              ` : ""}
             </article>
           `;
         }).join("")}
