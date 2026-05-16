@@ -1,0 +1,358 @@
+//@version=6
+strategy(
+     title="Genesis Advantage Strategy v1",
+     shorttitle="Genesis Advantage v1",
+     overlay=true,
+     pyramiding=0,
+     initial_capital=10000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     slippage=1,
+     calc_on_every_tick=false,
+     calc_on_order_fills=true,
+     process_orders_on_close=true,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1
+)
+
+// Genesis Advantage is built for backtesting, paper trading, alerts and journal.
+// It does not call FMP, OpenAI, MemoryStore or any broker from Pine.
+
+tradeMode = input.string("Long & Short", "Trade mode", options=["Long Only", "Short Only", "Long & Short"], group="General")
+strategyMode = input.string("Hybrid Genesis", "Strategy mode", options=["Breakout", "Pullback", "Momentum", "Mean Reversion", "Hybrid Genesis"], group="General")
+riskProfile = input.string("Moderado", "Risk profile", options=["Conservador", "Moderado", "Agresivo"], group="General")
+useMarketRegimeFilter = input.bool(true, "Use market regime filter", group="General")
+useVolumeFilter = input.bool(true, "Use volume filter", group="General")
+useGenesisContext = input.bool(true, "Use Genesis Context Score", group="General")
+genesisContextScore = input.int(0, "Genesis Context Score (-100 to +100)", minval=-100, maxval=100, group="General")
+minSignalScore = input.int(70, "Minimum signal score", minval=1, maxval=100, group="General")
+
+riskPerTradePct = input.float(1.0, "Risk per trade %", minval=0.1, maxval=5.0, step=0.1, group="Risk")
+maxDailyLossPct = input.float(3.0, "Max daily loss %", minval=0.1, maxval=20.0, step=0.1, group="Risk")
+maxDrawdownPct = input.float(12.0, "Max drawdown %", minval=1.0, maxval=60.0, step=0.5, group="Risk")
+atrStopMultiplier = input.float(2.0, "ATR stop multiplier", minval=0.5, maxval=8.0, step=0.1, group="Risk")
+takeProfitR = input.float(2.0, "Take profit R", minval=0.5, maxval=8.0, step=0.1, group="Risk")
+trailingStopATR = input.float(1.5, "Trailing stop ATR", minval=0.0, maxval=8.0, step=0.1, group="Risk")
+useTimeStop = input.bool(true, "Use time stop", group="Risk")
+maxBarsInTrade = input.int(60, "Max bars in trade", minval=1, maxval=500, group="Risk")
+minRiskReward = input.float(1.5, "Minimum risk/reward", minval=0.5, maxval=5.0, step=0.1, group="Risk")
+maxAtrPct = input.float(8.0, "Max ATR % allowed", minval=0.2, maxval=50.0, step=0.1, group="Risk")
+maxBarRangePct = input.float(7.5, "Max bar range % allowed", minval=0.2, maxval=50.0, step=0.1, group="Risk")
+minRelativeVolume = input.float(1.2, "Min relative volume", minval=0.1, maxval=10.0, step=0.1, group="Risk")
+
+marketSymbol = input.symbol("SPY", "Market symbol", group="Context Symbols")
+techSymbol = input.symbol("QQQ", "Tech symbol", group="Context Symbols")
+volatilitySymbol = input.symbol("CBOE:VIX", "Volatility symbol", group="Context Symbols")
+dollarSymbol = input.symbol("TVC:DXY", "Dollar symbol", group="Context Symbols")
+cryptoSymbol = input.symbol("BINANCE:BTCUSDT", "Crypto symbol", group="Context Symbols")
+
+higherTimeframe = input.timeframe("1D", "Higher timeframe", group="Timeframes")
+trendTimeframe = input.timeframe("240", "Trend timeframe (240 = 4H)", group="Timeframes")
+swingLength = input.int(50, "Swing lookback", minval=10, maxval=250, group="Structure")
+
+strategy.risk.max_intraday_loss(maxDailyLossPct, strategy.percent_of_equity)
+strategy.risk.max_drawdown(maxDrawdownPct, strategy.percent_of_equity)
+
+clamp(value, minValue, maxValue) =>
+    math.min(math.max(value, minValue), maxValue)
+
+scoreBool(condition, points) =>
+    condition ? points : 0.0
+
+safeDiv(numerator, denominator) =>
+    denominator != 0 and not na(denominator) ? numerator / denominator : na
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+sma20 = ta.sma(close, 20)
+sma50 = ta.sma(close, 50)
+vwapValue = ta.vwap(hlc3)
+rsi14 = ta.rsi(close, 14)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+atr14 = ta.atr(14)
+bbBasis = ta.sma(close, 20)
+bbDev = ta.stdev(close, 20) * 2.0
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+[plusDI, minusDI, adxValue] = ta.dmi(14, 14)
+avgVolume = ta.sma(volume, 20)
+relativeVolume = safeDiv(volume, avgVolume)
+dollarVolume = close * volume
+volatilityPct = safeDiv(atr14, close) * 100.0
+barRangePct = safeDiv(high - low, close) * 100.0
+
+resistance = ta.highest(high, swingLength)[1]
+support = ta.lowest(low, swingLength)[1]
+swingRange = resistance - support
+fib382 = resistance - swingRange * 0.382
+fib50 = resistance - swingRange * 0.5
+fib618 = resistance - swingRange * 0.618
+fib65 = resistance - swingRange * 0.65
+inGoldenPocket = not na(fib618) and not na(fib65) and close >= fib65 and close <= fib618
+nearEma20 = math.abs(close - ema20) <= atr14 * 0.6
+nearEma50 = math.abs(close - ema50) <= atr14 * 0.8
+
+htfClose = request.security(syminfo.tickerid, trendTimeframe, close, ignore_invalid_symbol=true)
+htfEma50 = request.security(syminfo.tickerid, trendTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+htfEma200 = request.security(syminfo.tickerid, trendTimeframe, ta.ema(close, 200), ignore_invalid_symbol=true)
+
+spyClose = request.security(marketSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
+spyEma50 = request.security(marketSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+spyEma200 = request.security(marketSymbol, higherTimeframe, ta.ema(close, 200), ignore_invalid_symbol=true)
+qqqClose = request.security(techSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
+qqqEma50 = request.security(techSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+qqqEma200 = request.security(techSymbol, higherTimeframe, ta.ema(close, 200), ignore_invalid_symbol=true)
+vixClose = request.security(volatilitySymbol, higherTimeframe, close, ignore_invalid_symbol=true)
+vixEma50 = request.security(volatilitySymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+dxyClose = request.security(dollarSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
+dxyEma50 = request.security(dollarSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+btcClose = request.security(cryptoSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
+btcEma50 = request.security(cryptoSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+
+marketRegimeScore = (
+     scoreBool(spyClose > spyEma50, 10) +
+     scoreBool(spyClose > spyEma200, 10) +
+     scoreBool(qqqClose > qqqEma50, 10) +
+     scoreBool(qqqClose > qqqEma200, 10) +
+     scoreBool(vixClose < 20, 10) +
+     scoreBool(vixClose < vixEma50, 10) +
+     scoreBool(dxyClose < dxyEma50, 10) +
+     scoreBool(btcClose > btcEma50, 10) +
+     scoreBool(close > ema200, 10) +
+     scoreBool(ema50 > ema50[10], 10)
+)
+marketRegimeScore := clamp(marketRegimeScore, 0, 100)
+regimeLabel = marketRegimeScore >= 80 ? "Alcista fuerte" : marketRegimeScore >= 62 ? "Alcista moderado" : marketRegimeScore >= 45 ? "Lateral" : marketRegimeScore >= 30 ? "Riesgo alto" : "Bajista"
+
+longTrendScore = (
+     scoreBool(ema20 > ema50, 22) +
+     scoreBool(ema50 > ema200, 24) +
+     scoreBool(close > ema200, 20) +
+     scoreBool(htfClose > htfEma50, 18) +
+     scoreBool(htfEma50 > htfEma200, 16)
+)
+shortTrendScore = (
+     scoreBool(ema20 < ema50, 22) +
+     scoreBool(ema50 < ema200, 24) +
+     scoreBool(close < ema200, 20) +
+     scoreBool(htfClose < htfEma50, 18) +
+     scoreBool(htfEma50 < htfEma200, 16)
+)
+
+longMomentumScore = (
+     scoreBool(rsi14 >= 45 and rsi14 <= 70, 25) +
+     scoreBool(macdLine > macdSignal, 25) +
+     scoreBool(macdHist > macdHist[1], 20) +
+     scoreBool(plusDI > minusDI, 15) +
+     scoreBool(adxValue >= 18, 15)
+)
+shortMomentumScore = (
+     scoreBool(rsi14 <= 55 and rsi14 >= 30, 25) +
+     scoreBool(macdLine < macdSignal, 25) +
+     scoreBool(macdHist < macdHist[1], 20) +
+     scoreBool(minusDI > plusDI, 15) +
+     scoreBool(adxValue >= 18, 15)
+)
+
+volumeScore = (
+     scoreBool(relativeVolume >= minRelativeVolume, 45) +
+     scoreBool(relativeVolume >= 1.6, 25) +
+     scoreBool(volume > avgVolume, 20) +
+     scoreBool(dollarVolume > ta.sma(dollarVolume, 20), 10)
+)
+volumeScore := clamp(volumeScore, 0, 100)
+
+longStructureScore = (
+     scoreBool(close > resistance, 28) +
+     scoreBool(close > vwapValue, 18) +
+     scoreBool(close > support, 14) +
+     scoreBool(inGoldenPocket or nearEma20 or nearEma50, 22) +
+     scoreBool(close > fib50, 18)
+)
+shortStructureScore = (
+     scoreBool(close < support, 28) +
+     scoreBool(close < vwapValue, 18) +
+     scoreBool(close < resistance, 14) +
+     scoreBool(close < fib50, 18) +
+     scoreBool(close < ema20 and close < ema50, 22)
+)
+
+genesisScoreNormalized = (genesisContextScore + 100.0) / 2.0
+riskMultiplier = riskProfile == "Conservador" ? 0.8 : riskProfile == "Agresivo" ? 1.25 : 1.0
+profileMinSignalScore = riskProfile == "Conservador" ? math.max(minSignalScore, 75) : riskProfile == "Agresivo" ? math.max(minSignalScore - 5, 55) : minSignalScore
+
+longStopCandidate = math.min(close - atr14 * atrStopMultiplier, nz(support, close - atr14 * atrStopMultiplier))
+shortStopCandidate = math.max(close + atr14 * atrStopMultiplier, nz(resistance, close + atr14 * atrStopMultiplier))
+longRisk = math.max(close - longStopCandidate, syminfo.mintick)
+shortRisk = math.max(shortStopCandidate - close, syminfo.mintick)
+longTargetCandidate = math.max(close + longRisk * takeProfitR, nz(resistance, close + longRisk * takeProfitR))
+shortTargetCandidate = math.min(close - shortRisk * takeProfitR, nz(support, close - shortRisk * takeProfitR))
+longRR = math.max((longTargetCandidate - close) / longRisk, 0)
+shortRR = math.max((close - shortTargetCandidate) / shortRisk, 0)
+longRiskRewardScore = clamp(longRR / minRiskReward * 70 + scoreBool(longRR >= takeProfitR, 30), 0, 100)
+shortRiskRewardScore = clamp(shortRR / minRiskReward * 70 + scoreBool(shortRR >= takeProfitR, 30), 0, 100)
+
+longCoreScore = longTrendScore * 0.22 + longMomentumScore * 0.18 + volumeScore * 0.16 + marketRegimeScore * 0.16 + longStructureScore * 0.14 + longRiskRewardScore * 0.14
+shortRegimeScore = 100 - marketRegimeScore
+shortCoreScore = shortTrendScore * 0.22 + shortMomentumScore * 0.18 + volumeScore * 0.16 + shortRegimeScore * 0.16 + shortStructureScore * 0.14 + shortRiskRewardScore * 0.14
+longSignalScore = useGenesisContext ? longCoreScore * 0.85 + genesisScoreNormalized * 0.15 : longCoreScore
+shortSignalScore = useGenesisContext ? shortCoreScore * 0.85 + (100 - genesisScoreNormalized) * 0.15 : shortCoreScore
+finalSignalScore = math.max(longSignalScore, shortSignalScore)
+
+allowLong = tradeMode == "Long Only" or tradeMode == "Long & Short"
+allowShort = tradeMode == "Short Only" or tradeMode == "Long & Short"
+modeBreakout = strategyMode == "Breakout" or strategyMode == "Hybrid Genesis"
+modePullback = strategyMode == "Pullback" or strategyMode == "Hybrid Genesis"
+modeMomentum = strategyMode == "Momentum" or strategyMode == "Hybrid Genesis"
+modeMeanReversion = strategyMode == "Mean Reversion" or strategyMode == "Hybrid Genesis"
+
+volumeOk = not useVolumeFilter or relativeVolume >= minRelativeVolume
+atrOk = not na(volatilityPct) and volatilityPct <= maxAtrPct
+rangeOk = not na(barRangePct) and barRangePct <= maxBarRangePct
+longRegimeOk = not useMarketRegimeFilter or marketRegimeScore >= 45
+shortRegimeOk = not useMarketRegimeFilter or marketRegimeScore <= 68
+marketRiskBlocked = useMarketRegimeFilter and regimeLabel == "Riesgo alto"
+commonRiskOk = atrOk and rangeOk and volumeOk and not marketRiskBlocked
+
+longBreakout = modeBreakout and close > resistance and relativeVolume > minRelativeVolume and ema20 > ema50 and close > ema200 and rsi14 < 75 and macdLine > macdSignal
+longPullback = modePullback and ema20 > ema50 and close > ema200 and (nearEma20 or nearEma50 or inGoldenPocket) and close > math.min(ema20, ema50) and close > vwapValue and rsi14 > rsi14[1] and volumeOk
+longMomentum = modeMomentum and ema20 > ema50 and ema50 > ema200 and macdLine > macdSignal and rsi14 >= 50 and rsi14 <= 70 and relativeVolume >= minRelativeVolume and close > ema20
+longMeanReversion = modeMeanReversion and close <= bbLower and rsi14 < 42 and rsi14 > rsi14[1] and close >= support and marketRegimeScore >= 35
+shortBreakdown = (modeBreakout or modeMomentum or strategyMode == "Hybrid Genesis") and close < support and ema20 < ema50 and close < ema200 and macdLine < macdSignal and volumeOk
+shortPullback = modePullback and ema20 < ema50 and close < ema200 and (nearEma20 or nearEma50) and close < vwapValue and rsi14 < rsi14[1] and volumeOk
+shortMeanReversion = modeMeanReversion and close >= bbUpper and rsi14 > 58 and rsi14 < rsi14[1] and marketRegimeScore <= 70
+
+longSetup = longBreakout or longPullback or longMomentum or longMeanReversion
+shortSetup = shortBreakdown or shortPullback or shortMeanReversion
+setupText = longBreakout ? "Breakout long" : longPullback ? "Pullback long" : longMomentum ? "Momentum long" : longMeanReversion ? "Mean reversion long" : shortBreakdown ? "Breakdown short" : shortPullback ? "Pullback short" : shortMeanReversion ? "Mean reversion short" : "Watch only"
+setupCode = longBreakout ? 1 : longPullback ? 2 : longMomentum ? 3 : longMeanReversion ? 4 : shortBreakdown ? -1 : shortPullback ? -2 : shortMeanReversion ? -4 : 0
+
+longSignal = allowLong and longSetup and commonRiskOk and longRegimeOk and longRR >= minRiskReward and longSignalScore >= profileMinSignalScore and strategy.position_size == 0
+shortSignal = allowShort and shortSetup and commonRiskOk and shortRegimeOk and shortRR >= minRiskReward and shortSignalScore >= profileMinSignalScore and strategy.position_size == 0
+
+riskCash = strategy.equity * (riskPerTradePct * riskMultiplier / 100.0)
+longQty = math.max(riskCash / longRisk, 0)
+shortQty = math.max(riskCash / shortRisk, 0)
+
+dynamicAlert(action, score, stopLevel, targetLevel, riskText, notesText) =>
+    str.format("{{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{0}\",\"time\":\"{1}\",\"action\":\"{2}\",\"price\":\"{3}\",\"score\":\"{4}\",\"setup\":\"{5}\",\"risk\":\"{6}\",\"stop\":\"{7}\",\"target\":\"{8}\",\"regime\":\"{9}\",\"notes\":\"{10}\"}}", syminfo.ticker, str.tostring(time), action, str.tostring(close), str.tostring(score, "#.##"), setupText, riskText, str.tostring(stopLevel, "#.####"), str.tostring(targetLevel, "#.####"), regimeLabel, notesText)
+
+var float longTrailStop = na
+var float shortTrailStop = na
+var int entryBar = na
+
+if strategy.position_size == 0
+    longTrailStop := na
+    shortTrailStop := na
+    entryBar := na
+
+if longSignal
+    strategy.entry("Long", strategy.long, qty=longQty, alert_message=dynamicAlert("long_signal", longSignalScore, longStopCandidate, longTargetCandidate, str.tostring(riskPerTradePct, "#.##") + "%", "paper_only_no_broker"))
+
+if shortSignal
+    strategy.entry("Short", strategy.short, qty=shortQty, alert_message=dynamicAlert("short_signal", shortSignalScore, shortStopCandidate, shortTargetCandidate, str.tostring(riskPerTradePct, "#.##") + "%", "paper_only_no_broker"))
+
+if strategy.position_size > 0
+    entryBar := na(entryBar) ? bar_index : entryBar
+    longTrailCandidate = close - atr14 * trailingStopATR
+    longTrailStop := trailingStopATR > 0 ? math.max(nz(longTrailStop, longTrailCandidate), longTrailCandidate) : na
+
+if strategy.position_size < 0
+    entryBar := na(entryBar) ? bar_index : entryBar
+    shortTrailCandidate = close + atr14 * trailingStopATR
+    shortTrailStop := trailingStopATR > 0 ? math.min(nz(shortTrailStop, shortTrailCandidate), shortTrailCandidate) : na
+
+managedLongStop = trailingStopATR > 0 ? math.max(longStopCandidate, nz(longTrailStop, longStopCandidate)) : longStopCandidate
+managedShortStop = trailingStopATR > 0 ? math.min(shortStopCandidate, nz(shortTrailStop, shortStopCandidate)) : shortStopCandidate
+barsInTrade = na(entryBar) ? 0 : bar_index - entryBar
+longInvalidated = strategy.position_size > 0 and (close < ema50 or close < support or longSignalScore < profileMinSignalScore * 0.65 or (useTimeStop and barsInTrade >= maxBarsInTrade))
+shortInvalidated = strategy.position_size < 0 and (close > ema50 or close > resistance or shortSignalScore < profileMinSignalScore * 0.65 or (useTimeStop and barsInTrade >= maxBarsInTrade))
+
+if strategy.position_size > 0
+    strategy.exit("Long Risk Exit", from_entry="Long", stop=managedLongStop, limit=longTargetCandidate, alert_message=dynamicAlert("long_exit", longSignalScore, managedLongStop, longTargetCandidate, "managed", "risk_exit_or_target_no_broker"))
+
+if strategy.position_size < 0
+    strategy.exit("Short Risk Exit", from_entry="Short", stop=managedShortStop, limit=shortTargetCandidate, alert_message=dynamicAlert("short_exit", shortSignalScore, managedShortStop, shortTargetCandidate, "managed", "risk_exit_or_target_no_broker"))
+
+if longInvalidated
+    strategy.close("Long", comment="Long invalidated", alert_message=dynamicAlert("strategy_invalidated", longSignalScore, managedLongStop, longTargetCandidate, "score_or_structure_failed", "long_invalidated_no_broker"))
+
+if shortInvalidated
+    strategy.close("Short", comment="Short invalidated", alert_message=dynamicAlert("strategy_invalidated", shortSignalScore, managedShortStop, shortTargetCandidate, "score_or_structure_failed", "short_invalidated_no_broker"))
+
+activeStop = strategy.position_size > 0 ? managedLongStop : strategy.position_size < 0 ? managedShortStop : longSetup ? longStopCandidate : shortStopCandidate
+activeTarget = strategy.position_size > 0 ? longTargetCandidate : strategy.position_size < 0 ? shortTargetCandidate : longSetup ? longTargetCandidate : shortTargetCandidate
+activeRR = longSetup ? longRR : shortSetup ? shortRR : math.max(longRR, shortRR)
+stateText = longSignal or shortSignal ? "Entrada" : commonRiskOk and (longSetup or shortSetup) and finalSignalScore >= profileMinSignalScore - 10 ? "Vigilar" : "Evitar"
+watchOnly = stateText == "Vigilar" and not longSignal and not shortSignal
+exitSignal = longInvalidated or shortInvalidated
+stopHit = (strategy.position_size > 0 and low <= managedLongStop) or (strategy.position_size < 0 and high >= managedShortStop)
+takeProfitHit = (strategy.position_size > 0 and high >= longTargetCandidate) or (strategy.position_size < 0 and low <= shortTargetCandidate)
+
+plot(ema20, "EMA 20", color=color.new(color.teal, 0), linewidth=1)
+plot(ema50, "EMA 50", color=color.new(color.orange, 0), linewidth=1)
+plot(ema200, "EMA 200", color=color.new(color.white, 0), linewidth=2)
+plot(vwapValue, "VWAP", color=color.new(color.purple, 0), linewidth=1)
+plot(support, "Support", color=color.new(color.green, 10), style=plot.style_linebr)
+plot(resistance, "Resistance", color=color.new(color.red, 10), style=plot.style_linebr)
+plot(fib618, "Golden Pocket 0.618", color=color.new(color.yellow, 25), style=plot.style_linebr)
+plot(fib65, "Golden Pocket 0.65", color=color.new(color.yellow, 45), style=plot.style_linebr)
+plot(activeStop, "Active Stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(activeTarget, "Active Target", color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+plot(longTrailStop, "Long Trailing Stop", color=color.new(color.fuchsia, 0), style=plot.style_linebr)
+plot(shortTrailStop, "Short Trailing Stop", color=color.new(color.fuchsia, 0), style=plot.style_linebr)
+plot(finalSignalScore, "Final Score", display=display.none)
+plot(marketRegimeScore, "Regime Score", display=display.none)
+plot(activeRR, "Risk Reward", display=display.none)
+plot(activeStop, "Stop", display=display.none)
+plot(activeTarget, "Target", display=display.none)
+plot(setupCode, "Setup Code", display=display.none)
+
+plotshape(longSignal, title="Long entry label", text="LONG", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+plotshape(shortSignal, title="Short entry label", text="SHORT", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+plotshape(exitSignal, title="Exit label", text="EXIT", style=shape.xcross, location=location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
+
+bg = regimeLabel == "Alcista fuerte" ? color.new(color.green, 88) : regimeLabel == "Alcista moderado" ? color.new(color.teal, 90) : regimeLabel == "Lateral" ? color.new(color.gray, 92) : regimeLabel == "Riesgo alto" ? color.new(color.orange, 88) : color.new(color.red, 90)
+bgcolor(useMarketRegimeFilter ? bg : na)
+
+var table dashboard = table.new(position.top_right, 2, 11, border_width=1)
+if barstate.islast
+    headerColor = stateText == "Entrada" ? color.new(color.green, 0) : stateText == "Vigilar" ? color.new(color.orange, 0) : color.new(color.red, 0)
+    table.cell(dashboard, 0, 0, "Genesis Advantage", text_color=color.white, bgcolor=headerColor)
+    table.cell(dashboard, 1, 0, stateText, text_color=color.white, bgcolor=headerColor)
+    table.cell(dashboard, 0, 1, "Regimen", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 1, regimeLabel + " " + str.tostring(marketRegimeScore, "#"), text_color=color.white)
+    table.cell(dashboard, 0, 2, "Score final", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 2, str.tostring(finalSignalScore, "#.##"), text_color=color.white)
+    table.cell(dashboard, 0, 3, "Setup", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 3, setupText, text_color=color.white)
+    table.cell(dashboard, 0, 4, "RR", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 4, str.tostring(activeRR, "#.##"), text_color=color.white)
+    table.cell(dashboard, 0, 5, "Stop", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 5, str.tostring(activeStop, "#.####"), text_color=color.white)
+    table.cell(dashboard, 0, 6, "Target", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 6, str.tostring(activeTarget, "#.####"), text_color=color.white)
+    table.cell(dashboard, 0, 7, "Genesis Context", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 7, useGenesisContext ? str.tostring(genesisContextScore) : "Off", text_color=color.white)
+    table.cell(dashboard, 0, 8, "Trend/Mom/Vol", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 8, str.tostring(longTrendScore, "#") + "/" + str.tostring(longMomentumScore, "#") + "/" + str.tostring(volumeScore, "#"), text_color=color.white)
+    table.cell(dashboard, 0, 9, "ATR% / RelVol", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 9, str.tostring(volatilityPct, "#.##") + "% / " + str.tostring(relativeVolume, "#.##") + "x", text_color=color.white)
+    table.cell(dashboard, 0, 10, "Nota", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 10, "Paper/backtest only", text_color=color.white)
+
+const string longAlertMessage = "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{{ticker}}\",\"time\":\"{{time}}\",\"action\":\"long_signal\",\"price\":\"{{close}}\",\"score\":\"{{plot(\"Final Score\")}}\",\"setup\":\"{{plot(\"Setup Code\")}}\",\"risk\":\"paper_only\",\"stop\":\"{{plot(\"Stop\")}}\",\"target\":\"{{plot(\"Target\")}}\",\"regime\":\"{{plot(\"Regime Score\")}}\",\"notes\":\"Long signal for Genesis journal, no broker execution.\"}"
+const string shortAlertMessage = "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{{ticker}}\",\"time\":\"{{time}}\",\"action\":\"short_signal\",\"price\":\"{{close}}\",\"score\":\"{{plot(\"Final Score\")}}\",\"setup\":\"{{plot(\"Setup Code\")}}\",\"risk\":\"paper_only\",\"stop\":\"{{plot(\"Stop\")}}\",\"target\":\"{{plot(\"Target\")}}\",\"regime\":\"{{plot(\"Regime Score\")}}\",\"notes\":\"Short signal for Genesis journal, no broker execution.\"}"
+const string exitAlertMessage = "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{{ticker}}\",\"time\":\"{{time}}\",\"action\":\"exit_signal\",\"price\":\"{{close}}\",\"score\":\"{{plot(\"Final Score\")}}\",\"setup\":\"{{plot(\"Setup Code\")}}\",\"risk\":\"managed_exit\",\"stop\":\"{{plot(\"Stop\")}}\",\"target\":\"{{plot(\"Target\")}}\",\"regime\":\"{{plot(\"Regime Score\")}}\",\"notes\":\"Exit or invalidation for Genesis journal.\"}"
+const string stopAlertMessage = "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{{ticker}}\",\"time\":\"{{time}}\",\"action\":\"stop_hit\",\"price\":\"{{close}}\",\"score\":\"{{plot(\"Final Score\")}}\",\"setup\":\"{{plot(\"Setup Code\")}}\",\"risk\":\"stop_hit\",\"stop\":\"{{plot(\"Stop\")}}\",\"target\":\"{{plot(\"Target\")}}\",\"regime\":\"{{plot(\"Regime Score\")}}\",\"notes\":\"Stop touched; journal outcome, no broker execution.\"}"
+const string targetAlertMessage = "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{{ticker}}\",\"time\":\"{{time}}\",\"action\":\"take_profit_hit\",\"price\":\"{{close}}\",\"score\":\"{{plot(\"Final Score\")}}\",\"setup\":\"{{plot(\"Setup Code\")}}\",\"risk\":\"target_hit\",\"stop\":\"{{plot(\"Stop\")}}\",\"target\":\"{{plot(\"Target\")}}\",\"regime\":\"{{plot(\"Regime Score\")}}\",\"notes\":\"Target touched; journal outcome, no broker execution.\"}"
+const string watchAlertMessage = "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"ticker\":\"{{ticker}}\",\"time\":\"{{time}}\",\"action\":\"watch_only\",\"price\":\"{{close}}\",\"score\":\"{{plot(\"Final Score\")}}\",\"setup\":\"{{plot(\"Setup Code\")}}\",\"risk\":\"watch_only\",\"stop\":\"{{plot(\"Stop\")}}\",\"target\":\"{{plot(\"Target\")}}\",\"regime\":\"{{plot(\"Regime Score\")}}\",\"notes\":\"Watch only; confirmation still needed.\"}"
+
+alertcondition(longSignal, title="Long Signal", message=longAlertMessage)
+alertcondition(shortSignal, title="Short Signal", message=shortAlertMessage)
+alertcondition(exitSignal, title="Exit Signal", message=exitAlertMessage)
+alertcondition(stopHit, title="Stop Hit", message=stopAlertMessage)
+alertcondition(takeProfitHit, title="Take Profit Hit", message=targetAlertMessage)
+alertcondition(exitSignal, title="Strategy Invalidated", message=exitAlertMessage)
+alertcondition(watchOnly, title="Watch Only", message=watchAlertMessage)

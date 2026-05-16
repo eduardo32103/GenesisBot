@@ -189,7 +189,21 @@ def _mentions_tracking(text: str) -> bool:
 
 
 def _mentions_memory(text: str) -> bool:
-    return any(token in text for token in ("recuerdame", "que vimos", "que hicimos", "que sabes", "aprendiste", "consultas recientes", "activos reviso"))
+    return any(
+        token in text
+        for token in (
+            "recuerdame",
+            "que vimos",
+            "que hicimos",
+            "que sabes",
+            "aprendiste",
+            "consultas recientes",
+            "activos reviso",
+            "senales de tradingview",
+            "senales tradingview",
+            "tradingview tengo",
+        )
+    )
 
 
 def _mentions_performance_review(text: str) -> bool:

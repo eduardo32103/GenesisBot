@@ -46,6 +46,10 @@ from api.routes.dashboard import (
     search_dashboard_market_ticker,
     simulate_dashboard_portfolio_purchase,
 )
+from api.routes.genesis import (
+    get_genesis_trading_context,
+    post_genesis_tradingview_webhook,
+)
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
 from services.genesis.chart_image_analysis import analyze_chart_image
 from services.genesis.intelligence_core import ask_genesis
@@ -166,6 +170,8 @@ def create_app() -> dict[str, str]:
         "genesis_memory_ticker_endpoint": "/api/genesis/memory/ticker/{ticker}",
         "genesis_memory_event_endpoint": "/api/genesis/memory/event",
         "genesis_briefing_endpoint": "/api/genesis/briefing",
+        "genesis_trading_context_endpoint": "/api/genesis/trading-context?ticker={symbol}",
+        "genesis_tradingview_webhook_endpoint": "/api/genesis/tradingview-webhook",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
@@ -633,6 +639,9 @@ def _is_memory_genesis_prompt(message: str) -> bool:
             " historial de ",
             " memoria de ",
             " mis consultas recientes ",
+            " senales de tradingview ",
+            " senales tradingview ",
+            " tradingview tengo ",
             " alertas funcionaron ",
             " noticias movieron ",
         )
@@ -3963,6 +3972,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
                 return
+
+        if parsed.path == "/api/genesis/tradingview-webhook":
+            result = post_genesis_tradingview_webhook(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if self._try_proxy_to_production(parsed, method="POST", body=body):
             return
 
@@ -4263,6 +4278,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            return
+
+        if parsed.path == "/api/genesis/trading-context":
+            ticker = (parse_qs(parsed.query).get("ticker") or parse_qs(parsed.query).get("symbol") or [""])[0]
+            payload_data = get_genesis_trading_context(ticker)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
         if parsed.path == "/api/dashboard/money-flow/model":
