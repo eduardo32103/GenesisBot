@@ -234,6 +234,35 @@ Mensaje JSON sugerido:
 
 El backend guarda la alerta y responde sin ejecutar orden.
 
+## Error: can't parse argument number
+
+TradingView puede mostrar `can't parse argument number` cuando un JSON con llaves `{}` se arma dentro de `str.format()`. Pine interpreta las llaves del JSON como placeholders de formato, por ejemplo `{0}`, y se rompe si encuentra `{"source":...}`.
+
+La estrategia evita ese error usando un JSON builder por concatenacion segura (`buildAlertJson`) y no mete JSON dentro de `str.format()`.
+
+Reglas aplicadas:
+
+- `strategy.entry`, `strategy.exit` y `strategy.close` usan `alert_message=buildAlertJson(...)`.
+- `alertcondition` usa mensajes constantes simples.
+- El webhook dinamico debe salir de `{{strategy.order.alert_message}}`.
+- No hay API keys ni secretos dentro del Pine.
+
+Para crear la alerta en TradingView:
+
+1. Pega el Pine.
+2. Click en `Add to chart`.
+3. Activa `freePlanMode=true`.
+4. Activa `validationMode=true`.
+5. Activa `debugMode=true`.
+6. Create Alert sobre la estrategia.
+7. En `Message`, usa exactamente:
+
+```text
+{{strategy.order.alert_message}}
+```
+
+Si usas alertconditions manuales, deja su mensaje constante o reemplazalo por `{{strategy.order.alert_message}}` cuando quieras enviar fills reales de estrategia al webhook Genesis.
+
 ## Memoria Y Journal
 
 El webhook guarda:
@@ -281,6 +310,47 @@ En TradingView:
 5. Compara mercado alcista, lateral y bajista.
 
 La tabla del script muestra score, regimen, setup, RR, stop, target y estado. TradingView calcula metricas de estrategia; Pine puede mostrar parte del contexto, pero las metricas finales se validan en Strategy Tester.
+
+## Uso sin pagar Deep Backtesting
+
+Deep Backtesting y el cambio manual de rango de fechas son funciones Premium en TradingView. En plan gratis, Genesis Advantage debe trabajar con las barras que ya estan cargadas en el chart normal.
+
+Para probar sin pagar:
+
+- `freePlanMode=true`
+- `validationMode=true`
+- `debugMode=true`
+- `showConditionMarkers=true`
+- `showScoreTable=true`
+- `minSignalScore=40`
+- `useMarketRegimeFilter=false`
+- `useVolumeFilter=false`
+- `genesisContextScore=100`
+- `tradeMode=Long & Short`
+- Timeframe recomendado: `1H` o `4H`
+- Simbolos recomendados: `NVDA`, `SPY`, `QQQ` o `BTCUSD`
+
+`validationMode=true` no es modo operativo final. Solo sirve para validar que el Strategy Tester genera operaciones con las barras cargadas, que las entradas/salidas funcionan y que las alertas visuales aparecen.
+
+Si Strategy Tester muestra `Sin datos`, revisa la tabla de diagnostico:
+
+- `Raw condition no aparece`: el chart aun no genero una condicion tecnica basica.
+- `Score bajo`: baja `minSignalScore` en validacion o sube temporalmente `genesisContextScore`.
+- `Volumen bloquea`: desactiva `useVolumeFilter` en validacion.
+- `Regimen bloquea`: desactiva `useMarketRegimeFilter` en validacion.
+- `RR insuficiente`: baja `Minimum risk/reward` o usa validation mode.
+- `TradeMode bloquea`: cambia a `Long & Short`.
+- `Sin suficientes barras`: carga mas historial o usa un timeframe mayor.
+
+Para paper serio:
+
+- `validationMode=false`
+- `debugMode=false`
+- `minSignalScore=65-75`
+- `useMarketRegimeFilter=true`
+- `useVolumeFilter=true`
+- `riskPerTradePct` bajo
+- Revisar drawdown, profit factor, cantidad de trades y rachas perdedoras antes de confiar en el setup.
 
 ## Como Evitar Overfitting
 
