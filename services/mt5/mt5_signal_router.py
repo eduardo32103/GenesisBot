@@ -140,7 +140,9 @@ class MT5SignalRouter:
             "no_trade_score": no_trade_score,
             "genesis_context_score": context_score,
             "market_regime": context.get("market_regime") or "",
-            "risk_flags": list(context.get("risk_flags") or []) + (guard["reasons"] if guard["blocked"] else []),
+            "warnings": list(symbol_info.get("warnings") or []),
+            "instrument_warning": symbol_info.get("instrument_warning") or "",
+            "risk_flags": list(symbol_info.get("warnings") or []) + list(context.get("risk_flags") or []) + (guard["reasons"] if guard["blocked"] else []),
             "what_to_watch": context.get("what_to_watch") or [],
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
@@ -280,4 +282,3 @@ def _maybe_float(value: Any) -> float | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-

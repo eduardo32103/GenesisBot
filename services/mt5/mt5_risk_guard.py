@@ -110,6 +110,7 @@ class MT5RiskGuard:
             "blocked": bool(reasons),
             "reasons": reasons,
             "primary_reason": reasons[0] if reasons else "passed",
+            "warnings": list(symbol_info.get("warnings") or []),
             "risk_reward": rr,
             "symbol": symbol_info,
             "order_policy": "journal_only_no_broker" if reasons or not executable_demo else "demo_only",
@@ -150,4 +151,3 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-

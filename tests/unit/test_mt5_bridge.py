@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from api.main import create_app
 from api.routes.genesis import (
@@ -64,6 +65,33 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertFalse(unknown["ok"])
         self.assertEqual(unknown["reason"], "symbol_not_mapped")
 
+    def test_symbol_mapper_accepts_btc_when_broker_allowed_symbol_is_btc(self) -> None:
+        mapper = MT5SymbolMapper(allowed_symbols=["BTC"])
+
+        btc = mapper.map_symbol("BTC")
+
+        self.assertTrue(btc["ok"])
+        self.assertEqual(btc["raw_symbol"], "BTC")
+        self.assertEqual(btc["genesis_symbol"], "BTC-USD")
+        self.assertEqual(btc["mt5_symbol"], "BTC")
+        self.assertEqual(btc["reason"], "ok")
+        self.assertIn("BTC en este broker puede ser ETF/proxy", btc["instrument_warning"])
+
+    def test_symbol_mapper_env_map_can_map_btc_aliases(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "MT5_ALLOWED_SYMBOLS": "BTC,BTCUSD",
+                "MT5_SYMBOL_MAP_JSON": '{"BTC":"BTC","BTC-USD":"BTC","BTCUSD":"BTCUSD","BTCUSDT":"BTCUSD"}',
+            },
+        ):
+            mapper = MT5SymbolMapper()
+
+        self.assertEqual(mapper.map_symbol("BTC")["mt5_symbol"], "BTC")
+        self.assertEqual(mapper.map_symbol("BTC-USD")["mt5_symbol"], "BTC")
+        self.assertEqual(mapper.map_symbol("BTCUSD")["mt5_symbol"], "BTCUSD")
+        self.assertEqual(mapper.map_symbol("BTCUSDT")["mt5_symbol"], "BTCUSD")
+
     def test_risk_guard_blocks_without_stop_live_disabled_and_kill_switch(self) -> None:
         mapper = MT5SymbolMapper(allowed_symbols=["BTCUSD"])
         config = MT5BridgeConfig(enabled=True, demo_only=True, live_trading_enabled=False, order_execution_enabled=True, kill_switch=False)
@@ -121,6 +149,23 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertIn("stop_loss_required", order["risk_guard"]["reasons"])
             self.assertTrue(store.get_mt5_events("mt5_order_requests", "BTCUSD", limit=5))
             self.assertTrue(store.get_mt5_events("mt5_risk_blocks", "BTCUSD", limit=5))
+
+    def test_btc_allowed_symbol_does_not_trigger_symbol_not_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MT5_ALLOWED_SYMBOLS": "BTC"}):
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            decision = mt5_decision("BTC", memory=store)
+            order = mt5_order_request({"symbol": "BTC", "action": "BUY", "entry": 100, "risk_pct": 0.25, "confidence": "high"}, memory=store)
+
+            self.assertTrue(decision["ok"])
+            self.assertEqual(decision["symbol"], "BTC")
+            self.assertEqual(decision["genesis_symbol"], "BTC-USD")
+            self.assertNotEqual(decision["reason"], "symbol_not_mapped_or_not_allowed")
+            self.assertNotIn("symbol_not_allowed", decision["risk_flags"])
+            self.assertIn("BTC en este broker puede ser ETF/proxy", decision["instrument_warning"])
+            self.assertNotIn("symbol_not_allowed", order["risk_guard"]["reasons"])
+            self.assertFalse(order["order_executed"])
+            self.assertFalse(order["broker_touched"])
+            self.assertEqual(order["order_policy"], "journal_only_no_broker")
 
     def test_api_route_facades_return_expected_contracts(self) -> None:
         decision = get_genesis_mt5_decision("BTCUSD")
