@@ -48,6 +48,7 @@ from api.routes.dashboard import (
 )
 from api.routes.genesis import (
     get_genesis_hedge_plan,
+    get_genesis_mt5_auto_forward_status,
     get_genesis_mt5_forward_test,
     get_genesis_mt5_config,
     get_genesis_mt5_decision,
@@ -199,6 +200,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_forward_test_endpoint": "/api/genesis/mt5/forward-test?symbol={symbol}",
         "genesis_mt5_outcomes_recent_endpoint": "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25",
         "genesis_mt5_shadow_trades_endpoint": "/api/genesis/mt5/shadow-trades?symbol={symbol}",
+        "genesis_mt5_auto_forward_status_endpoint": "/api/genesis/mt5/auto-forward-status?symbol={symbol}",
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
         "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
         "genesis_mt5_tick_endpoint": "/api/genesis/mt5/tick",
@@ -4435,6 +4437,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 limit = 100
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_shadow_trades(limit=limit, symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/auto-forward-status":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_auto_forward_status(symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

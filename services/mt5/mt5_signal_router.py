@@ -29,7 +29,7 @@ class MT5SignalRouter:
         self.risk_guard = MT5RiskGuard(config=self.config, symbol_mapper=self.symbol_mapper)
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
-        self.forward_engine = MT5ForwardTestEngine(memory=self.memory)
+        self.forward_engine = MT5ForwardTestEngine(memory=self.memory, config=self.config, symbol_mapper=self.symbol_mapper)
         self.performance_engine = MT5Performance(memory=self.memory)
 
     def health(self) -> dict[str, Any]:
@@ -280,6 +280,9 @@ class MT5SignalRouter:
 
     def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
         return self.shadow.snapshot(symbol=symbol, limit=limit)
+
+    def auto_forward_status(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.forward_engine.auto_forward_status(symbol=symbol)
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}

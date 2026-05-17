@@ -6,6 +6,7 @@ from services.genesis.hedge_engine import build_hedge_context
 from services.genesis.tradingview_bridge import get_trading_context, receive_tradingview_webhook
 from services.mt5.mt5_bridge import (
     mt5_account_sync,
+    mt5_auto_forward_status,
     mt5_config,
     mt5_decision,
     mt5_forward_test,
@@ -68,6 +69,10 @@ def get_genesis_mt5_outcomes_recent(limit: int = 25, symbol: str = "") -> dict[s
 
 def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[str, Any]:
     return mt5_shadow_trades(limit=limit, symbol=symbol)
+
+
+def get_genesis_mt5_auto_forward_status(symbol: str = "") -> dict[str, Any]:
+    return mt5_auto_forward_status(symbol=symbol)
 
 
 def get_genesis_mt5_decision(symbol: str = "") -> dict[str, Any]:

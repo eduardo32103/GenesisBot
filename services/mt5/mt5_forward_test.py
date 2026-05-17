@@ -4,18 +4,28 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_auto_forward import MT5AutoForward
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
 from services.mt5.mt5_performance import MT5Performance
+from services.mt5.mt5_risk_guard import MT5BridgeConfig
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
+from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 
 
 class MT5ForwardTestEngine:
-    def __init__(self, *, memory: MemoryStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        memory: MemoryStore | None = None,
+        config: MT5BridgeConfig | None = None,
+        symbol_mapper: MT5SymbolMapper | None = None,
+    ) -> None:
         self.memory = memory or MemoryStore()
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
         self.performance = MT5Performance(memory=self.memory)
+        self.auto_forward = MT5AutoForward(memory=self.memory, config=config, symbol_mapper=symbol_mapper)
 
     def record_tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         clean = sanitize_payload(payload or {})
@@ -42,12 +52,15 @@ class MT5ForwardTestEngine:
         }
         event = self.journal.save("mt5_ticks", symbol, tick)
         updates = self.shadow.update_with_tick(tick)
+        auto_forward = self.auto_forward.process_tick(tick)
         return {
             "ok": True,
             "status": "mt5_tick_recorded",
             "tick": tick,
             "event": event,
             "shadow_updates": updates,
+            "auto_forward": auto_forward,
+            "auto_shadow_trade_created": bool(auto_forward.get("shadow_trade_created")),
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -69,6 +82,9 @@ class MT5ForwardTestEngine:
 
     def outcomes_recent(self, *, symbol: str = "", limit: int = 25) -> dict[str, Any]:
         return self.performance.outcomes_recent(symbol=symbol, limit=limit)
+
+    def auto_forward_status(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.auto_forward.status(symbol=symbol)
 
 
 def _price(payload: dict[str, Any]) -> float | None:

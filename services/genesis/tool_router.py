@@ -512,7 +512,9 @@ def _mt5_performance_answer(performance: dict[str, Any]) -> str:
         f"MT5 Forward Test {symbol}: win rate {summary.get('win_rate', 0)}%, "
         f"profit factor {summary.get('profit_factor', 0)}, expectancy {summary.get('expectancy', 0)}R, "
         f"P/L simulado {summary.get('net_pnl', 0)}R y drawdown {summary.get('max_drawdown', 0)}R. "
-        f"Shadow trades {summary.get('shadow_trades', 0)}: {summary.get('wins', 0)} ganadoras, "
+        f"Shadow trades {summary.get('shadow_trades', 0)} "
+        f"(auto {summary.get('auto_shadow_trades', 0)}, manual {summary.get('manual_shadow_trades', 0)}): "
+        f"{summary.get('wins', 0)} ganadoras, "
         f"{summary.get('losses', 0)} perdedoras y {summary.get('open', 0)} abiertas. "
         "Todo sigue journal-only: order_executed=false, broker_touched=false."
     )

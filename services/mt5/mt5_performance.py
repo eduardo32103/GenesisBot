@@ -28,6 +28,8 @@ class MT5Performance:
         risk_blocks = self._events("mt5_risk_blocks", clean_symbol, 25)
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
+        auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade)]
+        manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade)]
         closed = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
         wins = [trade for trade in closed if trade.get("status") == "win"]
         losses = [trade for trade in closed if trade.get("status") == "loss"]
@@ -42,6 +44,9 @@ class MT5Performance:
             "total_signals": len(signals) + len(decisions) + len(order_requests),
             "actionable_signals": sum(1 for row in signals + decisions + order_requests if _action(row) in {"BUY", "SELL"}),
             "shadow_trades": len(trades),
+            "manual_shadow_trades": len(manual_trades),
+            "auto_shadow_trades": len(auto_trades),
+            "total_shadow_trades": len(trades),
             "wins": len(wins),
             "losses": len(losses),
             "open": len(open_trades),
@@ -203,6 +208,10 @@ def _pnl_value(trade: dict[str, Any]) -> float:
     if r_multiple is not None:
         return r_multiple
     return _number(trade.get("pnl_pct")) or _number(trade.get("pnl")) or 0.0
+
+
+def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:
+    return bool(trade.get("auto_forward")) or str(trade.get("source") or "").casefold() == "mt5_auto_forward"
 
 
 def _profit_factor(gross_win: float, gross_loss: float) -> float:

@@ -42,6 +42,10 @@ def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", li
     return build_router(memory).shadow_trades(symbol=symbol, limit=limit)
 
 
+def mt5_auto_forward_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).auto_forward_status(symbol=symbol)
+
+
 def mt5_account_sync(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).account_sync(payload)
 

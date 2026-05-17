@@ -94,6 +94,7 @@ class MT5ShadowTrading:
             "updated_at": _now(),
             "status": "open",
             "source": str(payload.get("source") or "mt5_bridge"),
+            "auto_forward": bool(payload.get("auto_forward")),
             "risk_reward": _number(payload.get("risk_reward")) or 0.0,
             "max_favorable_excursion": 0.0,
             "max_adverse_excursion": 0.0,
