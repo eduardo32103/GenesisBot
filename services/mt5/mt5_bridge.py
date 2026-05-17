@@ -38,6 +38,10 @@ def mt5_outcomes_recent(*, memory: MemoryStore | None = None, symbol: str = "", 
     return build_router(memory).outcomes_recent(symbol=symbol, limit=limit)
 
 
+def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 100) -> dict[str, Any]:
+    return build_router(memory).shadow_trades(symbol=symbol, limit=limit)
+
+
 def mt5_account_sync(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).account_sync(payload)
 

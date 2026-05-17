@@ -16,6 +16,7 @@ from services.mt5.mt5_bridge import (
     mt5_outcomes_recent,
     mt5_performance,
     mt5_signal,
+    mt5_shadow_trades,
     mt5_status,
     mt5_tick,
 )
@@ -63,6 +64,10 @@ def get_genesis_mt5_forward_test(symbol: str = "", timeframe: str = "") -> dict[
 
 def get_genesis_mt5_outcomes_recent(limit: int = 25, symbol: str = "") -> dict[str, Any]:
     return mt5_outcomes_recent(limit=limit, symbol=symbol)
+
+
+def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[str, Any]:
+    return mt5_shadow_trades(limit=limit, symbol=symbol)
 
 
 def get_genesis_mt5_decision(symbol: str = "") -> dict[str, Any]:

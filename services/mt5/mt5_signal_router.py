@@ -218,13 +218,19 @@ class MT5SignalRouter:
         intent = MT5OrderIntent.from_payload(body)
         account = self._account_state_for_order(body, intent.symbol)
         guard = self.risk_guard.evaluate_order(intent, account_state=account)
+        shadow = self.shadow.create_from_order_request(body, account_state=account, min_rr=self.config.min_rr)
+        shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
         order_payload = {
             **intent.to_payload(),
             "guard": guard,
             "status": "blocked" if guard["blocked"] else "journal_only",
-            "order_policy": "journal_only_no_broker" if not guard["demo_order_allowed"] else "demo_only",
+            "order_policy": "journal_only_no_broker",
             "broker_touched": False,
             "order_executed": False,
+            "shadow_trade_created": bool(shadow.get("created")),
+            "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
+            "shadow_trade_status": shadow.get("status") or "",
+            "shadow_trade_reason": shadow.get("reason") or "",
             "reason": guard["primary_reason"] if guard["blocked"] else "execution_disabled_in_phase",
             "phase": "Fase 11 demo/journal only",
         }
@@ -239,6 +245,9 @@ class MT5SignalRouter:
             "risk_guard": guard,
             "request_event": request_event,
             "risk_block_event": risk_event,
+            "shadow": shadow,
+            "shadow_trade_created": bool(shadow.get("created")),
+            "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
             "order_executed": False,
             "broker_touched": False,
             "order_policy": order_payload["order_policy"],
@@ -268,6 +277,9 @@ class MT5SignalRouter:
 
     def outcomes_recent(self, *, symbol: str = "", limit: int = 25) -> dict[str, Any]:
         return self.forward_engine.outcomes_recent(symbol=symbol, limit=limit)
+
+    def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
+        return self.shadow.snapshot(symbol=symbol, limit=limit)
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}

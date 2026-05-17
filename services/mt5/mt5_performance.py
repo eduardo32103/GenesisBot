@@ -24,6 +24,7 @@ class MT5Performance:
         ]
         signals = self._events("mt5_signals", clean_symbol, 200)
         decisions = self._events("mt5_decisions", clean_symbol, 200)
+        order_requests = self._events("mt5_order_requests", clean_symbol, 200)
         risk_blocks = self._events("mt5_risk_blocks", clean_symbol, 25)
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
@@ -38,8 +39,8 @@ class MT5Performance:
         gross_loss = abs(sum(loss_values))
         profit_factor = _profit_factor(gross_win, gross_loss)
         summary = {
-            "total_signals": len(signals) + len(decisions),
-            "actionable_signals": sum(1 for row in signals + decisions if _action(row) in {"BUY", "SELL"}),
+            "total_signals": len(signals) + len(decisions) + len(order_requests),
+            "actionable_signals": sum(1 for row in signals + decisions + order_requests if _action(row) in {"BUY", "SELL"}),
             "shadow_trades": len(trades),
             "wins": len(wins),
             "losses": len(losses),
@@ -61,7 +62,7 @@ class MT5Performance:
             "symbol": clean_symbol,
             "timeframe": clean_timeframe,
             "summary": summary,
-            "by_action": self._by_action(trades, signals, decisions, no_trade, hedge),
+            "by_action": self._by_action(trades, signals, decisions, order_requests, no_trade, hedge),
             "by_timeframe": _group_trades(trades, "timeframe"),
             "by_strategy": _group_trades(trades, "strategy_profile"),
             "no_trade_accuracy": no_trade_metrics,
@@ -116,6 +117,7 @@ class MT5Performance:
         trades: list[dict[str, Any]],
         signals: list[dict[str, Any]],
         decisions: list[dict[str, Any]],
+        order_requests: list[dict[str, Any]],
         no_trade: list[dict[str, Any]],
         hedge: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -125,7 +127,7 @@ class MT5Performance:
             "NO_TRADE": _outcome_bucket(no_trade, correct_outcomes={"correct_sideways", "protected_loss"}),
             "HEDGE": _outcome_bucket(hedge, correct_outcomes={"hedge_correct", "hedge_watch"}),
         }
-        output["WAIT"] = {"signals": sum(1 for row in signals + decisions if _action(row) == "WAIT")}
+        output["WAIT"] = {"signals": sum(1 for row in signals + decisions + order_requests if _action(row) == "WAIT")}
         return output
 
 

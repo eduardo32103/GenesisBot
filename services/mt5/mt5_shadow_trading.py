@@ -37,7 +37,7 @@ class MT5ShadowTrading:
         intent = MT5OrderIntent.from_payload(payload)
         action = intent.action
         symbol = _symbol(intent.symbol or payload.get("symbol") or payload.get("ticker"))
-        entry = intent.entry or _number(payload.get("last") or payload.get("bid") or payload.get("ask"))
+        entry = intent.entry if intent.entry is not None else _number(payload.get("last") or payload.get("bid") or payload.get("ask"))
         if action not in {"BUY", "SELL"} or not symbol:
             return {"created": False, "status": "not_actionable", "action": action, "symbol": symbol}
         if entry is None or intent.stop_loss is None or intent.take_profit is None:
@@ -94,6 +94,7 @@ class MT5ShadowTrading:
             "updated_at": _now(),
             "status": "open",
             "source": str(payload.get("source") or "mt5_bridge"),
+            "risk_reward": _number(payload.get("risk_reward")) or 0.0,
             "max_favorable_excursion": 0.0,
             "max_adverse_excursion": 0.0,
             "unrealized_pnl": 0.0,
@@ -104,6 +105,46 @@ class MT5ShadowTrading:
         }
         event = self.journal.save("mt5_shadow_trades", symbol, trade, confidence=trade["confidence"])
         return {"created": True, "status": "shadow_trade_opened", "trade": trade, "event": event}
+
+    def create_from_order_request(
+        self,
+        payload: dict[str, Any],
+        *,
+        account_state: dict[str, Any] | None = None,
+        min_rr: float = 1.2,
+    ) -> dict[str, Any]:
+        clean = sanitize_payload(payload or {})
+        intent = MT5OrderIntent.from_payload(clean)
+        account = account_state or {}
+        if intent.action not in {"BUY", "SELL"}:
+            return {"created": False, "status": "not_actionable", "reason": "action_not_buy_or_sell"}
+        if not bool(account.get("is_demo")):
+            return {"created": False, "status": "blocked", "reason": "demo_account_not_confirmed"}
+        if intent.entry is None or intent.stop_loss is None or intent.take_profit is None:
+            return {"created": False, "status": "invalid_signal", "reason": "missing_risk_parameters"}
+        rr = _risk_reward(intent.action, intent.entry, intent.stop_loss, intent.take_profit)
+        if rr is None or rr < min_rr:
+            return {"created": False, "status": "invalid_signal", "reason": "risk_reward_too_low", "risk_reward": rr}
+        result = self.create_shadow_trade(
+            {
+                **clean,
+                "symbol": intent.symbol,
+                "action": intent.action,
+                "entry": intent.entry,
+                "stop_loss": intent.stop_loss,
+                "take_profit": intent.take_profit,
+                "risk_pct": intent.risk_pct,
+                "timeframe": intent.timeframe,
+                "strategy_profile": intent.strategy_profile,
+                "confidence": intent.confidence,
+                "risk_reward": rr,
+                "source": clean.get("source") or "mt5_order_request_shadow",
+            }
+        )
+        if result.get("created") and isinstance(result.get("trade"), dict):
+            result["trade"]["risk_reward"] = rr
+        result["risk_reward"] = rr
+        return result
 
     def record_no_trade_signal(self, payload: dict[str, Any]) -> dict[str, Any]:
         symbol = _symbol(payload.get("symbol") or payload.get("ticker"))
@@ -199,6 +240,26 @@ class MT5ShadowTrading:
 
     def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return [trade for trade in self.trades(symbol) if trade.get("status") == "open"]
+
+    def snapshot(self, symbol: str | None = None, limit: int = 100) -> dict[str, Any]:
+        clean_symbol = _symbol(symbol)
+        trades = self.trades(clean_symbol, limit=limit)
+        open_trades = [trade for trade in trades if trade.get("status") == "open"]
+        closed_trades = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
+        return {
+            "ok": True,
+            "status": "mt5_shadow_trades_ready",
+            "symbol": clean_symbol,
+            "items": trades,
+            "open_trades": open_trades,
+            "closed_trades": closed_trades,
+            "count": len(trades),
+            "open": len(open_trades),
+            "closed": len(closed_trades),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
 
     def trades(self, symbol: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         rows = self.memory.get_mt5_events("mt5_shadow_trades", _symbol(symbol), limit=limit)
@@ -365,6 +426,18 @@ def _directional_pnl(action: str, entry: float, price: float) -> float:
     if action == "SELL":
         return entry - price
     return price - entry
+
+
+def _risk_reward(action: str, entry: float, stop: float, target: float) -> float | None:
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    if risk <= 0 or reward <= 0:
+        return None
+    if action == "BUY" and not (stop < entry < target):
+        return None
+    if action == "SELL" and not (target < entry < stop):
+        return None
+    return round(reward / risk, 4)
 
 
 def _noise_threshold(reference: float, tick: dict[str, Any]) -> float:
