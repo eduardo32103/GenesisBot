@@ -6,6 +6,7 @@ from typing import Any
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
 from services.mt5.mt5_account_state import normalize_account_state
+from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
@@ -151,14 +152,18 @@ class MT5SignalRouter:
         no_trade_score = int(context.get("no_trade_score") or 0)
         hedge_score = int(context.get("hedge_score") or 0)
         context_score = int(context.get("genesis_context_score") or 0)
-        decision = _decision_from_context(context, hedge_score, no_trade_score)
-        reason = _decision_reason(context, decision, symbol_info)
-        entry = _maybe_float((context.get("technical_context") or {}).get("price"))
-        stop_loss = _stop_from_context(decision, entry, context)
-        take_profit = _target_from_context(decision, entry, stop_loss)
-        if decision in {"BUY", "SELL"} and stop_loss is None:
-            decision = "NO_TRADE"
-            reason = "stop_loss_missing_from_context"
+        built = build_actionable_mt5_decision(
+            symbol_info["mt5_symbol"],
+            {"symbol": symbol_info["mt5_symbol"], "last": (context.get("technical_context") or {}).get("price")},
+            context,
+            min_rr=self.config.min_rr,
+            risk_pct=min(self.config.max_position_risk_pct, 0.5),
+        )
+        decision = str(built.get("decision") or "NO_TRADE")
+        reason = str(built.get("reason") or _decision_reason(context, decision, symbol_info))
+        entry = _maybe_float(built.get("entry"))
+        stop_loss = _maybe_float(built.get("stop_loss"))
+        take_profit = _maybe_float(built.get("take_profit"))
         risk_pct = min(self.config.max_position_risk_pct, 0.5)
         intent = MT5OrderIntent(
             symbol=symbol_info["mt5_symbol"],
@@ -186,6 +191,7 @@ class MT5SignalRouter:
             "decision": decision,
             "confidence": context.get("confidence") or "low",
             "reason": reason,
+            "actionable": bool(built.get("actionable")) and decision in {"BUY", "SELL"},
             "strategy_profile": context.get("recommended_strategy_profile") or "",
             "timeframe": context.get("recommended_timeframe") or "",
             "entry": entry,
@@ -193,6 +199,7 @@ class MT5SignalRouter:
             "take_profit": take_profit if decision in {"BUY", "SELL"} else None,
             "trailing_stop": intent.trailing_stop,
             "risk_pct": risk_pct if decision in {"BUY", "SELL"} else 0.0,
+            "risk_reward": built.get("risk_reward") or 0.0,
             "lot_size_hint": None,
             "hedge_needed": bool(context.get("hedge_needed")),
             "hedge_score": hedge_score,

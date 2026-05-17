@@ -40,6 +40,7 @@ from services.mt5.mt5_bridge import (
     mt5_status,
     mt5_tick,
 )
+from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_order_model import MT5OrderIntent
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_signal_router import MT5SignalRouter
@@ -322,6 +323,105 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(status["open_trades"][0]["source"], "mt5_auto_forward")
             self.assertFalse(tick["broker_touched"])
             self.assertFalse(tick["order_executed"])
+
+    def test_actionable_builder_generates_btc_entry_stop_and_take_profit(self) -> None:
+        built = build_actionable_mt5_decision(
+            "BTC",
+            {"symbol": "BTC", "last": 100, "timeframe": "H1"},
+            {
+                "ok": True,
+                "decision": "BUY",
+                "confidence": "high",
+                "no_trade_score": 0,
+                "hedge_score": 0,
+                "technical_context": {"atr": 2},
+                "recommended_strategy_profile": "BTC Auto",
+                "reason": "builder smoke",
+            },
+            min_rr=1.2,
+            risk_pct=0.5,
+        )
+
+        self.assertEqual(built["decision"], "BUY")
+        self.assertTrue(built["actionable"])
+        self.assertEqual(built["entry"], 100)
+        self.assertEqual(built["stop_loss"], 98)
+        self.assertEqual(built["take_profit"], 102.4)
+        self.assertGreaterEqual(built["risk_reward"], 1.2)
+
+    def test_actionable_builder_uses_btc_percent_fallback_without_atr(self) -> None:
+        built = build_actionable_mt5_decision(
+            "BTC",
+            {"symbol": "BTC", "last": 100, "timeframe": "H1"},
+            {
+                "ok": True,
+                "decision": "SELL",
+                "confidence": "high",
+                "no_trade_score": 0,
+                "hedge_score": 0,
+                "technical_context": {},
+                "recommended_strategy_profile": "BTC Auto",
+            },
+            min_rr=1.2,
+            risk_pct=0.5,
+        )
+
+        self.assertEqual(built["decision"], "SELL")
+        self.assertTrue(built["actionable"])
+        self.assertEqual(built["entry"], 100)
+        self.assertEqual(built["stop_loss"], 102)
+        self.assertEqual(built["take_profit"], 97.6)
+        self.assertGreaterEqual(built["risk_reward"], 1.2)
+
+    def test_actionable_builder_downgrades_to_no_trade_without_entry(self) -> None:
+        built = build_actionable_mt5_decision(
+            "BTC",
+            {"symbol": "BTC"},
+            {"ok": True, "decision": "BUY", "confidence": "high", "no_trade_score": 0, "hedge_score": 0},
+            min_rr=1.2,
+        )
+
+        self.assertEqual(built["decision"], "NO_TRADE")
+        self.assertFalse(built["actionable"])
+        self.assertEqual(built["reason"], "missing_entry")
+
+    def test_auto_forward_generates_buy_shadow_trade_without_context_stop_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _auto_forward_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_buy_context()):
+                tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            trade = router.shadow_trades(symbol="BTC")["open_trades"][0]
+
+            self.assertTrue(tick["auto_shadow_trade_created"])
+            self.assertEqual(tick["auto_forward"]["decision"]["decision"], "BUY")
+            self.assertTrue(tick["auto_forward"]["decision"]["actionable"])
+            self.assertEqual(tick["auto_forward"]["decision"]["stop_loss"], 98)
+            self.assertEqual(tick["auto_forward"]["decision"]["take_profit"], 102.4)
+            self.assertEqual(trade["source"], "mt5_auto_forward")
+            self.assertFalse(tick["order_executed"])
+            self.assertFalse(tick["broker_touched"])
+
+    def test_auto_forward_generates_sell_shadow_trade_without_context_stop_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _auto_forward_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_sell_context()):
+                tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            trade = router.shadow_trades(symbol="BTC")["open_trades"][0]
+
+            self.assertTrue(tick["auto_shadow_trade_created"])
+            self.assertEqual(tick["auto_forward"]["decision"]["decision"], "SELL")
+            self.assertTrue(tick["auto_forward"]["decision"]["actionable"])
+            self.assertEqual(tick["auto_forward"]["decision"]["stop_loss"], 102)
+            self.assertEqual(tick["auto_forward"]["decision"]["take_profit"], 97.6)
+            self.assertEqual(trade["action"], "SELL")
+            self.assertFalse(tick["order_executed"])
+            self.assertFalse(tick["broker_touched"])
 
     def test_auto_forward_no_trade_does_not_create_shadow_trade(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -636,6 +736,42 @@ def _sell_context() -> dict[str, object]:
         "take_profit": 118,
         "recommended_strategy_profile": "Auto Forward Test",
         "recommended_timeframe": "H1",
+    }
+
+
+def _generated_buy_context() -> dict[str, object]:
+    return {
+        "ok": True,
+        "decision": "BUY",
+        "bias": "bullish",
+        "confidence": "high",
+        "reason": "auto forward generated buy",
+        "no_trade_score": 0,
+        "hedge_score": 0,
+        "genesis_context_score": 80,
+        "technical_context": {"atr": 2},
+        "recommended_strategy_profile": "Generated Auto Forward Test",
+        "recommended_timeframe": "H1",
+        "risk_flags": [],
+        "what_to_watch": [],
+    }
+
+
+def _generated_sell_context() -> dict[str, object]:
+    return {
+        "ok": True,
+        "decision": "SELL",
+        "bias": "bearish",
+        "confidence": "high",
+        "reason": "auto forward generated sell",
+        "no_trade_score": 0,
+        "hedge_score": 0,
+        "genesis_context_score": -50,
+        "technical_context": {},
+        "recommended_strategy_profile": "Generated Auto Forward Test",
+        "recommended_timeframe": "H1",
+        "risk_flags": [],
+        "what_to_watch": [],
     }
 
 

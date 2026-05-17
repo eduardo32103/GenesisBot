@@ -5,6 +5,7 @@ from typing import Any
 
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
 from services.mt5.mt5_performance import MT5Performance
@@ -55,6 +56,7 @@ class MT5AutoForward:
                 stop_loss=None,
                 take_profit=None,
                 risk_reward=None,
+                actionable=False,
                 warnings=list(symbol_info.get("warnings") or []),
             )
             event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence="low")
@@ -84,6 +86,7 @@ class MT5AutoForward:
                 stop_loss=None,
                 take_profit=None,
                 risk_reward=None,
+                actionable=False,
                 warnings=list(symbol_info.get("warnings") or []),
             )
             event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence="low")
@@ -102,15 +105,22 @@ class MT5AutoForward:
             }
 
         context = GenesisBrain(memory=self.memory).build_trading_context(symbol_info["genesis_symbol"])
-        decision_name = _decision_from_context(context)
-        confidence = _confidence(context.get("confidence"))
+        built = build_actionable_mt5_decision(
+            raw_symbol,
+            clean,
+            context,
+            min_rr=self.config.min_rr,
+            risk_pct=min(self.config.max_position_risk_pct, 0.5),
+        )
+        decision_name = str(built.get("decision") or "NO_TRADE")
+        confidence = _confidence(built.get("confidence") or context.get("confidence"))
         no_trade_score = _int(context.get("no_trade_score"))
         hedge_score = _int(context.get("hedge_score"))
-        entry = _number(_first_present(context, ("entry", "price")) or (context.get("technical_context") or {}).get("price")) or last
-        stop_loss = _stop_from_context(decision_name, entry, context)
-        take_profit = _target_from_context(decision_name, entry, stop_loss, context)
-        risk_reward = _risk_reward(decision_name, entry, stop_loss, take_profit)
-        reason = _reason_from_context(context, decision_name)
+        entry = _number(built.get("entry")) or last
+        stop_loss = _number(built.get("stop_loss"))
+        take_profit = _number(built.get("take_profit"))
+        risk_reward = _number(built.get("risk_reward"))
+        reason = str(built.get("reason") or _reason_from_context(context, decision_name))
         block_reason = self._block_reason(
             symbol=raw_symbol,
             decision=decision_name,
@@ -124,6 +134,7 @@ class MT5AutoForward:
             is_demo=_is_demo(clean),
         )
         final_decision = decision_name if not block_reason else "NO_TRADE"
+        final_actionable = bool(built.get("actionable")) and final_decision in {"BUY", "SELL"}
         decision = self._decision_payload(
             symbol=raw_symbol,
             genesis_symbol=str(symbol_info.get("genesis_symbol") or raw_symbol),
@@ -136,6 +147,7 @@ class MT5AutoForward:
             stop_loss=stop_loss if final_decision in {"BUY", "SELL"} else None,
             take_profit=take_profit if final_decision in {"BUY", "SELL"} else None,
             risk_reward=risk_reward,
+            actionable=final_actionable,
             warnings=list(symbol_info.get("warnings") or []),
         )
         event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence=confidence)
@@ -190,6 +202,8 @@ class MT5AutoForward:
             "auto_forward_enabled": not self.config.kill_switch,
             "last_tick": last_tick,
             "last_decision": last_decision,
+            "last_reason": (last_decision or {}).get("reason") or "no_auto_forward_decision_yet",
+            "last_actionable": bool((last_decision or {}).get("actionable")),
             "last_shadow_trade": snapshot["items"][0] if snapshot.get("items") else None,
             "open_trades": snapshot.get("open_trades") or [],
             "closed_trades": snapshot.get("closed_trades") or [],
@@ -255,6 +269,7 @@ class MT5AutoForward:
         stop_loss: float | None,
         take_profit: float | None,
         risk_reward: float | None,
+        actionable: bool,
         warnings: list[str],
     ) -> dict[str, Any]:
         return {
@@ -269,6 +284,7 @@ class MT5AutoForward:
             "take_profit": take_profit,
             "risk_pct": min(self.config.max_position_risk_pct, 0.5) if decision in {"BUY", "SELL"} else 0.0,
             "risk_reward": risk_reward,
+            "actionable": actionable,
             "timeframe": str(tick.get("timeframe") or context.get("recommended_timeframe") or "").upper(),
             "strategy_profile": str(context.get("recommended_strategy_profile") or context.get("recommended_preset") or "Genesis Auto Forward"),
             "hedge_score": _int(context.get("hedge_score")),
