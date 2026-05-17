@@ -192,9 +192,12 @@ class MT5AutoForward:
         clean_symbol = _symbol(symbol)
         last_tick = _latest_payload(self.memory, "mt5_ticks", clean_symbol)
         last_decision = _latest_payload(self.memory, "mt5_decisions", clean_symbol)
+        if last_decision:
+            last_decision = {**last_decision, "reason": _reason_alias(last_decision.get("reason") or "")}
         snapshot = self.shadow.snapshot(symbol=clean_symbol)
         performance = self.performance.report(symbol=clean_symbol)
         summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+        last_reason = _reason_alias((last_decision or {}).get("reason") or "no_auto_forward_decision_yet")
         return {
             "ok": True,
             "status": "mt5_auto_forward_status_ready",
@@ -202,15 +205,22 @@ class MT5AutoForward:
             "auto_forward_enabled": not self.config.kill_switch,
             "last_tick": last_tick,
             "last_decision": last_decision,
-            "last_reason": (last_decision or {}).get("reason") or "no_auto_forward_decision_yet",
+            "last_reason": last_reason,
             "last_actionable": bool((last_decision or {}).get("actionable")),
+            "entry": (last_decision or {}).get("entry"),
+            "stop_loss": (last_decision or {}).get("stop_loss"),
+            "take_profit": (last_decision or {}).get("take_profit"),
+            "risk_reward": (last_decision or {}).get("risk_reward") or 0.0,
             "last_shadow_trade": snapshot["items"][0] if snapshot.get("items") else None,
             "open_trades": snapshot.get("open_trades") or [],
             "closed_trades": snapshot.get("closed_trades") or [],
+            "manual_shadow_trades": summary.get("manual_shadow_trades", 0),
+            "auto_shadow_trades": summary.get("auto_shadow_trades", 0),
+            "total_shadow_trades": summary.get("total_shadow_trades", summary.get("shadow_trades", 0)),
             "win_rate": summary.get("win_rate", 0.0),
             "profit_factor": summary.get("profit_factor", 0.0),
             "expectancy": summary.get("expectancy", 0.0),
-            "reason": (last_decision or {}).get("reason") or "no_auto_forward_decision_yet",
+            "reason": last_reason,
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -242,15 +252,15 @@ class MT5AutoForward:
         if hedge_score >= 80:
             return "hedge_score_hard_block"
         if confidence not in {"medium", "high"}:
-            return "confidence_too_low"
+            return "confidence_low"
         if stop_loss is None:
-            return "stop_loss_required"
+            return "missing_risk_parameters"
         if take_profit is None:
-            return "take_profit_required"
+            return "missing_risk_parameters"
         if risk_reward is None or risk_reward < self.config.min_rr:
             return "risk_reward_too_low"
         if self.shadow.open_trades(symbol):
-            return "open_shadow_trade_exists"
+            return "duplicate_open_trade"
         if spread is not None and spread > self.config.max_spread_points:
             return "spread_too_high"
         return ""
@@ -433,6 +443,18 @@ def _symbol(value: object) -> str:
 def _confidence(value: object) -> str:
     text = str(value or "low").casefold().strip()
     aliases = {"alta": "high", "media": "medium", "baja": "low"}
+    return aliases.get(text, text)
+
+
+def _reason_alias(value: object) -> str:
+    text = str(value or "")
+    aliases = {
+        "stop_loss_missing_from_context": "missing_risk_parameters",
+        "stop_loss_required": "missing_risk_parameters",
+        "take_profit_required": "missing_risk_parameters",
+        "confidence_too_low": "confidence_low",
+        "open_shadow_trade_exists": "duplicate_open_trade",
+    }
     return aliases.get(text, text)
 
 

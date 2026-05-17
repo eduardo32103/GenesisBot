@@ -26,6 +26,7 @@ class MT5Performance:
         decisions = self._events("mt5_decisions", clean_symbol, 200)
         order_requests = self._events("mt5_order_requests", clean_symbol, 200)
         risk_blocks = self._events("mt5_risk_blocks", clean_symbol, 25)
+        latest_decision = _latest_payload(decisions)
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
         auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade)]
@@ -76,6 +77,8 @@ class MT5Performance:
             "hedge_accuracy": hedge_metrics,
             "recent_trades": sorted(trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "risk_blocks": [_journal_item(row) for row in risk_blocks],
+            "last_decision": latest_decision,
+            "last_reason": _reason_alias((latest_decision or {}).get("reason") or ""),
             "genesis_reading": _reading(clean_symbol, summary, no_trade_metrics, hedge_metrics),
             "broker_touched": False,
             "order_executed": False,
@@ -194,7 +197,7 @@ def _journal_item(row: dict[str, Any]) -> dict[str, Any]:
         "event_type": row.get("event_type") or payload.get("event_type") or "",
         "symbol": str(payload.get("symbol") or "").upper(),
         "decision": payload.get("decision") or payload.get("action") or payload.get("outcome") or payload.get("status") or "",
-        "reason": payload.get("reason") or payload.get("exit_reason") or "",
+        "reason": _reason_alias(payload.get("reason") or payload.get("exit_reason") or ""),
         "broker_touched": False,
         "order_executed": False,
         "order_policy": payload.get("order_policy") or "journal_only_no_broker",
@@ -212,6 +215,29 @@ def _pnl_value(trade: dict[str, Any]) -> float:
 
 def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:
     return bool(trade.get("auto_forward")) or str(trade.get("source") or "").casefold() == "mt5_auto_forward"
+
+
+def _latest_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    payload = rows[0].get("payload")
+    if not isinstance(payload, dict):
+        return None
+    clean = dict(payload)
+    clean["reason"] = _reason_alias(clean.get("reason") or "")
+    return clean
+
+
+def _reason_alias(value: object) -> str:
+    text = str(value or "")
+    aliases = {
+        "stop_loss_missing_from_context": "missing_risk_parameters",
+        "stop_loss_required": "missing_risk_parameters",
+        "take_profit_required": "missing_risk_parameters",
+        "confidence_too_low": "confidence_low",
+        "open_shadow_trade_exists": "duplicate_open_trade",
+    }
+    return aliases.get(text, text)
 
 
 def _profit_factor(gross_win: float, gross_loss: float) -> float:

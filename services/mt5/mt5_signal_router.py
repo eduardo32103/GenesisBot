@@ -414,7 +414,7 @@ def _journal_item(row: dict[str, Any]) -> dict[str, Any]:
     payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
     guard = payload.get("guard") if isinstance(payload.get("guard"), dict) else {}
     decision = payload.get("decision") or payload.get("action") or payload.get("status") or ""
-    reason = payload.get("reason") or guard.get("primary_reason") or payload.get("comment") or ""
+    reason = _reason_alias(payload.get("reason") or guard.get("primary_reason") or payload.get("comment") or "")
     return {
         "event_type": row.get("event_type") or payload.get("event_type") or "",
         "symbol": str(payload.get("symbol") or "").upper(),
@@ -445,3 +445,15 @@ def _unique_symbols(items: list[dict[str, Any]]) -> list[str]:
             symbols.append(symbol)
             seen.add(symbol)
     return symbols
+
+
+def _reason_alias(value: object) -> str:
+    text = str(value or "")
+    aliases = {
+        "stop_loss_missing_from_context": "missing_risk_parameters",
+        "stop_loss_required": "missing_risk_parameters",
+        "take_profit_required": "missing_risk_parameters",
+        "confidence_too_low": "confidence_low",
+        "open_shadow_trade_exists": "duplicate_open_trade",
+    }
+    return aliases.get(text, text)

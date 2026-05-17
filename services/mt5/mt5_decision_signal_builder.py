@@ -58,7 +58,7 @@ def build_actionable_mt5_decision(
     if hedge_score >= 80:
         return {**base, "reason": "hedge_score_hard_block"}
     if confidence not in {"medium", "high"}:
-        return {**base, "reason": "confidence_too_low"}
+        return {**base, "reason": "confidence_low"}
 
     entry = _number(
         _first_present(clean_context, ("entry", "price"))
