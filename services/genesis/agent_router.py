@@ -27,7 +27,7 @@ class AgentRouter:
         chart = detect_chart_intent(clean, context=context)
         intent = self.detect_intent(clean, tickers=tickers, chart=chart)
         if intent == "memory_query":
-            tickers = [item for item in tickers if item not in {"CONSULTAS", "RECIENTES", "ACTIVOS", "MEMORIA", "APRENDISTE"}]
+            tickers = [item for item in tickers if item not in {"CONSULTAS", "RECIENTES", "ACTIVOS", "MEMORIA", "APRENDISTE", "SENAL", "SENALES", "ALES"}]
             primary_ticker = normalize_ticker(tickers[0] if tickers else ticker)
         if intent in {"greeting", "time", "date", "weather", "daily_briefing", "market_overview", "opportunities", "general_question"}:
             tickers = []
@@ -54,6 +54,12 @@ class AgentRouter:
             return "performance_review"
         if _mentions_casual_chat(text):
             return "greeting"
+        if _mentions_mt5(text):
+            return "mt5_bridge"
+        if _mentions_hedge(text):
+            return "hedge_plan"
+        if _mentions_strategy_research(text):
+            return "strategy_research"
         if detect_time_request(message):
             return "time"
         if detect_date_request(message):
@@ -111,6 +117,9 @@ _AGENT_BY_INTENT = {
     "alerts": "alerts_agent",
     "macro_news": "news_macro_agent",
     "opportunities": "opportunity_agent",
+    "hedge_plan": "hedge_engine",
+    "strategy_research": "strategy_research_lab",
+    "mt5_bridge": "mt5_bridge",
     "comparison": "price_agent",
     "technical_indicators": "technical_agent",
     "trade_decision": "asset_analysis_agent",
@@ -182,6 +191,83 @@ def _mentions_personal_support(text: str) -> bool:
 
 def _mentions_portfolio(text: str) -> bool:
     return any(token in text for token in ("cartera", "portfolio", "posiciones", "paper"))
+
+
+def _mentions_hedge(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "cobertura",
+            "cubrir",
+            "cubro",
+            "hedge",
+            "proteger ganancias",
+            "protejo ganancias",
+            "protejo mi cartera",
+            "proteger mi cartera",
+            "capital protection",
+            "no perder tanto",
+            "mercado se cae",
+            "aprovecho caidas",
+            "aprovechar caidas",
+            "caidas en btc",
+            "riesgo de mi estrategia",
+        )
+    )
+
+
+def _mentions_mt5(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "mt5",
+            "metatrader",
+            "meta trader",
+            "cuenta demo",
+            "bridge ea",
+            "expert advisor",
+            "forward test",
+            "decision tiene mt5",
+            "estado de mt5",
+            "senales llegaron de mt5",
+            "señales llegaron de mt5",
+            "por que no opero",
+            "que bloqueo la orden",
+            "conecta mt5",
+        )
+    )
+
+
+def _mentions_strategy_research(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "estrategia funciona mejor",
+            "que estrategia",
+            "preset uso",
+            "perfil usar",
+            "strategy research",
+            "research lab",
+            "por que voo pierde",
+            "por que pierde voo",
+            "por que btc pierde",
+            "por que pierde btc",
+            "mejora mi estrategia",
+            "activo opera mejor",
+            "activo tiene edge",
+            "setup tiene edge",
+            "tiene edge",
+            "edge ahora",
+            "sin edge",
+            "no hay edge",
+            "no operar",
+            "debo operar",
+            "deberia operar",
+            "estrategia mas estable",
+            "perfil de tradingview",
+            "perfil tradingview",
+        )
+    )
 
 
 def _mentions_tracking(text: str) -> bool:

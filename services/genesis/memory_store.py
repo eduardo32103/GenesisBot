@@ -498,6 +498,155 @@ class MemoryStore:
     def get_outcome_tracking(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
         return self._get_learning_rows("outcome_tracking", ticker, limit)
 
+    def save_hedge_event(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "hedge_engine",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "hedge_events", **_sanitize(payload or {})}
+        return self.save_event("hedge_event", clean, source, confidence)
+
+    def get_hedge_events(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        rows = self.get_recent_events(limit, "hedge_event")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized]
+        return rows
+
+    def save_strategy_profile_result(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "strategy_research_lab",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "strategy_profile_results", **_sanitize(payload or {})}
+        return self.save_event("strategy_profile_result", clean, source, confidence)
+
+    def get_strategy_profile_results(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        rows = self.get_recent_events(limit, "strategy_profile_result")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized]
+        return rows
+
+    def save_asset_strategy_recommendation(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "strategy_research_lab",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "asset_strategy_recommendations", **_sanitize(payload or {})}
+        return self.save_event("asset_strategy_recommendation", clean, source, confidence)
+
+    def get_asset_strategy_recommendations(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        rows = self.get_recent_events(limit, "asset_strategy_recommendation")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized]
+        return rows
+
+    def save_backtest_run(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "strategy_research_lab",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "backtest_runs", **_sanitize(payload or {})}
+        return self.save_event("backtest_run", clean, source, confidence)
+
+    def get_backtest_runs(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        rows = self.get_recent_events(limit, "backtest_run")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized]
+        return rows
+
+    def save_no_edge_decision(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "strategy_research_lab",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "no_edge_decisions", **_sanitize(payload or {})}
+        return self.save_event("no_edge_decision", clean, source, confidence)
+
+    def get_no_edge_decisions(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        fetch_limit = max(limit * 5, 100) if normalized else limit
+        rows = self.get_recent_events(fetch_limit, "no_edge_decision")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized][:limit]
+        return rows
+
+    def save_btc_edge_result(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "strategy_research_lab",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "btc_edge_results", **_sanitize(payload or {})}
+        return self.save_event("btc_edge_result", clean, source, confidence)
+
+    def get_btc_edge_results(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        fetch_limit = max(limit * 5, 100) if normalized else limit
+        rows = self.get_recent_events(fetch_limit, "btc_edge_result")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized][:limit]
+        return rows
+
+    def save_btc_backtest_result(
+        self,
+        ticker: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "strategy_research_lab",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean = {"ticker": str(ticker or "").upper(), "collection": "btc_backtest_results", **_sanitize(payload or {})}
+        return self.save_event("btc_backtest_result", clean, source, confidence)
+
+    def get_btc_backtest_results(self, ticker: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        normalized = str(ticker or "").upper().strip()
+        fetch_limit = max(limit * 5, 100) if normalized else limit
+        rows = self.get_recent_events(fetch_limit, "btc_backtest_result")
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("ticker") or "").upper() == normalized][:limit]
+        return rows
+
+    def save_mt5_event(
+        self,
+        collection: str,
+        symbol: str,
+        payload: dict[str, Any] | None = None,
+        source: str = "mt5_bridge",
+        confidence: str | float = "media",
+    ) -> dict[str, Any]:
+        clean_collection = str(collection or "mt5_journal").strip()[:80]
+        clean = {
+            "symbol": str(symbol or "").upper().strip(),
+            "collection": clean_collection,
+            "broker_touched": False,
+            "order_executed": False,
+            **_sanitize(payload or {}),
+        }
+        return self.save_event(_mt5_event_type(clean_collection), clean, source, confidence)
+
+    def get_mt5_events(self, collection: str | None = None, symbol: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        event_type = _mt5_event_type(collection) if collection else None
+        normalized = str(symbol or "").upper().strip()
+        fetch_limit = max(limit * 5, 100) if normalized else limit
+        rows = self.get_recent_events(fetch_limit, event_type)
+        if normalized:
+            return [row for row in rows if str(row.get("payload", {}).get("symbol") or "").upper() == normalized][:limit]
+        return rows[:limit]
+
     def get_asset_learning_summary(self, ticker: str, limit: int = 12) -> dict[str, Any]:
         normalized = str(ticker or "").upper().strip()[:40]
         if not normalized:
@@ -1419,6 +1568,22 @@ def _alert_row(row: Any) -> dict[str, Any]:
 
 def _is_tracked_entity_noise(ticker: object) -> bool:
     return str(ticker or "").strip().upper() in _TRACKED_ENTITY_BLOCKLIST
+
+
+def _mt5_event_type(collection: str | None) -> str:
+    mapping = {
+        "mt5_signals": "mt5_signal",
+        "mt5_decisions": "mt5_decision",
+        "mt5_order_requests": "mt5_order_request",
+        "mt5_order_results": "mt5_order_result",
+        "mt5_backtest_runs": "mt5_backtest_run",
+        "mt5_forward_tests": "mt5_forward_test",
+        "mt5_risk_blocks": "mt5_risk_block",
+        "mt5_journal": "mt5_journal",
+        "mt5_account_sync": "mt5_account_sync",
+    }
+    clean = str(collection or "mt5_journal").strip()
+    return mapping.get(clean, clean.rstrip("s") or "mt5_event")
 
 
 def _loads(value: Any) -> Any:

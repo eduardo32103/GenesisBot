@@ -6,6 +6,7 @@ from typing import Any
 from services.dashboard.get_opportunity_radar import get_opportunity_radar_snapshot
 from services.genesis.agent_router import AgentRouter
 from services.genesis.alerts_agent import get_alerts_agent
+from services.genesis.hedge_engine import HedgeEngine
 from services.genesis.llm_orchestrator import get_llm_orchestrator
 from services.genesis.market_format import format_signed_money, format_signed_percent
 from services.genesis.memory_store import MemoryStore
@@ -20,7 +21,9 @@ from services.genesis.ticker_parser import normalize_ticker
 from services.genesis.tracking_agent import get_tracking_agent
 from services.genesis.weather_agent import get_weather_agent
 from services.genesis.weather_tool import detect_weather_request
+from services.mt5.mt5_bridge import mt5_decision, mt5_health
 from services.genesis.whale_agent import get_whale_agent
+from services.trading_intelligence.strategy_research_lab import StrategyResearchLab
 
 
 def route_message(
@@ -48,12 +51,12 @@ def route_message(
         store.save_event("greeting", {"message": clean}, "genesis", "alta")
         return _payload("greeting", answer, tickers, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
-    if route.intent == "time" or detect_time_request(clean):
+    if route.intent == "time" or (route.intent not in {"strategy_research", "hedge_plan"} and detect_time_request(clean)):
         time_payload = get_time_answer()
         store.save_event("time_request", {"message": clean, "timezone": time_payload["timezone"]}, "time", "alta")
         return _payload("time", time_payload["answer"], [], extra={"time": time_payload}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
 
-    if route.intent == "date" or detect_date_request(clean):
+    if route.intent == "date" or (route.intent not in {"strategy_research", "hedge_plan"} and detect_date_request(clean)):
         date_payload = get_date_answer()
         store.save_event("date_request", {"message": clean, "timezone": date_payload["timezone"], "date": date_payload["date"]}, "time", "alta")
         return _payload("date", date_payload["answer"], [], extra={"date": date_payload}, memory=store, prompt=clean, conversation_id=clean_conversation_id)
@@ -108,6 +111,103 @@ def route_message(
             report["answer"],
             [report["ticker"]] if report.get("ticker") else [],
             extra={"performance": report, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
+    if route.intent == "mt5_bridge":
+        if explicit_ticker:
+            decision = mt5_decision(explicit_ticker, memory=store)
+            structured = composer.mt5_decision_card(decision)
+            answer = _mt5_decision_answer(decision)
+            store.save_event(
+                "mt5_chat_query",
+                {
+                    "message": clean,
+                    "symbol": decision.get("symbol"),
+                    "decision": decision.get("decision"),
+                    "order_policy": decision.get("order_policy"),
+                    "broker_touched": False,
+                },
+                "mt5_bridge",
+                "media",
+            )
+            return _payload(
+                "mt5_bridge",
+                answer,
+                [explicit_ticker],
+                extra={"mt5": decision, "structured": structured, "kind": structured["kind"]},
+                memory=store,
+                prompt=clean,
+                conversation_id=clean_conversation_id,
+            )
+        health = mt5_health(memory=store)
+        structured = composer.mt5_decision_card({"symbol": "MT5", "decision": "STATUS", **health})
+        answer = _mt5_health_answer(health)
+        store.save_event("mt5_chat_query", {"message": clean, **health}, "mt5_bridge", "media")
+        return _payload(
+            "mt5_bridge",
+            answer,
+            [],
+            extra={"mt5": health, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
+    if route.intent == "hedge_plan":
+        hedge_engine = HedgeEngine(memory=store)
+        plan = hedge_engine.build_hedge_context(explicit_ticker, portfolio_mode=not bool(explicit_ticker))
+        structured = composer.hedge_plan(plan)
+        answer = _hedge_plan_answer(plan)
+        store.save_event(
+            "hedge_recommendation",
+            {
+                "ticker": explicit_ticker,
+                "hedge_score": plan.get("hedge_score"),
+                "hedge_type": plan.get("hedge_type"),
+                "hedge_ratio": plan.get("suggested_hedge_ratio"),
+                "reason": plan.get("reason") or plan.get("genesis_reading"),
+                "order_policy": "journal_only_no_broker",
+                "broker_touched": False,
+            },
+            "hedge_engine",
+            "media",
+        )
+        return _payload(
+            "hedge_plan",
+            answer,
+            [explicit_ticker] if explicit_ticker else [],
+            extra={"hedge": plan, "structured": structured, "kind": structured["kind"]},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
+    if route.intent == "strategy_research":
+        lab = StrategyResearchLab(memory=store)
+        research_payload = lab.answer(clean, explicit_ticker)
+        research = research_payload["research"]
+        structured = composer.strategy_research_summary(research)
+        store.save_event(
+            "strategy_research_query",
+            {
+                "message": clean,
+                "ticker": research.get("ticker"),
+                "recommended_profile": research.get("recommended_strategy_profile"),
+                "recommended_preset": research.get("recommended_preset"),
+                "order_policy": "journal_only_no_broker",
+                "broker_touched": False,
+            },
+            "strategy_research_lab",
+            "media",
+        )
+        return _payload(
+            "strategy_research",
+            research_payload["answer"],
+            [research["ticker"]] if research.get("ticker") else [],
+            extra={"research": research, "structured": structured, "kind": structured["kind"]},
             memory=store,
             prompt=clean,
             conversation_id=clean_conversation_id,
@@ -331,6 +431,47 @@ def _general_assistant_answer(message: str, composer: Any) -> str:
             "Dime el contexto y te lo ordeno en lectura clara, siguiente paso y riesgos."
         )
     return composer.general()
+
+
+def _hedge_plan_answer(plan: dict[str, Any]) -> str:
+    ticker = str(plan.get("ticker") or "cartera").upper()
+    score = plan.get("hedge_score")
+    risk = plan.get("risk_level") or "low"
+    hedge_type = plan.get("hedge_type") or ("portfolio_hedge" if plan.get("portfolio_mode") else "none")
+    ratio = plan.get("suggested_hedge_ratio") or plan.get("suggested_reduction_pct") or 0
+    reason = plan.get("reason") or plan.get("genesis_reading") or "Sin deterioro fuerte confirmado."
+    watch = plan.get("what_to_watch") if isinstance(plan.get("what_to_watch"), list) else []
+    first_watch = watch[0] if watch else "precio, volumen, soporte, SPY/QQQ, VIX y DXY."
+    return (
+        f"{ticker}: hedge score {score}/100, riesgo {risk}. "
+        f"Sugerencia paper: {hedge_type} con ratio aproximado {ratio}. "
+        f"Razon: {reason} "
+        "Esto no es una orden real ni una garantia; la cobertura reduce riesgo, pero no elimina perdidas. "
+        f"Vigila: {first_watch}"
+    )
+
+
+def _mt5_decision_answer(decision: dict[str, Any]) -> str:
+    symbol = str(decision.get("symbol") or "MT5")
+    action = str(decision.get("decision") or "WAIT")
+    reason = str(decision.get("reason") or "Genesis mantiene modo seguro.")
+    policy = str(decision.get("order_policy") or "journal_only_no_broker")
+    flags = decision.get("risk_flags") if isinstance(decision.get("risk_flags"), list) else []
+    first_flag = flags[0] if flags else "sin bloqueo adicional confirmado"
+    return (
+        f"{symbol}: decision MT5 = {action}. Razon: {reason}. "
+        f"Politica: {policy}; order_executed=false y broker_touched=false. "
+        f"Bloqueo/riesgo principal: {first_flag}. Primero demo, journal y backtest."
+    )
+
+
+def _mt5_health_answer(health: dict[str, Any]) -> str:
+    return (
+        f"MT5 bridge: {health.get('status')}. "
+        f"enabled={health.get('mt5_enabled')}, demo_only={health.get('demo_only')}, "
+        f"live_trading_enabled={health.get('live_trading_enabled')}, kill_switch={health.get('kill_switch')}. "
+        "En esta fase no se ejecuta broker real; solo demo/journal/backtest."
+    )
 
 
 def _general_assistant_structured(message: str, answer: str) -> dict[str, Any]:
@@ -575,6 +716,8 @@ def _response_type_for_intent(intent: str) -> str:
         "portfolio_summary": "general_assistant",
         "tracking_summary": "general_assistant",
         "performance_review": "performance_review",
+        "hedge_plan": "hedge_plan",
+        "mt5_bridge": "mt5_decision",
         "image_chart_analysis": "chart_analysis",
     }.get(intent, "general_assistant")
 

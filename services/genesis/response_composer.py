@@ -224,6 +224,140 @@ class ResponseComposer:
             ],
         }
 
+    def hedge_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        ticker = str(plan.get("ticker") or "Cartera")
+        score = plan.get("hedge_score")
+        hedge_type = plan.get("hedge_type") or "none"
+        ratio = plan.get("suggested_hedge_ratio")
+        reading = plan.get("genesis_reading") or (
+            f"{ticker}: cobertura en modo paper. La cobertura reduce riesgo, pero no elimina perdidas."
+        )
+        return {
+            "kind": "hedge_plan",
+            "title": f"Cobertura {ticker}",
+            "summary": reading,
+            "hedge_score": score,
+            "hedge_type": hedge_type,
+            "hedge_ratio": ratio,
+            "risk_level": plan.get("risk_level"),
+            "sections": [
+                {"title": "Resumen ejecutivo", "bullets": [reading]},
+                {
+                    "title": "Plan sugerido",
+                    "bullets": [
+                        f"Hedge score: {score}/100.",
+                        f"Tipo: {hedge_type}.",
+                        f"Ratio sugerido: {ratio}.",
+                    ],
+                },
+                {
+                    "title": "Que NO significa",
+                    "bullets": [
+                        "No es orden real.",
+                        "No garantiza rentabilidad.",
+                        "No elimina perdidas; solo busca reducir riesgo y proteger capital.",
+                    ],
+                },
+                {"title": "Que vigilar", "bullets": plan.get("what_to_watch") or ["Precio, volumen, SPY/QQQ, VIX y soporte clave."]},
+            ],
+        }
+
+    def strategy_research_summary(self, research: dict[str, Any]) -> dict[str, Any]:
+        ticker = str(research.get("ticker") or "")
+        metrics = ((research.get("backtest_summary") or {}).get("metrics") or {})
+        benchmark = research.get("benchmark_summary") or {}
+        health = research.get("strategy_health") or {}
+        no_trade = research.get("no_trade_decision") or {}
+        profile = research.get("recommended_strategy_profile") or ""
+        preset = research.get("recommended_preset") or ""
+        summary = (
+            f"{ticker}: perfil recomendado {profile} con preset {preset}. "
+            f"Edge status: {health.get('edge_status') or no_trade.get('edge_status') or 'pendiente'}. "
+            "Primero backtesting, paper trading y forward testing; no garantiza rentabilidad."
+        )
+        return {
+            "kind": "strategy_research_summary",
+            "title": f"Strategy Research {ticker}",
+            "summary": summary,
+            "asset_class": research.get("asset_class"),
+            "recommended_profile": profile,
+            "recommended_preset": preset,
+            "recommended_timeframe": research.get("recommended_timeframe"),
+            "metrics": {
+                "profit_factor": metrics.get("profit_factor"),
+                "win_rate": metrics.get("win_rate"),
+                "max_drawdown": metrics.get("max_drawdown"),
+                "benchmark_capture_ratio": metrics.get("benchmark_capture_ratio"),
+                "quality_score": metrics.get("quality_score"),
+                "no_trade_score": health.get("no_trade_score") or no_trade.get("no_trade_score"),
+                "edge_status": health.get("edge_status") or no_trade.get("edge_status"),
+            },
+            "benchmark": benchmark,
+            "sections": [
+                {"title": "Perfil recomendado", "bullets": [f"{profile} / {preset}", str(research.get("reason") or "")]},
+                {
+                    "title": "Metricas",
+                    "bullets": [
+                        f"Profit factor: {metrics.get('profit_factor')}.",
+                        f"Win rate: {metrics.get('win_rate')}%.",
+                        f"Drawdown: {metrics.get('max_drawdown')}%.",
+                        f"Benchmark capture: {metrics.get('benchmark_capture_ratio')}.",
+                        f"No-trade score: {health.get('no_trade_score') or no_trade.get('no_trade_score')}.",
+                    ],
+                },
+                {
+                    "title": "Decision de edge",
+                    "bullets": [
+                        f"Estado: {health.get('edge_status') or no_trade.get('edge_status') or 'pendiente'}.",
+                        f"Accion: {health.get('action') or no_trade.get('action') or 'paper_only'}.",
+                    ],
+                },
+                {"title": "Riesgos", "bullets": research.get("risk_flags") or ["Validar fuera de muestra antes de operar."]},
+                {
+                    "title": "Politica",
+                    "bullets": [
+                        "No es orden real.",
+                        "No promete rentabilidad.",
+                        "Primero paper trading y journal.",
+                    ],
+                },
+            ],
+        }
+
+    def mt5_decision_card(self, payload: dict[str, Any]) -> dict[str, Any]:
+        decision = payload.get("decision") or "WAIT"
+        symbol = payload.get("symbol") or "MT5"
+        policy = payload.get("order_policy") or "journal_only_no_broker"
+        reason = payload.get("reason") or payload.get("status") or "MT5 bridge en modo seguro."
+        return {
+            "kind": "mt5_decision_card",
+            "title": f"MT5 {symbol}",
+            "summary": f"Decision: {decision}. Politica: {policy}. No hay broker real ni orden real.",
+            "decision": decision,
+            "symbol": symbol,
+            "order_policy": policy,
+            "broker_touched": False,
+            "sections": [
+                {"title": "Decision", "bullets": [f"{decision}: {reason}", f"Confianza: {payload.get('confidence') or 'low'}."]},
+                {
+                    "title": "Riesgo",
+                    "bullets": [
+                        f"Risk pct: {payload.get('risk_pct')}.",
+                        f"Hedge score: {payload.get('hedge_score')}.",
+                        f"No-trade score: {payload.get('no_trade_score')}.",
+                    ],
+                },
+                {
+                    "title": "Seguridad",
+                    "bullets": [
+                        "order_executed=false.",
+                        "broker_touched=false.",
+                        "Live trading desactivado en esta fase.",
+                    ],
+                },
+            ],
+        }
+
     def general_answer(self, answer: str) -> dict[str, Any]:
         return {"kind": "general_answer", "answer": answer, "sections": [{"title": "Respuesta", "bullets": [answer]}]}
 

@@ -47,7 +47,16 @@ from api.routes.dashboard import (
     simulate_dashboard_portfolio_purchase,
 )
 from api.routes.genesis import (
+    get_genesis_hedge_plan,
+    get_genesis_mt5_config,
+    get_genesis_mt5_decision,
+    get_genesis_mt5_health,
+    get_genesis_portfolio_hedge,
     get_genesis_trading_context,
+    post_genesis_mt5_account_sync,
+    post_genesis_mt5_order_request,
+    post_genesis_mt5_order_result,
+    post_genesis_mt5_signal,
     post_genesis_tradingview_webhook,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
@@ -171,7 +180,16 @@ def create_app() -> dict[str, str]:
         "genesis_memory_event_endpoint": "/api/genesis/memory/event",
         "genesis_briefing_endpoint": "/api/genesis/briefing",
         "genesis_trading_context_endpoint": "/api/genesis/trading-context?ticker={symbol}",
+        "genesis_hedge_plan_endpoint": "/api/genesis/hedge-plan?ticker={symbol}",
+        "genesis_portfolio_hedge_endpoint": "/api/genesis/portfolio-hedge",
         "genesis_tradingview_webhook_endpoint": "/api/genesis/tradingview-webhook",
+        "genesis_mt5_health_endpoint": "/api/genesis/mt5/health",
+        "genesis_mt5_config_endpoint": "/api/genesis/mt5/config",
+        "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
+        "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
+        "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
+        "genesis_mt5_order_request_endpoint": "/api/genesis/mt5/order-request",
+        "genesis_mt5_order_result_endpoint": "/api/genesis/mt5/order-result",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
@@ -648,6 +666,27 @@ def _is_memory_genesis_prompt(message: str) -> bool:
     )
 
 
+def _is_hedge_genesis_prompt(message: str) -> bool:
+    text = f" {_fold_prompt(message)} "
+    return any(
+        token in text
+        for token in (
+            " cobertura ",
+            " cubrir ",
+            " cubro ",
+            " hedge ",
+            " proteger ganancias ",
+            " protejo ganancias ",
+            " proteger mi cartera ",
+            " protejo mi cartera ",
+            " capital protection ",
+            " no perder tanto ",
+            " mercado se cae ",
+            " riesgo tiene mi estrategia ",
+        )
+    )
+
+
 def _is_performance_genesis_prompt(message: str) -> bool:
     text = f" {_fold_prompt(message)} "
     return any(
@@ -1019,6 +1058,7 @@ def _is_asset_genesis_prompt(message: str, context: object | None = None) -> boo
         or _is_whale_genesis_prompt(message)
         or _is_weather_genesis_prompt(message)
         or _is_memory_genesis_prompt(message)
+        or _is_hedge_genesis_prompt(message)
         or _is_comparison_genesis_prompt(message)
         or _is_opportunity_genesis_prompt(message)
         or _is_market_genesis_prompt(message)
@@ -3952,6 +3992,17 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 _remember_genesis_turn(body, message, result)
                 self._write_json(result, HTTPStatus.OK)
                 return
+            if _is_hedge_genesis_prompt(message):
+                result = ask_genesis(
+                    message,
+                    context=str(body.get("context") or "general"),
+                    ticker=str(body.get("ticker") or ""),
+                    panel_context=panel_context,
+                    conversation_id=str(body.get("conversation_id") or "default"),
+                )
+                _remember_genesis_turn(body, message, result)
+                self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+                return
             if _is_comparison_genesis_prompt(message):
                 result = _comparison_prompt_payload(message, body)
                 _remember_genesis_turn(body, message, result)
@@ -3975,6 +4026,26 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/tradingview-webhook":
             result = post_genesis_tradingview_webhook(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/account-sync":
+            result = post_genesis_mt5_account_sync(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/signal":
+            result = post_genesis_mt5_signal(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/order-request":
+            result = post_genesis_mt5_order_request(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/order-result":
+            result = post_genesis_mt5_order_result(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -4283,6 +4354,33 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/trading-context":
             ticker = (parse_qs(parsed.query).get("ticker") or parse_qs(parsed.query).get("symbol") or [""])[0]
             payload_data = get_genesis_trading_context(ticker)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/health":
+            payload_data = get_genesis_mt5_health()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/config":
+            payload_data = get_genesis_mt5_config()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/decision":
+            symbol = (parse_qs(parsed.query).get("symbol") or parse_qs(parsed.query).get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_decision(symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/hedge-plan":
+            ticker = (parse_qs(parsed.query).get("ticker") or parse_qs(parsed.query).get("symbol") or [""])[0]
+            payload_data = get_genesis_hedge_plan(ticker)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/portfolio-hedge":
+            payload_data = get_genesis_portfolio_hedge()
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
