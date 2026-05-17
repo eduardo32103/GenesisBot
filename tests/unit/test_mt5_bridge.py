@@ -9,18 +9,33 @@ from api.main import create_app
 from api.routes.genesis import (
     get_genesis_mt5_config,
     get_genesis_mt5_decision,
+    get_genesis_mt5_forward_test,
     get_genesis_mt5_health,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_outcomes_recent,
+    get_genesis_mt5_performance,
     get_genesis_mt5_status,
     post_genesis_mt5_account_sync,
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
     post_genesis_mt5_signal,
+    post_genesis_mt5_tick,
 )
 from services.genesis.agent_router import AgentRouter
 from services.genesis.memory_store import MemoryStore
 from services.genesis.tool_router import route_message
-from services.mt5.mt5_bridge import mt5_account_sync, mt5_decision, mt5_journal_recent, mt5_order_request, mt5_signal, mt5_status
+from services.mt5.mt5_bridge import (
+    mt5_account_sync,
+    mt5_decision,
+    mt5_forward_test,
+    mt5_journal_recent,
+    mt5_order_request,
+    mt5_outcomes_recent,
+    mt5_performance,
+    mt5_signal,
+    mt5_status,
+    mt5_tick,
+)
 from services.mt5.mt5_order_model import MT5OrderIntent
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
@@ -35,8 +50,12 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_config_endpoint"], "/api/genesis/mt5/config")
         self.assertEqual(app["genesis_mt5_decision_endpoint"], "/api/genesis/mt5/decision?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_journal_recent_endpoint"], "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25")
+        self.assertEqual(app["genesis_mt5_performance_endpoint"], "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}")
+        self.assertEqual(app["genesis_mt5_forward_test_endpoint"], "/api/genesis/mt5/forward-test?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_outcomes_recent_endpoint"], "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25")
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
+        self.assertEqual(app["genesis_mt5_tick_endpoint"], "/api/genesis/mt5/tick")
         self.assertEqual(app["genesis_mt5_order_request_endpoint"], "/api/genesis/mt5/order-request")
         self.assertEqual(app["genesis_mt5_order_result_endpoint"], "/api/genesis/mt5/order-result")
 
@@ -222,6 +241,80 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(status["bridge"]["order_executed"])
             self.assertNotIn("dont-save", str(status))
 
+    def test_mt5_tick_creates_and_updates_shadow_trade_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            buy = mt5_signal(
+                {
+                    "symbol": "BTC",
+                    "action": "BUY",
+                    "entry": 100,
+                    "stop_loss": 95,
+                    "take_profit": 110,
+                    "risk_pct": 0.25,
+                    "timeframe": "H1",
+                    "strategy_profile": "forward-smoke",
+                    "confidence": "high",
+                    "password": "dont-save",
+                },
+                memory=store,
+            )
+            first_tick = mt5_tick({"symbol": "BTC", "bid": 109.9, "ask": 110.1, "last": 110.2, "timeframe": "H1", "spread": 0.2}, memory=store)
+            sell = mt5_signal(
+                {
+                    "symbol": "BTC",
+                    "action": "SELL",
+                    "entry": 100,
+                    "stop_loss": 105,
+                    "take_profit": 90,
+                    "risk_pct": 0.25,
+                    "timeframe": "H1",
+                    "strategy_profile": "forward-smoke",
+                    "confidence": "high",
+                },
+                memory=store,
+            )
+            second_tick = mt5_tick({"symbol": "BTC", "bid": 105.9, "ask": 106.1, "last": 106, "timeframe": "H1", "spread": 0.2}, memory=store)
+            performance = mt5_performance(memory=store, symbol="BTC", timeframe="H1")
+            forward = mt5_forward_test(memory=store, symbol="BTC", timeframe="H1")
+            outcomes = mt5_outcomes_recent(memory=store, symbol="BTC", limit=10)
+
+            self.assertTrue(buy["shadow"]["created"])
+            self.assertTrue(sell["shadow"]["created"])
+            self.assertEqual(first_tick["status"], "mt5_tick_recorded")
+            self.assertEqual(second_tick["status"], "mt5_tick_recorded")
+            self.assertTrue(store.get_mt5_events("mt5_ticks", "BTC", limit=5))
+            self.assertEqual(performance["summary"]["shadow_trades"], 2)
+            self.assertEqual(performance["summary"]["wins"], 1)
+            self.assertEqual(performance["summary"]["losses"], 1)
+            self.assertEqual(performance["summary"]["win_rate"], 50.0)
+            self.assertEqual(performance["summary"]["profit_factor"], 2.0)
+            self.assertEqual(forward["status"], "mt5_forward_test_ready")
+            self.assertGreaterEqual(outcomes["count"], 2)
+            self.assertFalse(performance["broker_touched"])
+            self.assertFalse(performance["order_executed"])
+            self.assertNotIn("dont-save", str(performance))
+
+    def test_mt5_no_trade_and_hedge_outcomes_are_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            no_trade = mt5_signal({"symbol": "BTC", "decision": "NO_TRADE", "price": 100, "reason": "no_edge"}, memory=store)
+            hedge = mt5_signal({"symbol": "BTC", "decision": "HEDGE", "price": 100, "hedge_score": 72, "reason": "risk_off"}, memory=store)
+            tick = mt5_tick({"symbol": "BTC", "last": 98, "timeframe": "H1", "spread": 0.1}, memory=store)
+            performance = mt5_performance(memory=store, symbol="BTC")
+            outcomes = mt5_outcomes_recent(memory=store, symbol="BTC", limit=10)
+
+            self.assertEqual(no_trade["shadow"]["status"], "no_trade_outcome_pending")
+            self.assertEqual(hedge["shadow"]["status"], "hedge_outcome_pending")
+            self.assertEqual(tick["status"], "mt5_tick_recorded")
+            self.assertEqual(performance["no_trade_accuracy"]["protected_loss_count"], 1)
+            self.assertEqual(performance["no_trade_accuracy"]["accuracy"], 100.0)
+            self.assertEqual(performance["hedge_accuracy"]["accuracy"], 100.0)
+            self.assertTrue(any(item["event_type"] == "mt5_no_trade_outcome" for item in outcomes["items"]))
+            self.assertTrue(any(item["event_type"] == "mt5_hedge_outcome" for item in outcomes["items"]))
+            self.assertFalse(outcomes["broker_touched"])
+            self.assertFalse(outcomes["order_executed"])
+
     def test_demo_account_recognition_avoids_false_demo_only_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
@@ -239,14 +332,22 @@ class MT5BridgeTests(unittest.TestCase):
         decision = get_genesis_mt5_decision("BTCUSD")
         account = post_genesis_mt5_account_sync({"account_id": "demo", "is_demo": True})
         signal = post_genesis_mt5_signal({"symbol": "BTCUSD", "decision": "WAIT"})
+        tick = post_genesis_mt5_tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1"})
         request = post_genesis_mt5_order_request({"symbol": "BTCUSD", "action": "BUY", "entry": 100, "risk_pct": 0.25})
         result = post_genesis_mt5_order_result({"symbol": "BTCUSD", "result": "simulated"})
+        performance = get_genesis_mt5_performance("BTCUSD")
+        forward = get_genesis_mt5_forward_test("BTCUSD")
+        outcomes = get_genesis_mt5_outcomes_recent(symbol="BTCUSD", limit=5)
 
         self.assertTrue(decision["ok"])
         self.assertTrue(account["ok"])
         self.assertTrue(signal["ok"])
+        self.assertTrue(tick["ok"])
         self.assertTrue(request["ok"])
         self.assertTrue(result["ok"])
+        self.assertTrue(performance["ok"])
+        self.assertTrue(forward["ok"])
+        self.assertTrue(outcomes["ok"])
         self.assertFalse(request["order_executed"])
         self.assertFalse(request["broker_touched"])
         self.assertEqual(request["order_policy"], "journal_only_no_broker")
@@ -274,6 +375,8 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("input bool AllowLiveTrading = false", content)
         self.assertIn("input bool JournalOnly = true", content)
         self.assertIn("input bool KillSwitch = true", content)
+        self.assertIn("/api/genesis/mt5/tick", content)
+        self.assertIn("Last tick sent", content)
         self.assertIn("WebRequest", content)
         self.assertNotIn("FMP_API_KEY", content)
         self.assertNotIn("OPENAI_API_KEY", content)

@@ -6,9 +6,12 @@ from typing import Any
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
 from services.mt5.mt5_account_state import normalize_account_state
+from services.mt5.mt5_forward_test import MT5ForwardTestEngine
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
+from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
+from services.mt5.mt5_shadow_trading import MT5ShadowTrading
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 
 
@@ -25,6 +28,9 @@ class MT5SignalRouter:
         self.symbol_mapper = symbol_mapper or MT5SymbolMapper()
         self.risk_guard = MT5RiskGuard(config=self.config, symbol_mapper=self.symbol_mapper)
         self.journal = MT5Journal(memory=self.memory)
+        self.shadow = MT5ShadowTrading(memory=self.memory)
+        self.forward_engine = MT5ForwardTestEngine(memory=self.memory)
+        self.performance_engine = MT5Performance(memory=self.memory)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -123,10 +129,12 @@ class MT5SignalRouter:
         clean = sanitize_payload(payload or {})
         symbol = str(clean.get("symbol") or clean.get("ticker") or "").upper().strip()
         event = self.journal.save("mt5_signals", symbol, {**clean, "timestamp": _now()})
+        shadow = self.shadow.record_signal(clean) if symbol else {"created": False, "status": "missing_symbol"}
         return {
             "ok": bool(symbol),
             "status": "mt5_signal_recorded" if symbol else "missing_symbol",
             "event": event,
+            "shadow": shadow,
             "order_executed": False,
             "broker_touched": False,
             "order_policy": "journal_only_no_broker",
@@ -249,6 +257,18 @@ class MT5SignalRouter:
         event = self.journal.save("mt5_order_results", symbol, result)
         return {"ok": bool(symbol), "status": "mt5_order_result_recorded" if symbol else "missing_symbol", "event": event, **result}
 
+    def tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        return self.forward_engine.record_tick(payload)
+
+    def performance(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return self.performance_engine.report(symbol=symbol, timeframe=timeframe)
+
+    def forward_test(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return self.forward_engine.forward_test(symbol=symbol, timeframe=timeframe)
+
+    def outcomes_recent(self, *, symbol: str = "", limit: int = 25) -> dict[str, Any]:
+        return self.forward_engine.outcomes_recent(symbol=symbol, limit=limit)
+
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
         direct_keys = ("is_demo", "demo", "account_type", "trade_mode", "account_trade_mode", "mode", "server", "broker", "account_id", "login", "account")
@@ -359,6 +379,11 @@ _MT5_COLLECTIONS = (
     "mt5_order_requests",
     "mt5_order_results",
     "mt5_risk_blocks",
+    "mt5_shadow_trades",
+    "mt5_signal_outcomes",
+    "mt5_no_trade_outcomes",
+    "mt5_hedge_outcomes",
+    "mt5_forward_metrics",
     "mt5_journal",
 )
 

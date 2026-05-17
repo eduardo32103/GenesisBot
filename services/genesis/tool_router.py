@@ -21,7 +21,7 @@ from services.genesis.ticker_parser import normalize_ticker
 from services.genesis.tracking_agent import get_tracking_agent
 from services.genesis.weather_agent import get_weather_agent
 from services.genesis.weather_tool import detect_weather_request
-from services.mt5.mt5_bridge import mt5_decision, mt5_health
+from services.mt5.mt5_bridge import mt5_decision, mt5_health, mt5_performance
 from services.genesis.whale_agent import get_whale_agent
 from services.trading_intelligence.strategy_research_lab import StrategyResearchLab
 
@@ -117,6 +117,24 @@ def route_message(
         )
 
     if route.intent == "mt5_bridge":
+        if _mentions_mt5_forward_metrics(clean):
+            performance = mt5_performance(symbol=explicit_ticker, memory=store)
+            answer = _mt5_performance_answer(performance)
+            store.save_event(
+                "mt5_forward_test_query",
+                {"message": clean, "symbol": explicit_ticker, "summary": performance.get("summary"), "broker_touched": False},
+                "mt5_bridge",
+                "media",
+            )
+            return _payload(
+                "mt5_bridge",
+                answer,
+                [explicit_ticker] if explicit_ticker else [],
+                extra={"mt5": performance, "performance": performance, "kind": "mt5_forward_test"},
+                memory=store,
+                prompt=clean,
+                conversation_id=clean_conversation_id,
+            )
         if explicit_ticker:
             decision = mt5_decision(explicit_ticker, memory=store)
             structured = composer.mt5_decision_card(decision)
@@ -462,6 +480,41 @@ def _mt5_decision_answer(decision: dict[str, Any]) -> str:
         f"{symbol}: decision MT5 = {action}. Razon: {reason}. "
         f"Politica: {policy}; order_executed=false y broker_touched=false. "
         f"Bloqueo/riesgo principal: {first_flag}. Primero demo, journal y backtest."
+    )
+
+
+def _mentions_mt5_forward_metrics(message: str) -> bool:
+    text = _fold_prompt(message)
+    return any(
+        token in text
+        for token in (
+            "forward test",
+            "shadow",
+            "efectividad",
+            "win rate",
+            "profit factor",
+            "porcentaje",
+            "senales gano",
+            "senales perdio",
+            "señales gano",
+            "señales perdio",
+            "como va el test",
+            "desempeno mt5",
+            "desempeño mt5",
+        )
+    )
+
+
+def _mt5_performance_answer(performance: dict[str, Any]) -> str:
+    summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+    symbol = performance.get("symbol") or "MT5"
+    return (
+        f"MT5 Forward Test {symbol}: win rate {summary.get('win_rate', 0)}%, "
+        f"profit factor {summary.get('profit_factor', 0)}, expectancy {summary.get('expectancy', 0)}R, "
+        f"P/L simulado {summary.get('net_pnl', 0)}R y drawdown {summary.get('max_drawdown', 0)}R. "
+        f"Shadow trades {summary.get('shadow_trades', 0)}: {summary.get('wins', 0)} ganadoras, "
+        f"{summary.get('losses', 0)} perdedoras y {summary.get('open', 0)} abiertas. "
+        "Todo sigue journal-only: order_executed=false, broker_touched=false."
     )
 
 

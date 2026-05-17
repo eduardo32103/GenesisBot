@@ -8,12 +8,16 @@ from services.mt5.mt5_bridge import (
     mt5_account_sync,
     mt5_config,
     mt5_decision,
+    mt5_forward_test,
     mt5_health,
     mt5_journal_recent,
     mt5_order_request,
     mt5_order_result,
+    mt5_outcomes_recent,
+    mt5_performance,
     mt5_signal,
     mt5_status,
+    mt5_tick,
 )
 
 
@@ -49,6 +53,18 @@ def get_genesis_mt5_journal_recent(limit: int = 25, symbol: str = "") -> dict[st
     return mt5_journal_recent(limit=limit, symbol=symbol)
 
 
+def get_genesis_mt5_performance(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_performance(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_forward_test(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_forward_test(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_outcomes_recent(limit: int = 25, symbol: str = "") -> dict[str, Any]:
+    return mt5_outcomes_recent(limit=limit, symbol=symbol)
+
+
 def get_genesis_mt5_decision(symbol: str = "") -> dict[str, Any]:
     return mt5_decision(symbol)
 
@@ -59,6 +75,10 @@ def post_genesis_mt5_account_sync(payload: dict[str, Any] | None = None) -> dict
 
 def post_genesis_mt5_signal(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_signal(payload)
+
+
+def post_genesis_mt5_tick(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_tick(payload)
 
 
 def post_genesis_mt5_order_request(payload: dict[str, Any] | None = None) -> dict[str, Any]:

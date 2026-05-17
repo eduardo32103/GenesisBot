@@ -17,6 +17,7 @@ This phase does not enable real broker execution. The default posture is:
 - Reads Genesis decisions through `/api/genesis/mt5/decision?symbol=BTCUSD`.
 - Sends account snapshots to `/api/genesis/mt5/account-sync`.
 - Sends MT5 journal signals to `/api/genesis/mt5/signal`.
+- Sends safe market ticks to `/api/genesis/mt5/tick` for forward-test/shadow metrics.
 - Sends order requests to `/api/genesis/mt5/order-request`.
 - Sends results/logs to `/api/genesis/mt5/order-result`.
 - Stores everything in Genesis MemoryStore for learning.
@@ -86,11 +87,23 @@ If a symbol is not mapped or not allowed, Genesis returns `NO_TRADE`.
 GET  /api/genesis/mt5/health
 GET  /api/genesis/mt5/config
 GET  /api/genesis/mt5/decision?symbol=BTCUSD
+GET  /api/genesis/mt5/performance?symbol=BTC
+GET  /api/genesis/mt5/forward-test?symbol=BTC
+GET  /api/genesis/mt5/outcomes/recent?symbol=BTC
 POST /api/genesis/mt5/account-sync
 POST /api/genesis/mt5/signal
+POST /api/genesis/mt5/tick
 POST /api/genesis/mt5/order-request
 POST /api/genesis/mt5/order-result
 ```
+
+## Forward Test / Shadow Trading
+
+Genesis can measure MT5 decisions without sending orders. The EA posts ticks with symbol, bid, ask, last, spread, timeframe, account/server metadata and `broker_touched=false`.
+
+When Genesis receives a BUY/SELL signal with entry, stop and target, it creates a shadow trade in MemoryStore. Later ticks close that shadow trade as win/loss when simulated TP/SL is touched. NO_TRADE and HEDGE signals are tracked separately so Genesis can measure missed opportunities, avoided losses and hedge false alarms.
+
+This is not real trading and does not prove future profitability. Use it for forward testing, paper review and journal learning before considering any automation.
 
 Expected default behavior:
 

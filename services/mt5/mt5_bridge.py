@@ -26,12 +26,28 @@ def mt5_journal_recent(*, memory: MemoryStore | None = None, limit: int = 25, sy
     return build_router(memory).journal_recent(limit=limit, symbol=symbol)
 
 
+def mt5_performance(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).performance(symbol=symbol, timeframe=timeframe)
+
+
+def mt5_forward_test(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).forward_test(symbol=symbol, timeframe=timeframe)
+
+
+def mt5_outcomes_recent(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 25) -> dict[str, Any]:
+    return build_router(memory).outcomes_recent(symbol=symbol, limit=limit)
+
+
 def mt5_account_sync(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).account_sync(payload)
 
 
 def mt5_signal(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).signal(payload)
+
+
+def mt5_tick(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).tick(payload)
 
 
 def mt5_decision(symbol: str, *, memory: MemoryStore | None = None) -> dict[str, Any]:

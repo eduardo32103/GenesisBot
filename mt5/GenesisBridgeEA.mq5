@@ -4,7 +4,7 @@
 //| No real trading by default.                                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "11.00"
+#property version   "11.10"
 #property description "Genesis MT5 Bridge EA. Journal/demo bridge with kill switch enabled by default."
 
 #include <Trade/Trade.mqh>
@@ -32,6 +32,8 @@ double lastTarget = 0.0;
 double lastHedgeScore = 0.0;
 double lastNoTradeScore = 0.0;
 datetime lastPoll = 0;
+datetime lastTickSent = 0;
+datetime lastJournalEvent = 0;
 
 int OnInit()
 {
@@ -56,6 +58,7 @@ void OnTimer()
       return;
    }
    SyncAccount();
+   SendTick();
    PollDecision();
 }
 
@@ -120,6 +123,33 @@ void SyncAccount()
    HttpPost(GenesisBaseUrl + "/api/genesis/mt5/account-sync", payload);
 }
 
+void SendTick()
+{
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double last = LastMarketPrice();
+   string payload = "{";
+   payload += "\"source\":\"mt5_bridge\",";
+   payload += "\"symbol\":\"" + _Symbol + "\",";
+   payload += "\"bid\":" + DoubleToString(bid, _Digits) + ",";
+   payload += "\"ask\":" + DoubleToString(ask, _Digits) + ",";
+   payload += "\"last\":" + DoubleToString(last, _Digits) + ",";
+   payload += "\"spread\":" + DoubleToString(ask - bid, _Digits) + ",";
+   payload += "\"spread_points\":" + DoubleToString(CurrentSpreadPoints(), 1) + ",";
+   payload += "\"timeframe\":\"" + TimeframeText() + "\",";
+   payload += "\"account_id\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\",";
+   payload += "\"broker\":\"" + EscapeJson(AccountInfoString(ACCOUNT_COMPANY)) + "\",";
+   payload += "\"server\":\"" + EscapeJson(AccountInfoString(ACCOUNT_SERVER)) + "\",";
+   payload += "\"is_demo\":" + BoolJson(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO) + ",";
+   payload += "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   payload += "\"broker_touched\":false,";
+   payload += "\"order_executed\":false,";
+   payload += "\"order_policy\":\"journal_only_no_broker\"";
+   payload += "}";
+   HttpPost(GenesisBaseUrl + "/api/genesis/mt5/tick", payload);
+   lastTickSent = TimeCurrent();
+}
+
 void SendSignalJournal(string decision, string rawDecision)
 {
    string payload = "{";
@@ -140,6 +170,7 @@ void SendSignalJournal(string decision, string rawDecision)
    payload += "\"order_policy\":\"journal_only_no_broker\"";
    payload += "}";
    HttpPost(GenesisBaseUrl + "/api/genesis/mt5/signal", payload);
+   lastJournalEvent = TimeCurrent();
 }
 
 void RequestOrderJournal(string decision)
@@ -159,6 +190,7 @@ void RequestOrderJournal(string decision)
    payload += "\"broker_touched\":false";
    payload += "}";
    HttpPost(GenesisBaseUrl + "/api/genesis/mt5/order-request", payload);
+   lastJournalEvent = TimeCurrent();
 }
 
 void ExecuteDemoOrder(string decision)
@@ -208,6 +240,7 @@ void ExecuteDemoOrder(string decision)
    resultPayload += "\"order_policy\":\"demo_only\"";
    resultPayload += "}";
    HttpPost(GenesisBaseUrl + "/api/genesis/mt5/order-result", resultPayload);
+   lastJournalEvent = TimeCurrent();
 }
 
 string HttpGet(string url)
@@ -254,6 +287,10 @@ void DrawPanel(string decision, string reason)
    text += "Target: " + DoubleToString(lastTarget, _Digits) + "\n";
    text += "Hedge score: " + DoubleToString(lastHedgeScore, 0) + "\n";
    text += "No-trade score: " + DoubleToString(lastNoTradeScore, 0) + "\n";
+   text += "Last tick sent: " + TimeLabel(lastTickSent) + "\n";
+   text += "Last journal event: " + TimeLabel(lastJournalEvent) + "\n";
+   text += "Broker touched: false\n";
+   text += "Order executed: false\n";
    text += "JournalOnly: " + (JournalOnly ? "true" : "false") + "\n";
    text += "AllowLiveTrading: " + (AllowLiveTrading ? "true" : "false") + "\n";
    text += "Reason: " + reason;
@@ -273,6 +310,20 @@ double CurrentSpreadPoints()
    if(_Point <= 0.0)
       return 0.0;
    return (ask - bid) / _Point;
+}
+
+double LastMarketPrice()
+{
+   double last = SymbolInfoDouble(_Symbol, SYMBOL_LAST);
+   if(last > 0.0)
+      return last;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid > 0.0 && ask > 0.0)
+      return (bid + ask) / 2.0;
+   if(bid > 0.0)
+      return bid;
+   return ask;
 }
 
 double SafeLotSize()
@@ -300,6 +351,27 @@ string TradeModeText()
    if(mode == ACCOUNT_TRADE_MODE_CONTEST)
       return "contest";
    return "unknown";
+}
+
+string TimeframeText()
+{
+   if(_Period == PERIOD_M1) return "M1";
+   if(_Period == PERIOD_M5) return "M5";
+   if(_Period == PERIOD_M15) return "M15";
+   if(_Period == PERIOD_M30) return "M30";
+   if(_Period == PERIOD_H1) return "H1";
+   if(_Period == PERIOD_H4) return "H4";
+   if(_Period == PERIOD_D1) return "D1";
+   if(_Period == PERIOD_W1) return "W1";
+   if(_Period == PERIOD_MN1) return "MN1";
+   return IntegerToString((int)_Period);
+}
+
+string TimeLabel(datetime value)
+{
+   if(value <= 0)
+      return "never";
+   return TimeToString(value, TIME_DATE|TIME_SECONDS);
 }
 
 string BoolJson(bool value)

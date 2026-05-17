@@ -48,10 +48,13 @@ from api.routes.dashboard import (
 )
 from api.routes.genesis import (
     get_genesis_hedge_plan,
+    get_genesis_mt5_forward_test,
     get_genesis_mt5_config,
     get_genesis_mt5_decision,
     get_genesis_mt5_health,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_outcomes_recent,
+    get_genesis_mt5_performance,
     get_genesis_mt5_status,
     get_genesis_portfolio_hedge,
     get_genesis_trading_context,
@@ -59,6 +62,7 @@ from api.routes.genesis import (
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
     post_genesis_mt5_signal,
+    post_genesis_mt5_tick,
     post_genesis_tradingview_webhook,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
@@ -190,8 +194,12 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_config_endpoint": "/api/genesis/mt5/config",
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
         "genesis_mt5_journal_recent_endpoint": "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25",
+        "genesis_mt5_performance_endpoint": "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}",
+        "genesis_mt5_forward_test_endpoint": "/api/genesis/mt5/forward-test?symbol={symbol}",
+        "genesis_mt5_outcomes_recent_endpoint": "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25",
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
         "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
+        "genesis_mt5_tick_endpoint": "/api/genesis/mt5/tick",
         "genesis_mt5_order_request_endpoint": "/api/genesis/mt5/order-request",
         "genesis_mt5_order_result_endpoint": "/api/genesis/mt5/order-result",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
@@ -4043,6 +4051,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/tick":
+            result = post_genesis_mt5_tick(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if parsed.path == "/api/genesis/mt5/order-request":
             result = post_genesis_mt5_order_request(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
@@ -4380,6 +4393,34 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 limit = 25
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_journal_recent(limit=limit, symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/performance":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_performance(symbol=symbol, timeframe=timeframe)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/forward-test":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_forward_test(symbol=symbol, timeframe=timeframe)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/outcomes/recent":
+            query = parse_qs(parsed.query)
+            raw_limit = (query.get("limit") or ["25"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 25
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_outcomes_recent(limit=limit, symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

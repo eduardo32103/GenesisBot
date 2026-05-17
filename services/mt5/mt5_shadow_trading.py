@@ -1,0 +1,377 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_journal import MT5Journal
+from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
+
+
+class MT5ShadowTrading:
+    """Journal-only trade simulator for MT5 decisions.
+
+    This never touches a broker. It stores synthetic trades and outcomes in
+    MemoryStore so Genesis can measure forward-test quality from later ticks.
+    """
+
+    def __init__(self, *, memory: MemoryStore | None = None) -> None:
+        self.memory = memory or MemoryStore()
+        self.journal = MT5Journal(memory=self.memory)
+
+    def record_signal(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        clean = sanitize_payload(payload or {})
+        action = _action(clean)
+        if action in {"BUY", "SELL"}:
+            return self.create_shadow_trade(clean)
+        if action == "NO_TRADE":
+            return self.record_no_trade_signal(clean)
+        if action == "WAIT":
+            return {"created": False, "status": "wait_signal_recorded", "action": action}
+        if action in {"HEDGE", "REDUCE"}:
+            return self.record_hedge_signal(clean)
+        return {"created": False, "status": "ignored_non_actionable_signal", "action": action}
+
+    def create_shadow_trade(self, payload: dict[str, Any]) -> dict[str, Any]:
+        intent = MT5OrderIntent.from_payload(payload)
+        action = intent.action
+        symbol = _symbol(intent.symbol or payload.get("symbol") or payload.get("ticker"))
+        entry = intent.entry or _number(payload.get("last") or payload.get("bid") or payload.get("ask"))
+        if action not in {"BUY", "SELL"} or not symbol:
+            return {"created": False, "status": "not_actionable", "action": action, "symbol": symbol}
+        if entry is None or intent.stop_loss is None or intent.take_profit is None:
+            invalid = {
+                "symbol": symbol,
+                "action": action,
+                "entry": entry,
+                "stop_loss": intent.stop_loss,
+                "take_profit": intent.take_profit,
+                "status": "invalid_signal",
+                "reason": "missing_risk_parameters",
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "created_at": _now(),
+            }
+            event = self.journal.save("mt5_signal_outcomes", symbol, invalid)
+            return {"created": False, "status": "invalid_signal", "reason": "missing_risk_parameters", "event": event}
+
+        risk = abs(entry - intent.stop_loss)
+        if risk <= 0:
+            invalid = {
+                "symbol": symbol,
+                "action": action,
+                "entry": entry,
+                "stop_loss": intent.stop_loss,
+                "take_profit": intent.take_profit,
+                "status": "invalid_signal",
+                "reason": "invalid_stop_distance",
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "created_at": _now(),
+            }
+            event = self.journal.save("mt5_signal_outcomes", symbol, invalid)
+            return {"created": False, "status": "invalid_signal", "reason": "invalid_stop_distance", "event": event}
+
+        trade = {
+            "shadow_trade_id": str(payload.get("shadow_trade_id") or f"shadow-{uuid.uuid4().hex[:12]}"),
+            "symbol": symbol,
+            "action": action,
+            "entry": entry,
+            "stop_loss": intent.stop_loss,
+            "take_profit": intent.take_profit,
+            "trailing_stop": intent.trailing_stop,
+            "risk_pct": intent.risk_pct,
+            "timeframe": str(intent.timeframe or payload.get("timeframe") or "").upper(),
+            "strategy_profile": intent.strategy_profile or str(payload.get("strategy") or ""),
+            "confidence": intent.confidence,
+            "hedge_score": intent.hedge_score,
+            "no_trade_score": intent.no_trade_score,
+            "genesis_context_score": intent.genesis_context_score,
+            "opened_at": str(payload.get("timestamp") or payload.get("bar_time") or _now()),
+            "updated_at": _now(),
+            "status": "open",
+            "source": str(payload.get("source") or "mt5_bridge"),
+            "max_favorable_excursion": 0.0,
+            "max_adverse_excursion": 0.0,
+            "unrealized_pnl": 0.0,
+            "r_multiple": 0.0,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        event = self.journal.save("mt5_shadow_trades", symbol, trade, confidence=trade["confidence"])
+        return {"created": True, "status": "shadow_trade_opened", "trade": trade, "event": event}
+
+    def record_no_trade_signal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        symbol = _symbol(payload.get("symbol") or payload.get("ticker"))
+        if not symbol:
+            return {"created": False, "status": "missing_symbol"}
+        price = _number(payload.get("price") or payload.get("entry") or payload.get("last"))
+        event_payload = {
+            "outcome_id": str(payload.get("outcome_id") or f"notrade-{uuid.uuid4().hex[:12]}"),
+            "symbol": symbol,
+            "decision": _action(payload),
+            "reference_price": price,
+            "timeframe": str(payload.get("timeframe") or "").upper(),
+            "reason": str(payload.get("reason") or "no_trade_signal"),
+            "status": "pending",
+            "outcome": "pending",
+            "created_at": str(payload.get("timestamp") or payload.get("bar_time") or _now()),
+            "updated_at": _now(),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        event = self.journal.save("mt5_no_trade_outcomes", symbol, event_payload)
+        return {"created": True, "status": "no_trade_outcome_pending", "event": event, "outcome": event_payload}
+
+    def record_hedge_signal(self, payload: dict[str, Any]) -> dict[str, Any]:
+        symbol = _symbol(payload.get("symbol") or payload.get("ticker"))
+        if not symbol:
+            return {"created": False, "status": "missing_symbol"}
+        price = _number(payload.get("price") or payload.get("entry") or payload.get("last"))
+        event_payload = {
+            "outcome_id": str(payload.get("outcome_id") or f"hedge-{uuid.uuid4().hex[:12]}"),
+            "symbol": symbol,
+            "decision": _action(payload),
+            "reference_price": price,
+            "timeframe": str(payload.get("timeframe") or "").upper(),
+            "hedge_score": int(_number(payload.get("hedge_score")) or 0),
+            "reason": str(payload.get("reason") or "hedge_signal"),
+            "status": "pending",
+            "outcome": "pending",
+            "created_at": str(payload.get("timestamp") or payload.get("bar_time") or _now()),
+            "updated_at": _now(),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        event = self.journal.save("mt5_hedge_outcomes", symbol, event_payload)
+        return {"created": True, "status": "hedge_outcome_pending", "event": event, "outcome": event_payload}
+
+    def update_with_tick(self, tick: dict[str, Any]) -> dict[str, Any]:
+        clean_tick = sanitize_payload(tick or {})
+        symbol = _symbol(clean_tick.get("symbol") or clean_tick.get("ticker"))
+        last = _price_from_tick(clean_tick)
+        if not symbol or last is None:
+            return {"ok": False, "status": "tick_missing_symbol_or_price", "updates": []}
+
+        updates = []
+        for trade in self.open_trades(symbol):
+            update = self._evaluate_trade(trade, clean_tick, last)
+            event = self.journal.save("mt5_shadow_trades", symbol, update, confidence=update.get("confidence") or "media")
+            updates.append({"trade": update, "event": event})
+            if update.get("status") in {"win", "loss"}:
+                self.journal.save(
+                    "mt5_signal_outcomes",
+                    symbol,
+                    {
+                        "shadow_trade_id": update["shadow_trade_id"],
+                        "symbol": symbol,
+                        "action": update["action"],
+                        "timeframe": update.get("timeframe") or "",
+                        "strategy_profile": update.get("strategy_profile") or "",
+                        "outcome": update["status"],
+                        "pnl": update["pnl"],
+                        "pnl_pct": update["pnl_pct"],
+                        "r_multiple": update["r_multiple"],
+                        "closed_at": update["closed_at"],
+                        "broker_touched": False,
+                        "order_executed": False,
+                        "order_policy": "journal_only_no_broker",
+                    },
+                )
+
+        no_trade_updates = self._update_no_trade_outcomes(symbol, clean_tick, last)
+        hedge_updates = self._update_hedge_outcomes(symbol, clean_tick, last)
+        return {
+            "ok": True,
+            "status": "shadow_trades_updated",
+            "updates": updates,
+            "no_trade_updates": no_trade_updates,
+            "hedge_updates": hedge_updates,
+            "broker_touched": False,
+            "order_executed": False,
+        }
+
+    def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        return [trade for trade in self.trades(symbol) if trade.get("status") == "open"]
+
+    def trades(self, symbol: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self.memory.get_mt5_events("mt5_shadow_trades", _symbol(symbol), limit=limit)
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            trade_id = str(payload.get("shadow_trade_id") or "")
+            if trade_id and trade_id not in latest:
+                latest[trade_id] = {**payload, "created_at": row.get("created_at") or payload.get("created_at")}
+        return list(latest.values())
+
+    def _evaluate_trade(self, trade: dict[str, Any], tick: dict[str, Any], last: float) -> dict[str, Any]:
+        action = _action(trade)
+        entry = _number(trade.get("entry")) or last
+        stop = _number(trade.get("stop_loss"))
+        target = _number(trade.get("take_profit"))
+        pnl = _directional_pnl(action, entry, last)
+        risk = abs(entry - stop) if stop is not None else 0.0
+        r_multiple = round(pnl / risk, 6) if risk > 0 else 0.0
+        mfe = max(_number(trade.get("max_favorable_excursion")) or 0.0, pnl)
+        mae = min(_number(trade.get("max_adverse_excursion")) or 0.0, pnl)
+        status = "open"
+        exit_price = None
+        outcome = ""
+        if action == "BUY" and target is not None and last >= target:
+            status, exit_price, outcome = "win", target, "take_profit"
+        elif action == "BUY" and stop is not None and last <= stop:
+            status, exit_price, outcome = "loss", stop, "stop_loss"
+        elif action == "SELL" and target is not None and last <= target:
+            status, exit_price, outcome = "win", target, "take_profit"
+        elif action == "SELL" and stop is not None and last >= stop:
+            status, exit_price, outcome = "loss", stop, "stop_loss"
+
+        if exit_price is not None:
+            pnl = _directional_pnl(action, entry, exit_price)
+            r_multiple = round(pnl / risk, 6) if risk > 0 else 0.0
+
+        update = {
+            **trade,
+            "status": status,
+            "last_price": last,
+            "updated_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+            "unrealized_pnl": round(pnl, 8),
+            "max_favorable_excursion": round(mfe, 8),
+            "max_adverse_excursion": round(mae, 8),
+            "r_multiple": r_multiple,
+            "pnl": round(pnl, 8) if status in {"win", "loss"} else 0.0,
+            "pnl_pct": round((pnl / entry) * 100, 6) if entry else 0.0,
+            "exit_price": exit_price,
+            "exit_reason": outcome,
+            "closed_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()) if status in {"win", "loss"} else "",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        return update
+
+    def _update_no_trade_outcomes(self, symbol: str, tick: dict[str, Any], last: float) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        for row in self.memory.get_mt5_events("mt5_no_trade_outcomes", symbol, limit=50):
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if payload.get("status") not in {"pending", ""}:
+                continue
+            reference = _number(payload.get("reference_price"))
+            if reference is None or reference <= 0:
+                continue
+            threshold = _noise_threshold(reference, tick)
+            move = last - reference
+            move_pct = (move / reference) * 100
+            if abs(move) <= threshold:
+                outcome = "correct_sideways"
+                correct = True
+            elif move < -threshold:
+                outcome = "protected_loss"
+                correct = True
+            else:
+                outcome = "missed_opportunity"
+                correct = False
+            update = {
+                **payload,
+                "status": "evaluated",
+                "outcome": outcome,
+                "correct": correct,
+                "reference_price": reference,
+                "evaluated_price": last,
+                "move_pct": round(move_pct, 6),
+                "updated_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+            event = self.journal.save("mt5_no_trade_outcomes", symbol, update)
+            updates.append({"outcome": update, "event": event})
+        return updates
+
+    def _update_hedge_outcomes(self, symbol: str, tick: dict[str, Any], last: float) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        for row in self.memory.get_mt5_events("mt5_hedge_outcomes", symbol, limit=50):
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if payload.get("status") not in {"pending", ""}:
+                continue
+            reference = _number(payload.get("reference_price"))
+            if reference is None or reference <= 0:
+                continue
+            threshold = _noise_threshold(reference, tick)
+            move = last - reference
+            move_pct = (move / reference) * 100
+            if move < -threshold:
+                outcome = "hedge_correct"
+                correct = True
+            elif move > threshold:
+                outcome = "hedge_false_alarm"
+                correct = False
+            else:
+                outcome = "hedge_watch"
+                correct = True
+            update = {
+                **payload,
+                "status": "evaluated",
+                "outcome": outcome,
+                "correct": correct,
+                "reference_price": reference,
+                "evaluated_price": last,
+                "move_pct": round(move_pct, 6),
+                "updated_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+            event = self.journal.save("mt5_hedge_outcomes", symbol, update)
+            updates.append({"outcome": update, "event": event})
+        return updates
+
+
+def _action(payload: dict[str, Any]) -> str:
+    return str(payload.get("action") or payload.get("decision") or "WAIT").upper().strip()
+
+
+def _symbol(value: object) -> str:
+    return str(value or "").upper().strip()
+
+
+def _number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _price_from_tick(tick: dict[str, Any]) -> float | None:
+    last = _number(tick.get("last") or tick.get("price"))
+    if last is not None:
+        return last
+    bid = _number(tick.get("bid"))
+    ask = _number(tick.get("ask"))
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+    return bid if bid is not None else ask
+
+
+def _directional_pnl(action: str, entry: float, price: float) -> float:
+    if action == "SELL":
+        return entry - price
+    return price - entry
+
+
+def _noise_threshold(reference: float, tick: dict[str, Any]) -> float:
+    spread = abs(_number(tick.get("spread")) or 0.0)
+    pct_threshold = reference * 0.001
+    return max(spread, pct_threshold)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
