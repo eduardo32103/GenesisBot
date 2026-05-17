@@ -1,109 +1,164 @@
 //@version=6
 //@strategy_alert_message {{strategy.order.alert_message}}
-strategy(
-     title="Genesis Advantage Strategy v1",
-     shorttitle="Genesis Advantage v1",
-     overlay=true,
-     pyramiding=0,
-     initial_capital=100000,
-     commission_type=strategy.commission.percent,
-     commission_value=0.02,
-     slippage=1,
-     calc_on_every_tick=false,
-     calc_on_order_fills=true,
-     process_orders_on_close=true,
-     default_qty_type=strategy.percent_of_equity,
-     default_qty_value=10
-)
+strategy("Genesis Advantage Strategy v1 AUTOPILOT EDGE", shorttitle="Genesis v1 AUTOPILOT", overlay=true, pyramiding=0, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=80, commission_type=strategy.commission.percent, commission_value=0.02, slippage=1, process_orders_on_close=true, calc_on_order_fills=true)
+strategyVersion = "Genesis Advantage v10.13 BTC Edge"
 
-// Genesis Advantage is built for normal chart bars, backtesting, paper trading, alerts and journal.
-// It does not call external APIs, MemoryStore or any broker from Pine.
+// Genesis Advantage Strategy v1 - AUTOPILOT EDGE BUILD.
+// Genesis toma el contexto pesado en backend; Pine opera solo con chart, inputs manuales y alertas webhook.
+// No llama FMP, OpenAI, MemoryStore ni broker. Todo es backtesting, paper, alertas y journal.
+// benchmark awareness, Core Tactical, Trend Runner, Defensive ETF Core, Crypto Momentum V4, Commodity Regime, Gold Defensive.
 
-tradeMode = input.string("Long & Short", "Trade mode", options=["Long Only", "Short Only", "Long & Short"], group="General")
+autopilotMode = input.bool(true, "Autopilot: Genesis decide perfil", group="General")
+tradeMode = input.string("Long Only", "Trade mode", options=["Long Only", "Short Only", "Long & Short"], group="General")
+enableShorts = input.bool(false, "Permitir shorts tacticos", group="General")
 strategyMode = input.string("Hybrid Genesis", "Strategy mode", options=["Breakout", "Pullback", "Momentum", "Mean Reversion", "Hybrid Genesis"], group="General")
+preset = input.string("Auto", "Preset", options=["Auto", "Validation", "Paper Quality", "Core Tactical", "Trend Runner", "Defensive ETF Core", "Crypto Momentum V4", "Crypto Momentum V3", "Crypto Momentum V2", "Crypto Momentum", "Commodity Regime", "Gold Defensive", "No Trade / Watch Only", "Conservative", "Aggressive"], group="General")
 riskProfile = input.string("Moderado", "Risk profile", options=["Conservador", "Moderado", "Agresivo"], group="General")
+useMarketRegimeFilter = input.bool(true, "Use market regime filter", group="General")
+useVolumeFilter = input.bool(false, "Use volume filter", group="General")
+useGenesisContext = input.bool(true, "Use Genesis Context Score", group="General")
+genesisContextScore = input.int(0, "Genesis Context Score (-100 to +100)", minval=-100, maxval=100, group="General")
+minSignalScore = input.int(68, "Minimum signal score", minval=1, maxval=100, group="General")
+
+useGenesisSync = input.bool(true, "Genesis Sync Mode", group="Genesis Sync")
+genesisBiasInput = input.string("Neutral", "Genesis Bias", options=["Bullish", "Neutral", "Bearish"], group="Genesis Sync")
+genesisConfidenceInput = input.string("Medium", "Genesis Confidence", options=["Low", "Medium", "High"], group="Genesis Sync")
+genesisMarketRegimeInput = input.string("Neutral", "Genesis Market Regime", options=["Bullish", "Neutral", "Bearish", "Risk Off"], group="Genesis Sync")
+genesisNewsScore = input.int(0, "Genesis News Score (-100 to +100)", minval=-100, maxval=100, group="Genesis Sync")
+genesisWhaleScore = input.int(0, "Genesis Whale/Flow Score (-100 to +100)", minval=-100, maxval=100, group="Genesis Sync")
+genesisMacroRiskScore = input.int(0, "Genesis Macro Risk Score (0 to 100)", minval=0, maxval=100, group="Genesis Sync")
+
 freePlanMode = input.bool(true, "Modo plan gratis / barras cargadas", group="Free Plan")
-validationMode = input.bool(true, "Modo validacion: generar senales", group="Free Plan")
+validationMode = input.bool(false, "Modo validacion: generar senales", group="Free Plan")
+safeMode = input.bool(false, "Safe Mode estable", group="Free Plan")
 debugMode = input.bool(true, "Debug visual", group="Free Plan")
 showConditionMarkers = input.bool(true, "Mostrar condiciones", group="Free Plan")
 showScoreTable = input.bool(true, "Mostrar tabla de score", group="Free Plan")
-useMarketRegimeFilter = input.bool(true, "Use market regime filter", group="General")
-useVolumeFilter = input.bool(true, "Use volume filter", group="General")
-useGenesisContext = input.bool(true, "Use Genesis Context Score", group="General")
-genesisContextScore = input.int(0, "Genesis Context Score (-100 to +100)", minval=-100, maxval=100, group="General")
-minSignalScore = input.int(70, "Minimum signal score", minval=1, maxval=100, group="General")
+bootPulseBars = input.int(2, "BOOT: entrada cada N barras", minval=1, maxval=50, group="Free Plan")
+validationPulseBars = bootPulseBars
+validationExitBars = input.int(1, "BOOT: cerrar despues de N barras", minval=1, maxval=20, group="Free Plan")
+
+autoProfileMode = input.bool(true, "Auto Profile Mode", group="Auto Profile")
+assetProfile = input.string("Auto", "Asset Profile", options=["Auto", "Mega-cap Growth", "Index ETF", "Crypto", "Commodity", "Gold Defensive", "High Beta", "Custom"], group="Auto Profile")
+noTradeMode = input.bool(true, "No-Trade Mode si no hay edge", group="Auto Profile")
+noTradeScoreInput = input.int(0, "Genesis No-Trade Score", minval=0, maxval=100, group="Auto Profile")
+blockIfNoEdge = input.bool(true, "Bloquear si Genesis marca sin edge", group="Auto Profile")
+
+paperQualityMode = input.bool(true, "Paper Quality Mode", group="Quality")
+trendRunnerMode = input.bool(true, "Trend Runner Mode", group="Quality")
+coreTacticalMode = input.bool(true, "Core + Tactical Mode", group="Quality")
+avoidShortsInBullTrend = input.bool(true, "Evitar shorts en tendencia alcista fuerte", group="Quality")
+avoidLongsInBearTrend = input.bool(true, "Evitar longs en tendencia bajista fuerte", group="Quality")
+chopFilterEnabled = input.bool(true, "Evitar mercado lateral", group="Quality")
+minAdxForTrend = input.float(18, "ADX minimo tendencia", minval=5, maxval=60, step=0.5, group="Quality")
+bbWidthMin = input.float(1.8, "Bollinger width minimo %", minval=0.1, maxval=20, step=0.1, group="Quality")
+emaSlopeMin = input.float(0.08, "EMA slope minimo %", minval=0.0, maxval=5, step=0.01, group="Quality")
+maxExtensionATR = input.float(2.8, "Max extension vs EMA20 ATR", minval=0.5, maxval=10.0, step=0.1, group="Quality")
+useHTFConfirmation = input.bool(true, "Confirmacion timeframe superior", group="Quality")
+htf = input.timeframe("240", "Timeframe superior", group="Quality")
+coreTrailMode = input.string("EMA50", "Core trail mode", options=["EMA20", "EMA50", "ATR", "Structure"], group="Quality")
+cooldownBars = input.int(8, "Barras minimas entre operaciones", minval=0, maxval=200, group="Quality")
+maxTradesPerDay = input.int(1, "Maximo trades por dia", minval=1, maxval=200, group="Quality")
+avoidImmediateReversal = input.bool(true, "Evitar reversa inmediata", group="Quality")
+useRunnerExit = input.bool(true, "Dejar correr runner", group="Quality")
+runnerTrailATR = input.float(2.5, "ATR runner trailing", minval=0.5, maxval=8.0, step=0.1, group="Quality")
+coreATRMultiplier = input.float(3.0, "Core ATR multiplier", minval=0.5, maxval=10.0, step=0.1, group="Quality")
+tacticalATRMultiplier = input.float(1.8, "Tactical ATR multiplier", minval=0.5, maxval=8.0, step=0.1, group="Quality")
+
+useHedgeMode = input.bool(true, "Hedge Mode / Capital Protection", group="Hedge")
+hedgeScoreInput = input.int(0, "Genesis Hedge Score", minval=-100, maxval=100, group="Hedge")
+avoidTradeIfHedgeScoreAbove = input.int(75, "Bloquear trades si hedge score supera", minval=0, maxval=100, group="Hedge")
+reduceSizeIfHedgeScoreAbove = input.int(55, "Reducir tamano si hedge score supera", minval=0, maxval=100, group="Hedge")
+hedgeImpactMode = input.string("Balanced", "Hedge impact mode", options=["Off", "Light", "Balanced", "Defensive"], group="Hedge")
+capitalProtectionMode = input.bool(true, "Capital Protection Mode", group="Hedge")
+protectOpenProfit = input.bool(true, "Proteger ganancia abierta", group="Hedge")
+useActiveHedgeOverlay = input.bool(true, "BTC Active Hedge Overlay", group="BTC Hedge Overlay")
+hedgeShortAllowed = input.bool(true, "Permitir short tactico como hedge", group="BTC Hedge Overlay")
+hedgeProtectProfitThresholdR = input.float(1.0, "Proteger ganancia desde R", minval=0.2, maxval=5.0, step=0.1, group="BTC Hedge Overlay")
+hedgeRiskOffThreshold = input.int(65, "Hedge score risk-off", minval=0, maxval=100, group="BTC Hedge Overlay")
+hedgeHardBlockThreshold = input.int(80, "Hedge score bloqueo fuerte", minval=0, maxval=100, group="BTC Hedge Overlay")
+hedgeReduceExposureThreshold = input.int(55, "Reducir exposicion desde hedge score", minval=0, maxval=100, group="BTC Hedge Overlay")
 
 riskPerTradePct = input.float(1.0, "Risk per trade %", minval=0.1, maxval=5.0, step=0.1, group="Risk")
 maxDailyLossPct = input.float(3.0, "Max daily loss %", minval=0.1, maxval=20.0, step=0.1, group="Risk")
 maxDrawdownPct = input.float(12.0, "Max drawdown %", minval=1.0, maxval=60.0, step=0.5, group="Risk")
-atrStopMultiplier = input.float(2.0, "ATR stop multiplier", minval=0.5, maxval=8.0, step=0.1, group="Risk")
-takeProfitR = input.float(2.0, "Take profit R", minval=0.5, maxval=8.0, step=0.1, group="Risk")
-trailingStopATR = input.float(1.5, "Trailing stop ATR", minval=0.0, maxval=8.0, step=0.1, group="Risk")
+atrStopMultiplier = input.float(1.8, "ATR stop multiplier", minval=0.5, maxval=8.0, step=0.1, group="Risk")
+takeProfitR = input.float(2.8, "Take profit R", minval=0.5, maxval=8.0, step=0.1, group="Risk")
+minimumRiskReward = input.float(1.6, "Minimum risk/reward", minval=0.5, maxval=5.0, step=0.1, group="Risk")
+trailingStopATR = input.float(1.8, "Trailing stop ATR", minval=0.0, maxval=8.0, step=0.1, group="Risk")
 useTimeStop = input.bool(true, "Use time stop", group="Risk")
-maxBarsInTrade = input.int(60, "Max bars in trade", minval=1, maxval=500, group="Risk")
-minRiskReward = input.float(1.5, "Minimum risk/reward", minval=0.5, maxval=5.0, step=0.1, group="Risk")
-maxAtrPct = input.float(8.0, "Max ATR % allowed", minval=0.2, maxval=50.0, step=0.1, group="Risk")
-maxBarRangePct = input.float(7.5, "Max bar range % allowed", minval=0.2, maxval=50.0, step=0.1, group="Risk")
-minRelativeVolume = input.float(1.2, "Min relative volume", minval=0.1, maxval=10.0, step=0.1, group="Risk")
+maxBarsInTrade = input.int(160, "Max bars in trade", minval=1, maxval=500, group="Risk")
+minRelativeVolume = input.float(1.0, "Min relative volume", minval=0.1, maxval=10.0, step=0.1, group="Risk")
+useBreakEvenStop = input.bool(true, "Mover stop a breakeven", group="Risk")
+breakEvenAfterR = input.float(1.25, "Breakeven despues de R", minval=0.2, maxval=5.0, step=0.05, group="Risk")
+breakEvenOffsetATR = input.float(0.1, "Breakeven offset ATR", minval=0.0, maxval=2.0, step=0.05, group="Risk")
+useStrategyHealthGuard = input.bool(true, "Pausar si el perfil pierde edge", group="Risk")
+minClosedTradesForGuard = input.int(25, "Trades minimos para health guard", minval=5, maxval=500, group="Risk")
+minLiveProfitFactor = input.float(1.05, "PF minimo para seguir operando", minval=0.5, maxval=3.0, step=0.05, group="Risk")
+maxStrategyLossPctBeforePause = input.float(3.0, "Perdida estrategia % antes de pausar", minval=0.5, maxval=30.0, step=0.5, group="Risk")
 
-marketSymbol = input.symbol("SPY", "Market symbol", group="Context Symbols")
-techSymbol = input.symbol("QQQ", "Tech symbol", group="Context Symbols")
-volatilitySymbol = input.symbol("CBOE:VIX", "Volatility symbol", group="Context Symbols")
-dollarSymbol = input.symbol("TVC:DXY", "Dollar symbol", group="Context Symbols")
-cryptoSymbol = input.symbol("BINANCE:BTCUSDT", "Crypto symbol", group="Context Symbols")
+cryptoV4Mode = input.bool(true, "BTC Crypto Momentum V4", group="Crypto Momentum V4")
+cryptoV3Mode = input.bool(true, "BTC Crypto Momentum V3 legacy", group="Crypto Momentum V4")
+btcLongTermMode = input.bool(true, "BTC Long Term Edge Mode", group="Crypto Momentum V4")
+cryptoUseRegimeSwitch = input.bool(true, "BTC Regime Switch", group="Crypto Momentum V4")
+cryptoUseBreakoutRetest = input.bool(true, "BTC Breakout Retest", group="Crypto Momentum V4")
+cryptoUseVolExpansion = input.bool(true, "BTC Volatility Expansion", group="Crypto Momentum V4")
+cryptoUseTrendContinuation = input.bool(true, "BTC Trend Continuation", group="Crypto Momentum V4")
+cryptoUseMeanReversionOnlyInRange = input.bool(true, "BTC Mean Reversion solo en rango", group="Crypto Momentum V4")
+cryptoUseHTF = input.bool(true, "BTC HTF confirmation", group="Crypto Momentum V4")
+cryptoAvoidChop = input.bool(true, "BTC evitar chop", group="Crypto Momentum V4")
+cryptoNoTradeInChop = input.bool(true, "BTC No Trade en chop", group="Crypto Momentum V4")
+cryptoAtrMultiplier = input.float(3.0, "BTC ATR Stop", minval=1.0, maxval=8.0, step=0.1, group="Crypto Momentum V4")
+cryptoTrailATR = input.float(3.8, "BTC Trail ATR", minval=1.0, maxval=10.0, step=0.1, group="Crypto Momentum V4")
+cryptoMinAdx = input.float(20, "BTC ADX minimo", minval=5, maxval=60, step=0.5, group="Crypto Momentum V4")
+cryptoMinVolRel = input.float(1.1, "BTC Volumen relativo minimo", minval=0.2, maxval=10.0, step=0.1, group="Crypto Momentum V4")
+cryptoBreakoutBodyMin = input.float(0.45, "BTC cuerpo minimo ruptura", minval=0.1, maxval=1.0, step=0.05, group="Crypto Momentum V4")
+cryptoRetestToleranceATR = input.float(0.6, "BTC tolerancia retest ATR", minval=0.1, maxval=3.0, step=0.1, group="Crypto Momentum V4")
+btcMaxTradesPerDay = input.int(2, "BTC maximo trades por dia", minval=1, maxval=20, group="Crypto Momentum V4")
+btcCooldownBars = input.int(24, "BTC cooldown bars", minval=0, maxval=300, group="Crypto Momentum V4")
+btcMinBarsAfterExit = input.int(12, "BTC barras despues de salida", minval=0, maxval=300, group="Crypto Momentum V4")
+btcAvoidImmediateReversal = input.bool(true, "BTC evitar reversa inmediata", group="Crypto Momentum V4")
+btcBreakEvenAfterR = input.float(1.25, "BTC breakeven despues de R", minval=0.2, maxval=5.0, step=0.05, group="Crypto Momentum V4")
+btcRunnerTrailATR = input.float(3.8, "BTC runner trail ATR", minval=1.0, maxval=10.0, step=0.1, group="Crypto Momentum V4")
+btcStructureStop = input.bool(true, "BTC structure stop", group="Crypto Momentum V4")
+btcExitOnEMA50Break = input.bool(true, "BTC exit on EMA50 break", group="Crypto Momentum V4")
+btcExitOnTrendFlip = input.bool(true, "BTC exit on trend flip", group="Crypto Momentum V4")
 
 higherTimeframe = input.timeframe("1D", "Higher timeframe", group="Timeframes")
-trendTimeframe = input.timeframe("240", "Trend timeframe (240 = 4H)", group="Timeframes")
-swingLength = input.int(50, "Swing lookback", minval=10, maxval=250, group="Structure")
+marketSymbol = input.symbol("SPY", "Market symbol", group="Context Symbols")
+techSymbol = input.symbol("QQQ", "Tech symbol", group="Context Symbols")
 
 strategy.risk.max_intraday_loss(maxDailyLossPct, strategy.percent_of_equity)
 strategy.risk.max_drawdown(maxDrawdownPct, strategy.percent_of_equity)
 
-clamp(value, minValue, maxValue) =>
-    math.min(math.max(value, minValue), maxValue)
-
-scoreBool(condition, points) =>
-    condition ? points : 0.0
-
-safeDiv(numerator, denominator) =>
-    denominator != 0 and not na(denominator) ? numerator / denominator : na
-
-boolText(value) =>
-    value ? "OK" : "NO"
+clamp(value, minValue, maxValue) => math.min(math.max(value, minValue), maxValue)
+scoreBool(condition, points) => condition ? points : 0.0
+safeDiv(a, b) => b != 0 and not na(b) ? a / b : na
+boolText(v) => v ? "Si" : "No"
+boolJson(v) => v ? "true" : "false"
+jsonEscape(s) => str.replace_all(str.replace_all(str.tostring(s), "\"", "'"), "\n", " ")
+numToJson(v) => na(v) ? "null" : str.tostring(v)
+strToJson(s) => "\"" + jsonEscape(s) + "\""
 
 ema20 = ta.ema(close, 20)
 ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
 ema200 = ta.ema(close, 200)
-sma20 = ta.sma(close, 20)
-sma50 = ta.sma(close, 50)
-vwapValue = ta.vwap(hlc3)
 rsi14 = ta.rsi(close, 14)
 [macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
-atr14 = ta.atr(14)
+atr14 = nz(ta.atr(14), math.max(high - low, syminfo.mintick))
+avgVolume = ta.sma(volume, 20)
+relativeVolume = nz(safeDiv(volume, avgVolume), 1.0)
+resistance = ta.highest(high, 30)[1]
+support = ta.lowest(low, 30)[1]
 bbBasis = ta.sma(close, 20)
 bbDev = ta.stdev(close, 20) * 2.0
 bbUpper = bbBasis + bbDev
 bbLower = bbBasis - bbDev
+bbWidthPct = close != 0 ? (bbUpper - bbLower) / close * 100.0 : 0.0
 [plusDI, minusDI, adxValue] = ta.dmi(14, 14)
-avgVolume = ta.sma(volume, 20)
-relativeVolume = nz(safeDiv(volume, avgVolume), 1.0)
-dollarVolume = close * volume
-volatilityPct = safeDiv(atr14, close) * 100.0
-barRangePct = safeDiv(high - low, close) * 100.0
-
-resistance = ta.highest(high, swingLength)[1]
-support = ta.lowest(low, swingLength)[1]
-swingRange = resistance - support
-fib50 = resistance - swingRange * 0.5
-fib618 = resistance - swingRange * 0.618
-fib65 = resistance - swingRange * 0.65
-inGoldenPocket = not na(fib618) and not na(fib65) and close >= fib65 and close <= fib618
-nearEma20 = not na(atr14) and math.abs(close - ema20) <= atr14 * 0.8
-nearEma50 = not na(atr14) and math.abs(close - ema50) <= atr14 * 1.0
-
-htfClose = request.security(syminfo.tickerid, trendTimeframe, close, ignore_invalid_symbol=true)
-htfEma50 = request.security(syminfo.tickerid, trendTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
-htfEma200 = request.security(syminfo.tickerid, trendTimeframe, ta.ema(close, 200), ignore_invalid_symbol=true)
+ema50SlopePct = ema50[10] != 0 and not na(ema50[10]) ? (ema50 - ema50[10]) / ema50[10] * 100.0 : 0.0
+extensionATR = atr14 != 0 ? math.abs(close - ema20) / atr14 : 0.0
 
 spyClose = request.security(marketSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
 spyEma50 = request.security(marketSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
@@ -111,329 +166,327 @@ spyEma200 = request.security(marketSymbol, higherTimeframe, ta.ema(close, 200), 
 qqqClose = request.security(techSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
 qqqEma50 = request.security(techSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
 qqqEma200 = request.security(techSymbol, higherTimeframe, ta.ema(close, 200), ignore_invalid_symbol=true)
-vixClose = request.security(volatilitySymbol, higherTimeframe, close, ignore_invalid_symbol=true)
-vixEma50 = request.security(volatilitySymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
-dxyClose = request.security(dollarSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
-dxyEma50 = request.security(dollarSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
-btcClose = request.security(cryptoSymbol, higherTimeframe, close, ignore_invalid_symbol=true)
-btcEma50 = request.security(cryptoSymbol, higherTimeframe, ta.ema(close, 50), ignore_invalid_symbol=true)
+htfClose = request.security(syminfo.tickerid, htf, close, ignore_invalid_symbol=true)
+htfEma20 = request.security(syminfo.tickerid, htf, ta.ema(close, 20), ignore_invalid_symbol=true)
+htfEma50 = request.security(syminfo.tickerid, htf, ta.ema(close, 50), ignore_invalid_symbol=true)
+htfRsi = request.security(syminfo.tickerid, htf, ta.rsi(close, 14), ignore_invalid_symbol=true)
+htfBias = htfClose > htfEma50 and htfEma20 >= htfEma50 and htfRsi >= 45 ? "bullish" : htfClose < htfEma50 and htfEma20 <= htfEma50 and htfRsi <= 55 ? "bearish" : "neutral"
+htfScore = htfBias == "bullish" ? 75.0 : htfBias == "bearish" ? 25.0 : 50.0
+dailyClose = request.security(syminfo.tickerid, "D", close, ignore_invalid_symbol=true)
+dailyEma50 = request.security(syminfo.tickerid, "D", ta.ema(close, 50), ignore_invalid_symbol=true)
+dailyEma200 = request.security(syminfo.tickerid, "D", ta.ema(close, 200), ignore_invalid_symbol=true)
+dailyMomentum252 = request.security(syminfo.tickerid, "D", close > close[252], ignore_invalid_symbol=true)
+weeklyClose = request.security(syminfo.tickerid, "W", close, ignore_invalid_symbol=true)
+weeklyEma40 = request.security(syminfo.tickerid, "W", ta.ema(close, 40), ignore_invalid_symbol=true)
+monthlyClose = request.security(syminfo.tickerid, "M", close, ignore_invalid_symbol=true)
+monthlySma10 = request.security(syminfo.tickerid, "M", ta.sma(close, 10), ignore_invalid_symbol=true)
 
-marketRegimeScore = (
-     scoreBool(spyClose > spyEma50, 10) +
-     scoreBool(spyClose > spyEma200, 10) +
-     scoreBool(qqqClose > qqqEma50, 10) +
-     scoreBool(qqqClose > qqqEma200, 10) +
-     scoreBool(vixClose < 20, 10) +
-     scoreBool(vixClose < vixEma50, 10) +
-     scoreBool(dxyClose < dxyEma50, 10) +
-     scoreBool(btcClose > btcEma50, 10) +
-     scoreBool(close > ema200, 10) +
-     scoreBool(ema50 > ema50[10], 10)
-)
-marketRegimeScore := clamp(marketRegimeScore, 0, 100)
-regimeLabel = marketRegimeScore >= 80 ? "Alcista fuerte" : marketRegimeScore >= 62 ? "Alcista moderado" : marketRegimeScore >= 45 ? "Lateral" : marketRegimeScore >= 30 ? "Riesgo alto" : "Bajista"
+tickerUpper = str.upper(syminfo.ticker)
+autoIndexETF = tickerUpper == "VOO" or tickerUpper == "SPY" or tickerUpper == "QQQ" or tickerUpper == "IVV" or tickerUpper == "VTI"
+autoCrypto = str.contains(tickerUpper, "BTC") or str.contains(tickerUpper, "ETH") or str.contains(tickerUpper, "SOL") or str.contains(tickerUpper, "XRP") or str.contains(tickerUpper, "ADA") or str.contains(tickerUpper, "DOGE") or str.contains(tickerUpper, "BNB") or str.contains(tickerUpper, "AVAX")
+autoGold = tickerUpper == "IAU" or tickerUpper == "GLD"
+resolvedAssetProfile = assetProfile == "Auto" and autoIndexETF ? "Index ETF" : assetProfile == "Auto" and autoCrypto ? "Crypto" : assetProfile == "Auto" and autoGold ? "Gold Defensive" : assetProfile
+autoPresetByProfile = resolvedAssetProfile == "Index ETF" ? "Defensive ETF Core" : resolvedAssetProfile == "Crypto" ? "Crypto Momentum V4" : resolvedAssetProfile == "Gold Defensive" ? "Gold Defensive" : resolvedAssetProfile == "Commodity" ? "Commodity Regime" : resolvedAssetProfile == "Mega-cap Growth" ? "Core Tactical" : preset == "Auto" ? "Core Tactical" : preset
+effectivePreset = (autoProfileMode or preset == "Auto") ? autoPresetByProfile : preset
+profileWarning = resolvedAssetProfile == "Index ETF" and timeframe.isintraday and timeframe.multiplier <= 60 ? "ETF core funciona mejor en 4H/1D; 1H puede sobreoperar." : ""
+validationWarning = (safeMode or validationMode) ? "VALIDACION: no usar para evaluar rentabilidad" : ""
+btcFastTimeframe = resolvedAssetProfile == "Crypto" and timeframe.isintraday and timeframe.multiplier <= 60
+btcRecommendedTimeframe = btcLongTermMode ? "4H/1D" : "1H/4H"
+btcCurrentTfWarning = btcLongTermMode and btcFastTimeframe ? "BTC long-term edge suele requerir 4H/1D; 1H puede sobreoperar." : ""
 
-longTrendScore = (
-     scoreBool(ema20 > ema50, 22) +
-     scoreBool(ema50 > ema200, 24) +
-     scoreBool(close > ema200, 20) +
-     scoreBool(htfClose > htfEma50, 18) +
-     scoreBool(htfEma50 > htfEma200, 16)
-)
-shortTrendScore = (
-     scoreBool(ema20 < ema50, 22) +
-     scoreBool(ema50 < ema200, 24) +
-     scoreBool(close < ema200, 20) +
-     scoreBool(htfClose < htfEma50, 18) +
-     scoreBool(htfEma50 < htfEma200, 16)
-)
-longMomentumScore = (
-     scoreBool(rsi14 >= 45 and rsi14 <= 75, 25) +
-     scoreBool(macdLine > macdSignal, 25) +
-     scoreBool(macdHist > macdHist[1], 20) +
-     scoreBool(plusDI > minusDI, 15) +
-     scoreBool(adxValue >= 15, 15)
-)
-shortMomentumScore = (
-     scoreBool(rsi14 <= 55 and rsi14 >= 25, 25) +
-     scoreBool(macdLine < macdSignal, 25) +
-     scoreBool(macdHist < macdHist[1], 20) +
-     scoreBool(minusDI > plusDI, 15) +
-     scoreBool(adxValue >= 15, 15)
-)
-volumeScore = clamp(
-     scoreBool(relativeVolume >= minRelativeVolume, 45) +
-     scoreBool(relativeVolume >= 1.5, 25) +
-     scoreBool(volume > avgVolume, 20) +
-     scoreBool(dollarVolume > ta.sma(dollarVolume, 20), 10),
-     0,
-     100
-)
-longStructureScore = (
-     scoreBool(close > resistance, 25) +
-     scoreBool(close > vwapValue, 18) +
-     scoreBool(close > support, 14) +
-     scoreBool(inGoldenPocket or nearEma20 or nearEma50, 23) +
-     scoreBool(close > fib50, 20)
-)
-shortStructureScore = (
-     scoreBool(close < support, 25) +
-     scoreBool(close < vwapValue, 18) +
-     scoreBool(close < resistance, 14) +
-     scoreBool(close < fib50, 20) +
-     scoreBool(close < ema20 and close < ema50, 23)
-)
+assetMacroTrendOk = dailyClose > dailyEma200 and weeklyClose > weeklyEma40 and (na(monthlySma10) or monthlyClose > monthlySma10)
+assetAbsoluteMomentumOk = na(dailyMomentum252) ? dailyClose > dailyEma200 : dailyMomentum252
+marketRegimeScore = clamp(scoreBool(spyClose > spyEma50, 16) + scoreBool(spyClose > spyEma200, 18) + scoreBool(qqqClose > qqqEma50, 16) + scoreBool(qqqClose > qqqEma200, 16) + scoreBool(close > ema200, 16) + scoreBool(assetMacroTrendOk, 18), 0, 100)
+regimeLabel = marketRegimeScore >= 70 ? "Alcista fuerte" : marketRegimeScore >= 55 ? "Alcista moderado" : marketRegimeScore <= 30 ? "Bajista" : marketRegimeScore <= 45 ? "Riesgo alto" : "Lateral"
+strongBullTrend = close > ema200 and ema50 > ema200 and ema20 >= ema50 and htfBias != "bearish" and marketRegimeScore >= 55
+strongBearTrend = close < ema200 and ema50 < ema200 and ema20 <= ema50 and htfBias == "bearish" and marketRegimeScore <= 45
+chop = chopFilterEnabled and adxValue < minAdxForTrend and bbWidthPct < bbWidthMin and math.abs(ema50SlopePct) < emaSlopeMin
+overextendedLong = extensionATR > maxExtensionATR and close > ema20
+overextendedShort = extensionATR > maxExtensionATR and close < ema20
+candleBodyStrength = high != low ? math.abs(close - open) / (high - low) : 0.0
+priceTrappedRange = resistance > support and close > support and close < resistance and (resistance - support) / close * 100.0 < 8.0
+btcBullTrend = resolvedAssetProfile == "Crypto" and close > ema200 and ema20 >= ema50 and ema50SlopePct > 0 and htfBias != "bearish" and rsi14 > 50 and macdHist >= macdHist[1]
+btcBearTrend = resolvedAssetProfile == "Crypto" and close < ema200 and ema20 <= ema50 and ema50SlopePct < 0 and htfBias != "bullish" and rsi14 < 50 and macdHist <= macdHist[1]
+btcSqueeze = resolvedAssetProfile == "Crypto" and bbWidthPct < math.max(bbWidthMin, 2.5) and atr14 / close * 100.0 < 4.0
+btcChop = resolvedAssetProfile == "Crypto" and cryptoAvoidChop and adxValue < cryptoMinAdx and bbWidthPct < math.max(bbWidthMin, 2.5) and math.abs(ema50SlopePct) < emaSlopeMin and priceTrappedRange and relativeVolume < cryptoMinVolRel
+btcRangeMarket = resolvedAssetProfile == "Crypto" and priceTrappedRange and adxValue < cryptoMinAdx and not btcBullTrend and not btcBearTrend
 
-genesisScoreNormalized = (genesisContextScore + 100.0) / 2.0
-riskMultiplier = riskProfile == "Conservador" ? 0.8 : riskProfile == "Agresivo" ? 1.25 : 1.0
-profileMinSignalScore = riskProfile == "Conservador" ? math.max(minSignalScore, 75) : riskProfile == "Agresivo" ? math.max(minSignalScore - 5, 55) : minSignalScore
-effectiveMinSignalScore = validationMode ? math.min(minSignalScore, 40) : profileMinSignalScore
-effectiveUseMarketRegimeFilter = validationMode ? false : useMarketRegimeFilter
-effectiveUseVolumeFilter = validationMode ? false : useVolumeFilter
-effectiveMinRR = validationMode ? 1.15 : minRiskReward
+genesisBiasScore = genesisBiasInput == "Bullish" ? 12.0 : genesisBiasInput == "Bearish" ? -12.0 : 0.0
+genesisRegimeScore = genesisMarketRegimeInput == "Bullish" ? 8.0 : genesisMarketRegimeInput == "Bearish" ? -8.0 : genesisMarketRegimeInput == "Risk Off" ? -18.0 : 0.0
+genesisConfidenceBoost = genesisConfidenceInput == "High" ? 1.0 : genesisConfidenceInput == "Medium" ? 0.65 : 0.35
+genesisComposite = useGenesisSync ? (genesisContextScore * 0.16 + genesisNewsScore * 0.06 + genesisWhaleScore * 0.06 - genesisMacroRiskScore * 0.10 + genesisBiasScore + genesisRegimeScore) * genesisConfidenceBoost : 0.0
 
-longStopCandidate = close - atr14 * atrStopMultiplier
-shortStopCandidate = close + atr14 * atrStopMultiplier
-longRisk = math.max(close - longStopCandidate, syminfo.mintick)
-shortRisk = math.max(shortStopCandidate - close, syminfo.mintick)
-longTargetCandidate = close + longRisk * takeProfitR
-shortTargetCandidate = close - shortRisk * takeProfitR
-longRR = math.max((longTargetCandidate - close) / longRisk, 0)
-shortRR = math.max((close - shortTargetCandidate) / shortRisk, 0)
-longRiskRewardScore = clamp(longRR / effectiveMinRR * 70 + scoreBool(longRR >= takeProfitR, 30), 0, 100)
-shortRiskRewardScore = clamp(shortRR / effectiveMinRR * 70 + scoreBool(shortRR >= takeProfitR, 30), 0, 100)
+trendScore = clamp(scoreBool(close > ema200, 25) + scoreBool(ema20 >= ema50, 25) + scoreBool(ema50 >= ema200, 25) + scoreBool(ema50SlopePct > 0, 25), 0, 100)
+momentumScore = clamp(scoreBool(rsi14 >= 45 and rsi14 <= 70, 35) + scoreBool(macdHist > 0, 35) + scoreBool(macdHist > macdHist[1], 30), 0, 100)
+volumeScore = clamp(relativeVolume >= 1.25 ? 100 : relativeVolume >= 1.0 ? 75 : relativeVolume >= minRelativeVolume ? 55 : 30, 0, 100)
+structureScore = clamp(scoreBool(close > support, 25) + scoreBool(close > ema20, 25) + scoreBool(close > ema50, 25) + scoreBool(not overextendedLong, 25), 0, 100)
+riskRewardScore = takeProfitR >= minimumRiskReward ? 75.0 : 35.0
+chopPenalty = chop ? 18.0 : 0.0
+overextensionPenalty = (overextendedLong or overextendedShort) ? 14.0 : 0.0
+hedgeDefenseScore = clamp(math.max(hedgeScoreInput, 0), 0, 100)
+hedgeScorePenalty = useHedgeMode ? hedgeDefenseScore * 0.22 : 0.0
+finalSignalScore = clamp(trendScore * 0.25 + momentumScore * 0.20 + volumeScore * 0.10 + marketRegimeScore * 0.15 + structureScore * 0.12 + riskRewardScore * 0.08 + htfScore * 0.10 + genesisComposite - chopPenalty - overextensionPenalty - hedgeScorePenalty, 0, 100)
+liveGrossLossAbs = math.abs(strategy.grossloss)
+liveProfitFactor = liveGrossLossAbs > 0 ? strategy.grossprofit / liveGrossLossAbs : strategy.grossprofit > 0 ? 99.0 : 1.0
+liveNetProfitPct = strategy.netprofit / 100000.0 * 100.0
+strategyHealthBlock = useStrategyHealthGuard and strategy.closedtrades >= minClosedTradesForGuard and (liveProfitFactor < minLiveProfitFactor or liveNetProfitPct <= -maxStrategyLossPctBeforePause)
 
-longCoreScore = longTrendScore * 0.22 + longMomentumScore * 0.18 + volumeScore * 0.16 + marketRegimeScore * 0.16 + longStructureScore * 0.14 + longRiskRewardScore * 0.14
-shortRegimeScore = 100 - marketRegimeScore
-shortCoreScore = shortTrendScore * 0.22 + shortMomentumScore * 0.18 + volumeScore * 0.16 + shortRegimeScore * 0.16 + shortStructureScore * 0.14 + shortRiskRewardScore * 0.14
-longSignalScore = useGenesisContext ? longCoreScore * 0.85 + genesisScoreNormalized * 0.15 : longCoreScore
-shortSignalScore = useGenesisContext ? shortCoreScore * 0.85 + (100 - genesisScoreNormalized) * 0.15 : shortCoreScore
-finalSignalScore = math.max(longSignalScore, shortSignalScore)
+hedgeHardBlock = useHedgeMode and hedgeImpactMode != "Off" and hedgeDefenseScore >= (useActiveHedgeOverlay ? math.max(avoidTradeIfHedgeScoreAbove, hedgeHardBlockThreshold) : avoidTradeIfHedgeScoreAbove)
+hedgeRiskOff = useActiveHedgeOverlay and useHedgeMode and hedgeImpactMode != "Off" and hedgeDefenseScore >= hedgeRiskOffThreshold
+hedgeNeeded = useHedgeMode and hedgeImpactMode != "Off" and hedgeDefenseScore >= (useActiveHedgeOverlay ? hedgeReduceExposureThreshold : reduceSizeIfHedgeScoreAbove)
+effectiveValidationMode = validationMode or (safeMode and preset == "Validation")
+cryptoChop = btcChop
+cryptoChopBlock = noTradeMode and blockIfNoEdge and resolvedAssetProfile == "Crypto" and cryptoNoTradeInChop and cryptoChop and not effectiveValidationMode
+btcTimeframeBlock = noTradeMode and blockIfNoEdge and resolvedAssetProfile == "Crypto" and btcLongTermMode and btcFastTimeframe and not effectiveValidationMode
+genesisNegativeBlock = noTradeMode and blockIfNoEdge and resolvedAssetProfile == "Crypto" and useGenesisContext and genesisContextScore <= -45 and not effectiveValidationMode
+btcHedgeHardNoTrade = noTradeMode and blockIfNoEdge and resolvedAssetProfile == "Crypto" and hedgeHardBlock and not effectiveValidationMode
+noTradeBlock = noTradeMode and blockIfNoEdge and (effectivePreset == "No Trade / Watch Only" or noTradeScoreInput >= 70 or cryptoChopBlock or btcTimeframeBlock or genesisNegativeBlock or btcHedgeHardNoTrade)
+edgeStatus = effectiveValidationMode ? "validation_not_edge" : noTradeBlock ? "no_edge" : noTradeScoreInput >= 45 ? "weak_edge_watch_only" : "edge_candidate"
+effectiveMinSignalScore = effectiveValidationMode ? 35 : minSignalScore + (hedgeNeeded ? 8 : 0) + (resolvedAssetProfile == "Index ETF" ? 7 : 0) + (resolvedAssetProfile == "Crypto" ? 4 : 0)
+sufficientBars = bar_index > 220 and not na(close)
 
-allowLong = tradeMode == "Long Only" or tradeMode == "Long & Short"
-allowShort = tradeMode == "Short Only" or tradeMode == "Long & Short"
-modeBreakout = strategyMode == "Breakout" or strategyMode == "Hybrid Genesis"
-modePullback = strategyMode == "Pullback" or strategyMode == "Hybrid Genesis"
-modeMomentum = strategyMode == "Momentum" or strategyMode == "Hybrid Genesis"
-modeMeanReversion = strategyMode == "Mean Reversion" or strategyMode == "Hybrid Genesis"
+bootLong = safeMode and effectiveValidationMode and bar_index > 1 and bar_index % 2 == 0
+bootShort = safeMode and effectiveValidationMode and bar_index > 1 and bar_index % 2 == 1
+donchianHigh55 = ta.highest(high, 55)[1]
+donchianLow20 = ta.lowest(low, 20)[1]
+donchianBreakout = close > donchianHigh55 and close > open
+donchianBreakdown = close < donchianLow20 and close < open
+btcBreakout = resolvedAssetProfile == "Crypto" and close > donchianHigh55 and candleBodyStrength >= cryptoBreakoutBodyMin and relativeVolume >= cryptoMinVolRel and not overextendedLong
+btcBreakdown = resolvedAssetProfile == "Crypto" and close < donchianLow20 and candleBodyStrength >= cryptoBreakoutBodyMin and relativeVolume >= cryptoMinVolRel and not overextendedShort
+btcVolExpansion = resolvedAssetProfile == "Crypto" and cryptoUseVolExpansion and bbWidthPct > bbWidthPct[3] and atr14 > atr14[3] and relativeVolume >= cryptoMinVolRel and candleBodyStrength >= cryptoBreakoutBodyMin
+btcRetestZone = ta.highest(high, 20)[1]
+btcBreakoutRetest = resolvedAssetProfile == "Crypto" and cryptoUseBreakoutRetest and ta.barssince(btcBreakout) <= 10 and low <= btcRetestZone + atr14 * cryptoRetestToleranceATR and close > btcRetestZone and relativeVolume >= cryptoMinVolRel
+btcFailedBreakoutShort = resolvedAssetProfile == "Crypto" and high > resistance and close < resistance and close < ema20 and rsi14 < 50 and macdHist < macdHist[1] and relativeVolume >= cryptoMinVolRel
+btcRegimeText = btcBreakout ? "breakout" : btcBreakdown ? "breakdown" : btcVolExpansion ? "volatility_expansion" : btcSqueeze ? "squeeze" : btcChop ? "chop" : btcBullTrend ? "bull_trend" : btcBearTrend ? "bear_trend" : btcRangeMarket ? "range" : "recovery"
+btcRegime = btcRegimeText
+recentCryptoBreakout = ta.barssince(donchianBreakout) <= 8
+cryptoRetestLevel = ta.highest(high, 20)[1]
+cryptoBreakoutRetestLong = resolvedAssetProfile == "Crypto" and cryptoUseBreakoutRetest and (btcBreakoutRetest or (recentCryptoBreakout and low <= cryptoRetestLevel and close > cryptoRetestLevel and relativeVolume >= cryptoMinVolRel))
+cryptoVolExpansionLong = resolvedAssetProfile == "Crypto" and cryptoUseVolExpansion and btcVolExpansion and close > cryptoRetestLevel and (htfBias != "bearish" or not cryptoUseRegimeSwitch)
+cryptoTrendContinuationLong = resolvedAssetProfile == "Crypto" and cryptoUseTrendContinuation and (not cryptoUseHTF or htfBias == "bullish") and btcBullTrend and (low <= ema20 or low <= ema50 or close > ema20) and rsi14 > 45 and rsi14 < 72 and macdHist >= macdHist[1] and relativeVolume >= math.min(cryptoMinVolRel, 1.0) and not cryptoChop
+cryptoMeanReversionLong = resolvedAssetProfile == "Crypto" and cryptoUseMeanReversionOnlyInRange and btcRangeMarket and not strongBearTrend and close > bbLower and low <= bbLower and rsi14 > rsi14[1] and rsi14 < 45 and close > support
+autopilotCoreLong = autopilotMode and assetMacroTrendOk and assetAbsoluteMomentumOk and marketRegimeScore >= 55
+pullbackLong = not autopilotMode and strongBullTrend and low <= ema50 and close > ema50 and rsi14 >= 42 and rsi14 <= 66 and macdHist > macdHist[1] and relativeVolume >= 0.8
+emaReclaimLong = not autopilotMode and strongBullTrend and close > ema20 and close[1] <= ema20[1] and ema20 >= ema50 and rsi14 > 50 and macdHist >= macdHist[1]
+breakoutLong = not autopilotMode and close > resistance and close[1] <= resistance and close > open and relativeVolume >= 1.15 and macdHist > macdHist[1] and htfBias == "bullish" and not overextendedLong
+momentumLong = not autopilotMode and ema20 > ema50 and ema50 > ema200 and close > ema20 and rsi14 >= 52 and rsi14 <= 70 and macdHist > 0 and macdHist >= macdHist[1] and relativeVolume >= 0.9 and not overextendedLong
+initialCoreLong = strategy.closedtrades == 0 and strategy.opentrades == 0 and close > ema50
+defensiveETFLong = resolvedAssetProfile == "Index ETF" and autopilotCoreLong and (initialCoreLong or ta.crossover(dailyClose, dailyEma200) or low <= ema100 or close > ema50)
+cryptoMomentumLong = resolvedAssetProfile == "Crypto" and (cryptoTrendContinuationLong or cryptoBreakoutRetestLong or cryptoVolExpansionLong or cryptoMeanReversionLong or (assetMacroTrendOk and htfBias == "bullish" and (donchianBreakout or initialCoreLong) and relativeVolume >= cryptoMinVolRel and not overextendedLong and not cryptoChop))
+growthCoreLong = resolvedAssetProfile != "Index ETF" and resolvedAssetProfile != "Crypto" and autopilotCoreLong and (initialCoreLong or donchianBreakout or low <= ema50)
+coreEntryCondition = coreTacticalMode and (defensiveETFLong or cryptoMomentumLong or growthCoreLong or pullbackLong or momentumLong or breakoutLong)
+tacticalEntry = autopilotMode ? (defensiveETFLong or cryptoMomentumLong or growthCoreLong) : (pullbackLong or emaReclaimLong or breakoutLong or momentumLong)
 
-sufficientBars = bar_index > 55 and not na(ema50) and not na(atr14)
-longEmaCrossRaw = ta.crossover(ema20, ema50)
-shortEmaCrossRaw = ta.crossunder(ema20, ema50)
-longEmaReclaimRaw = ta.crossover(close, ema20) and ema20 >= ema50
-shortEmaRejectRaw = ta.crossunder(close, ema20) and ema20 <= ema50
-longRsiRecoverRaw = ta.crossover(rsi14, 50)
-shortRsiLoseRaw = ta.crossunder(rsi14, 50)
-longMacdImproveRaw = macdHist > macdHist[1] and close > ema20 and ema20 > ema50
-shortMacdWeakenRaw = macdHist < macdHist[1] and close < ema20 and ema20 < ema50
-longBreakoutRaw = modeBreakout and not na(resistance) and close > resistance
-shortBreakdownRaw = modeBreakout and not na(support) and close < support
-longPullbackRaw = modePullback and (longEmaReclaimRaw or nearEma20 or nearEma50 or inGoldenPocket) and ema20 >= ema50
-shortPullbackRaw = modePullback and (shortEmaRejectRaw or nearEma20 or nearEma50) and ema20 <= ema50
-longMomentumRaw = modeMomentum and (longEmaCrossRaw or longRsiRecoverRaw or longMacdImproveRaw or (close > ema20 and ema20 > ema50 and rsi14 > 50))
-shortMomentumRaw = modeMomentum and (shortEmaCrossRaw or shortRsiLoseRaw or shortMacdWeakenRaw or (close < ema20 and ema20 < ema50 and rsi14 < 50))
-longMeanReversionRaw = modeMeanReversion and ((close <= bbLower and rsi14 > rsi14[1]) or ta.crossover(close, bbLower))
-shortMeanReversionRaw = modeMeanReversion and ((close >= bbUpper and rsi14 < rsi14[1]) or ta.crossunder(close, bbUpper))
-longValidationRaw = validationMode and (longEmaCrossRaw or longEmaReclaimRaw or longRsiRecoverRaw or longMacdImproveRaw)
-shortValidationRaw = validationMode and (shortEmaCrossRaw or shortEmaRejectRaw or shortRsiLoseRaw or shortMacdWeakenRaw)
+cryptoTrendContinuationShort = resolvedAssetProfile == "Crypto" and enableShorts and (hedgeShortAllowed or tradeMode == "Long & Short") and (not cryptoUseHTF or htfBias == "bearish") and (btcBearTrend or btcBreakdown or btcFailedBreakoutShort or hedgeRiskOff) and rsi14 < 55 and macdHist <= macdHist[1] and relativeVolume >= cryptoMinVolRel and not cryptoChop and not strongBullTrend
+breakdownShort = (resolvedAssetProfile == "Crypto" ? (cryptoTrendContinuationShort and (btcBreakdown or btcFailedBreakoutShort or hedgeRiskOff)) : strongBearTrend) and close < support and close[1] >= support and close < open and relativeVolume >= minRelativeVolume
+trendShort = resolvedAssetProfile == "Crypto" ? cryptoTrendContinuationShort : strongBearTrend and close < ema20 and rsi14 <= 48 and macdHist < 0 and macdHist <= macdHist[1]
+rejectionShort = false
 
-longConditionRaw = sufficientBars and (longBreakoutRaw or longPullbackRaw or longMomentumRaw or longMeanReversionRaw or longValidationRaw)
-shortConditionRaw = sufficientBars and (shortBreakdownRaw or shortPullbackRaw or shortMomentumRaw or shortMeanReversionRaw or shortValidationRaw)
-setupText = longBreakoutRaw ? "Breakout long" : longPullbackRaw ? "Pullback long" : longMomentumRaw ? "Momentum long" : longMeanReversionRaw ? "Mean reversion long" : shortBreakdownRaw ? "Breakdown short" : shortPullbackRaw ? "Pullback short" : shortMomentumRaw ? "Momentum short" : shortMeanReversionRaw ? "Mean reversion short" : longValidationRaw ? "Validation long" : shortValidationRaw ? "Validation short" : "Watch only"
-setupCode = longBreakoutRaw ? 1 : longPullbackRaw ? 2 : longMomentumRaw ? 3 : longMeanReversionRaw ? 4 : longValidationRaw ? 5 : shortBreakdownRaw ? -1 : shortPullbackRaw ? -2 : shortMomentumRaw ? -3 : shortMeanReversionRaw ? -4 : shortValidationRaw ? -5 : 0
+longRaw = sufficientBars and (bootLong or coreEntryCondition or tacticalEntry)
+shortRaw = sufficientBars and (bootShort or breakdownShort or trendShort or rejectionShort)
+longConditionRaw = longRaw
+shortConditionRaw = shortRaw
 
-volumeOk = not effectiveUseVolumeFilter or relativeVolume >= minRelativeVolume
-longRegimeOk = not effectiveUseMarketRegimeFilter or marketRegimeScore >= 45
-shortRegimeOk = not effectiveUseMarketRegimeFilter or marketRegimeScore <= 68
-regimeOk = longConditionRaw ? longRegimeOk : shortConditionRaw ? shortRegimeOk : longRegimeOk or shortRegimeOk
-atrOk = validationMode ? true : (not na(volatilityPct) and volatilityPct <= maxAtrPct)
-rangeOk = validationMode ? true : (not na(barRangePct) and barRangePct <= maxBarRangePct)
-volatilityOk = atrOk and rangeOk
-longScoreOk = longSignalScore >= effectiveMinSignalScore
-shortScoreOk = shortSignalScore >= effectiveMinSignalScore
-scoreOk = longConditionRaw ? longScoreOk : shortConditionRaw ? shortScoreOk : finalSignalScore >= effectiveMinSignalScore
-longRROk = longRR >= effectiveMinRR
-shortRROk = shortRR >= effectiveMinRR
-rrOk = longConditionRaw ? longRROk : shortConditionRaw ? shortRROk : longRROk or shortRROk
-tradeModeOk = (longConditionRaw and allowLong) or (shortConditionRaw and allowShort) or (not longConditionRaw and not shortConditionRaw)
-longFiltersOk = validationMode ? (longScoreOk and longRROk) : (longScoreOk and volumeOk and longRegimeOk and volatilityOk and longRROk)
-shortFiltersOk = validationMode ? (shortScoreOk and shortRROk) : (shortScoreOk and volumeOk and shortRegimeOk and volatilityOk and shortRROk)
+var int lastTradeBar = na
+var int currentDay = na
+var int tradesToday = 0
+dayKey = year(time) * 10000 + month(time) * 100 + dayofmonth(time)
+if na(currentDay) or dayKey != currentDay
+    currentDay := dayKey
+    tradesToday := 0
 
-longCondition = allowLong and longConditionRaw and longFiltersOk and strategy.position_size <= 0
-shortCondition = allowShort and shortConditionRaw and shortFiltersOk and strategy.position_size >= 0
-watchOnly = (longConditionRaw or shortConditionRaw) and not longCondition and not shortCondition
+effectiveCooldownBars = resolvedAssetProfile == "Crypto" ? math.max(cooldownBars, btcCooldownBars) : math.max(cooldownBars, resolvedAssetProfile == "Index ETF" ? 240 : 96)
+effectiveMaxTradesPerDay = resolvedAssetProfile == "Crypto" ? btcMaxTradesPerDay : math.min(maxTradesPerDay, resolvedAssetProfile == "Index ETF" ? 1 : 2)
+closedCount = strategy.closedtrades
+btcLastLoss1 = closedCount >= 1 ? strategy.closedtrades.profit(closedCount - 1) < 0 : false
+btcLastLoss2 = closedCount >= 2 ? strategy.closedtrades.profit(closedCount - 2) < 0 : false
+btcLastLoss3 = closedCount >= 3 ? strategy.closedtrades.profit(closedCount - 3) < 0 : false
+btcLossStreak = resolvedAssetProfile == "Crypto" and btcLastLoss1 and btcLastLoss2 and btcLastLoss3
+btcExtendedCooldownActive = btcLossStreak and not effectiveValidationMode and not na(lastTradeBar) and bar_index - lastTradeBar < effectiveCooldownBars * 3
+cooldownOk = (na(lastTradeBar) or bar_index - lastTradeBar >= effectiveCooldownBars) and not btcExtendedCooldownActive
+btcBarsAfterExitOk = resolvedAssetProfile != "Crypto" or na(lastTradeBar) or bar_index - lastTradeBar >= btcMinBarsAfterExit
+tradesTodayOk = tradesToday < effectiveMaxTradesPerDay
+scoreOk = effectiveValidationMode or finalSignalScore >= effectiveMinSignalScore
+volumeOk = effectiveValidationMode or not useVolumeFilter or relativeVolume >= minRelativeVolume or resolvedAssetProfile == "Index ETF"
+regimeLongOk = effectiveValidationMode or not useMarketRegimeFilter or marketRegimeScore >= 45 or effectivePreset == "Defensive ETF Core"
+regimeShortOk = effectiveValidationMode or not useMarketRegimeFilter or marketRegimeScore <= 55
+htfLongOk = effectiveValidationMode or not useHTFConfirmation or htfBias != "bearish"
+htfShortOk = effectiveValidationMode or not useHTFConfirmation or htfBias != "bullish"
+hedgeOk = not hedgeHardBlock
+rrOk = takeProfitR >= minimumRiskReward
+entryQualityScore = clamp(scoreBool((longRaw and htfLongOk) or (shortRaw and htfShortOk), 15) + scoreBool(not cryptoChop and not chop, 15) + scoreBool(relativeVolume >= cryptoMinVolRel or resolvedAssetProfile != "Crypto", 12) + scoreBool(rrOk, 12) + scoreBool(not overextendedLong and not overextendedShort, 12) + scoreBool(not na(macdHist) ? (longRaw ? macdHist >= macdHist[1] : shortRaw ? macdHist <= macdHist[1] : true) : true, 10) + scoreBool(rsi14 >= 35 and rsi14 <= 72, 8) + scoreBool(genesisContextScore >= 0 or not longRaw, 8) + scoreBool(not hedgeHardBlock and hedgeDefenseScore < hedgeRiskOffThreshold, 8), 0, 100)
+entryQualityOk = effectiveValidationMode or entryQualityScore >= (resolvedAssetProfile == "Crypto" ? 55 : 50)
+avoidShortNow = avoidShortsInBullTrend and strongBullTrend
+avoidLongNow = avoidLongsInBearTrend and strongBearTrend
+profileBlocksShort = autoIndexETF or resolvedAssetProfile == "Index ETF" or effectivePreset == "Defensive ETF Core"
+qualityGateLong = effectiveValidationMode or (autopilotMode ? (resolvedAssetProfile == "Crypto" ? ((cryptoTrendContinuationLong or cryptoBreakoutRetestLong or cryptoVolExpansionLong or cryptoMeanReversionLong) and not cryptoChopBlock and not hedgeHardBlock and entryQualityOk and (not cryptoUseHTF or htfLongOk) and (genesisMarketRegimeInput != "Risk Off" or genesisContextScore >= 35)) : (assetMacroTrendOk and assetAbsoluteMomentumOk and htfLongOk and not hedgeHardBlock and (genesisMarketRegimeInput != "Risk Off" or genesisContextScore >= 35))) : ((not chop or pullbackLong or defensiveETFLong) and not overextendedLong and rsi14 <= 72 and not avoidLongNow and htfLongOk and entryQualityOk and (genesisMarketRegimeInput != "Risk Off" or genesisContextScore >= 35)))
+qualityGateShort = effectiveValidationMode or (resolvedAssetProfile == "Crypto" ? (cryptoTrendContinuationShort and entryQualityOk and not overextendedShort and htfShortOk and genesisBiasInput != "Bullish") : (strongBearTrend and breakdownShort and not overextendedShort and rsi14 >= 25 and not avoidShortNow and not profileBlocksShort and htfShortOk and genesisBiasInput != "Bullish"))
+qualityOk = (longRaw and qualityGateLong) or (shortRaw and qualityGateShort) or effectiveValidationMode
+allowLong = autopilotMode or tradeMode == "Long Only" or tradeMode == "Long & Short" or profileBlocksShort
+allowShort = enableShorts and (not autopilotMode or resolvedAssetProfile == "Crypto") and (tradeMode == "Short Only" or tradeMode == "Long & Short") and not profileBlocksShort and not avoidShortNow and (strongBearTrend or cryptoTrendContinuationShort)
+tradeModeOk = (longRaw and allowLong) or (shortRaw and allowShort) or (not longRaw and not shortRaw)
 
-blockReason = not sufficientBars ? "Sin suficientes barras" :
-     not (longConditionRaw or shortConditionRaw) ? "Raw condition no aparece" :
-     not tradeModeOk ? "TradeMode bloquea" :
-     not scoreOk ? "Score bajo" :
-     not volumeOk ? "Volumen bloquea" :
-     not regimeOk ? "Regimen bloquea" :
-     not rrOk ? "RR insuficiente" :
-     not volatilityOk ? "Volatilidad bloquea" :
-     strategy.position_size != 0 ? "Posicion activa" :
-     "Listo / esperando cierre"
+longCondition = allowLong and longRaw and scoreOk and volumeOk and regimeLongOk and htfLongOk and hedgeOk and rrOk and qualityGateLong and cooldownOk and btcBarsAfterExitOk and tradesTodayOk and not noTradeBlock and not strategyHealthBlock and strategy.position_size <= 0
+shortCondition = allowShort and shortRaw and scoreOk and volumeOk and regimeShortOk and htfShortOk and hedgeOk and rrOk and qualityGateShort and cooldownOk and btcBarsAfterExitOk and tradesTodayOk and not noTradeBlock and not strategyHealthBlock and strategy.position_size >= 0
 
-jsonEscape(s) =>
-    str.replace_all(str.replace_all(str.replace_all(str.tostring(s), "\"", "'"), "\n", " "), "\r", " ")
+if longCondition or shortCondition
+    lastTradeBar := bar_index
+    tradesToday += 1
 
-numToJson(v) =>
-    na(v) ? "null" : str.tostring(v)
+corePositionActive = strategy.position_size > 0 and coreTacticalMode and strongBullTrend
+strategyAlive = sufficientBars and (longRaw or shortRaw or strategy.closedtrades > 0 or strategy.opentrades > 0)
+watchOnly = (longRaw or shortRaw or noTradeBlock or hedgeNeeded) and not (longCondition or shortCondition)
+botStatus = noTradeBlock ? "SIN EDGE - NO OPERAR" : strategyAlive ? "ACTIVO" : "BLOQUEADO"
+entryQuality = entryQualityScore >= 75 ? "Alta" : entryQualityScore >= 55 ? "Media" : "Baja"
+trendAlignment = (longRaw and not avoidLongNow and htfLongOk) or (shortRaw and not avoidShortNow and htfShortOk)
+setupText = longCondition and cryptoBreakoutRetestLong ? "BTC Breakout Retest" : longCondition and cryptoVolExpansionLong ? "BTC Volatility Expansion" : longCondition and cryptoTrendContinuationLong ? "BTC Trend Continuation" : shortCondition and btcBreakdown ? "BTC Breakdown Hedge" : shortCondition and btcFailedBreakoutShort ? "BTC Failed Breakout Hedge" : longCondition and defensiveETFLong ? "Defensive ETF Core" : longCondition and pullbackLong ? "Trend Pullback" : longCondition and breakoutLong ? "Breakout Volume" : longCondition and momentumLong ? "Trend Runner" : shortCondition and breakdownShort ? "Short Breakdown" : shortCondition ? "Tactical Short" : watchOnly ? "Watch only" : "No setup"
+blockReason = not sufficientBars ? "sin barras suficientes" : btcTimeframeBlock ? "BTC 1H bloqueado: usar 4H/1D" : cryptoChopBlock ? "BTC CHOP - no trade" : genesisNegativeBlock ? "Genesis context negativo" : btcHedgeHardNoTrade ? "Hedge score risk-off" : noTradeBlock ? "No-Trade bloquea" : strategyHealthBlock ? "health guard: perfil sin edge" : hedgeHardBlock ? "hedge bloqueando" : not tradeModeOk ? "tradeMode/perfil bloquea" : btcExtendedCooldownActive ? "BTC cooldown extendido por 3 perdidas" : not cooldownOk ? "cooldown activo" : not btcBarsAfterExitOk ? "BTC espera despues de salida" : not tradesTodayOk ? "max trades diario" : not volumeOk ? "volumen bajo" : not (regimeLongOk or regimeShortOk) ? "regimen bloquea" : not (htfLongOk or htfShortOk) ? "HTF no confirma" : not scoreOk ? "score bajo" : not entryQualityOk ? "entry quality baja" : not qualityOk ? "quality gate bloquea" : not rrOk ? "RR insuficiente" : not (longRaw or shortRaw) ? "no raw signal" : "Listo"
+suggestedMode = effectivePreset
+suggestedAction = longCondition ? "paper_long_signal" : shortCondition ? "paper_short_or_hedge_signal" : noTradeBlock ? "no_trade_watch" : hedgeRiskOff ? "risk_off_reduce_or_hedge" : hedgeNeeded ? "protect_or_reduce" : "watch_only"
+hedgeTypeText = hedgeHardBlock ? "reduce_exposure" : hedgeRiskOff ? "crypto_hedge" : hedgeNeeded ? "protective_stop" : "none"
+hedgeRatio = hedgeHardBlock ? 0.50 : hedgeRiskOff ? 0.35 : hedgeNeeded ? 0.25 : 0.0
+noTradeReason = btcTimeframeBlock ? "BTC 1H sin edge para long-term; usar 4H/1D" : cryptoChopBlock ? "BTC sin edge en este timeframe por chop" : genesisNegativeBlock ? "Genesis context negativo" : btcHedgeHardNoTrade ? "Hedge score risk-off" : noTradeBlock ? "Genesis marca sin edge" : strategyHealthBlock ? "Perfil live sin edge" : ""
+setupCode = longRaw ? 1 : shortRaw ? -1 : 0
 
-strToJson(s) =>
-    "\"" + jsonEscape(s) + "\""
+var float firstLoadedClose = na
+if na(firstLoadedClose)
+    firstLoadedClose := close
+buyHoldReturnPct = firstLoadedClose != 0 ? (close / firstLoadedClose - 1.0) * 100.0 : 0.0
+strategyReturnPct = liveNetProfitPct
+strategyVsHold = strategyReturnPct - buyHoldReturnPct
+strategyVsHoldPct = strategyVsHold
+benchmarkCaptureRatio = buyHoldReturnPct > 0 ? strategyReturnPct / buyHoldReturnPct : na
+benchmarkWarning = buyHoldReturnPct > 25 and (na(benchmarkCaptureRatio) or benchmarkCaptureRatio < 0.25) and strongBullTrend ? "Captura de tendencia baja: activar Core." : strategyReturnPct > buyHoldReturnPct and strategy.max_drawdown < math.abs(buyHoldReturnPct) ? "Estrategia supera benchmark con riesgo controlado." : "Comparar vs hold antes de optimizar."
 
-buildAlertJson(action, setupName, riskText, stopValue, targetValue, scoreValue, notesText) =>
-    "{" +
-     "\"source\":" + strToJson("tradingview") + "," +
-     "\"strategy\":" + strToJson("Genesis Advantage Strategy v1") + "," +
-     "\"ticker\":" + strToJson(syminfo.ticker) + "," +
-     "\"time\":" + str.tostring(time) + "," +
-     "\"action\":" + strToJson(action) + "," +
-     "\"price\":" + numToJson(close) + "," +
-     "\"score\":" + numToJson(scoreValue) + "," +
-     "\"setup\":" + strToJson(setupName) + "," +
-     "\"regime\":" + strToJson(regimeLabel) + "," +
-     "\"stop\":" + numToJson(stopValue) + "," +
-     "\"target\":" + numToJson(targetValue) + "," +
-     "\"risk\":" + strToJson(riskText) + "," +
-     "\"notes\":" + strToJson(notesText) + "," +
-     "\"broker_touched\":false," +
-     "\"order_policy\":" + strToJson("journal_only_no_broker") +
-     "}"
+longEntryStop = close - atr14 * (resolvedAssetProfile == "Crypto" ? cryptoAtrMultiplier : coreTacticalMode or trendRunnerMode ? coreATRMultiplier : atrStopMultiplier)
+longEntryTarget = close + atr14 * tacticalATRMultiplier * takeProfitR
+shortEntryStop = close + atr14 * (resolvedAssetProfile == "Crypto" ? cryptoAtrMultiplier : tacticalATRMultiplier)
+shortEntryTarget = close - atr14 * tacticalATRMultiplier * takeProfitR
+longTrailBase = resolvedAssetProfile == "Index ETF" ? dailyEma200 - atr14 * 1.0 : resolvedAssetProfile == "Crypto" ? math.max(btcStructureStop ? donchianLow20 : close - atr14 * btcRunnerTrailATR, close - atr14 * (useActiveHedgeOverlay and hedgeNeeded ? math.max(cryptoTrailATR, 2.5) : btcRunnerTrailATR)) : coreTrailMode == "EMA20" ? ema20 - atr14 * 0.25 : coreTrailMode == "EMA50" ? ema50 - atr14 * 0.25 : close - atr14 * runnerTrailATR
+shortTrailBase = resolvedAssetProfile == "Crypto" ? math.min(btcStructureStop ? resistance + atr14 * 0.2 : close + atr14 * btcRunnerTrailATR, close + atr14 * btcRunnerTrailATR) : coreTrailMode == "EMA20" ? ema20 + atr14 * 0.25 : coreTrailMode == "EMA50" ? ema50 + atr14 * 0.25 : close + atr14 * runnerTrailATR
+longStopCandidate = strategy.position_size > 0 ? math.max(strategy.position_avg_price - atr14 * (resolvedAssetProfile == "Crypto" ? cryptoAtrMultiplier : coreATRMultiplier), longTrailBase) : na
+shortStopCandidate = strategy.position_size < 0 ? math.min(strategy.position_avg_price + atr14 * (resolvedAssetProfile == "Crypto" ? cryptoAtrMultiplier : coreATRMultiplier), shortTrailBase) : na
+longBreakEven = useBreakEvenStop and strategy.position_size > 0 and close >= strategy.position_avg_price + atr14 * (resolvedAssetProfile == "Crypto" ? btcBreakEvenAfterR : breakEvenAfterR) ? strategy.position_avg_price + atr14 * breakEvenOffsetATR : longStopCandidate
+shortBreakEven = useBreakEvenStop and strategy.position_size < 0 and close <= strategy.position_avg_price - atr14 * (resolvedAssetProfile == "Crypto" ? btcBreakEvenAfterR : breakEvenAfterR) ? strategy.position_avg_price - atr14 * breakEvenOffsetATR : shortStopCandidate
+longExitStop = strategy.position_size > 0 ? math.min(close - syminfo.mintick, na(longBreakEven) ? longEntryStop : longBreakEven) : na
+shortExitStop = strategy.position_size < 0 ? math.max(close + syminfo.mintick, na(shortBreakEven) ? shortEntryStop : shortBreakEven) : na
+longExitLimit = (trendRunnerMode or effectivePreset == "Defensive ETF Core" or resolvedAssetProfile == "Index ETF") ? na : strategy.position_avg_price + atr14 * tacticalATRMultiplier * takeProfitR
+shortExitLimit = trendRunnerMode ? na : strategy.position_avg_price - atr14 * tacticalATRMultiplier * takeProfitR
+autopilotCoreExit = autopilotMode and strategy.position_size > 0 and (dailyClose < dailyEma200 or weeklyClose < weeklyEma40 or not assetAbsoluteMomentumOk or hedgeHardBlock or noTradeBlock)
+cryptoCoreExit = autopilotMode and resolvedAssetProfile == "Crypto" and strategy.position_size > 0 and ((btcExitOnEMA50Break and close < ema50 and close[1] < ema50[1]) or (btcExitOnTrendFlip and btcBearTrend) or close < donchianLow20 or htfBias == "bearish" or cryptoChopBlock or hedgeRiskOff and close < ema20)
+coreExitCondition = coreTacticalMode and strategy.position_size > 0 and (autopilotCoreExit or cryptoCoreExit or (not autopilotMode and (close < ema200 or (close < ema50 and close[1] < ema50[1] and htfBias == "bearish") or hedgeHardBlock)))
+shortCoreExitCondition = strategy.position_size < 0 and (close > ema50 and close[1] > ema50[1] or htfBias == "bullish")
+scoreExit = not autopilotMode and not effectiveValidationMode and strategy.position_size != 0 and not corePositionActive and finalSignalScore < effectiveMinSignalScore - 20
 
-var float longTrailStop = na
-var float shortTrailStop = na
-var int entryBar = na
-
-if strategy.position_size == 0
-    longTrailStop := na
-    shortTrailStop := na
-    entryBar := na
+buildAlertJson(action, setupName, stopValue, targetValue) => "{\"source\":\"tradingview\",\"strategy\":\"Genesis Advantage Strategy v1\",\"strategy_version\":" + strToJson(strategyVersion) + ",\"ticker\":" + strToJson(syminfo.ticker) + ",\"timeframe\":" + strToJson(timeframe.period) + ",\"recommended_timeframe\":" + strToJson(btcRecommendedTimeframe) + ",\"action\":" + strToJson(action) + ",\"price\":" + numToJson(close) + ",\"score\":" + numToJson(finalSignalScore) + ",\"setup\":" + strToJson(setupName) + ",\"preset\":" + strToJson(effectivePreset) + ",\"asset_profile\":" + strToJson(resolvedAssetProfile) + ",\"bot_status\":" + strToJson(botStatus) + ",\"autopilot_mode\":" + boolJson(autopilotMode) + ",\"enable_shorts\":" + boolJson(enableShorts) + ",\"safe_mode\":" + boolJson(safeMode) + ",\"validation_mode\":" + boolJson(validationMode) + ",\"validation_warning\":" + strToJson(validationWarning) + ",\"suggested_mode\":" + strToJson(suggestedMode) + ",\"market_regime\":" + strToJson(regimeLabel) + ",\"htf_bias\":" + strToJson(htfBias) + ",\"btc_regime\":" + strToJson(btcRegime) + ",\"btc_long_term_mode\":" + boolJson(btcLongTermMode) + ",\"crypto_v4_mode\":" + boolJson(cryptoV4Mode) + ",\"crypto_v3_mode\":" + boolJson(cryptoV3Mode) + ",\"entry_quality\":" + strToJson(entryQuality) + ",\"entry_quality_score\":" + numToJson(entryQualityScore) + ",\"trend_alignment\":" + boolJson(trendAlignment) + ",\"core_tactical_mode\":" + boolJson(coreTacticalMode) + ",\"core_position_active\":" + boolJson(corePositionActive) + ",\"core_entry\":" + boolJson(coreEntryCondition) + ",\"tactical_entry\":" + boolJson(tacticalEntry) + ",\"trend_runner_mode\":" + boolJson(trendRunnerMode) + ",\"crypto_avoid_chop\":" + boolJson(cryptoAvoidChop) + ",\"crypto_breakout_retest\":" + boolJson(cryptoBreakoutRetestLong) + ",\"crypto_vol_expansion\":" + boolJson(cryptoVolExpansionLong) + ",\"crypto_chop_block\":" + boolJson(cryptoChopBlock) + ",\"strategy_health_block\":" + boolJson(strategyHealthBlock) + ",\"live_profit_factor\":" + numToJson(liveProfitFactor) + ",\"benchmark_capture_ratio\":" + numToJson(benchmarkCaptureRatio) + ",\"strategy_vs_hold\":" + numToJson(strategyVsHold) + ",\"benchmark_warning\":" + strToJson(benchmarkWarning) + ",\"hedge_mode\":" + boolJson(useHedgeMode) + ",\"hedge_overlay\":" + boolJson(useActiveHedgeOverlay) + ",\"hedge_short_allowed\":" + boolJson(hedgeShortAllowed) + ",\"hedge_needed\":" + boolJson(hedgeNeeded) + ",\"hedge_score\":" + numToJson(hedgeDefenseScore) + ",\"hedge_type\":" + strToJson(hedgeTypeText) + ",\"hedge_ratio\":" + numToJson(hedgeRatio) + ",\"capital_protection_mode\":" + boolJson(capitalProtectionMode) + ",\"protect_open_profit\":" + boolJson(protectOpenProfit) + ",\"genesis_context_score\":" + str.tostring(genesisContextScore) + ",\"no_trade_block\":" + boolJson(noTradeBlock) + ",\"no_trade_score\":" + str.tostring(noTradeScoreInput) + ",\"no_trade_reason\":" + strToJson(noTradeReason) + ",\"edge_status\":" + strToJson(edgeStatus) + ",\"stop\":" + numToJson(stopValue) + ",\"target\":" + numToJson(targetValue) + ",\"block_reason\":" + strToJson(blockReason) + ",\"suggested_action\":" + strToJson(suggestedAction) + ",\"broker_touched\":false,\"order_policy\":\"journal_only_no_broker\"}"
 
 if longCondition
-    entryBar := bar_index
-    strategy.entry("Long", strategy.long, alert_message=buildAlertJson("long_signal", setupText, str.tostring(riskPerTradePct * riskMultiplier, "#.##") + "%", longStopCandidate, longTargetCandidate, longSignalScore, validationMode ? "validation_mode_paper_only" : "paper_only_no_broker"))
-
+    strategy.entry("Long", strategy.long, alert_message=buildAlertJson("long_signal", setupText, longEntryStop, longEntryTarget))
 if shortCondition
+    strategy.entry("Short", strategy.short, alert_message=buildAlertJson("short_signal", setupText, shortEntryStop, shortEntryTarget))
+
+strategy.exit("Long Exit", from_entry="Long", stop=longExitStop, limit=longExitLimit, alert_message=buildAlertJson("long_exit", setupText, longExitStop, longExitLimit))
+strategy.exit("Short Exit", from_entry="Short", stop=shortExitStop, limit=shortExitLimit, alert_message=buildAlertJson("short_exit", setupText, shortExitStop, shortExitLimit))
+
+var int entryBar = na
+if longCondition or shortCondition
     entryBar := bar_index
-    strategy.entry("Short", strategy.short, alert_message=buildAlertJson("short_signal", setupText, str.tostring(riskPerTradePct * riskMultiplier, "#.##") + "%", shortStopCandidate, shortTargetCandidate, shortSignalScore, validationMode ? "validation_mode_paper_only" : "paper_only_no_broker"))
+barsInTrade = not na(entryBar) ? bar_index - entryBar : 0
+validationQuickExit = effectiveValidationMode and safeMode and strategy.position_size != 0 and barsInTrade >= validationExitBars
+timeStopExit = useTimeStop and not corePositionActive and strategy.position_size != 0 and barsInTrade >= maxBarsInTrade
+longCloseSignal = strategy.position_size > 0 and (validationQuickExit or timeStopExit or coreExitCondition or hedgeHardBlock or noTradeBlock or scoreExit)
+shortCloseSignal = strategy.position_size < 0 and (validationQuickExit or timeStopExit or shortCoreExitCondition or hedgeHardBlock or noTradeBlock or scoreExit)
+if longCloseSignal
+    strategy.close("Long", comment="Genesis close long", alert_message=buildAlertJson("exit_signal", setupText, longExitStop, longExitLimit))
+if shortCloseSignal
+    strategy.close("Short", comment="Genesis close short", alert_message=buildAlertJson("exit_signal", setupText, shortExitStop, shortExitLimit))
 
-longEntryPrice = strategy.position_size > 0 ? strategy.position_avg_price : close
-shortEntryPrice = strategy.position_size < 0 ? strategy.position_avg_price : close
-longStop = longEntryPrice - atr14 * atrStopMultiplier
-shortStop = shortEntryPrice + atr14 * atrStopMultiplier
-longTarget = longEntryPrice + (longEntryPrice - longStop) * takeProfitR
-shortTarget = shortEntryPrice - (shortStop - shortEntryPrice) * takeProfitR
-
-if strategy.position_size > 0
-    entryBar := na(entryBar) ? bar_index : entryBar
-    longTrailCandidate = close - atr14 * trailingStopATR
-    longTrailStop := trailingStopATR > 0 ? math.max(nz(longTrailStop, longTrailCandidate), longTrailCandidate) : na
-
-if strategy.position_size < 0
-    entryBar := na(entryBar) ? bar_index : entryBar
-    shortTrailCandidate = close + atr14 * trailingStopATR
-    shortTrailStop := trailingStopATR > 0 ? math.min(nz(shortTrailStop, shortTrailCandidate), shortTrailCandidate) : na
-
-managedLongStop = trailingStopATR > 0 ? math.max(longStop, nz(longTrailStop, longStop)) : longStop
-managedShortStop = trailingStopATR > 0 ? math.min(shortStop, nz(shortTrailStop, shortStop)) : shortStop
-barsInTrade = na(entryBar) ? 0 : bar_index - entryBar
-longTimeStop = strategy.position_size > 0 and useTimeStop and barsInTrade >= maxBarsInTrade
-shortTimeStop = strategy.position_size < 0 and useTimeStop and barsInTrade >= maxBarsInTrade
-longScoreExit = strategy.position_size > 0 and not validationMode and longSignalScore < effectiveMinSignalScore * 0.65
-shortScoreExit = strategy.position_size < 0 and not validationMode and shortSignalScore < effectiveMinSignalScore * 0.65
-
-if strategy.position_size > 0
-    strategy.exit("Long Exit", from_entry="Long", stop=managedLongStop, limit=longTarget, alert_message=buildAlertJson("long_exit", setupText, "managed", managedLongStop, longTarget, longSignalScore, "risk_exit_or_target_no_broker"))
-
-if strategy.position_size < 0
-    strategy.exit("Short Exit", from_entry="Short", stop=managedShortStop, limit=shortTarget, alert_message=buildAlertJson("short_exit", setupText, "managed", managedShortStop, shortTarget, shortSignalScore, "risk_exit_or_target_no_broker"))
-
-if longTimeStop or longScoreExit
-    strategy.close("Long", comment=longTimeStop ? "Long time stop" : "Long score exit", alert_message=buildAlertJson("exit_signal", setupText, "managed", managedLongStop, longTarget, longSignalScore, longTimeStop ? "time_stop_no_broker" : "score_exit_no_broker"))
-
-if shortTimeStop or shortScoreExit
-    strategy.close("Short", comment=shortTimeStop ? "Short time stop" : "Short score exit", alert_message=buildAlertJson("exit_signal", setupText, "managed", managedShortStop, shortTarget, shortSignalScore, shortTimeStop ? "time_stop_no_broker" : "score_exit_no_broker"))
-
-activeStop = strategy.position_size > 0 ? managedLongStop : strategy.position_size < 0 ? managedShortStop : longConditionRaw ? longStopCandidate : shortStopCandidate
-activeTarget = strategy.position_size > 0 ? longTarget : strategy.position_size < 0 ? shortTarget : longConditionRaw ? longTargetCandidate : shortTargetCandidate
-activeRR = longConditionRaw ? longRR : shortConditionRaw ? shortRR : math.max(longRR, shortRR)
 stateText = longCondition or shortCondition ? "Entrada" : watchOnly ? "Vigilar" : "Evitar"
-exitSignal = longTimeStop or shortTimeStop or longScoreExit or shortScoreExit
-stopHit = (strategy.position_size > 0 and low <= managedLongStop) or (strategy.position_size < 0 and high >= managedShortStop)
-takeProfitHit = (strategy.position_size > 0 and high >= longTarget) or (strategy.position_size < 0 and low <= shortTarget)
+exitSignal = longCloseSignal or shortCloseSignal
+stopHit = false
+takeProfitHit = false
+hedgeAlert = hedgeNeeded or hedgeHardBlock
+activeStop = strategy.position_size > 0 ? longExitStop : strategy.position_size < 0 ? shortExitStop : longRaw ? longEntryStop : shortRaw ? shortEntryStop : na
+activeTarget = strategy.position_size > 0 ? longExitLimit : strategy.position_size < 0 ? shortExitLimit : longRaw ? longEntryTarget : shortRaw ? shortEntryTarget : na
 
-plot(ema20, "EMA 20", color=color.new(color.teal, 0), linewidth=1)
-plot(ema50, "EMA 50", color=color.new(color.orange, 0), linewidth=1)
-plot(ema200, "EMA 200", color=color.new(color.white, 0), linewidth=2)
-plot(vwapValue, "VWAP", color=color.new(color.purple, 0), linewidth=1)
-plot(support, "Support", color=color.new(color.green, 15), style=plot.style_linebr)
-plot(resistance, "Resistance", color=color.new(color.red, 15), style=plot.style_linebr)
-plot(fib618, "Golden Pocket 0.618", color=color.new(color.yellow, 30), style=plot.style_linebr)
-plot(fib65, "Golden Pocket 0.65", color=color.new(color.yellow, 45), style=plot.style_linebr)
-plot(activeStop, "Stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
-plot(activeTarget, "Target", color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
-plot(longTrailStop, "Long Trailing Stop", color=color.new(color.fuchsia, 0), style=plot.style_linebr)
-plot(shortTrailStop, "Short Trailing Stop", color=color.new(color.fuchsia, 0), style=plot.style_linebr)
+if watchOnly and not (watchOnly[1] == true)
+    alert(buildAlertJson("watch_only", setupText, activeStop, activeTarget), alert.freq_once_per_bar_close)
+
+plot(ema20, "EMA 20", color=color.teal)
+plot(ema50, "EMA 50", color=color.orange)
+plot(ema200, "EMA 200", color=color.blue, linewidth=2)
+plot(support, "Support", color=color.new(color.green, 30), style=plot.style_linebr)
+plot(resistance, "Resistance", color=color.new(color.red, 30), style=plot.style_linebr)
+plot(activeStop, "Stop", color=color.red, style=plot.style_linebr)
+plot(activeTarget, "Target", color=color.lime, style=plot.style_linebr)
 plot(finalSignalScore, "Final Score", display=display.none)
 plot(marketRegimeScore, "Regime Score", display=display.none)
-plot(activeRR, "Risk Reward", display=display.none)
-plot(activeStop, "Alert Stop", display=display.none)
-plot(activeTarget, "Alert Target", display=display.none)
 plot(setupCode, "Setup Code", display=display.none)
+plot(hedgeDefenseScore, "Hedge Score", display=display.none)
+plot(noTradeScoreInput, "No-Trade Score", display=display.none)
+plot(entryQualityScore, "Entry Quality Score", display=display.none)
+plot(benchmarkCaptureRatio, "Benchmark Capture Ratio", display=display.none)
+bgcolor(regimeLabel == "Alcista fuerte" ? color.new(color.green, 92) : regimeLabel == "Bajista" or regimeLabel == "Riesgo alto" ? color.new(color.red, 92) : color.new(color.gray, 96))
 
-plotshape(showConditionMarkers and debugMode and longConditionRaw, title="Raw Long", text="raw L", style=shape.circle, location=location.belowbar, color=color.new(color.green, 65), textcolor=color.white, size=size.tiny)
-plotshape(showConditionMarkers and debugMode and shortConditionRaw, title="Raw Short", text="raw S", style=shape.circle, location=location.abovebar, color=color.new(color.red, 65), textcolor=color.white, size=size.tiny)
-plotshape(showConditionMarkers and longCondition, title="Final Long", text="LONG", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
-plotshape(showConditionMarkers and shortCondition, title="Final Short", text="SHORT", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
-plotshape(showConditionMarkers and debugMode and scoreOk and (longConditionRaw or shortConditionRaw), title="Score OK", text="score", style=shape.square, location=location.bottom, color=color.new(color.blue, 35), textcolor=color.white, size=size.tiny)
-plotshape(showConditionMarkers and debugMode and volumeOk and (longConditionRaw or shortConditionRaw), title="Volume OK", text="vol", style=shape.square, location=location.bottom, color=color.new(color.teal, 35), textcolor=color.white, size=size.tiny)
-plotshape(showConditionMarkers and debugMode and regimeOk and (longConditionRaw or shortConditionRaw), title="Regime OK", text="reg", style=shape.square, location=location.bottom, color=color.new(color.purple, 35), textcolor=color.white, size=size.tiny)
-plotshape(showConditionMarkers and debugMode and watchOnly, title="Blocked Setup", text="BLOCK", style=shape.triangledown, location=location.abovebar, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+plotshape(showConditionMarkers and debugMode and longRaw, title="Raw Long", text="RAW L", style=shape.circle, location=location.belowbar, color=color.new(color.green, 65), textcolor=color.white, size=size.tiny)
+plotshape(showConditionMarkers and debugMode and shortRaw, title="Raw Short", text="RAW S", style=shape.circle, location=location.abovebar, color=color.new(color.red, 65), textcolor=color.white, size=size.tiny)
+plotshape(showConditionMarkers and longCondition, title="Final Long", text="LONG", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, size=size.small)
+plotshape(showConditionMarkers and shortCondition, title="Final Short", text="SHORT", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.small)
+plotshape(showConditionMarkers and debugMode and watchOnly, title="Blocked Setup", text="WATCH", style=shape.triangledown, location=location.abovebar, color=color.orange, textcolor=color.white, size=size.tiny)
 
-bg = regimeLabel == "Alcista fuerte" ? color.new(color.green, 90) : regimeLabel == "Alcista moderado" ? color.new(color.teal, 92) : regimeLabel == "Lateral" ? color.new(color.gray, 94) : regimeLabel == "Riesgo alto" ? color.new(color.orange, 90) : color.new(color.red, 92)
-bgcolor(effectiveUseMarketRegimeFilter ? bg : na)
-
-var table dashboard = table.new(position.top_right, 2, 16, border_width=1)
+var table dashboard = table.new(position.top_right, 2, 22, border_width=1)
 if barstate.islast and showScoreTable
-    headerColor = stateText == "Entrada" ? color.new(color.green, 0) : stateText == "Vigilar" ? color.new(color.orange, 0) : color.new(color.red, 0)
-    table.cell(dashboard, 0, 0, "Genesis Advantage v1", text_color=color.white, bgcolor=headerColor)
-    table.cell(dashboard, 1, 0, stateText, text_color=color.white, bgcolor=headerColor)
-    table.cell(dashboard, 0, 1, "Free Plan Mode", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 1, boolText(freePlanMode), text_color=color.white)
-    table.cell(dashboard, 0, 2, "Validation Mode", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 2, boolText(validationMode), text_color=color.white)
-    table.cell(dashboard, 0, 3, "Setup actual", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 3, setupText, text_color=color.white)
-    table.cell(dashboard, 0, 4, "Regime", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 4, regimeLabel + " " + str.tostring(marketRegimeScore, "#"), text_color=color.white)
-    table.cell(dashboard, 0, 5, "Final score", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 5, str.tostring(finalSignalScore, "#.##") + " / min " + str.tostring(effectiveMinSignalScore, "#"), text_color=color.white)
-    table.cell(dashboard, 0, 6, "Long raw", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 6, boolText(longConditionRaw), text_color=color.white)
-    table.cell(dashboard, 0, 7, "Short raw", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 7, boolText(shortConditionRaw), text_color=color.white)
-    table.cell(dashboard, 0, 8, "Score OK", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 8, boolText(scoreOk), text_color=color.white)
-    table.cell(dashboard, 0, 9, "Volume OK", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 9, boolText(volumeOk), text_color=color.white)
-    table.cell(dashboard, 0, 10, "Regime OK", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 10, boolText(regimeOk), text_color=color.white)
-    table.cell(dashboard, 0, 11, "RR", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 11, str.tostring(activeRR, "#.##") + " / min " + str.tostring(effectiveMinRR, "#.##"), text_color=color.white)
-    table.cell(dashboard, 0, 12, "Stop", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 12, str.tostring(activeStop, "#.####"), text_color=color.white)
-    table.cell(dashboard, 0, 13, "Target", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 13, str.tostring(activeTarget, "#.####"), text_color=color.white)
-    table.cell(dashboard, 0, 14, "Block reason", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 14, blockReason, text_color=color.white)
-    table.cell(dashboard, 0, 15, "Nota", text_color=color.white, bgcolor=color.new(color.black, 20))
-    table.cell(dashboard, 1, 15, validationMode ? "Validacion, no modo operativo" : "Paper/backtest only", text_color=color.white)
+    headerColor = stateText == "Entrada" ? color.green : stateText == "Vigilar" ? color.orange : color.red
+    table.cell(dashboard, 0, 0, "Version", text_color=color.white, bgcolor=headerColor)
+    table.cell(dashboard, 1, 0, strategyVersion, text_color=color.white, bgcolor=headerColor)
+    table.cell(dashboard, 0, 1, "Bot Status", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 1, botStatus, text_color=color.white)
+    table.cell(dashboard, 0, 2, "State", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 2, stateText, text_color=color.white)
+    table.cell(dashboard, 0, 3, "Asset Profile", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 3, resolvedAssetProfile, text_color=color.white)
+    table.cell(dashboard, 0, 4, "Preset", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 4, effectivePreset, text_color=color.white)
+    table.cell(dashboard, 0, 5, "Timeframe", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 5, timeframe.period + " -> " + btcRecommendedTimeframe, text_color=color.white)
+    table.cell(dashboard, 0, 6, "BTC Regime", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 6, btcRegime + " / HTF " + htfBias, text_color=color.white)
+    table.cell(dashboard, 0, 7, "BTC Long Term Mode", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 7, boolText(btcLongTermMode), text_color=color.white)
+    table.cell(dashboard, 0, 8, "BTC Chop", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 8, boolText(btcChop) + " / ADX " + str.tostring(adxValue, "#.##"), text_color=color.white)
+    table.cell(dashboard, 0, 9, "BTC Vol Expansion", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 9, boolText(btcVolExpansion), text_color=color.white)
+    table.cell(dashboard, 0, 10, "Entry Quality", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 10, entryQuality + " / " + str.tostring(entryQualityScore, "#.##"), text_color=color.white)
+    table.cell(dashboard, 0, 11, "Final Score", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 11, str.tostring(finalSignalScore, "#.##") + " / " + str.tostring(effectiveMinSignalScore), text_color=color.white)
+    table.cell(dashboard, 0, 12, "Long Raw / Final", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 12, boolText(longRaw) + " / " + boolText(longCondition), text_color=color.white)
+    table.cell(dashboard, 0, 13, "Short Raw / Final", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 13, boolText(shortRaw) + " / " + boolText(shortCondition), text_color=color.white)
+    table.cell(dashboard, 0, 14, "Hedge Score", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 14, str.tostring(hedgeDefenseScore) + " / " + hedgeTypeText, text_color=color.white)
+    table.cell(dashboard, 0, 15, "Hedge Needed", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 15, boolText(hedgeNeeded) + " / overlay " + boolText(useActiveHedgeOverlay), text_color=color.white)
+    table.cell(dashboard, 0, 16, "No Trade Score", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 16, str.tostring(noTradeScoreInput) + " / " + edgeStatus, text_color=color.white)
+    table.cell(dashboard, 0, 17, "Suggested Action", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 17, suggestedAction, text_color=color.white)
+    table.cell(dashboard, 0, 18, "Block Reason", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 18, blockReason, text_color=color.white)
+    table.cell(dashboard, 0, 19, "TF Warning", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 19, btcCurrentTfWarning != "" ? btcCurrentTfWarning : profileWarning, text_color=color.white)
+    table.cell(dashboard, 0, 20, "Safe/Validation", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 20, validationWarning == "" ? "OFF" : validationWarning, text_color=color.white)
+    table.cell(dashboard, 0, 21, "Policy", text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(dashboard, 1, 21, "journal_only_no_broker", text_color=color.white)
 
 alertcondition(longCondition, title="Long Signal", message="Long Signal - use {{strategy.order.alert_message}} for order-fill webhook")
 alertcondition(shortCondition, title="Short Signal", message="Short Signal - use {{strategy.order.alert_message}} for order-fill webhook")
 alertcondition(exitSignal, title="Exit Signal", message="Exit Signal - use {{strategy.order.alert_message}} for order-fill webhook")
 alertcondition(stopHit, title="Stop Hit", message="Stop Hit - use {{strategy.order.alert_message}} for order-fill webhook")
 alertcondition(takeProfitHit, title="Take Profit Hit", message="Take Profit Hit - use {{strategy.order.alert_message}} for order-fill webhook")
+alertcondition(hedgeAlert, title="Hedge Needed", message="Hedge Needed - use {{strategy.order.alert_message}} for order-fill webhook")
 alertcondition(watchOnly, title="Watch Only", message="Watch Only - use {{strategy.order.alert_message}} for order-fill webhook")
+alertcondition(noTradeBlock, title="No Trade / Watch Only", message="No Trade / Watch Only - use {{strategy.order.alert_message}} for order-fill webhook")

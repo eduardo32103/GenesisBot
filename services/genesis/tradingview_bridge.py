@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
 from services.genesis.ticker_parser import normalize_ticker
 
@@ -20,51 +21,18 @@ _VALID_ACTIONS = {
     "watch_only",
     "long_exit",
     "short_exit",
+    "hedge_alert",
+    "protect_profit",
+    "reduce_exposure",
+    "risk_off",
 }
 
 
 def get_trading_context(ticker: str, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     """Build the external Genesis context Pine can read manually through inputs."""
 
-    normalized = normalize_ticker(ticker)
-    if not normalized:
-        return {
-            "ok": False,
-            "status": "missing_ticker",
-            "message": "ticker requerido",
-            "genesis_context_score": 0,
-            "bias": "neutral",
-            "confidence": "low",
-        }
-
     store = memory or MemoryStore()
-    summary = store.get_asset_learning_summary(normalized, limit=10)
-    evidence = _context_evidence(summary)
-    score = _clamp_score(sum(item["score"] for item in evidence))
-    bias = "bullish" if score >= 25 else "bearish" if score <= -25 else "neutral"
-    confidence = _confidence(score, evidence)
-    risk_flags = _risk_flags(summary, evidence)
-    asset_name = _asset_name(normalized, summary)
-
-    return {
-        "ok": True,
-        "status": "genesis_trading_context_ready",
-        "ticker": normalized,
-        "asset_name": asset_name,
-        "genesis_context_score": score,
-        "bias": bias,
-        "confidence": confidence,
-        "relevant_news": _compact_rows(summary.get("news") or [], limit=5),
-        "active_alerts": _compact_rows(summary.get("alerts") or summary.get("signals") or [], limit=5),
-        "whale_flow": _compact_rows(summary.get("whales") or [], limit=5),
-        "memory_notes": list(summary.get("summary_lines") or [])[:6],
-        "risk_flags": risk_flags,
-        "what_to_watch": _what_to_watch(normalized, bias, risk_flags),
-        "evidence_count": len(evidence),
-        "source": "MemoryStore + Genesis learning",
-        "policy": "Contexto para TradingView input manual; no es orden, no ejecuta broker.",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return GenesisBrain(memory=store).build_trading_context(ticker)
 
 
 def receive_tradingview_webhook(
@@ -138,13 +106,114 @@ def receive_tradingview_webhook(
         source="tradingview",
         confidence=confidence,
     )
+    benchmark_comparison = None
+    if canonical.get("benchmark_capture_ratio") is not None or canonical.get("strategy_vs_hold") is not None:
+        benchmark_comparison = store.save_event(
+            "benchmark_comparison",
+            {
+                **canonical,
+                "event_type": "benchmark_comparison",
+                "collection": "benchmark_comparison",
+                "benchmark_capture_ratio": canonical.get("benchmark_capture_ratio"),
+                "strategy_vs_hold": canonical.get("strategy_vs_hold"),
+                "benchmark_warning": canonical.get("benchmark_warning"),
+                "order_policy": "journal_only_no_broker",
+                "broker_touched": False,
+            },
+            "tradingview",
+            confidence,
+        )
+    hedge_event = None
+    hedge_recommendation = None
+    protected_trade = None
+    no_edge_decision = None
+    btc_edge_result = None
+    btc_backtest_result = None
+    if canonical.get("hedge_score") is not None or canonical.get("hedge_needed") is not None:
+        hedge_payload = {
+            **canonical,
+            "event_type": "hedge_event",
+            "collection": "hedge_events",
+            "hedge_score": canonical.get("hedge_score"),
+            "hedge_type": canonical.get("hedge_type"),
+            "hedge_ratio": canonical.get("hedge_ratio"),
+            "action_suggested": canonical.get("suggested_action"),
+            "reason": canonical.get("block_reason") or canonical.get("notes"),
+            "expected_risk": "capital_protection_watch",
+            "status": "open",
+            "order_policy": "journal_only_no_broker",
+            "broker_touched": False,
+        }
+        hedge_event = store.save_event("hedge_event", hedge_payload, "tradingview", confidence)
+        hedge_recommendation = store.save_event(
+            "hedge_recommendation",
+            {**hedge_payload, "event_type": "hedge_recommendation", "collection": "hedge_recommendations"},
+            "tradingview",
+            confidence,
+        )
+        if canonical.get("protect_open_profit"):
+            protected_trade = store.save_event(
+                "protected_trade",
+                {**hedge_payload, "event_type": "protected_trade", "collection": "protected_trades"},
+                "tradingview",
+                confidence,
+            )
+    if canonical.get("no_trade_block") or (canonical.get("no_trade_score") is not None and canonical.get("no_trade_score") >= 70):
+        no_edge_decision = store.save_no_edge_decision(
+            normalized,
+            {
+                **canonical,
+                "event_type": "no_edge_decision",
+                "collection": "no_edge_decisions",
+                "edge_status": canonical.get("edge_status") or "no_edge",
+                "reason": canonical.get("block_reason") or "Genesis marco sin edge para este activo/timeframe/setup.",
+                "order_policy": "journal_only_no_broker",
+                "broker_touched": False,
+            },
+            "tradingview",
+            confidence,
+        )
+    if canonical.get("btc_regime") or canonical.get("crypto_v4_mode"):
+        btc_payload = {
+            **canonical,
+            "event_type": "btc_edge_result",
+            "collection": "btc_edge_results",
+            "strategy_version": canonical.get("strategy_version") or "Genesis Advantage v10.13 BTC Edge",
+            "order_policy": "journal_only_no_broker",
+            "broker_touched": False,
+        }
+        btc_edge_result = store.save_btc_edge_result(normalized, btc_payload, "tradingview", confidence)
+        btc_backtest_result = store.save_btc_backtest_result(
+            normalized,
+            {**btc_payload, "event_type": "btc_backtest_result", "collection": "btc_backtest_results"},
+            "tradingview",
+            confidence,
+        )
     store.save_learned_context(
         f"tradingview:last_signal:{normalized}",
         {
             "ticker": normalized,
+            "strategy_version": canonical.get("strategy_version"),
             "action": canonical["action"],
             "setup": canonical["setup"],
             "score": canonical["score"],
+            "asset_profile": canonical.get("asset_profile"),
+            "core_tactical_mode": canonical.get("core_tactical_mode"),
+            "core_entry": canonical.get("core_entry"),
+            "tactical_entry": canonical.get("tactical_entry"),
+            "btc_regime": canonical.get("btc_regime"),
+            "btc_long_term_mode": canonical.get("btc_long_term_mode"),
+            "crypto_v4_mode": canonical.get("crypto_v4_mode"),
+            "crypto_v3_mode": canonical.get("crypto_v3_mode"),
+            "bot_status": canonical.get("bot_status"),
+            "recommended_timeframe": canonical.get("recommended_timeframe"),
+            "entry_quality_score": canonical.get("entry_quality_score"),
+            "benchmark_capture_ratio": canonical.get("benchmark_capture_ratio"),
+            "strategy_vs_hold": canonical.get("strategy_vs_hold"),
+            "hedge_score": canonical.get("hedge_score"),
+            "hedge_overlay": canonical.get("hedge_overlay"),
+            "no_trade_score": canonical.get("no_trade_score"),
+            "edge_status": canonical.get("edge_status"),
             "timestamp": canonical["timestamp"],
             "status": canonical["status"],
         },
@@ -164,6 +233,15 @@ def receive_tradingview_webhook(
             "strategy_outcomes",
             "backtest_notes",
             "trade_journal",
+            *(["benchmark_comparison"] if benchmark_comparison is not None else []),
+            *(
+                ["hedge_events", "hedge_recommendations"]
+                if hedge_event is not None
+                else []
+            ),
+            *(["protected_trades"] if protected_trade is not None else []),
+            *(["no_edge_decisions"] if no_edge_decision is not None else []),
+            *(["btc_edge_results", "btc_backtest_results"] if btc_edge_result is not None else []),
         ],
         "memory": {
             "backend": store.backend,
@@ -172,6 +250,13 @@ def receive_tradingview_webhook(
             "outcome_event_id": outcome.get("event_id"),
             "journal_event_id": journal.get("event_id"),
             "backtest_note_event_id": backtest_note.get("event_id"),
+            "benchmark_comparison": benchmark_comparison,
+            "hedge_event": hedge_event,
+            "hedge_recommendation": hedge_recommendation,
+            "protected_trade": protected_trade,
+            "no_edge_decision": no_edge_decision,
+            "btc_edge_result": btc_edge_result,
+            "btc_backtest_result": btc_backtest_result,
         },
         "order_executed": False,
         "broker_touched": False,
@@ -225,6 +310,7 @@ def _canonical_signal(
         "asset_name": str(body.get("asset_name") or body.get("name") or "")[:240],
         "source": "tradingview",
         "strategy": str(body.get("strategy") or "Genesis Advantage Strategy v1")[:160],
+        "strategy_version": str(body.get("strategy_version") or "")[:160],
         "setup": str(body.get("setup") or "unspecified")[:120],
         "action": action,
         "score": score,
@@ -235,10 +321,58 @@ def _canonical_signal(
         "risk_reward": risk_reward,
         "market_regime": str(body.get("regime") or body.get("market_regime") or "")[:120],
         "genesis_context": _safe_float(body.get("genesis_context") or body.get("genesis_context_score")),
+        "preset": str(body.get("preset") or "")[:80],
+        "auto_profile_mode": _safe_bool(body.get("auto_profile_mode")),
+        "safe_mode": _safe_bool(body.get("safe_mode")),
+        "validation_mode": _safe_bool(body.get("validation_mode")),
+        "validation_warning": str(body.get("validation_warning") or "")[:180],
+        "bot_status": str(body.get("bot_status") or "")[:120],
+        "recommended_timeframe": str(body.get("recommended_timeframe") or "")[:80],
+        "asset_profile": str(body.get("asset_profile") or "")[:120],
+        "profile_warning": str(body.get("profile_warning") or "")[:240],
+        "no_trade_mode": _safe_bool(body.get("no_trade_mode")),
+        "no_trade_score": _safe_float(body.get("no_trade_score")),
+        "no_trade_block": _safe_bool(body.get("no_trade_block")),
+        "edge_status": str(body.get("edge_status") or "")[:80],
+        "suggested_mode": str(body.get("suggested_mode") or "")[:80],
+        "core_tactical_mode": _safe_bool(body.get("core_tactical_mode")),
+        "core_position_active": _safe_bool(body.get("core_position_active")),
+        "core_entry": _safe_bool(body.get("core_entry")),
+        "tactical_entry": _safe_bool(body.get("tactical_entry")),
+        "entry_quality": str(body.get("entry_quality") or "")[:80],
+        "entry_quality_score": _safe_float(body.get("entry_quality_score")),
+        "trend_runner_mode": _safe_bool(body.get("trend_runner_mode")),
+        "btc_long_term_mode": _safe_bool(body.get("btc_long_term_mode")),
+        "crypto_v4_mode": _safe_bool(body.get("crypto_v4_mode")),
+        "crypto_v3_mode": _safe_bool(body.get("crypto_v3_mode")),
+        "btc_regime": str(body.get("btc_regime") or "")[:80],
+        "crypto_avoid_chop": _safe_bool(body.get("crypto_avoid_chop")),
+        "crypto_breakout_retest": _safe_bool(body.get("crypto_breakout_retest")),
+        "crypto_vol_expansion": _safe_bool(body.get("crypto_vol_expansion")),
+        "crypto_chop_block": _safe_bool(body.get("crypto_chop_block")),
+        "trend_alignment": str(body.get("trend_alignment") or "")[:80],
+        "benchmark_warning": str(body.get("benchmark_warning") or "")[:240],
+        "benchmark_capture_ratio": _safe_float(body.get("benchmark_capture_ratio")),
+        "strategy_vs_hold": _safe_float(body.get("strategy_vs_hold")),
+        "runner_active": _safe_bool(body.get("runner_active")),
+        "breakeven_active": _safe_bool(body.get("breakeven_active")),
+        "block_reason": str(body.get("block_reason") or "")[:240],
+        "hedge_mode": _safe_bool(body.get("hedge_mode")),
+        "hedge_overlay": _safe_bool(body.get("hedge_overlay")),
+        "hedge_short_allowed": _safe_bool(body.get("hedge_short_allowed")),
+        "hedge_impact_mode": str(body.get("hedge_impact_mode") or "")[:80],
+        "hedge_score": _safe_float(body.get("hedge_score")),
+        "hedge_needed": _safe_bool(body.get("hedge_needed")),
+        "hedge_type": str(body.get("hedge_type") or "")[:120],
+        "hedge_ratio": _safe_float(body.get("hedge_ratio")),
+        "capital_protection_mode": _safe_bool(body.get("capital_protection_mode")),
+        "protect_open_profit": _safe_bool(body.get("protect_open_profit")),
+        "no_trade_reason": str(body.get("no_trade_reason") or "")[:240],
+        "suggested_action": str(body.get("suggested_action") or "")[:160],
         "timestamp": timestamp,
         "created_at": clock.isoformat(),
         "confidence": confidence,
-        "status": "watching",
+        "status": "validation_only" if _safe_bool(body.get("safe_mode")) or _safe_bool(body.get("validation_mode")) else "watching",
         "outcome_1h": None,
         "outcome_24h": None,
         "outcome_7d": None,
@@ -401,6 +535,14 @@ def _safe_float(value: Any) -> float | None:
         return float(str(value).replace("$", "").replace("%", "").replace(",", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _safe_bool(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() in {"1", "true", "yes", "si", "sí", "on"}
 
 
 def _clamp_score(value: int | float) -> int:
