@@ -9,9 +9,11 @@ from services.mt5.mt5_bridge import (
     mt5_config,
     mt5_decision,
     mt5_health,
+    mt5_journal_recent,
     mt5_order_request,
     mt5_order_result,
     mt5_signal,
+    mt5_status,
 )
 
 
@@ -37,6 +39,14 @@ def get_genesis_mt5_health() -> dict[str, Any]:
 
 def get_genesis_mt5_config() -> dict[str, Any]:
     return mt5_config()
+
+
+def get_genesis_mt5_status() -> dict[str, Any]:
+    return mt5_status()
+
+
+def get_genesis_mt5_journal_recent(limit: int = 25, symbol: str = "") -> dict[str, Any]:
+    return mt5_journal_recent(limit=limit, symbol=symbol)
 
 
 def get_genesis_mt5_decision(symbol: str = "") -> dict[str, Any]:

@@ -51,6 +51,8 @@ from api.routes.genesis import (
     get_genesis_mt5_config,
     get_genesis_mt5_decision,
     get_genesis_mt5_health,
+    get_genesis_mt5_journal_recent,
+    get_genesis_mt5_status,
     get_genesis_portfolio_hedge,
     get_genesis_trading_context,
     post_genesis_mt5_account_sync,
@@ -184,8 +186,10 @@ def create_app() -> dict[str, str]:
         "genesis_portfolio_hedge_endpoint": "/api/genesis/portfolio-hedge",
         "genesis_tradingview_webhook_endpoint": "/api/genesis/tradingview-webhook",
         "genesis_mt5_health_endpoint": "/api/genesis/mt5/health",
+        "genesis_mt5_status_endpoint": "/api/genesis/mt5/status",
         "genesis_mt5_config_endpoint": "/api/genesis/mt5/config",
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
+        "genesis_mt5_journal_recent_endpoint": "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25",
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
         "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
         "genesis_mt5_order_request_endpoint": "/api/genesis/mt5/order-request",
@@ -4359,6 +4363,23 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/health":
             payload_data = get_genesis_mt5_health()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/status":
+            payload_data = get_genesis_mt5_status()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path in {"/api/genesis/mt5/journal/recent", "/api/genesis/mt5/journal"}:
+            query = parse_qs(parsed.query)
+            raw_limit = (query.get("limit") or ["25"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 25
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_journal_recent(limit=limit, symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

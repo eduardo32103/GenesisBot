@@ -55,6 +55,57 @@ class MT5SignalRouter:
             "broker_touched": False,
         }
 
+    def status(self) -> dict[str, Any]:
+        health = self.health()
+        journal = self.journal_recent(limit=100)
+        last_account_sync = _first_event(journal["items"], "mt5_account_sync")
+        last_decision = _first_event(journal["items"], "mt5_decision")
+        last_signal = _first_event(journal["items"], "mt5_signal")
+        last_order_request = _first_event(journal["items"], "mt5_order_request")
+        risk_blocks = [item for item in journal["items"] if item.get("event_type") == "mt5_risk_block"][:10]
+        symbols = _unique_symbols(journal["items"])
+        return {
+            "ok": True,
+            "status": "mt5_status_ready",
+            "bridge": {
+                "mt5_enabled": health["mt5_enabled"],
+                "demo_only": health["demo_only"],
+                "live_trading_enabled": health["live_trading_enabled"],
+                "order_execution_enabled": health["order_execution_enabled"],
+                "kill_switch": health["kill_switch"],
+                "order_policy": "journal_only_no_broker",
+                "broker_touched": False,
+                "order_executed": False,
+            },
+            "last_account_sync": last_account_sync,
+            "last_decision": last_decision,
+            "last_signal": last_signal,
+            "last_order_request": last_order_request,
+            "risk_blocks": risk_blocks,
+            "symbols": symbols,
+            "updated_at": _now(),
+        }
+
+    def journal_recent(self, *, limit: int = 25, symbol: str = "") -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 25), 200))
+        clean_symbol = str(symbol or "").upper().strip()
+        rows: list[dict[str, Any]] = []
+        for collection in _MT5_COLLECTIONS:
+            rows.extend(self.memory.get_mt5_events(collection, clean_symbol or None, limit=safe_limit))
+        rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+        items = [_journal_item(row) for row in rows[:safe_limit]]
+        return {
+            "ok": True,
+            "status": "mt5_journal_ready",
+            "items": items,
+            "count": len(items),
+            "limit": safe_limit,
+            "symbol": clean_symbol,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
     def account_sync(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         state = normalize_account_state(payload)
         event = self.journal.save("mt5_account_sync", state.get("account_id") or "ACCOUNT", state)
@@ -155,8 +206,9 @@ class MT5SignalRouter:
         return payload
 
     def order_request(self, payload: dict[str, Any] | None) -> dict[str, Any]:
-        intent = MT5OrderIntent.from_payload(payload)
-        account = normalize_account_state((payload or {}).get("account") if isinstance((payload or {}).get("account"), dict) else {})
+        body = payload or {}
+        intent = MT5OrderIntent.from_payload(body)
+        account = self._account_state_for_order(body, intent.symbol)
         guard = self.risk_guard.evaluate_order(intent, account_state=account)
         order_payload = {
             **intent.to_payload(),
@@ -196,6 +248,22 @@ class MT5SignalRouter:
         }
         event = self.journal.save("mt5_order_results", symbol, result)
         return {"ok": bool(symbol), "status": "mt5_order_result_recorded" if symbol else "missing_symbol", "event": event, **result}
+
+    def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+        account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+        direct_keys = ("is_demo", "demo", "account_type", "trade_mode", "account_trade_mode", "mode", "server", "broker", "account_id", "login", "account")
+        if account_payload:
+            return normalize_account_state(account_payload)
+        if any(key in payload for key in direct_keys):
+            return normalize_account_state({key: payload.get(key) for key in direct_keys if key in payload})
+        recent = self.memory.get_mt5_events("mt5_account_sync", symbol, limit=10)
+        if not recent:
+            recent = self.memory.get_mt5_events("mt5_account_sync", None, limit=10)
+        for row in recent:
+            payload_row = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if payload_row.get("is_demo"):
+                return normalize_account_state(payload_row)
+        return None
 
 
 def _base_decision(symbol_info: dict[str, Any], decision: str, confidence: str, reason: str) -> dict[str, Any]:
@@ -282,3 +350,51 @@ def _maybe_float(value: Any) -> float | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_MT5_COLLECTIONS = (
+    "mt5_account_sync",
+    "mt5_decisions",
+    "mt5_signals",
+    "mt5_order_requests",
+    "mt5_order_results",
+    "mt5_risk_blocks",
+    "mt5_journal",
+)
+
+
+def _journal_item(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    guard = payload.get("guard") if isinstance(payload.get("guard"), dict) else {}
+    decision = payload.get("decision") or payload.get("action") or payload.get("status") or ""
+    reason = payload.get("reason") or guard.get("primary_reason") or payload.get("comment") or ""
+    return {
+        "event_type": row.get("event_type") or payload.get("event_type") or "",
+        "symbol": str(payload.get("symbol") or "").upper(),
+        "decision": decision,
+        "reason": reason,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": payload.get("order_policy") or "journal_only_no_broker",
+        "created_at": row.get("created_at") or payload.get("timestamp") or "",
+        "confidence": row.get("confidence") or payload.get("confidence") or "",
+        "risk_reasons": guard.get("reasons") if isinstance(guard.get("reasons"), list) else payload.get("risk_reasons") or [],
+    }
+
+
+def _first_event(items: list[dict[str, Any]], event_type: str) -> dict[str, Any] | None:
+    for item in items:
+        if item.get("event_type") == event_type:
+            return item
+    return None
+
+
+def _unique_symbols(items: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for item in items:
+        symbol = str(item.get("symbol") or "").upper().strip()
+        if symbol and symbol not in seen:
+            symbols.append(symbol)
+            seen.add(symbol)
+    return symbols

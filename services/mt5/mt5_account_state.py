@@ -8,11 +8,13 @@ from services.mt5.mt5_order_model import sanitize_payload
 
 def normalize_account_state(payload: dict[str, Any] | None) -> dict[str, Any]:
     body = sanitize_payload(payload or {})
-    trade_mode = str(body.get("trade_mode") or body.get("account_trade_mode") or body.get("mode") or "").lower()
-    is_demo = bool(body.get("is_demo")) or trade_mode == "demo" or "demo" in str(body.get("server") or "").lower()
+    trade_mode = str(body.get("trade_mode") or body.get("account_trade_mode") or body.get("mode") or body.get("account_type") or "").lower()
+    server = str(body.get("server") or body.get("broker") or "").lower()
+    is_demo = bool(body.get("is_demo") or body.get("demo")) or trade_mode == "demo" or "demo" in server
     return {
         "account_id": str(body.get("account_id") or body.get("login") or body.get("account") or "")[:80],
         "server": str(body.get("server") or "")[:160],
+        "broker": str(body.get("broker") or "")[:160],
         "currency": str(body.get("currency") or "USD")[:20],
         "balance": _to_float(body.get("balance")),
         "equity": _to_float(body.get("equity")),
@@ -36,4 +38,3 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-

@@ -18,6 +18,14 @@ def mt5_config(*, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).config_payload()
 
 
+def mt5_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).status()
+
+
+def mt5_journal_recent(*, memory: MemoryStore | None = None, limit: int = 25, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).journal_recent(limit=limit, symbol=symbol)
+
+
 def mt5_account_sync(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).account_sync(payload)
 
@@ -36,4 +44,3 @@ def mt5_order_request(payload: dict[str, Any] | None, *, memory: MemoryStore | N
 
 def mt5_order_result(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).order_result(payload)
-
