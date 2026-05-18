@@ -26,7 +26,7 @@ class MT5ForwardTestEngine:
         self.memory = memory or MemoryStore()
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
-        self.performance = MT5Performance(memory=self.memory)
+        self.performance = MT5Performance(memory=self.memory, config=config)
         self.auto_forward = MT5AutoForward(memory=self.memory, config=config, symbol_mapper=symbol_mapper)
 
     def record_tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:

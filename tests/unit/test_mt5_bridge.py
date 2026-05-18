@@ -39,6 +39,7 @@ from services.genesis.tool_router import route_message
 from services.mt5.mt5_bridge import (
     mt5_auto_forward_status,
     mt5_account_sync,
+    mt5_config,
     mt5_debug_storage,
     mt5_decision,
     mt5_forward_test,
@@ -60,6 +61,7 @@ from services.mt5.mt5_bridge import (
     mt5_status,
     mt5_tick,
 )
+from services.mt5.mt5_config import is_paper_exploration_enabled
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent
@@ -118,6 +120,32 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertFalse(health["order_executed"])
         self.assertEqual(health["order_policy"], "journal_only_no_broker")
         self.assertIn("MT5_KILL_SWITCH", config["config"])
+
+    def test_paper_exploration_env_values_are_read_by_single_config_loader(self) -> None:
+        truthy_values = ("true", "True", "TRUE", "1", "yes", "YES", "on", "ON")
+        for value in truthy_values:
+            with self.subTest(value=value):
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "MT5_ENABLED": "true",
+                        "MT5_DEMO_ONLY": "true",
+                        "MT5_LIVE_TRADING_ENABLED": "false",
+                        "MT5_ORDER_EXECUTION_ENABLED": "false",
+                        "MT5_KILL_SWITCH": "false",
+                        "MT5_PAPER_EXPLORATION_ENABLED": value,
+                    },
+                    clear=False,
+                ):
+                    config = MT5BridgeConfig.from_env()
+                    payload = mt5_config()
+
+                    self.assertTrue(config.paper_exploration_enabled)
+                    self.assertTrue(is_paper_exploration_enabled())
+                    self.assertTrue(payload["MT5_PAPER_EXPLORATION_ENABLED"])
+                    self.assertTrue(payload["paper_exploration_enabled"])
+                    self.assertFalse(payload["broker_touched"])
+                    self.assertFalse(payload["order_executed"])
 
     def test_symbol_mapper_handles_crypto_and_blocks_unallowed_symbols(self) -> None:
         mapper = MT5SymbolMapper(allowed_symbols=["BTCUSD", "XAUUSD"])
@@ -695,25 +723,67 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(report["broker_touched"])
             self.assertFalse(report["order_executed"])
 
+    def test_tick_uses_env_paper_exploration_config_and_records_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            with patch.dict(
+                "os.environ",
+                {
+                    "MT5_ENABLED": "true",
+                    "MT5_DEMO_ONLY": "true",
+                    "MT5_LIVE_TRADING_ENABLED": "false",
+                    "MT5_ORDER_EXECUTION_ENABLED": "false",
+                    "MT5_KILL_SWITCH": "false",
+                    "MT5_MAX_SPREAD_POINTS": "50",
+                    "MT5_PAPER_EXPLORATION_ENABLED": "true",
+                },
+                clear=False,
+            ):
+                router = MT5SignalRouter(memory=store, symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTCUSD"]))
+                with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+                    warmup = router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                    tick = router.tick({"symbol": "BTCUSD", "last": 77025, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                report = router.no_trade_report(symbol="BTCUSD")
+                performance = router.performance(symbol="BTCUSD")
+
+            self.assertTrue(report["paper_exploration_enabled"])
+            self.assertGreaterEqual(report["exploration_attempts"], 1)
+            self.assertEqual(report["exploration_created"], 1)
+            self.assertTrue(warmup["auto_forward"]["exploration"]["enabled"])
+            self.assertNotEqual(warmup["auto_forward"]["exploration"]["reason"], "paper_exploration_disabled")
+            self.assertTrue(tick["auto_forward"]["exploration_shadow_trade_created"])
+            self.assertIn("summary_exploration", performance)
+            self.assertEqual(performance["summary_exploration"]["exploration_trades"], 1)
+            self.assertFalse(tick["broker_touched"])
+            self.assertFalse(tick["order_executed"])
+
     def test_paper_exploration_creates_separate_shadow_trade(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             router = _exploration_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
-                tick = router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                warmup = router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                tick = router.tick({"symbol": "BTCUSD", "last": 77020, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
 
             performance = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
             status = mt5_auto_forward_status(memory=store, symbol="BTCUSD")
             trades = mt5_shadow_trades(memory=store, symbol="BTCUSD")
+            no_trade_report = router.no_trade_report(symbol="BTCUSD")
 
+            self.assertFalse(warmup["auto_forward"]["exploration_shadow_trade_created"])
+            self.assertNotEqual(warmup["auto_forward"]["exploration"]["reason"], "paper_exploration_disabled")
             self.assertFalse(tick["auto_shadow_trade_created"])
             self.assertTrue(tick["auto_forward"]["exploration_shadow_trade_created"])
             self.assertEqual(performance["summary_strict_auto"]["shadow_trades"], 0)
             self.assertEqual(performance["summary_exploration"]["shadow_trades"], 1)
+            self.assertEqual(performance["summary_exploration"]["exploration_trades"], 1)
             self.assertEqual(performance["summary_forward_auto"]["shadow_trades"], 1)
             self.assertEqual(status["exploration_shadow_trades"], 1)
             self.assertEqual(status["strict_shadow_trades"], 0)
+            self.assertTrue(no_trade_report["paper_exploration_enabled"])
+            self.assertGreaterEqual(no_trade_report["exploration_attempts"], 1)
+            self.assertEqual(no_trade_report["exploration_created"], 1)
             self.assertTrue(trades["items"][0]["paper_exploration"])
             self.assertTrue(trades["items"][0]["excluded_from_live_grade"])
             self.assertGreaterEqual(trades["items"][0]["risk_reward"], 1.2)
@@ -726,8 +796,9 @@ class MT5BridgeTests(unittest.TestCase):
             router = _exploration_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
-                first = router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
-                second = router.tick({"symbol": "BTCUSD", "last": 77010, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                first = router.tick({"symbol": "BTCUSD", "last": 77010, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                second = router.tick({"symbol": "BTCUSD", "last": 77020, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
 
             performance = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
 

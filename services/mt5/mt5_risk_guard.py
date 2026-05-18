@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
+from services.mt5.mt5_config import get_mt5_config
 from services.mt5.mt5_order_model import MT5OrderIntent
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 
@@ -24,18 +24,19 @@ class MT5BridgeConfig:
 
     @classmethod
     def from_env(cls) -> "MT5BridgeConfig":
+        runtime = get_mt5_config()
         return cls(
-            enabled=_bool_env("MT5_ENABLED", False),
-            demo_only=_bool_env("MT5_DEMO_ONLY", True),
-            live_trading_enabled=_bool_env("MT5_LIVE_TRADING_ENABLED", False),
-            order_execution_enabled=_bool_env("MT5_ORDER_EXECUTION_ENABLED", False),
-            kill_switch=_bool_env("MT5_KILL_SWITCH", True),
-            max_daily_loss_pct=_float_env("MT5_MAX_DAILY_LOSS_PCT", 2.0),
-            max_position_risk_pct=_float_env("MT5_MAX_POSITION_RISK_PCT", 0.5),
-            max_open_trades=int(_float_env("MT5_MAX_OPEN_TRADES", 1)),
-            max_spread_points=_float_env("MT5_MAX_SPREAD", _float_env("MT5_MAX_SPREAD_POINTS", 50.0)),
-            min_rr=_float_env("MT5_MIN_RR", 1.2),
-            paper_exploration_enabled=_bool_env("MT5_PAPER_EXPLORATION_ENABLED", False),
+            enabled=runtime.enabled,
+            demo_only=runtime.demo_only,
+            live_trading_enabled=runtime.live_trading_enabled,
+            order_execution_enabled=runtime.order_execution_enabled,
+            kill_switch=runtime.kill_switch,
+            max_daily_loss_pct=runtime.max_daily_loss_pct,
+            max_position_risk_pct=runtime.max_position_risk_pct,
+            max_open_trades=runtime.max_open_trades,
+            max_spread_points=runtime.max_spread_points,
+            min_rr=runtime.min_rr,
+            paper_exploration_enabled=runtime.paper_exploration_enabled,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -131,20 +132,6 @@ def _risk_reward(intent: MT5OrderIntent) -> float | None:
     if risk <= 0:
         return None
     return round(reward / risk, 4)
-
-
-def _bool_env(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    return str(raw).strip().casefold() in {"1", "true", "yes", "on", "si"}
-
-
-def _float_env(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
 
 
 def _to_float(value: Any) -> float | None:

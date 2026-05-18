@@ -6,12 +6,14 @@ from typing import Any
 from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import normalize_mt5_symbol
 from services.mt5.mt5_journal import MT5Journal
+from services.mt5.mt5_risk_guard import MT5BridgeConfig
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
 
 
 class MT5Performance:
-    def __init__(self, *, memory: MemoryStore | None = None) -> None:
+    def __init__(self, *, memory: MemoryStore | None = None, config: MT5BridgeConfig | None = None) -> None:
         self.memory = memory or MemoryStore()
+        self.config = config or MT5BridgeConfig.from_env()
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
 
@@ -47,12 +49,21 @@ class MT5Performance:
         included_trades = [trade for trade in trades if not _is_excluded(trade)]
         excluded_manual = [trade for trade in manual_trades if _is_excluded(trade)]
         open_auto_trades = [trade for trade in auto_trades if trade.get("status") == "open"]
+        normalized_symbol = normalize_mt5_symbol(clean_symbol)
         summary_total = _summary_for_trades(included_trades)
         summary_auto = _summary_for_trades(auto_trades)
         summary_exploration = _summary_for_trades(exploration_trades)
+        summary_exploration_payload = {
+            **summary_exploration,
+            "exploration_trades": summary_exploration["shadow_trades"],
+            "symbol": clean_symbol,
+            "normalized_symbol": normalized_symbol,
+            "instrument_type": "crypto_spot" if normalized_symbol == "BTCUSD" else "",
+            "profile": "BTCUSD_PAPER_EXPLORATION_V1",
+            "paper_exploration": True,
+        }
         summary_forward_auto = _summary_for_trades(forward_auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
-        normalized_symbol = normalize_mt5_symbol(clean_symbol)
         proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if not _is_excluded(trade)])
         last_valid_decision = _latest_payload_by_actionable(decisions, True)
         last_invalid_decision = _latest_payload_by_actionable(decisions, False)
@@ -84,19 +95,13 @@ class MT5Performance:
             "symbol": clean_symbol,
             "normalized_symbol": normalized_symbol,
             "timeframe": clean_timeframe,
+            "paper_exploration_enabled": self.config.paper_exploration_enabled,
             "summary": summary,
             "summary_btcusd_auto": summary_auto_payload if normalized_symbol == "BTCUSD" else {},
             "summary_total": {**summary_total, "manual_shadow_trades": summary_manual["shadow_trades"], "auto_shadow_trades": summary_auto["shadow_trades"]},
             "summary_auto": summary_auto_payload,
             "summary_strict_auto": summary_auto_payload,
-            "summary_exploration": {
-                **summary_exploration,
-                "symbol": clean_symbol,
-                "normalized_symbol": normalized_symbol,
-                "instrument_type": instrument_type,
-                "profile": "BTCUSD_PAPER_EXPLORATION_V1",
-                "paper_exploration": True,
-            },
+            "summary_exploration": summary_exploration_payload,
             "summary_forward_auto": {
                 **summary_forward_auto,
                 "symbol": clean_symbol,

@@ -35,7 +35,7 @@ class MT5SignalRouter:
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
         self.forward_engine = MT5ForwardTestEngine(memory=self.memory, config=self.config, symbol_mapper=self.symbol_mapper)
-        self.performance_engine = MT5Performance(memory=self.memory)
+        self.performance_engine = MT5Performance(memory=self.memory, config=self.config)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -57,13 +57,17 @@ class MT5SignalRouter:
         }
 
     def config_payload(self) -> dict[str, Any]:
+        config_payload = self.config.to_payload()
         return {
             "ok": True,
-            "config": self.config.to_payload(),
+            **config_payload,
+            "paper_exploration_enabled": self.config.paper_exploration_enabled,
+            "config": config_payload,
             "allowed_symbols": sorted(self.symbol_mapper.allowed_symbols),
             "symbol_map": self.symbol_mapper.symbol_map,
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
+            "order_executed": False,
         }
 
     def instrument(self, *, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
