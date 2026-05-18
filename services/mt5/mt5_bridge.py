@@ -46,6 +46,10 @@ def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", li
     return build_router(memory).shadow_trades(symbol=symbol, limit=limit)
 
 
+def mt5_debug_storage(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).debug_storage(symbol=symbol)
+
+
 def mt5_auto_forward_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     return build_router(memory).auto_forward_status(symbol=symbol)
 

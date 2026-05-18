@@ -305,6 +305,50 @@ class MT5SignalRouter:
     def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
         return self.shadow.snapshot(symbol=symbol, limit=limit)
 
+    def debug_storage(self, *, symbol: str = "") -> dict[str, Any]:
+        clean_symbol = str(symbol or "").upper().strip()
+        aliases = _symbol_aliases(clean_symbol)
+        collections = (
+            "mt5_shadow_trades",
+            "mt5_ticks",
+            "mt5_decisions",
+            "mt5_signals",
+            "mt5_order_requests",
+            "mt5_forward_metrics",
+            "mt5_signal_outcomes",
+            "mt5_no_trade_outcomes",
+            "mt5_hedge_outcomes",
+        )
+        counts: dict[str, int] = {}
+        latest: dict[str, dict[str, Any] | None] = {}
+        for collection in collections:
+            rows = self.memory.get_mt5_events(collection, clean_symbol or None, limit=500)
+            counts[collection] = len(rows)
+            latest[collection] = _payload(rows[0]) if rows else None
+        snapshot = self.shadow.snapshot(symbol=clean_symbol, limit=500)
+        performance = self.performance(symbol=clean_symbol)
+        return {
+            "ok": True,
+            "status": "mt5_storage_debug_ready",
+            "symbol": clean_symbol,
+            "normalized_symbol": _normalized_symbol(clean_symbol),
+            "symbol_filters_applied": aliases,
+            "collections": list(collections),
+            "counts": counts,
+            "database_enabled": getattr(self.memory, "backend", "") == "postgres",
+            "memory_fallback": getattr(self.memory, "backend", "") != "postgres",
+            "memory_backend": getattr(self.memory, "backend", "unknown"),
+            "shadow_snapshot_count": snapshot["count"],
+            "performance_total_shadow_trades": (performance.get("summary") or {}).get("total_shadow_trades", 0),
+            "last_shadow_trade": latest["mt5_shadow_trades"],
+            "last_tick": latest["mt5_ticks"],
+            "last_decision": latest["mt5_decisions"],
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "updated_at": _now(),
+        }
+
     def auto_forward_status(self, *, symbol: str = "") -> dict[str, Any]:
         return self.forward_engine.auto_forward_status(symbol=symbol)
 
@@ -418,6 +462,7 @@ _MT5_COLLECTIONS = (
     "mt5_account_sync",
     "mt5_decisions",
     "mt5_signals",
+    "mt5_ticks",
     "mt5_order_requests",
     "mt5_order_results",
     "mt5_risk_blocks",
@@ -428,6 +473,11 @@ _MT5_COLLECTIONS = (
     "mt5_forward_metrics",
     "mt5_journal",
 )
+
+
+def _payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    return payload
 
 
 def _journal_item(row: dict[str, Any]) -> dict[str, Any]:
@@ -480,6 +530,23 @@ def _signal_symbol(payload: dict[str, Any]) -> str:
         if symbol:
             return symbol
     return ""
+
+
+def _normalized_symbol(symbol: object) -> str:
+    clean = str(symbol or "").upper().strip()
+    if clean in {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}:
+        return "BTC"
+    return clean
+
+
+def _symbol_aliases(symbol: object) -> list[str]:
+    clean = str(symbol or "").upper().strip()
+    if not clean:
+        return []
+    if _normalized_symbol(clean) == "BTC":
+        return ["BTC", "BTC-USD", "BTCUSD", "BTCUSDT", "XBTUSD"]
+    aliases = {clean, _normalized_symbol(clean)}
+    return sorted(alias for alias in aliases if alias)
 
 
 def _unique_symbols(items: list[dict[str, Any]]) -> list[str]:

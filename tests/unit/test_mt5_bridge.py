@@ -9,6 +9,7 @@ from api.main import create_app
 from api.routes.genesis import (
     get_genesis_mt5_auto_forward_status,
     get_genesis_mt5_config,
+    get_genesis_mt5_debug_storage,
     get_genesis_mt5_decision,
     get_genesis_mt5_forward_test,
     get_genesis_mt5_health,
@@ -31,6 +32,7 @@ from services.genesis.tool_router import route_message
 from services.mt5.mt5_bridge import (
     mt5_auto_forward_status,
     mt5_account_sync,
+    mt5_debug_storage,
     mt5_decision,
     mt5_forward_test,
     mt5_journal_recent,
@@ -66,6 +68,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_forward_test_endpoint"], "/api/genesis/mt5/forward-test?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_outcomes_recent_endpoint"], "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25")
         self.assertEqual(app["genesis_mt5_shadow_trades_endpoint"], "/api/genesis/mt5/shadow-trades?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_debug_storage_endpoint"], "/api/genesis/mt5/debug/storage?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_auto_forward_status_endpoint"], "/api/genesis/mt5/auto-forward-status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
@@ -321,6 +324,7 @@ class MT5BridgeTests(unittest.TestCase):
             )
             second_tick = mt5_tick({"symbol": "BTC", "bid": 105.9, "ask": 106.1, "last": 106, "timeframe": "H1", "spread": 0.2}, memory=store)
             performance = mt5_performance(memory=store, symbol="BTC", timeframe="H1")
+            shadow = mt5_shadow_trades(memory=store, symbol="BTC", limit=10)
             forward = mt5_forward_test(memory=store, symbol="BTC", timeframe="H1")
             outcomes = mt5_outcomes_recent(memory=store, symbol="BTC", limit=10)
 
@@ -334,11 +338,78 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(performance["summary_manual"]["losses"], 1)
             self.assertEqual(performance["summary_manual"]["win_rate"], 50.0)
             self.assertEqual(performance["summary_manual"]["profit_factor"], 2.0)
+            self.assertEqual(shadow["count"], performance["summary"]["total_shadow_trades"])
+            self.assertEqual(shadow["closed"], performance["summary_manual"]["closed"])
+            self.assertEqual(shadow["items"][0]["normalized_symbol"], "BTC")
             self.assertEqual(forward["status"], "mt5_forward_test_ready")
             self.assertGreaterEqual(outcomes["count"], 2)
             self.assertFalse(performance["broker_touched"])
             self.assertFalse(performance["order_executed"])
             self.assertNotIn("dont-save", str(performance))
+
+    def test_shadow_trades_and_performance_share_btc_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            mt5_signal(
+                {
+                    "symbol": "BTCUSD",
+                    "action": "BUY",
+                    "entry": 100,
+                    "stop_loss": 95,
+                    "take_profit": 110,
+                    "risk_pct": 0.25,
+                    "timeframe": "H1",
+                    "confidence": "high",
+                },
+                memory=store,
+            )
+            mt5_tick({"symbol": "BTCUSD", "last": 110.2, "timeframe": "H1", "spread": 0.2}, memory=store)
+
+            perf_btc = mt5_performance(memory=store, symbol="BTC", timeframe="H1")
+            shadow_btc = mt5_shadow_trades(memory=store, symbol="BTC")
+            shadow_btcusd = mt5_shadow_trades(memory=store, symbol="BTCUSD")
+            debug = mt5_debug_storage(memory=store, symbol="BTC")
+
+            self.assertEqual(perf_btc["summary"]["total_shadow_trades"], 1)
+            self.assertEqual(shadow_btc["count"], 1)
+            self.assertEqual(shadow_btcusd["count"], 1)
+            self.assertEqual(shadow_btc["items"][0]["symbol"], "BTCUSD")
+            self.assertEqual(shadow_btc["items"][0]["normalized_symbol"], "BTC")
+            self.assertGreaterEqual(debug["counts"]["mt5_shadow_trades"], 1)
+            self.assertEqual(debug["shadow_snapshot_count"], 1)
+            self.assertEqual(debug["performance_total_shadow_trades"], 1)
+            self.assertIn("BTCUSD", debug["symbol_filters_applied"])
+            self.assertFalse(shadow_btc["broker_touched"])
+            self.assertFalse(debug["order_executed"])
+
+    def test_shadow_trades_survive_store_reload_and_reverse_btc_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "memory.sqlite3"
+            first_store = MemoryStore(database_url="", sqlite_path=db_path)
+            mt5_signal(
+                {
+                    "symbol": "BTC",
+                    "action": "SELL",
+                    "entry": 100,
+                    "stop_loss": 105,
+                    "take_profit": 90,
+                    "risk_pct": 0.25,
+                    "timeframe": "H1",
+                    "confidence": "high",
+                },
+                memory=first_store,
+            )
+
+            reloaded = MemoryStore(database_url="", sqlite_path=db_path)
+            perf_btcusd = mt5_performance(memory=reloaded, symbol="BTCUSD", timeframe="H1")
+            shadow_btcusd = mt5_shadow_trades(memory=reloaded, symbol="BTCUSD")
+
+            self.assertEqual(perf_btcusd["summary"]["total_shadow_trades"], 1)
+            self.assertEqual(shadow_btcusd["count"], 1)
+            self.assertEqual(shadow_btcusd["items"][0]["symbol"], "BTC")
+            self.assertEqual(shadow_btcusd["items"][0]["normalized_symbol"], "BTC")
+            self.assertFalse(shadow_btcusd["broker_touched"])
+            self.assertFalse(shadow_btcusd["order_executed"])
 
     def test_auto_forward_tick_creates_decision_and_shadow_trade(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -861,6 +932,7 @@ class MT5BridgeTests(unittest.TestCase):
         forward = get_genesis_mt5_forward_test("BTCUSD")
         outcomes = get_genesis_mt5_outcomes_recent(symbol="BTCUSD", limit=5)
         shadow = get_genesis_mt5_shadow_trades(symbol="BTCUSD", limit=5)
+        debug = get_genesis_mt5_debug_storage(symbol="BTCUSD")
         auto_status = get_genesis_mt5_auto_forward_status(symbol="BTCUSD")
         reset = post_genesis_mt5_manual_tests_reset({"symbol": "BTCUSD"})
 
@@ -875,6 +947,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(forward["ok"])
         self.assertTrue(outcomes["ok"])
         self.assertTrue(shadow["ok"])
+        self.assertTrue(debug["ok"])
         self.assertTrue(auto_status["ok"])
         self.assertTrue(reset["ok"])
         self.assertFalse(request["order_executed"])

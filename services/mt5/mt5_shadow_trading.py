@@ -78,6 +78,8 @@ class MT5ShadowTrading:
         trade = {
             "shadow_trade_id": str(payload.get("shadow_trade_id") or f"shadow-{uuid.uuid4().hex[:12]}"),
             "symbol": symbol,
+            "original_symbol": _symbol(payload.get("original_symbol") or payload.get("symbol") or symbol),
+            "normalized_symbol": _normalized_symbol(symbol),
             "action": action,
             "entry": entry,
             "stop_loss": intent.stop_loss,
@@ -282,6 +284,8 @@ class MT5ShadowTrading:
             "ok": True,
             "status": "mt5_shadow_trades_ready",
             "symbol": clean_symbol,
+            "normalized_symbol": _normalized_symbol(clean_symbol),
+            "symbol_aliases": sorted(_symbol_aliases(clean_symbol)) if clean_symbol else [],
             "items": trades,
             "open_trades": open_trades,
             "closed_trades": closed_trades,
@@ -432,6 +436,22 @@ def _action(payload: dict[str, Any]) -> str:
 
 def _symbol(value: object) -> str:
     return str(value or "").upper().strip()
+
+
+def _normalized_symbol(value: object) -> str:
+    clean = _symbol(value)
+    if clean in {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}:
+        return "BTC"
+    return clean
+
+
+def _symbol_aliases(value: object) -> set[str]:
+    clean = _symbol(value)
+    if not clean:
+        return set()
+    if _normalized_symbol(clean) == "BTC":
+        return {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}
+    return {clean, _normalized_symbol(clean)}
 
 
 def _number(value: object) -> float | None:

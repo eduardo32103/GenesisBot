@@ -629,22 +629,31 @@ class MemoryStore:
         confidence: str | float = "media",
     ) -> dict[str, Any]:
         clean_collection = str(collection or "mt5_journal").strip()[:80]
+        raw_payload = _sanitize(payload or {})
+        clean_symbol = str(symbol or raw_payload.get("symbol") or raw_payload.get("ticker") or "").upper().strip()
         clean = {
-            "symbol": str(symbol or "").upper().strip(),
+            **raw_payload,
+            "symbol": clean_symbol,
+            "original_symbol": str(raw_payload.get("original_symbol") or raw_payload.get("symbol") or clean_symbol).upper().strip(),
+            "normalized_symbol": _mt5_normalized_symbol(clean_symbol),
             "collection": clean_collection,
             "broker_touched": False,
             "order_executed": False,
-            **_sanitize(payload or {}),
         }
         return self.save_event(_mt5_event_type(clean_collection), clean, source, confidence)
 
     def get_mt5_events(self, collection: str | None = None, symbol: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
         event_type = _mt5_event_type(collection) if collection else None
         normalized = str(symbol or "").upper().strip()
-        fetch_limit = max(limit * 5, 100) if normalized else limit
+        aliases = _mt5_symbol_aliases(normalized)
+        fetch_limit = max(limit * 12, 500) if normalized else limit
         rows = self.get_recent_events(fetch_limit, event_type)
         if normalized:
-            return [row for row in rows if str(row.get("payload", {}).get("symbol") or "").upper() == normalized][:limit]
+            return [
+                row
+                for row in rows
+                if _mt5_payload_symbol_match(row.get("payload") if isinstance(row.get("payload"), dict) else {}, aliases)
+            ][:limit]
         return rows[:limit]
 
     def get_asset_learning_summary(self, ticker: str, limit: int = 12) -> dict[str, Any]:
@@ -1590,6 +1599,38 @@ def _mt5_event_type(collection: str | None) -> str:
     }
     clean = str(collection or "mt5_journal").strip()
     return mapping.get(clean, clean.rstrip("s") or "mt5_event")
+
+
+def _mt5_normalized_symbol(symbol: object) -> str:
+    clean = str(symbol or "").upper().strip()
+    if clean in {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}:
+        return "BTC"
+    return clean
+
+
+def _mt5_symbol_aliases(symbol: object) -> set[str]:
+    clean = str(symbol or "").upper().strip()
+    if not clean:
+        return set()
+    normalized = _mt5_normalized_symbol(clean)
+    if normalized == "BTC":
+        return {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}
+    return {clean, normalized}
+
+
+def _mt5_payload_symbol_match(payload: dict[str, Any], aliases: set[str]) -> bool:
+    if not aliases:
+        return True
+    candidates = {
+        str(payload.get("symbol") or "").upper().strip(),
+        str(payload.get("ticker") or "").upper().strip(),
+        str(payload.get("original_symbol") or "").upper().strip(),
+        str(payload.get("normalized_symbol") or "").upper().strip(),
+    }
+    normalized_aliases = set(aliases)
+    normalized_aliases.update(_mt5_normalized_symbol(alias) for alias in aliases)
+    candidates.update(_mt5_normalized_symbol(candidate) for candidate in list(candidates))
+    return bool(candidates & normalized_aliases)
 
 
 def _loads(value: Any) -> Any:

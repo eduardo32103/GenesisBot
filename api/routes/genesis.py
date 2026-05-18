@@ -8,6 +8,7 @@ from services.mt5.mt5_bridge import (
     mt5_account_sync,
     mt5_auto_forward_status,
     mt5_config,
+    mt5_debug_storage,
     mt5_decision,
     mt5_forward_test,
     mt5_health,
@@ -75,6 +76,10 @@ def get_genesis_mt5_outcomes_recent(limit: int = 25, symbol: str = "") -> dict[s
 
 def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[str, Any]:
     return mt5_shadow_trades(limit=limit, symbol=symbol)
+
+
+def get_genesis_mt5_debug_storage(symbol: str = "") -> dict[str, Any]:
+    return mt5_debug_storage(symbol=symbol)
 
 
 def get_genesis_mt5_auto_forward_status(symbol: str = "") -> dict[str, Any]:
