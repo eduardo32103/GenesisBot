@@ -81,16 +81,33 @@ class MT5Performance:
 
     def auto_report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         report = self.report(symbol=symbol, timeframe=timeframe)
+        summary_auto = {
+            **report["summary_auto"],
+            "auto_shadow_trades": report["summary_auto"].get("shadow_trades", 0),
+            "drawdown": report["summary_auto"].get("max_drawdown", 0.0),
+        }
         return {
             "ok": True,
             "status": "mt5_auto_performance_ready",
             "symbol": report["symbol"],
             "timeframe": report["timeframe"],
-            "summary": report["summary_auto"],
-            "summary_auto": report["summary_auto"],
+            "summary": summary_auto,
+            "summary_auto": summary_auto,
+            "auto_shadow_trades": summary_auto["auto_shadow_trades"],
+            "closed": summary_auto.get("closed", 0),
+            "open": summary_auto.get("open", 0),
+            "wins": summary_auto.get("wins", 0),
+            "losses": summary_auto.get("losses", 0),
+            "win_rate": summary_auto.get("win_rate", 0.0),
+            "profit_factor": summary_auto.get("profit_factor", 0.0),
+            "expectancy": summary_auto.get("expectancy", 0.0),
+            "net_pnl": summary_auto.get("net_pnl", 0.0),
+            "drawdown": summary_auto.get("drawdown", 0.0),
             "recent_trades": report.get("recent_auto_trades") or [],
+            "recent_auto_trades": report.get("recent_auto_trades") or [],
             "sample_warning": report.get("auto_sample_warning") or "",
             "genesis_reading": report.get("genesis_reading") or "",
+            "last_reason": report.get("last_reason") or "",
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -271,6 +288,7 @@ def _latest_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 def _reason_alias(value: object) -> str:
     text = str(value or "")
     aliases = {
+        "missing_entry": "missing_risk_parameters",
         "stop_loss_missing_from_context": "missing_risk_parameters",
         "stop_loss_required": "missing_risk_parameters",
         "take_profit_required": "missing_risk_parameters",

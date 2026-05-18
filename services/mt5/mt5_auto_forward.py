@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -150,6 +151,13 @@ class MT5AutoForward:
             actionable=final_actionable,
             warnings=list(symbol_info.get("warnings") or []),
         )
+        logging.getLogger("genesis.mt5").info(
+            "MT5_AUTO_FORWARD_EVAL symbol=%s decision=%s actionable=%s reason=%s",
+            raw_symbol,
+            final_decision,
+            final_actionable,
+            decision["reason"],
+        )
         event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence=confidence)
 
         shadow: dict[str, Any] = {"created": False, "status": "not_actionable", "reason": decision["reason"]}
@@ -169,8 +177,19 @@ class MT5AutoForward:
                     "timestamp": decision["generated_at"],
                 }
             )
+            shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
+            if shadow.get("created"):
+                logging.getLogger("genesis.mt5").info(
+                    "MT5_AUTO_SHADOW_CREATED id=%s symbol=%s entry=%s stop=%s target=%s",
+                    shadow_trade.get("shadow_trade_id"),
+                    raw_symbol,
+                    entry,
+                    stop_loss,
+                    take_profit,
+                )
         else:
             self.shadow.record_no_trade_signal({**decision, "price": last})
+            logging.getLogger("genesis.mt5").info("MT5_AUTO_FORWARD_BLOCKED symbol=%s reason=%s", raw_symbol, decision["reason"])
 
         shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
         return {
@@ -195,6 +214,8 @@ class MT5AutoForward:
         last_decision = _latest_payload(self.memory, "mt5_decisions", clean_symbol)
         if last_decision:
             last_decision = {**last_decision, "reason": _reason_alias(last_decision.get("reason") or "")}
+        last_valid_decision = last_decision if bool((last_decision or {}).get("actionable")) else None
+        last_invalid_decision = last_decision if last_decision and not bool(last_decision.get("actionable")) else None
         snapshot = self.shadow.snapshot(symbol=clean_symbol)
         performance = self.performance.report(symbol=clean_symbol)
         summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
@@ -205,10 +226,13 @@ class MT5AutoForward:
             "symbol": clean_symbol,
             "auto_forward_enabled": not self.config.kill_switch,
             "last_tick": last_tick,
+            "last_tick_status": "mt5_tick_recorded" if last_tick else "",
             "last_signal": last_signal,
             "last_signal_status": (last_signal or {}).get("signal_status") or (last_signal or {}).get("status") or "",
             "last_signal_error": (last_signal or {}).get("signal_error") or "",
             "last_decision": last_decision,
+            "last_valid_decision": last_valid_decision,
+            "last_invalid_decision": last_invalid_decision,
             "last_reason": last_reason,
             "last_actionable": bool((last_decision or {}).get("actionable")),
             "entry": (last_decision or {}).get("entry"),
@@ -453,6 +477,7 @@ def _confidence(value: object) -> str:
 def _reason_alias(value: object) -> str:
     text = str(value or "")
     aliases = {
+        "missing_entry": "missing_risk_parameters",
         "stop_loss_missing_from_context": "missing_risk_parameters",
         "stop_loss_required": "missing_risk_parameters",
         "take_profit_required": "missing_risk_parameters",

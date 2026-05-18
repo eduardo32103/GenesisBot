@@ -374,10 +374,15 @@ class MT5BridgeTests(unittest.TestCase):
 
             self.assertTrue(signal["ok"])
             self.assertEqual(tick["status"], "mt5_tick_recorded")
+            self.assertEqual(tick["symbol"], "BTC")
+            self.assertTrue(tick["tick_saved"])
+            self.assertTrue(tick["auto_forward_checked"])
             self.assertTrue(tick["auto_shadow_trade_created"])
             self.assertEqual(status["last_signal_status"], "mt5_signal_recorded")
             self.assertEqual(status["last_signal_error"], "")
+            self.assertEqual(status["last_tick_status"], "mt5_tick_recorded")
             self.assertIsNotNone(status["last_tick"])
+            self.assertIsNotNone(status["last_valid_decision"])
             self.assertFalse(status["broker_touched"])
             self.assertFalse(status["order_executed"])
 
@@ -440,7 +445,8 @@ class MT5BridgeTests(unittest.TestCase):
 
         self.assertEqual(built["decision"], "NO_TRADE")
         self.assertFalse(built["actionable"])
-        self.assertEqual(built["reason"], "missing_entry")
+        self.assertEqual(built["reason"], "missing_risk_parameters")
+        self.assertNotEqual(built["reason"], "missing_entry")
 
     def test_auto_forward_generates_buy_shadow_trade_without_context_stop_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -540,7 +546,7 @@ class MT5BridgeTests(unittest.TestCase):
                 {
                     "symbol": "BTC",
                     "decision": "NO_TRADE",
-                    "reason": "stop_loss_missing_from_context",
+                    "reason": "missing_entry",
                     "broker_touched": False,
                     "order_executed": False,
                     "order_policy": "journal_only_no_broker",
@@ -552,8 +558,8 @@ class MT5BridgeTests(unittest.TestCase):
 
             self.assertEqual(performance["last_reason"], "missing_risk_parameters")
             self.assertEqual(status["last_reason"], "missing_risk_parameters")
-            self.assertNotIn("stop_loss_missing_from_context", str(performance))
-            self.assertNotIn("stop_loss_missing_from_context", str(status))
+            self.assertNotIn("missing_entry", str(performance))
+            self.assertNotIn("missing_entry", str(status))
             self.assertFalse(performance["broker_touched"])
             self.assertFalse(status["order_executed"])
 
@@ -897,14 +903,23 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("input bool AllowLiveTrading = false", content)
         self.assertIn("input bool JournalOnly = true", content)
         self.assertIn("input bool KillSwitch = true", content)
+        self.assertIn("GenesisBridgeEA_v11_tick_fix", content)
+        self.assertIn("AllowedSymbols = \"BTC,BTCUSD", content)
+        self.assertIn("bool SendTick()", content)
+        self.assertIn("MT5 SendTick start", content)
         self.assertIn("/api/genesis/mt5/tick", content)
         self.assertIn("/api/genesis/mt5/signal", content)
         self.assertIn("Content-Type: application/json", content)
         self.assertIn("JsonToCharArray", content)
-        self.assertIn("PostJson", content)
+        self.assertIn("int PostJson(string path, string json, string &response)", content)
+        self.assertIn("int GetJson(string path, string &response)", content)
+        self.assertIn("ea_version", content)
+        self.assertIn("EA version", content)
         self.assertIn("Last tick sent", content)
         self.assertIn("Last signal HTTP code", content)
         self.assertIn("Last tick HTTP code", content)
+        self.assertIn("Last account sync HTTP code", content)
+        self.assertIn("DemoOnly", content)
         self.assertIn("WebRequest", content)
         self.assertNotIn("FMP_API_KEY", content)
         self.assertNotIn("OPENAI_API_KEY", content)
@@ -946,6 +961,7 @@ def _ea_tick_payload() -> dict[str, object]:
         "server": "MetaQuotes-Demo",
         "is_demo": True,
         "source": "mt5_bridge",
+        "ea_version": "GenesisBridgeEA_v11_tick_fix",
     }
 
 

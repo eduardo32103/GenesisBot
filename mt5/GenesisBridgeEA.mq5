@@ -4,7 +4,7 @@
 //| No real trading by default.                                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "11.11"
+#property version   "11.12"
 #property description "Genesis MT5 Bridge EA. Journal/demo bridge with kill switch enabled by default."
 
 #include <Trade/Trade.mqh>
@@ -19,10 +19,11 @@ input int MaxOpenTrades = 1;
 input int PollSeconds = 30;
 input int MagicNumber = 50501;
 input double MaxSpreadPoints = 50;
-input string AllowedSymbols = "BTCUSD,NVDA,SPY,QQQ,XAUUSD";
+input string AllowedSymbols = "BTC,BTCUSD,NVDA,SPY,QQQ,XAUUSD";
 input bool KillSwitch = true;
 
 CTrade trade;
+string EA_VERSION = "GenesisBridgeEA_v11_tick_fix";
 string lastDecision = "WAIT";
 string lastConfidence = "low";
 string lastReason = "waiting";
@@ -63,19 +64,20 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    if(!IsAllowedSymbol(_Symbol))
-   {
-      DrawPanel("NO_TRADE", "symbol_not_allowed");
-      return;
-   }
+      Print("MT5 allowed-symbol warning: ", _Symbol, " not in AllowedSymbols, but account-sync/tick/decision will still run.");
    SyncAccount();
-   SendTick();
+   bool tickSent = SendTick();
+   if(!tickSent)
+      Print("MT5 tick warning: SendTick returned false but decision poll will continue.");
    PollDecision();
 }
 
 void PollDecision()
 {
    string url = GenesisBaseUrl + "/api/genesis/mt5/decision?symbol=" + _Symbol;
-   string response = GetJson(url, "decision", lastDecisionHttpCode, lastDecisionStatus);
+   string response = "";
+   lastDecisionHttpCode = GetJson("/api/genesis/mt5/decision?symbol=" + _Symbol, response);
+   lastDecisionStatus = HttpStatusText(lastDecisionHttpCode);
    if(StringLen(response) <= 0)
    {
       DrawPanel("WAIT", "no_response_from_genesis");
@@ -130,11 +132,14 @@ void SyncAccount()
    payload += "\"trade_mode\":\"" + TradeModeText() + "\",";
    payload += "\"broker_touched\":false";
    payload += "}";
-   PostJson(GenesisBaseUrl + "/api/genesis/mt5/account-sync", payload, "account-sync", lastAccountHttpCode, lastAccountStatus);
+   string response = "";
+   lastAccountHttpCode = PostJson("/api/genesis/mt5/account-sync", payload, response);
+   lastAccountStatus = HttpStatusText(lastAccountHttpCode);
 }
 
-void SendTick()
+bool SendTick()
 {
+   Print("MT5 SendTick start symbol=", _Symbol, " tf=", TimeframeText());
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double last = LastMarketPrice();
@@ -152,13 +157,25 @@ void SendTick()
    payload += "\"broker\":\"" + EscapeJson(AccountInfoString(ACCOUNT_COMPANY)) + "\",";
    payload += "\"server\":\"" + EscapeJson(AccountInfoString(ACCOUNT_SERVER)) + "\",";
    payload += "\"is_demo\":" + BoolJson(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO) + ",";
+   payload += "\"ea_version\":\"" + EA_VERSION + "\",";
    payload += "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
    payload += "\"broker_touched\":false,";
    payload += "\"order_executed\":false,";
    payload += "\"order_policy\":\"journal_only_no_broker\"";
    payload += "}";
-   PostJson(GenesisBaseUrl + "/api/genesis/mt5/tick", payload, "tick", lastTickHttpCode, lastTickStatus);
+   Print("MT5 tick JSON: ", ShortText(payload, 350));
+   string response = "";
+   lastTickHttpCode = PostJson("/api/genesis/mt5/tick", payload, response);
+   lastTickStatus = HttpStatusText(lastTickHttpCode);
+   Print("MT5 tick HTTP: ", lastTickHttpCode);
+   Print("MT5 tick response: ", ShortText(response, 350));
+   if(lastTickHttpCode < 200 || lastTickHttpCode >= 300)
+   {
+      Print("MT5 tick error: ", GetLastError());
+      Print("MT5 tick response body: ", ShortText(response, 500));
+   }
    lastTickSent = TimeCurrent();
+   return (lastTickHttpCode >= 200 && lastTickHttpCode < 300);
 }
 
 void SendSignalJournal(string decision, string rawDecision)
@@ -201,7 +218,9 @@ void SendSignalJournal(string decision, string rawDecision)
    payload += "\"order_executed\":false,";
    payload += "\"order_policy\":\"journal_only_no_broker\"";
    payload += "}";
-   PostJson(GenesisBaseUrl + "/api/genesis/mt5/signal", payload, "signal", lastSignalHttpCode, lastSignalStatus);
+   string response = "";
+   lastSignalHttpCode = PostJson("/api/genesis/mt5/signal", payload, response);
+   lastSignalStatus = HttpStatusText(lastSignalHttpCode);
    lastJournalEvent = TimeCurrent();
 }
 
@@ -221,9 +240,8 @@ void RequestOrderJournal(string decision)
    payload += "\"no_trade_score\":" + DoubleToString(lastNoTradeScore, 0) + ",";
    payload += "\"broker_touched\":false";
    payload += "}";
-   int orderRequestCode = 0;
-   string orderRequestStatus = "";
-   PostJson(GenesisBaseUrl + "/api/genesis/mt5/order-request", payload, "order-request", orderRequestCode, orderRequestStatus);
+   string response = "";
+   PostJson("/api/genesis/mt5/order-request", payload, response);
    lastJournalEvent = TimeCurrent();
 }
 
@@ -273,9 +291,8 @@ void ExecuteDemoOrder(string decision)
    resultPayload += "\"broker_touched\":false,";
    resultPayload += "\"order_policy\":\"demo_only\"";
    resultPayload += "}";
-   int orderResultCode = 0;
-   string orderResultStatus = "";
-   PostJson(GenesisBaseUrl + "/api/genesis/mt5/order-result", resultPayload, "order-result", orderResultCode, orderResultStatus);
+   string response = "";
+   PostJson("/api/genesis/mt5/order-result", resultPayload, response);
    lastJournalEvent = TimeCurrent();
 }
 
@@ -294,75 +311,92 @@ bool JsonToCharArray(string json, char &data[])
    return true;
 }
 
-string GetJson(string url, string label, int &httpCode, string &status)
+string EndpointUrl(string path)
+{
+   if(StringFind(path, "http://") == 0 || StringFind(path, "https://") == 0)
+      return path;
+   if(StringLen(path) > 0 && StringSubstr(path, 0, 1) == "/")
+      return GenesisBaseUrl + path;
+   return GenesisBaseUrl + "/" + path;
+}
+
+int GetJson(string path, string &response)
 {
    char data[];
    char result[];
    string headers = "Content-Type: application/json\r\n";
    string resultHeaders = "";
+   string url = EndpointUrl(path);
+   response = "";
    ResetLastError();
    int code = WebRequest("GET", url, headers, 5000, data, result, resultHeaders);
-   httpCode = code;
-   string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
    lastResponseShort = ShortText(response, 220);
    if(code < 200 || code >= 300)
    {
-      status = "http_error";
-      lastError = label + " GET HTTP " + IntegerToString(code) + " err=" + IntegerToString(GetLastError());
-      Print("GET ", label, " failed code=", code, " err=", GetLastError(), " url=", url, " response=", lastResponseShort);
-      return "";
+      lastError = "GET HTTP " + IntegerToString(code) + " err=" + IntegerToString(GetLastError());
+      Print("GET failed code=", code, " err=", GetLastError(), " url=", url, " response=", lastResponseShort);
+      return code;
    }
-   status = "ok";
-   return response;
+   return code;
 }
 
-string PostJson(string url, string payload, string label, int &httpCode, string &status)
+int PostJson(string path, string json, string &response)
 {
    char data[];
    char result[];
    string headers = "Content-Type: application/json\r\n";
    string resultHeaders = "";
-   if(!JsonToCharArray(payload, data))
+   string url = EndpointUrl(path);
+   response = "";
+   if(!JsonToCharArray(json, data))
    {
-      httpCode = -1;
-      status = "json_encode_error";
-      lastError = label + " json_encode_error";
-      Print("POST ", label, " failed before WebRequest: json_encode_error");
-      return "";
+      lastError = "json_encode_error";
+      Print("POST failed before WebRequest: json_encode_error url=", url);
+      return -1;
    }
    ResetLastError();
    int code = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
-   httpCode = code;
-   string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
    lastResponseShort = ShortText(response, 220);
    if(code < 200 || code >= 300)
    {
-      status = "http_error";
-      lastError = label + " POST HTTP " + IntegerToString(code) + " err=" + IntegerToString(GetLastError());
-      Print("POST ", label, " failed code=", code, " err=", GetLastError(), " url=", url, " response=", lastResponseShort);
-      return "";
+      lastError = "POST HTTP " + IntegerToString(code) + " err=" + IntegerToString(GetLastError());
+      Print("POST failed code=", code, " err=", GetLastError(), " url=", url, " response=", lastResponseShort);
+      return code;
    }
-   status = "ok";
-   return response;
+   return code;
 }
 
 string HttpGet(string url)
 {
-   int code = 0;
-   string status = "";
-   return GetJson(url, "compat-get", code, status);
+   string response = "";
+   GetJson(url, response);
+   return response;
 }
 
 string HttpPost(string url, string payload)
 {
-   int code = 0;
-   string status = "";
-   return PostJson(url, payload, "compat-post", code, status);
+   string response = "";
+   PostJson(url, payload, response);
+   return response;
+}
+
+string HttpStatusText(int code)
+{
+   if(code >= 200 && code < 300)
+      return "ok";
+   if(code == -1)
+      return "json_encode_error";
+   if(code == -2)
+      return "not_sent";
+   return "http_error";
 }
 
 void DrawPanel(string decision, string reason)
 {
    string text = "Genesis MT5 Bridge\n";
+   text += "EA version: " + EA_VERSION + "\n";
    text += "Status: " + (KillSwitch ? "KILL SWITCH" : "ACTIVE") + "\n";
    text += "Decision: " + decision + "\n";
    text += "Confidence: " + lastConfidence + "\n";
@@ -377,13 +411,17 @@ void DrawPanel(string decision, string reason)
    text += "Last signal HTTP code: " + IntegerToString(lastSignalHttpCode) + "\n";
    text += "Last tick status: " + lastTickStatus + "\n";
    text += "Last tick HTTP code: " + IntegerToString(lastTickHttpCode) + "\n";
+   text += "Last tick error: " + ShortText(lastError, 80) + "\n";
    text += "Last decision HTTP code: " + IntegerToString(lastDecisionHttpCode) + "\n";
+   text += "Last account sync HTTP code: " + IntegerToString(lastAccountHttpCode) + "\n";
    text += "Last error: " + ShortText(lastError, 80) + "\n";
    text += "Last response short: " + ShortText(lastResponseShort, 100) + "\n";
    text += "Broker touched: false\n";
    text += "Order executed: false\n";
    text += "JournalOnly: " + (JournalOnly ? "true" : "false") + "\n";
    text += "AllowLiveTrading: " + (AllowLiveTrading ? "true" : "false") + "\n";
+   text += "DemoOnly: " + (DemoOnly ? "true" : "false") + "\n";
+   text += "KillSwitch: " + (KillSwitch ? "true" : "false") + "\n";
    text += "Reason: " + reason;
    Comment(text);
 }

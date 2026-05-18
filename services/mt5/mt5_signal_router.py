@@ -496,6 +496,7 @@ def _unique_symbols(items: list[dict[str, Any]]) -> list[str]:
 def _reason_alias(value: object) -> str:
     text = str(value or "")
     aliases = {
+        "missing_entry": "missing_risk_parameters",
         "stop_loss_missing_from_context": "missing_risk_parameters",
         "stop_loss_required": "missing_risk_parameters",
         "take_profit_required": "missing_risk_parameters",

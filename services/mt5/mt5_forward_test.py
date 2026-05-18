@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,12 +51,16 @@ class MT5ForwardTestEngine:
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
         }
+        logging.getLogger("genesis.mt5").info("MT5_TICK_RECEIVED symbol=%s source=%s", symbol, tick.get("source"))
         event = self.journal.save("mt5_ticks", symbol, tick)
         updates = self.shadow.update_with_tick(tick)
         auto_forward = self.auto_forward.process_tick(tick)
         return {
             "ok": True,
             "status": "mt5_tick_recorded",
+            "symbol": symbol,
+            "tick_saved": True,
+            "auto_forward_checked": True,
             "tick": tick,
             "event": event,
             "shadow_updates": updates,

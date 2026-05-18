@@ -66,7 +66,7 @@ def build_actionable_mt5_decision(
         or _price(clean_tick)
     )
     if entry is None or entry <= 0:
-        return {**base, "decision": "NO_TRADE", "reason": "missing_entry"}
+        return {**base, "decision": "NO_TRADE", "reason": "missing_risk_parameters"}
 
     stop_loss = _number(_first_present(clean_context, ("stop_loss", "stop", "sl")))
     take_profit = _number(_first_present(clean_context, ("take_profit", "target", "tp")))
