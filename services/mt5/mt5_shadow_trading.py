@@ -255,7 +255,7 @@ class MT5ShadowTrading:
         }
 
     def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        return [trade for trade in self.trades(symbol) if trade.get("status") == "open" and not _is_hard_excluded_trade(trade)]
+        return [trade for trade in self.trades(symbol) if trade.get("status") == "open" and is_main_metric_trade(trade, query_symbol=symbol or "")]
 
     def exclude_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
@@ -320,9 +320,8 @@ class MT5ShadowTrading:
     def snapshot(self, symbol: str | None = None, limit: int = 100) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         raw_trades = self.trades(clean_symbol, limit=limit)
-        query_normalized = _normalized_symbol(clean_symbol)
-        excluded_trades = [trade for trade in raw_trades if _is_excluded_trade(trade, query_normalized)]
-        trades = [trade for trade in raw_trades if not _is_excluded_trade(trade, query_normalized)]
+        excluded_trades = [trade for trade in raw_trades if not is_main_metric_trade(trade, query_symbol=clean_symbol)]
+        trades = [trade for trade in raw_trades if is_main_metric_trade(trade, query_symbol=clean_symbol)]
         open_trades = [trade for trade in trades if trade.get("status") == "open"]
         closed_trades = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
         return {
@@ -351,7 +350,7 @@ class MT5ShadowTrading:
             payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
             trade_id = str(payload.get("shadow_trade_id") or "")
             if trade_id and trade_id not in latest:
-                latest[trade_id] = {**payload, "created_at": row.get("created_at") or payload.get("created_at")}
+                latest[trade_id] = _normalize_trade_for_read({**payload, "created_at": row.get("created_at") or payload.get("created_at")})
         return list(latest.values())
 
     def _evaluate_trade(self, trade: dict[str, Any], tick: dict[str, Any], last: float) -> dict[str, Any]:
@@ -515,18 +514,60 @@ def _should_exclude_old_proxy(trade: dict[str, Any]) -> bool:
     return False
 
 
-def _is_excluded_trade(trade: dict[str, Any], query_normalized: str = "") -> bool:
-    if bool(trade.get("excluded_from_main_metrics")) or _is_hard_excluded_trade(trade):
-        return True
-    if query_normalized == "BTCUSD" and (bool(trade.get("manual_test")) or _should_exclude_old_proxy(trade)):
-        return True
-    return False
+def is_main_metric_trade(trade: dict[str, Any], *, query_symbol: str = "") -> bool:
+    query_normalized = _normalized_symbol(query_symbol) if query_symbol else ""
+    strict_btcusd = query_normalized == "BTCUSD"
+    trade_normalized = _trade_normalized_symbol(trade)
+    source = str(trade.get("source") or "").casefold()
+    instrument_type = str(trade.get("instrument_type") or "").casefold()
+    if bool(trade.get("excluded_from_main_metrics")):
+        return False
+    if str(trade.get("excluded_reason") or "").strip():
+        return False
+    if strict_btcusd and bool(trade.get("manual_test")):
+        return False
+    if strict_btcusd and source.startswith("manual_"):
+        return False
+    if _is_legacy_proxy_trade(trade):
+        return False
+    if strict_btcusd and instrument_type in {"crypto_etf_proxy", "legacy_proxy"}:
+        return False
+    if query_normalized and trade_normalized and trade_normalized != query_normalized:
+        return False
+    return True
 
 
-def _is_hard_excluded_trade(trade: dict[str, Any]) -> bool:
+def _normalize_trade_for_read(trade: dict[str, Any]) -> dict[str, Any]:
+    if not _is_legacy_proxy_trade(trade):
+        return trade
+    return {
+        **trade,
+        "excluded_from_main_metrics": True,
+        "excluded_reason": str(trade.get("excluded_reason") or "old_proxy_or_manual_test"),
+        "normalized_symbol": "BTC_PROXY",
+        "instrument_type": "legacy_proxy",
+        "is_spot_crypto": False,
+        "underlying": "BTC",
+    }
+
+
+def _is_legacy_proxy_trade(trade: dict[str, Any]) -> bool:
     last_price = _number(trade.get("last_price")) or 0.0
     exit_price = _number(trade.get("exit_price")) or 0.0
-    return bool(trade.get("excluded_from_main_metrics")) or str(trade.get("excluded_reason") or "") == "old_proxy_or_manual_test" or (last_price > 1000 and 0 < exit_price < 100)
+    original = _symbol(trade.get("original_symbol") or trade.get("symbol"))
+    source = str(trade.get("source") or "").casefold()
+    if str(trade.get("excluded_reason") or "") == "old_proxy_or_manual_test":
+        return True
+    if original == "BTC" and 0 < exit_price < 100 and last_price > 1000:
+        return True
+    return last_price > 1000 and 0 < exit_price < 100
+
+
+def _trade_normalized_symbol(trade: dict[str, Any]) -> str:
+    stored = _symbol(trade.get("normalized_symbol"))
+    if stored:
+        return stored
+    return _normalized_symbol(trade.get("symbol") or trade.get("original_symbol"))
 
 
 def _number(value: object) -> float | None:

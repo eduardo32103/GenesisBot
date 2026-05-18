@@ -7,7 +7,7 @@ from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import normalize_mt5_symbol
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
-from services.mt5.mt5_shadow_trading import MT5ShadowTrading
+from services.mt5.mt5_shadow_trading import MT5ShadowTrading, is_main_metric_trade
 
 
 class MT5Performance:
@@ -33,24 +33,27 @@ class MT5Performance:
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
         replay = self._latest_replay(clean_symbol)
+        main_trades = [trade for trade in trades if is_main_metric_trade(trade, query_symbol=clean_symbol)]
+        excluded_trades = [trade for trade in trades if not is_main_metric_trade(trade, query_symbol=clean_symbol)]
         strict_auto_trades = [
             trade
-            for trade in trades
-            if _is_strict_auto_trade(trade) and not bool(trade.get("manual_test")) and not _is_excluded(trade)
+            for trade in main_trades
+            if _is_strict_auto_trade(trade)
         ]
         exploration_trades = [
             trade
-            for trade in trades
-            if _is_exploration_trade(trade) and not bool(trade.get("manual_test")) and not _is_excluded(trade)
+            for trade in main_trades
+            if _is_exploration_trade(trade)
         ]
         forward_auto_trades = strict_auto_trades + exploration_trades
         auto_trades = strict_auto_trades
-        manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade) or bool(trade.get("manual_test"))]
-        included_trades = [trade for trade in trades if not _is_excluded(trade)]
-        excluded_manual = [trade for trade in manual_trades if _is_excluded(trade)]
+        manual_trades = [trade for trade in main_trades if not _is_auto_forward_trade(trade)]
+        excluded_manual = [trade for trade in excluded_trades if bool(trade.get("manual_test")) or str(trade.get("source") or "").casefold().startswith("manual_")]
+        legacy_trades = [trade for trade in excluded_trades if str(trade.get("instrument_type") or "").casefold() == "legacy_proxy"]
+        proxy_trades_for_query = [trade for trade in excluded_trades if str(trade.get("instrument_type") or "").casefold() in {"crypto_etf_proxy", "legacy_proxy"}]
         open_auto_trades = [trade for trade in auto_trades if trade.get("status") == "open"]
         normalized_symbol = normalize_mt5_symbol(clean_symbol)
-        summary_total = _summary_for_trades(included_trades)
+        summary_total = _summary_for_trades(main_trades)
         summary_auto = _summary_for_trades(auto_trades)
         summary_exploration = _summary_for_trades(exploration_trades)
         summary_exploration_payload = {
@@ -64,7 +67,7 @@ class MT5Performance:
         }
         summary_forward_auto = _summary_for_trades(forward_auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
-        proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if not _is_excluded(trade)])
+        proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if is_main_metric_trade(trade, query_symbol="BTC_PROXY")])
         last_valid_decision = _latest_payload_by_actionable(decisions, True)
         last_invalid_decision = _latest_payload_by_actionable(decisions, False)
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
@@ -111,19 +114,23 @@ class MT5Performance:
             },
             "summary_manual": summary_manual,
             "summary_proxy": proxy_summary,
+            "excluded_count": len(excluded_trades),
+            "legacy_count": len(legacy_trades),
+            "proxy_count": len(proxy_trades_for_query),
             "summary_replay": replay,
             "auto_sample_warning": _sample_warning(summary_auto),
-            "by_action": self._by_action(included_trades, signals, decisions, order_requests, no_trade, hedge),
-            "by_timeframe": _group_trades(included_trades, "timeframe"),
-            "by_strategy": _group_trades(included_trades, "strategy_profile"),
+            "by_action": self._by_action(main_trades, signals, decisions, order_requests, no_trade, hedge),
+            "by_timeframe": _group_trades(main_trades, "timeframe"),
+            "by_strategy": _group_trades(main_trades, "strategy_profile"),
             "no_trade_accuracy": no_trade_metrics,
             "missed_opportunity_count": no_trade_metrics["missed_opportunity_count"],
             "protected_loss_count": no_trade_metrics["protected_loss_count"],
             "hedge_accuracy": hedge_metrics,
-            "recent_trades": sorted(included_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "recent_trades": sorted(main_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_auto_trades": sorted(auto_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_exploration_trades": sorted(exploration_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_manual_trades": sorted(manual_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "excluded_trades": sorted(excluded_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "risk_blocks": [_journal_item(row) for row in risk_blocks],
             "last_decision": latest_decision,
             "last_valid_decision": last_valid_decision,
@@ -169,6 +176,9 @@ class MT5Performance:
             "recent_trades": report.get("recent_auto_trades") or [],
             "recent_auto_trades": report.get("recent_auto_trades") or [],
             "sample_warning": report.get("auto_sample_warning") or "",
+            "excluded_count": report.get("excluded_count", 0),
+            "legacy_count": report.get("legacy_count", 0),
+            "proxy_count": report.get("proxy_count", 0),
             "genesis_reading": report.get("genesis_reading") or "",
             "last_reason": report.get("last_reason") or "",
             "last_valid_decision": report.get("last_valid_decision"),

@@ -453,7 +453,7 @@ class MT5BridgeTests(unittest.TestCase):
             debug = mt5_debug_storage(memory=store, symbol="BTCUSD")
 
             self.assertEqual(perf_btc["summary"]["total_shadow_trades"], 0)
-            self.assertEqual(perf_btcusd["summary"]["total_shadow_trades"], 1)
+            self.assertEqual(perf_btcusd["summary"]["total_shadow_trades"], 0)
             self.assertEqual(perf_btcusd["summary_btcusd_auto"]["symbol"], "BTCUSD")
             self.assertEqual(shadow_btc["count"], 0)
             self.assertEqual(shadow_btcusd["count"], 0)
@@ -464,7 +464,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertGreaterEqual(debug["counts"]["mt5_shadow_trades"], 1)
             self.assertEqual(debug["shadow_snapshot_count"], 0)
             self.assertEqual(debug["excluded_count"], 1)
-            self.assertEqual(debug["performance_total_shadow_trades"], 1)
+            self.assertEqual(debug["performance_total_shadow_trades"], 0)
             self.assertIn("BTCUSD", debug["symbol_filters_applied"])
             self.assertIn("active_backend", debug)
             self.assertIn("persistence_backend", debug)
@@ -1043,7 +1043,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(reset["updated"], 1)
             self.assertEqual(report["summary_total"]["shadow_trades"], 1)
             self.assertEqual(report["summary_auto"]["shadow_trades"], 1)
-            self.assertEqual(report["summary_manual"]["shadow_trades"], 1)
+            self.assertEqual(report["summary_manual"]["shadow_trades"], 0)
             self.assertEqual(report["summary_manual"]["excluded_from_main_metrics"], 1)
             self.assertEqual(trades["count"], 1)
             self.assertEqual(trades["excluded_count"], 1)
@@ -1140,6 +1140,66 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertNotEqual(status["last_shadow_trade"]["shadow_trade_id"], "legacy-mixed")
             self.assertEqual(auto["summary"]["auto_shadow_trades"], 1)
             self.assertFalse(status["broker_touched"])
+            self.assertFalse(auto["order_executed"])
+
+    def test_excluded_legacy_trade_only_stays_out_of_btcusd_main_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            MT5Journal(memory=store).save(
+                "mt5_shadow_trades",
+                "BTCUSD",
+                {
+                    "shadow_trade_id": "legacy-only",
+                    "symbol": "BTCUSD",
+                    "original_symbol": "BTC",
+                    "normalized_symbol": "BTCUSD",
+                    "instrument_type": "crypto_etf_proxy",
+                    "is_spot_crypto": False,
+                    "action": "BUY",
+                    "entry": 35.0,
+                    "stop_loss": 34.0,
+                    "take_profit": 37.0,
+                    "status": "open",
+                    "exit_price": 35.7888,
+                    "last_price": 77047.92,
+                    "source": "manual_shadow_test",
+                    "manual_test": True,
+                    "excluded_from_main_metrics": True,
+                    "excluded_reason": "old_proxy_or_manual_test",
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                },
+            )
+
+            shadow = mt5_shadow_trades(memory=store, symbol="BTCUSD")
+            auto = mt5_performance_auto(memory=store, symbol="BTCUSD")
+            performance = mt5_performance(memory=store, symbol="BTCUSD")
+            status = mt5_auto_forward_status(memory=store, symbol="BTCUSD")
+
+            self.assertEqual(shadow["count"], 0)
+            self.assertEqual(shadow["open"], 0)
+            self.assertEqual(shadow["closed"], 0)
+            self.assertEqual(shadow["items"], [])
+            self.assertEqual(shadow["open_trades"], [])
+            self.assertEqual(shadow["closed_trades"], [])
+            self.assertEqual(shadow["excluded_count"], 1)
+            self.assertEqual(shadow["excluded_trades"][0]["normalized_symbol"], "BTC_PROXY")
+            self.assertEqual(shadow["excluded_trades"][0]["instrument_type"], "legacy_proxy")
+            self.assertEqual(auto["auto_shadow_trades"], 0)
+            self.assertEqual(auto["open"], 0)
+            self.assertEqual(auto["closed"], 0)
+            self.assertEqual(auto["win_rate"], 0.0)
+            self.assertEqual(auto["profit_factor"], 0.0)
+            self.assertEqual(performance["summary"]["total_shadow_trades"], 0)
+            self.assertEqual(performance["summary"]["manual_shadow_trades"], 0)
+            self.assertEqual(performance["excluded_count"], 1)
+            self.assertIsNone(status["last_shadow_trade"])
+            self.assertEqual(status["open_trades"], [])
+            self.assertEqual(status["closed_trades"], [])
+            self.assertEqual(status["auto_shadow_trades"], 0)
+            self.assertEqual(status["excluded_count"], 1)
+            self.assertFalse(shadow["broker_touched"])
             self.assertFalse(auto["order_executed"])
 
     def test_genesis_chat_uses_auto_summary_and_warns_small_sample(self) -> None:
