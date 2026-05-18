@@ -22,7 +22,9 @@ from services.mt5.mt5_bridge import (
     mt5_performance,
     mt5_performance_auto,
     mt5_replay_results,
+    mt5_replay_reset,
     mt5_replay_run,
+    mt5_replay_status,
     mt5_signal,
     mt5_shadow_trades,
     mt5_status,
@@ -132,3 +134,11 @@ def post_genesis_mt5_replay_run(payload: dict[str, Any] | None = None) -> dict[s
 
 def get_genesis_mt5_replay_results(symbol: str = "") -> dict[str, Any]:
     return mt5_replay_results(symbol=symbol)
+
+
+def get_genesis_mt5_replay_status(symbol: str = "") -> dict[str, Any]:
+    return mt5_replay_status(symbol=symbol)
+
+
+def post_genesis_mt5_replay_reset(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_replay_reset(payload)

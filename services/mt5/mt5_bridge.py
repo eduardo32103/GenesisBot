@@ -98,3 +98,11 @@ def mt5_replay_run(payload: dict[str, Any] | None = None, *, memory: MemoryStore
 
 def mt5_replay_results(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     return build_router(memory).replay_results(symbol=symbol)
+
+
+def mt5_replay_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).replay_status(symbol=symbol)
+
+
+def mt5_replay_reset(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).replay_reset(payload)

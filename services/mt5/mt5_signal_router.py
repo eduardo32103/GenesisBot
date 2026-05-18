@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
+from urllib.request import urlopen
 
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
@@ -344,9 +347,12 @@ class MT5SignalRouter:
         snapshot = self.shadow.snapshot(symbol=clean_symbol, limit=500)
         performance = self.performance(symbol=clean_symbol)
         trades = snapshot.get("items") or []
+        raw_trades = self.shadow.trades(clean_symbol, limit=500)
+        excluded_trades = snapshot.get("excluded_trades") or []
         auto_trades = [trade for trade in trades if trade.get("auto_forward")]
         manual_trades = [trade for trade in trades if trade.get("manual_test")]
         proxy_trades = [trade for trade in self.shadow.trades("BTC_PROXY", limit=500)]
+        btcusd_real_trades = [trade for trade in trades if str(trade.get("normalized_symbol") or "").upper() == "BTCUSD" and str(trade.get("instrument_type") or "") == "crypto_spot"]
         return {
             "ok": True,
             "status": "mt5_storage_debug_ready",
@@ -356,6 +362,13 @@ class MT5SignalRouter:
             "symbol_aliases": aliases,
             "collections": list(collections),
             "counts": counts,
+            "collection_counts": counts,
+            "mt5_ticks_count": counts.get("mt5_ticks", 0),
+            "mt5_shadow_trades_count": len(raw_trades),
+            "mt5_auto_trades_count": len(auto_trades),
+            "btcusd_real_count": len(btcusd_real_trades),
+            "btc_proxy_count": len(proxy_trades),
+            "manual_count": len(manual_trades),
             "database_enabled": getattr(self.memory, "backend", "") == "postgres",
             "memory_fallback": getattr(self.memory, "backend", "") != "postgres",
             "memory_backend": getattr(self.memory, "backend", "unknown"),
@@ -363,11 +376,13 @@ class MT5SignalRouter:
             "persistence_backend": getattr(self.memory, "backend", "unknown"),
             "shadow_snapshot_count": snapshot["count"],
             "performance_total_shadow_trades": (performance.get("summary") or {}).get("total_shadow_trades", 0),
-            "last_shadow_trade": latest["mt5_shadow_trades"],
+            "last_shadow_trade": trades[0] if trades else None,
+            "last_shadow_trade_real": btcusd_real_trades[0] if btcusd_real_trades else None,
+            "last_excluded_trade": excluded_trades[0] if excluded_trades else None,
             "last_auto_trade": auto_trades[0] if auto_trades else None,
             "last_manual_trade": manual_trades[0] if manual_trades else None,
             "last_proxy_trade": proxy_trades[0] if proxy_trades else None,
-            "excluded_count": sum(1 for trade in trades if trade.get("excluded_from_main_metrics")),
+            "excluded_count": len(excluded_trades),
             "last_tick": latest["mt5_ticks"],
             "last_decision": latest["mt5_decisions"],
             "broker_touched": False,
@@ -390,22 +405,41 @@ class MT5SignalRouter:
         symbol = str(body.get("symbol") or "BTCUSD").upper().strip()
         timeframe = str(body.get("timeframe") or "H1").upper().strip()
         bars = max(1, min(int(body.get("bars") or 500), 2000))
+        normalized = _normalized_symbol(symbol)
+        source_bars = _bars_from_payload(body) or _fetch_yahoo_bars(symbol, timeframe=timeframe, bars=bars)
+        replay_id = f"replay-{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        trades, no_trade_count, blocked_reasons = _run_replay_engine(
+            replay_id=replay_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            bars=source_bars[:bars],
+            min_rr=self.config.min_rr,
+        )
+        for trade in trades:
+            self.journal.save("mt5_replay_shadow_trades", symbol, trade, confidence=trade.get("confidence") or "medium")
+        summary = _replay_summary(trades)
+        if not source_bars:
+            blocked_reasons.append("historical_market_data_not_available_locally")
         result = {
-            "replay_id": f"replay-{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+            "replay_id": replay_id,
             "symbol": symbol,
-            "normalized_symbol": _normalized_symbol(symbol),
+            "normalized_symbol": normalized,
+            "instrument_type": "crypto_spot" if normalized == "BTCUSD" else "",
             "timeframe": timeframe,
             "bars_requested": bars,
-            "replay_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate": 0.0,
-            "profit_factor": 0.0,
-            "expectancy": 0.0,
-            "max_drawdown": 0.0,
-            "no_trade_count": 0,
-            "blocked_reasons": ["historical_market_data_not_available_locally"],
-            "genesis_reading": "Replay listo como carril separado; no toca broker y no se mezcla con forward live.",
+            "bars_loaded": len(source_bars),
+            "replay_trades": summary["replay_trades"],
+            "wins": summary["wins"],
+            "losses": summary["losses"],
+            "win_rate": summary["win_rate"],
+            "profit_factor": summary["profit_factor"],
+            "expectancy": summary["expectancy"],
+            "max_drawdown": summary["max_drawdown"],
+            "no_trade_count": no_trade_count,
+            "blocked_reasons": sorted(set(blocked_reasons)),
+            "best_profile": "BTCUSD replay momentum scaffold" if trades else "",
+            "recent_replay_trades": trades[-10:],
+            "genesis_reading": _replay_reading(symbol, summary, len(source_bars), no_trade_count),
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -434,6 +468,37 @@ class MT5SignalRouter:
                 "genesis_reading": "Aun no hay replay historico para este simbolo.",
             }
         return {"ok": True, "status": "mt5_replay_results_ready", **payload, "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+
+    def replay_status(self, *, symbol: str = "") -> dict[str, Any]:
+        result = self.replay_results(symbol=symbol)
+        return {
+            "ok": True,
+            "status": "mt5_replay_status_ready",
+            "symbol": result.get("symbol") or str(symbol or "").upper().strip(),
+            "normalized_symbol": result.get("normalized_symbol") or _normalized_symbol(symbol),
+            "last_replay": result,
+            "replay_trades": result.get("replay_trades", 0),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
+    def replay_reset(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = payload or {}
+        symbol = str(body.get("symbol") or body.get("ticker") or "").upper().strip()
+        reset = {
+            "symbol": symbol or "ALL",
+            "normalized_symbol": _normalized_symbol(symbol) if symbol else "",
+            "status": "replay_reset_marker_recorded",
+            "note": "Los eventos previos no se borran; este marcador excluye la lectura principal de replay anterior.",
+            "excluded_from_main_metrics": True,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "created_at": _now(),
+        }
+        event = self.journal.save("mt5_replay_runs", symbol or "MT5", reset)
+        return {"ok": True, "status": "mt5_replay_reset_recorded", "event": event, **reset}
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
@@ -552,6 +617,7 @@ _MT5_COLLECTIONS = (
     "mt5_hedge_outcomes",
     "mt5_forward_metrics",
     "mt5_replay_runs",
+    "mt5_replay_shadow_trades",
     "mt5_journal",
 )
 
@@ -559,6 +625,218 @@ _MT5_COLLECTIONS = (
 def _payload(row: dict[str, Any]) -> dict[str, Any]:
     payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
     return payload
+
+
+def _bars_from_payload(body: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = body.get("bars_data") or body.get("bars_history") or body.get("candles") or []
+    if not isinstance(raw, list):
+        return []
+    bars: list[dict[str, Any]] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        close = _maybe_float(row.get("close") or row.get("last"))
+        high = _maybe_float(row.get("high") or close)
+        low = _maybe_float(row.get("low") or close)
+        open_price = _maybe_float(row.get("open") or close)
+        if close is None or high is None or low is None or open_price is None:
+            continue
+        bars.append(
+            {
+                "time": str(row.get("time") or row.get("timestamp") or row.get("date") or ""),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+            }
+        )
+    return bars
+
+
+def _fetch_yahoo_bars(symbol: str, *, timeframe: str, bars: int) -> list[dict[str, Any]]:
+    yahoo_symbol = "BTC-USD" if _normalized_symbol(symbol) == "BTCUSD" else symbol
+    interval = {"M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m", "H1": "1h", "H4": "1d", "D1": "1d"}.get(timeframe.upper(), "1h")
+    range_value = "60d" if interval.endswith("h") or interval.endswith("m") else "2y"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(yahoo_symbol)}?range={range_value}&interval={quote(interval)}"
+    try:
+        with urlopen(url, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    result = ((data.get("chart") or {}).get("result") or [{}])[0]
+    timestamps = result.get("timestamp") or []
+    quote_row = (((result.get("indicators") or {}).get("quote") or [{}])[0]) if isinstance(result, dict) else {}
+    opens = quote_row.get("open") or []
+    highs = quote_row.get("high") or []
+    lows = quote_row.get("low") or []
+    closes = quote_row.get("close") or []
+    parsed: list[dict[str, Any]] = []
+    for index, timestamp in enumerate(timestamps):
+        close = _maybe_float(closes[index] if index < len(closes) else None)
+        high = _maybe_float(highs[index] if index < len(highs) else close)
+        low = _maybe_float(lows[index] if index < len(lows) else close)
+        open_price = _maybe_float(opens[index] if index < len(opens) else close)
+        if close is None or high is None or low is None or open_price is None:
+            continue
+        parsed.append({"time": str(timestamp), "open": open_price, "high": high, "low": low, "close": close})
+    return parsed[-bars:]
+
+
+def _run_replay_engine(*, replay_id: str, symbol: str, timeframe: str, bars: list[dict[str, Any]], min_rr: float) -> tuple[list[dict[str, Any]], int, list[str]]:
+    trades: list[dict[str, Any]] = []
+    blocked: list[str] = []
+    no_trade_count = 0
+    open_trade: dict[str, Any] | None = None
+    prev_close: float | None = None
+    for index, bar in enumerate(bars):
+        close = _maybe_float(bar.get("close"))
+        high = _maybe_float(bar.get("high"))
+        low = _maybe_float(bar.get("low"))
+        if close is None or high is None or low is None:
+            continue
+        if open_trade:
+            closed = _close_replay_trade(open_trade, high=high, low=low, close=close, timestamp=str(bar.get("time") or ""))
+            if closed:
+                trades.append(closed)
+                open_trade = None
+        if open_trade or prev_close is None:
+            prev_close = close
+            continue
+        move = (close - prev_close) / prev_close if prev_close else 0.0
+        decision = "BUY" if move > 0.003 else "SELL" if move < -0.003 else "NO_TRADE"
+        if decision == "NO_TRADE":
+            no_trade_count += 1
+            prev_close = close
+            continue
+        atr = max(abs(high - low), close * 0.02)
+        built = build_actionable_mt5_decision(
+            symbol,
+            {"symbol": symbol, "last": close, "timeframe": timeframe},
+            {
+                "ok": True,
+                "decision": decision,
+                "confidence": "high",
+                "no_trade_score": 0,
+                "hedge_score": 0,
+                "technical_context": {"atr": atr},
+                "recommended_strategy_profile": "BTCUSD Replay Momentum",
+                "recommended_timeframe": timeframe,
+                "reason": "replay_momentum_signal",
+            },
+            min_rr=min_rr,
+            risk_pct=0.5,
+        )
+        if not built.get("actionable"):
+            blocked.append(str(built.get("reason") or "not_actionable"))
+            prev_close = close
+            continue
+        open_trade = {
+            "shadow_trade_id": f"{replay_id}-{index}",
+            "replay_id": replay_id,
+            "symbol": symbol,
+            "original_symbol": symbol,
+            "normalized_symbol": _normalized_symbol(symbol),
+            "instrument_type": "crypto_spot" if _normalized_symbol(symbol) == "BTCUSD" else "",
+            "is_spot_crypto": _normalized_symbol(symbol) == "BTCUSD",
+            "action": built["decision"],
+            "entry": built["entry"],
+            "stop_loss": built["stop_loss"],
+            "take_profit": built["take_profit"],
+            "risk_reward": built["risk_reward"],
+            "risk_pct": built["risk_pct"],
+            "timeframe": timeframe,
+            "strategy_profile": built["strategy_profile"],
+            "confidence": built["confidence"],
+            "status": "open",
+            "source": "mt5_replay",
+            "replay": True,
+            "auto_forward": False,
+            "manual_test": False,
+            "excluded_from_main_metrics": False,
+            "opened_at": str(bar.get("time") or _now()),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        prev_close = close
+    if open_trade:
+        open_trade = _close_replay_trade(open_trade, high=_maybe_float(bars[-1].get("high")) or open_trade["entry"], low=_maybe_float(bars[-1].get("low")) or open_trade["entry"], close=_maybe_float(bars[-1].get("close")) or open_trade["entry"], timestamp=str(bars[-1].get("time") or ""))
+        if open_trade:
+            trades.append(open_trade)
+    return trades, no_trade_count, blocked
+
+
+def _close_replay_trade(trade: dict[str, Any], *, high: float, low: float, close: float, timestamp: str) -> dict[str, Any] | None:
+    action = str(trade.get("action") or "").upper()
+    entry = _maybe_float(trade.get("entry")) or close
+    stop = _maybe_float(trade.get("stop_loss"))
+    target = _maybe_float(trade.get("take_profit"))
+    status = ""
+    exit_price = close
+    reason = "time_close"
+    if action == "BUY" and target is not None and high >= target:
+        status, exit_price, reason = "win", target, "take_profit"
+    elif action == "BUY" and stop is not None and low <= stop:
+        status, exit_price, reason = "loss", stop, "stop_loss"
+    elif action == "SELL" and target is not None and low <= target:
+        status, exit_price, reason = "win", target, "take_profit"
+    elif action == "SELL" and stop is not None and high >= stop:
+        status, exit_price, reason = "loss", stop, "stop_loss"
+    if not status and reason != "time_close":
+        return None
+    if not status:
+        status = "win" if (exit_price - entry if action == "BUY" else entry - exit_price) > 0 else "loss"
+    pnl = exit_price - entry if action == "BUY" else entry - exit_price
+    risk = abs(entry - (_maybe_float(trade.get("stop_loss")) or entry))
+    return {
+        **trade,
+        "status": status,
+        "exit_price": exit_price,
+        "exit_reason": reason,
+        "pnl": round(pnl, 8),
+        "pnl_pct": round((pnl / entry) * 100, 6) if entry else 0.0,
+        "r_multiple": round(pnl / risk, 6) if risk > 0 else 0.0,
+        "closed_at": timestamp or _now(),
+        "updated_at": timestamp or _now(),
+    }
+
+
+def _replay_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    wins = [trade for trade in trades if trade.get("status") == "win"]
+    losses = [trade for trade in trades if trade.get("status") == "loss"]
+    win_pnl = sum(max(_maybe_float(trade.get("r_multiple")) or 0.0, 0.0) for trade in trades)
+    loss_pnl = abs(sum(min(_maybe_float(trade.get("r_multiple")) or 0.0, 0.0) for trade in trades))
+    total = len(wins) + len(losses)
+    expectancy = sum(_maybe_float(trade.get("r_multiple")) or 0.0 for trade in trades) / total if total else 0.0
+    return {
+        "replay_trades": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round((len(wins) / total) * 100, 2) if total else 0.0,
+        "profit_factor": round(win_pnl / loss_pnl, 4) if loss_pnl else round(win_pnl, 4) if win_pnl else 0.0,
+        "expectancy": round(expectancy, 4),
+        "max_drawdown": _replay_drawdown(trades),
+    }
+
+
+def _replay_drawdown(trades: list[dict[str, Any]]) -> float:
+    equity = 0.0
+    peak = 0.0
+    drawdown = 0.0
+    for trade in trades:
+        equity += _maybe_float(trade.get("r_multiple")) or 0.0
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak - equity)
+    return round(drawdown, 4)
+
+
+def _replay_reading(symbol: str, summary: dict[str, Any], bars_loaded: int, no_trade_count: int) -> str:
+    if bars_loaded <= 0:
+        return f"{symbol}: replay historico no encontro velas disponibles; forward live sigue separado y journal-only."
+    return (
+        f"{symbol}: replay separado con {summary['replay_trades']} trades, win rate {summary['win_rate']}%, "
+        f"PF {summary['profit_factor']} y {no_trade_count} barras sin trade. No toca broker."
+    )
 
 
 def _journal_item(row: dict[str, Any]) -> dict[str, Any]:

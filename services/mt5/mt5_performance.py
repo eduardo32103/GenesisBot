@@ -30,8 +30,9 @@ class MT5Performance:
         latest_decision = _latest_payload(decisions)
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
-        auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade) and not _is_excluded(trade)]
-        manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade)]
+        replay = self._latest_replay(clean_symbol)
+        auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade) and not bool(trade.get("manual_test")) and not _is_excluded(trade)]
+        manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade) or bool(trade.get("manual_test"))]
         included_trades = [trade for trade in trades if not _is_excluded(trade)]
         excluded_manual = [trade for trade in manual_trades if _is_excluded(trade)]
         open_auto_trades = [trade for trade in auto_trades if trade.get("status") == "open"]
@@ -45,8 +46,13 @@ class MT5Performance:
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
         current_state_reason = "active_open_trade" if open_auto_trades else ""
         last_reason = current_state_reason or _reason_alias((latest_decision or {}).get("reason") or "")
+        instrument_type = "crypto_spot" if normalized_symbol == "BTCUSD" else "crypto_etf_proxy" if normalized_symbol == "BTC_PROXY" else ""
+        summary_auto_payload = {**summary_auto, "symbol": clean_symbol, "normalized_symbol": normalized_symbol, "instrument_type": instrument_type, "sample_warning": _sample_warning(summary_auto)}
         summary = {
             **summary_auto,
+            "symbol": clean_symbol,
+            "normalized_symbol": normalized_symbol,
+            "instrument_type": instrument_type,
             "total_signals": len(signals) + len(decisions) + len(order_requests),
             "actionable_signals": sum(1 for row in signals + decisions + order_requests if _action(row) in {"BUY", "SELL"}),
             "manual_shadow_trades": summary_manual["shadow_trades"],
@@ -63,11 +69,12 @@ class MT5Performance:
             "normalized_symbol": normalized_symbol,
             "timeframe": clean_timeframe,
             "summary": summary,
-            "summary_btcusd_auto": {**summary_auto, "symbol": "BTCUSD", "instrument_type": "crypto_spot"} if normalized_symbol == "BTCUSD" else {},
+            "summary_btcusd_auto": summary_auto_payload if normalized_symbol == "BTCUSD" else {},
             "summary_total": {**summary_total, "manual_shadow_trades": summary_manual["shadow_trades"], "auto_shadow_trades": summary_auto["shadow_trades"]},
-            "summary_auto": summary_auto,
+            "summary_auto": summary_auto_payload,
             "summary_manual": summary_manual,
             "summary_proxy": proxy_summary,
+            "summary_replay": replay,
             "auto_sample_warning": _sample_warning(summary_auto),
             "by_action": self._by_action(included_trades, signals, decisions, order_requests, no_trade, hedge),
             "by_timeframe": _group_trades(included_trades, "timeframe"),
@@ -167,6 +174,22 @@ class MT5Performance:
             if outcome_id and outcome_id not in latest:
                 latest[outcome_id] = payload
         return list(latest.values())
+
+    def _latest_replay(self, symbol: str) -> dict[str, Any]:
+        rows = self.memory.get_mt5_events("mt5_replay_runs", symbol or None, limit=1)
+        payload = rows[0].get("payload") if rows and isinstance(rows[0].get("payload"), dict) else {}
+        if not payload:
+            return {"replay_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "profit_factor": 0.0, "expectancy": 0.0, "max_drawdown": 0.0}
+        return {
+            "replay_trades": int(payload.get("replay_trades") or 0),
+            "wins": int(payload.get("wins") or 0),
+            "losses": int(payload.get("losses") or 0),
+            "win_rate": _number(payload.get("win_rate")) or 0.0,
+            "profit_factor": _number(payload.get("profit_factor")) or 0.0,
+            "expectancy": _number(payload.get("expectancy")) or 0.0,
+            "max_drawdown": _number(payload.get("max_drawdown")) or 0.0,
+            "blocked_reasons": payload.get("blocked_reasons") if isinstance(payload.get("blocked_reasons"), list) else [],
+        }
 
     def _by_action(
         self,
@@ -383,7 +406,7 @@ def _reading(symbol: str, summary: dict[str, Any], no_trade: dict[str, Any], hed
     if current_state_reason == "active_open_trade":
         return f"{scope}: hay una operacion sombra abierta; Genesis espera cierre por TP/SL antes de abrir otra."
     if summary["shadow_trades"] == 0:
-        return f"{scope}: forward test automatico listo, pero aun no hay shadow trades automaticos para medir ventaja."
+        return f"{scope}: forward test automatico listo, pero aun no hay trades automaticos {scope} suficientes para medir ventaja."
     warning = _sample_warning(summary)
     suffix = f" {warning}" if warning else ""
     return (

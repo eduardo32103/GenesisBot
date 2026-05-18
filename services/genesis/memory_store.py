@@ -1599,6 +1599,7 @@ def _mt5_event_type(collection: str | None) -> str:
         "mt5_journal": "mt5_journal",
         "mt5_account_sync": "mt5_account_sync",
         "mt5_replay_runs": "mt5_replay_run",
+        "mt5_replay_shadow_trades": "mt5_replay_shadow_trade",
     }
     clean = str(collection or "mt5_journal").strip()
     return mapping.get(clean, clean.rstrip("s") or "mt5_event")

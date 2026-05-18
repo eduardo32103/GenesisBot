@@ -251,7 +251,7 @@ class MT5ShadowTrading:
         }
 
     def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        return [trade for trade in self.trades(symbol) if trade.get("status") == "open"]
+        return [trade for trade in self.trades(symbol) if trade.get("status") == "open" and not _is_hard_excluded_trade(trade)]
 
     def exclude_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
@@ -291,6 +291,10 @@ class MT5ShadowTrading:
                 **trade,
                 "excluded_from_main_metrics": True,
                 "excluded_reason": "old_proxy_or_manual_test",
+                "normalized_symbol": "BTC_PROXY",
+                "instrument_type": "crypto_etf_proxy",
+                "is_spot_crypto": False,
+                "underlying": "BTC",
                 "updated_at": _now(),
                 "broker_touched": False,
                 "order_executed": False,
@@ -311,7 +315,10 @@ class MT5ShadowTrading:
 
     def snapshot(self, symbol: str | None = None, limit: int = 100) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
-        trades = self.trades(clean_symbol, limit=limit)
+        raw_trades = self.trades(clean_symbol, limit=limit)
+        query_normalized = _normalized_symbol(clean_symbol)
+        excluded_trades = [trade for trade in raw_trades if _is_excluded_trade(trade, query_normalized)]
+        trades = [trade for trade in raw_trades if not _is_excluded_trade(trade, query_normalized)]
         open_trades = [trade for trade in trades if trade.get("status") == "open"]
         closed_trades = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
         return {
@@ -323,6 +330,8 @@ class MT5ShadowTrading:
             "items": trades,
             "open_trades": open_trades,
             "closed_trades": closed_trades,
+            "excluded_trades": excluded_trades,
+            "excluded_count": len(excluded_trades),
             "count": len(trades),
             "open": len(open_trades),
             "closed": len(closed_trades),
@@ -487,6 +496,8 @@ def _should_exclude_old_proxy(trade: dict[str, Any]) -> bool:
     entry = _number(trade.get("entry")) or 0.0
     last_price = _number(trade.get("last_price")) or 0.0
     exit_price = _number(trade.get("exit_price")) or 0.0
+    if str(trade.get("excluded_reason") or "") == "old_proxy_or_manual_test":
+        return True
     if bool(trade.get("manual_test")):
         return True
     if source in {"manual_shadow_test", "manual_tick_test"}:
@@ -498,6 +509,20 @@ def _should_exclude_old_proxy(trade: dict[str, Any]) -> bool:
     if last_price > 1000 and 0 < exit_price < 100:
         return True
     return False
+
+
+def _is_excluded_trade(trade: dict[str, Any], query_normalized: str = "") -> bool:
+    if bool(trade.get("excluded_from_main_metrics")) or _is_hard_excluded_trade(trade):
+        return True
+    if query_normalized == "BTCUSD" and (bool(trade.get("manual_test")) or _should_exclude_old_proxy(trade)):
+        return True
+    return False
+
+
+def _is_hard_excluded_trade(trade: dict[str, Any]) -> bool:
+    last_price = _number(trade.get("last_price")) or 0.0
+    exit_price = _number(trade.get("exit_price")) or 0.0
+    return bool(trade.get("excluded_from_main_metrics")) or str(trade.get("excluded_reason") or "") == "old_proxy_or_manual_test" or (last_price > 1000 and 0 < exit_price < 100)
 
 
 def _number(value: object) -> float | None:

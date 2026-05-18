@@ -19,6 +19,7 @@ from api.routes.genesis import (
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
     get_genesis_mt5_replay_results,
+    get_genesis_mt5_replay_status,
     get_genesis_mt5_shadow_trades,
     get_genesis_mt5_status,
     post_genesis_mt5_account_sync,
@@ -26,6 +27,7 @@ from api.routes.genesis import (
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
     post_genesis_mt5_manual_tests_reset,
+    post_genesis_mt5_replay_reset,
     post_genesis_mt5_replay_run,
     post_genesis_mt5_signal,
     post_genesis_mt5_tick,
@@ -47,8 +49,10 @@ from services.mt5.mt5_bridge import (
     mt5_outcomes_recent,
     mt5_performance,
     mt5_performance_auto,
+    mt5_replay_reset,
     mt5_replay_results,
     mt5_replay_run,
+    mt5_replay_status,
     mt5_signal,
     mt5_shadow_trades,
     mt5_status,
@@ -82,6 +86,8 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_metrics_exclude_old_proxy_endpoint"], "/api/genesis/mt5/metrics/exclude-old-proxy")
         self.assertEqual(app["genesis_mt5_replay_run_endpoint"], "/api/genesis/mt5/replay/run")
         self.assertEqual(app["genesis_mt5_replay_results_endpoint"], "/api/genesis/mt5/replay/results?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_replay_status_endpoint"], "/api/genesis/mt5/replay/status?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_replay_reset_endpoint"], "/api/genesis/mt5/replay/reset")
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
         self.assertEqual(app["genesis_mt5_tick_endpoint"], "/api/genesis/mt5/tick")
@@ -419,12 +425,14 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(perf_btcusd["summary"]["total_shadow_trades"], 1)
             self.assertEqual(perf_btcusd["summary_btcusd_auto"]["symbol"], "BTCUSD")
             self.assertEqual(shadow_btc["count"], 0)
-            self.assertEqual(shadow_btcusd["count"], 1)
-            self.assertEqual(shadow_btcusd["items"][0]["symbol"], "BTCUSD")
-            self.assertEqual(shadow_btcusd["items"][0]["normalized_symbol"], "BTCUSD")
-            self.assertEqual(shadow_btcusd["items"][0]["instrument_type"], "crypto_spot")
+            self.assertEqual(shadow_btcusd["count"], 0)
+            self.assertEqual(shadow_btcusd["excluded_count"], 1)
+            self.assertEqual(shadow_btcusd["excluded_trades"][0]["symbol"], "BTCUSD")
+            self.assertEqual(shadow_btcusd["excluded_trades"][0]["normalized_symbol"], "BTCUSD")
+            self.assertEqual(shadow_btcusd["excluded_trades"][0]["instrument_type"], "crypto_spot")
             self.assertGreaterEqual(debug["counts"]["mt5_shadow_trades"], 1)
-            self.assertEqual(debug["shadow_snapshot_count"], 1)
+            self.assertEqual(debug["shadow_snapshot_count"], 0)
+            self.assertEqual(debug["excluded_count"], 1)
             self.assertEqual(debug["performance_total_shadow_trades"], 1)
             self.assertIn("BTCUSD", debug["symbol_filters_applied"])
             self.assertIn("active_backend", debug)
@@ -901,8 +909,9 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(report["summary_auto"]["shadow_trades"], 1)
             self.assertEqual(report["summary_manual"]["shadow_trades"], 1)
             self.assertEqual(report["summary_manual"]["excluded_from_main_metrics"], 1)
-            self.assertEqual(trades["count"], 2)
-            self.assertTrue(any(item.get("excluded_from_main_metrics") for item in trades["items"] if not item.get("auto_forward")))
+            self.assertEqual(trades["count"], 1)
+            self.assertEqual(trades["excluded_count"], 1)
+            self.assertTrue(any(item.get("excluded_from_main_metrics") for item in trades["excluded_trades"]))
             self.assertFalse(reset["broker_touched"])
             self.assertFalse(reset["order_executed"])
 
@@ -942,12 +951,60 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(btcusd_perf["summary"]["total_shadow_trades"], 1)
             self.assertEqual(proxy_perf["summary"]["total_shadow_trades"], 0)
             self.assertEqual(btcusd_trades["count"], 1)
-            self.assertEqual(proxy_trades["count"], 1)
-            self.assertTrue(proxy_trades["items"][0]["excluded_from_main_metrics"])
-            self.assertEqual(proxy_trades["items"][0]["normalized_symbol"], "BTC_PROXY")
+            self.assertEqual(proxy_trades["count"], 0)
+            self.assertEqual(proxy_trades["excluded_count"], 1)
+            self.assertTrue(proxy_trades["excluded_trades"][0]["excluded_from_main_metrics"])
+            self.assertEqual(proxy_trades["excluded_trades"][0]["normalized_symbol"], "BTC_PROXY")
             self.assertIsNotNone(debug["last_proxy_trade"])
             self.assertFalse(exclude["broker_touched"])
             self.assertFalse(btcusd_perf["order_executed"])
+
+    def test_btcusd_shadow_status_ignores_excluded_mixed_legacy_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _auto_forward_router(store)
+            MT5Journal(memory=store).save(
+                "mt5_shadow_trades",
+                "BTCUSD",
+                {
+                    "shadow_trade_id": "legacy-mixed",
+                    "symbol": "BTCUSD",
+                    "original_symbol": "BTC",
+                    "normalized_symbol": "BTCUSD",
+                    "instrument_type": "crypto_etf_proxy",
+                    "is_spot_crypto": False,
+                    "action": "BUY",
+                    "entry": 35.0,
+                    "stop_loss": 34.0,
+                    "take_profit": 37.0,
+                    "status": "loss",
+                    "exit_price": 35.7888,
+                    "last_price": 77047.92,
+                    "source": "manual_shadow_test",
+                    "manual_test": True,
+                    "excluded_from_main_metrics": True,
+                    "excluded_reason": "old_proxy_or_manual_test",
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                },
+            )
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_buy_context()):
+                router.tick(_ea_tick_payload())
+
+            shadow = mt5_shadow_trades(memory=store, symbol="BTCUSD")
+            status = mt5_auto_forward_status(memory=store, symbol="BTCUSD")
+            auto = mt5_performance_auto(memory=store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertEqual(shadow["count"], 1)
+            self.assertEqual(shadow["excluded_count"], 1)
+            self.assertEqual(shadow["items"][0]["normalized_symbol"], "BTCUSD")
+            self.assertEqual(shadow["items"][0]["instrument_type"], "crypto_spot")
+            self.assertEqual(status["last_shadow_trade"]["shadow_trade_id"], shadow["items"][0]["shadow_trade_id"])
+            self.assertNotEqual(status["last_shadow_trade"]["shadow_trade_id"], "legacy-mixed")
+            self.assertEqual(auto["summary"]["auto_shadow_trades"], 1)
+            self.assertFalse(status["broker_touched"])
+            self.assertFalse(auto["order_executed"])
 
     def test_genesis_chat_uses_auto_summary_and_warns_small_sample(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1090,8 +1147,21 @@ class MT5BridgeTests(unittest.TestCase):
         instrument = get_genesis_mt5_instrument("BTCUSD")
         reset = post_genesis_mt5_manual_tests_reset({"symbol": "BTCUSD"})
         exclude_proxy = post_genesis_mt5_metrics_exclude_old_proxy({"symbol": "BTCUSD"})
-        replay = post_genesis_mt5_replay_run({"symbol": "BTCUSD", "timeframe": "H1", "bars": 10})
+        replay = post_genesis_mt5_replay_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars": 3,
+                "bars_data": [
+                    {"time": "1", "open": 100, "high": 101, "low": 99, "close": 100},
+                    {"time": "2", "open": 100, "high": 105, "low": 99, "close": 103},
+                    {"time": "3", "open": 103, "high": 106, "low": 101, "close": 105},
+                ],
+            }
+        )
         replay_results = get_genesis_mt5_replay_results("BTCUSD")
+        replay_status = get_genesis_mt5_replay_status("BTCUSD")
+        replay_reset = post_genesis_mt5_replay_reset({"symbol": "BTCUSD"})
 
         self.assertTrue(decision["ok"])
         self.assertTrue(account["ok"])
@@ -1112,9 +1182,38 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(exclude_proxy["ok"])
         self.assertTrue(replay["ok"])
         self.assertTrue(replay_results["ok"])
+        self.assertTrue(replay_status["ok"])
+        self.assertTrue(replay_reset["ok"])
         self.assertFalse(request["order_executed"])
         self.assertFalse(request["broker_touched"])
         self.assertEqual(request["order_policy"], "journal_only_no_broker")
+
+    def test_replay_run_status_results_and_reset_are_journal_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            bars = [
+                {"time": "1", "open": 100, "high": 101, "low": 99, "close": 100},
+                {"time": "2", "open": 100, "high": 105, "low": 99, "close": 103},
+                {"time": "3", "open": 103, "high": 106, "low": 101, "close": 105},
+                {"time": "4", "open": 105, "high": 108, "low": 102, "close": 104},
+                {"time": "5", "open": 104, "high": 107, "low": 100, "close": 101},
+            ]
+
+            run = mt5_replay_run({"symbol": "BTCUSD", "timeframe": "H1", "bars": 5, "bars_data": bars}, memory=store)
+            results = mt5_replay_results(memory=store, symbol="BTCUSD")
+            status = mt5_replay_status(memory=store, symbol="BTCUSD")
+            reset = mt5_replay_reset({"symbol": "BTCUSD"}, memory=store)
+
+            self.assertTrue(run["ok"])
+            self.assertEqual(run["result"]["normalized_symbol"], "BTCUSD")
+            self.assertEqual(run["result"]["instrument_type"], "crypto_spot")
+            self.assertGreaterEqual(results["replay_trades"], 1)
+            self.assertEqual(results["status"], "mt5_replay_results_ready")
+            self.assertEqual(status["status"], "mt5_replay_status_ready")
+            self.assertTrue(reset["ok"])
+            self.assertFalse(run["broker_touched"])
+            self.assertFalse(results["order_executed"])
+            self.assertEqual(run["order_policy"], "journal_only_no_broker")
 
     def test_genesis_chat_routes_mt5_questions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
