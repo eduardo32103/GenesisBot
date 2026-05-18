@@ -227,6 +227,7 @@ class MT5AutoForward:
             "auto_forward_enabled": not self.config.kill_switch,
             "last_tick": last_tick,
             "last_tick_status": "mt5_tick_recorded" if last_tick else "",
+            "last_tick_ea_version": (last_tick or {}).get("ea_version") or "",
             "last_signal": last_signal,
             "last_signal_status": (last_signal or {}).get("signal_status") or (last_signal or {}).get("status") or "",
             "last_signal_error": (last_signal or {}).get("signal_error") or "",

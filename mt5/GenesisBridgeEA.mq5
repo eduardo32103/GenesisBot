@@ -4,7 +4,7 @@
 //| No real trading by default.                                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "11.12"
+#property version   "11.9"
 #property description "Genesis MT5 Bridge EA. Journal/demo bridge with kill switch enabled by default."
 
 #include <Trade/Trade.mqh>
@@ -20,13 +20,18 @@ input int PollSeconds = 30;
 input int MagicNumber = 50501;
 input double MaxSpreadPoints = 50;
 input string AllowedSymbols = "BTC,BTCUSD,NVDA,SPY,QQQ,XAUUSD";
-input bool KillSwitch = true;
+input bool KillSwitch = false;
+input bool EnableTickPost = true;
+input bool EnableSignalPost = false;
+input bool EnableAccountSync = true;
+input bool EnableDecisionPoll = true;
 
 CTrade trade;
-string EA_VERSION = "GenesisBridgeEA_v11_tick_fix";
+string EA_VERSION = "GenesisBridgeEA_v11_9_FORCE_TICK";
 string lastDecision = "WAIT";
 string lastConfidence = "low";
 string lastReason = "waiting";
+string lastDecisionRawResponse = "";
 double lastRiskPct = 0.0;
 double lastStop = 0.0;
 double lastTarget = 0.0;
@@ -44,6 +49,7 @@ string lastTickStatus = "never";
 string lastDecisionStatus = "never";
 string lastAccountStatus = "never";
 string lastError = "";
+string lastTickError = "";
 string lastResponseShort = "";
 
 int OnInit()
@@ -51,7 +57,8 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    EventSetTimer(MathMax(PollSeconds, 5));
    Print("GenesisBridgeEA initialized. JournalOnly=", JournalOnly, " AllowLiveTrading=", AllowLiveTrading, " KillSwitch=", KillSwitch);
-   SyncAccount();
+   if(EnableAccountSync)
+      SendAccountSync();
    return(INIT_SUCCEEDED);
 }
 
@@ -65,19 +72,40 @@ void OnTimer()
 {
    if(!IsAllowedSymbol(_Symbol))
       Print("MT5 allowed-symbol warning: ", _Symbol, " not in AllowedSymbols, but account-sync/tick/decision will still run.");
-   SyncAccount();
-   bool tickSent = SendTick();
-   if(!tickSent)
-      Print("MT5 tick warning: SendTick returned false but decision poll will continue.");
-   PollDecision();
+   if(EnableAccountSync)
+      SendAccountSync();
+   else
+      lastAccountStatus = "disabled";
+
+   if(EnableTickPost)
+   {
+      bool tickSent = SendTick();
+      if(!tickSent)
+         Print("MT5 tick warning: SendTick returned false but decision poll will continue.");
+   }
+   else
+   {
+      lastTickStatus = "disabled";
+      Print("MT5 SendTick disabled by EnableTickPost=false");
+   }
+
+   if(EnableDecisionPoll)
+      PollDecision();
+   else
+      lastDecisionStatus = "disabled";
+
+   if(EnableSignalPost)
+      SendSignalJournal(lastDecision, lastDecisionRawResponse);
+   else
+      lastSignalStatus = "disabled";
 }
 
 void PollDecision()
 {
-   string url = GenesisBaseUrl + "/api/genesis/mt5/decision?symbol=" + _Symbol;
    string response = "";
    lastDecisionHttpCode = GetJson("/api/genesis/mt5/decision?symbol=" + _Symbol, response);
    lastDecisionStatus = HttpStatusText(lastDecisionHttpCode);
+   lastDecisionRawResponse = response;
    if(StringLen(response) <= 0)
    {
       DrawPanel("WAIT", "no_response_from_genesis");
@@ -95,7 +123,6 @@ void PollDecision()
    lastPoll = TimeCurrent();
 
    DrawPanel(lastDecision, lastReason);
-   SendSignalJournal(lastDecision, response);
 
    if(JournalOnly || !AllowLiveTrading || KillSwitch)
    {
@@ -116,7 +143,7 @@ void PollDecision()
    }
 }
 
-void SyncAccount()
+bool SendAccountSync()
 {
    string payload = "{";
    payload += "\"symbol\":\"" + _Symbol + "\",";
@@ -135,6 +162,12 @@ void SyncAccount()
    string response = "";
    lastAccountHttpCode = PostJson("/api/genesis/mt5/account-sync", payload, response);
    lastAccountStatus = HttpStatusText(lastAccountHttpCode);
+   return (lastAccountHttpCode >= 200 && lastAccountHttpCode < 300);
+}
+
+void SyncAccount()
+{
+   SendAccountSync();
 }
 
 bool SendTick()
@@ -143,36 +176,46 @@ bool SendTick()
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double last = LastMarketPrice();
+   if(last <= 0.0 && bid <= 0.0 && ask <= 0.0)
+   {
+      lastTickHttpCode = -2;
+      lastTickStatus = "no_price";
+      lastTickError = "tick skipped: no price";
+      Print("MT5 SendTick local error=tick skipped: no price");
+      return false;
+   }
+   if(bid <= 0.0)
+      bid = last;
+   if(ask <= 0.0)
+      ask = last;
+   if(last <= 0.0)
+      last = (bid + ask) / 2.0;
    string payload = "{";
-   payload += "\"source\":\"mt5_bridge\",";
    payload += "\"symbol\":\"" + _Symbol + "\",";
    payload += "\"bid\":" + DoubleToString(bid, _Digits) + ",";
    payload += "\"ask\":" + DoubleToString(ask, _Digits) + ",";
    payload += "\"last\":" + DoubleToString(last, _Digits) + ",";
    payload += "\"spread\":" + DoubleToString(ask - bid, _Digits) + ",";
-   payload += "\"spread_points\":" + DoubleToString(CurrentSpreadPoints(), 1) + ",";
    payload += "\"timeframe\":\"" + TimeframeText() + "\",";
    payload += "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\",";
-   payload += "\"account_id\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\",";
    payload += "\"broker\":\"" + EscapeJson(AccountInfoString(ACCOUNT_COMPANY)) + "\",";
    payload += "\"server\":\"" + EscapeJson(AccountInfoString(ACCOUNT_SERVER)) + "\",";
    payload += "\"is_demo\":" + BoolJson(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO) + ",";
-   payload += "\"ea_version\":\"" + EA_VERSION + "\",";
-   payload += "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
-   payload += "\"broker_touched\":false,";
-   payload += "\"order_executed\":false,";
-   payload += "\"order_policy\":\"journal_only_no_broker\"";
+   payload += "\"source\":\"mt5_bridge\",";
+   payload += "\"ea_version\":\"" + EA_VERSION + "\"";
    payload += "}";
-   Print("MT5 tick JSON: ", ShortText(payload, 350));
+   Print("MT5 SendTick JSON=", ShortText(payload, 350));
    string response = "";
    lastTickHttpCode = PostJson("/api/genesis/mt5/tick", payload, response);
    lastTickStatus = HttpStatusText(lastTickHttpCode);
-   Print("MT5 tick HTTP: ", lastTickHttpCode);
-   Print("MT5 tick response: ", ShortText(response, 350));
+   lastTickError = "";
+   Print("MT5 SendTick HTTP=", lastTickHttpCode);
+   Print("MT5 SendTick response=", ShortText(response, 350));
    if(lastTickHttpCode < 200 || lastTickHttpCode >= 300)
    {
-      Print("MT5 tick error: ", GetLastError());
-      Print("MT5 tick response body: ", ShortText(response, 500));
+      lastTickError = "HTTP " + IntegerToString(lastTickHttpCode) + " err=" + IntegerToString(GetLastError());
+      Print("MT5 SendTick error=", GetLastError());
+      Print("MT5 SendTick response body=", ShortText(response, 500));
    }
    lastTickSent = TimeCurrent();
    return (lastTickHttpCode >= 200 && lastTickHttpCode < 300);
@@ -296,19 +339,24 @@ void ExecuteDemoOrder(string decision)
    lastJournalEvent = TimeCurrent();
 }
 
-bool JsonToCharArray(string json, char &data[])
+bool StringToUtf8Body(string text, char &body[])
 {
-   ArrayResize(data, 0);
-   int copied = StringToCharArray(json, data, 0, WHOLE_ARRAY, CP_UTF8);
+   ArrayResize(body, 0);
+   int copied = StringToCharArray(text, body, 0, WHOLE_ARRAY, CP_UTF8);
    if(copied <= 0)
       return false;
    int size = copied;
-   if(ArraySize(data) > 0 && data[ArraySize(data) - 1] == 0)
+   if(ArraySize(body) > 0 && body[ArraySize(body) - 1] == 0)
       size = copied - 1;
    if(size < 0)
       size = 0;
-   ArrayResize(data, size);
+   ArrayResize(body, size);
    return true;
+}
+
+bool JsonToCharArray(string json, char &data[])
+{
+   return StringToUtf8Body(json, data);
 }
 
 string EndpointUrl(string path)
@@ -405,15 +453,15 @@ void DrawPanel(string decision, string reason)
    text += "Target: " + DoubleToString(lastTarget, _Digits) + "\n";
    text += "Hedge score: " + DoubleToString(lastHedgeScore, 0) + "\n";
    text += "No-trade score: " + DoubleToString(lastNoTradeScore, 0) + "\n";
-   text += "Last tick sent: " + TimeLabel(lastTickSent) + "\n";
+   text += "LastTickTime: " + TimeLabel(lastTickSent) + "\n";
    text += "Last journal event: " + TimeLabel(lastJournalEvent) + "\n";
    text += "Last signal status: " + lastSignalStatus + "\n";
-   text += "Last signal HTTP code: " + IntegerToString(lastSignalHttpCode) + "\n";
+   text += "LastSignalHttpCode: " + IntegerToString(lastSignalHttpCode) + "\n";
    text += "Last tick status: " + lastTickStatus + "\n";
-   text += "Last tick HTTP code: " + IntegerToString(lastTickHttpCode) + "\n";
-   text += "Last tick error: " + ShortText(lastError, 80) + "\n";
-   text += "Last decision HTTP code: " + IntegerToString(lastDecisionHttpCode) + "\n";
-   text += "Last account sync HTTP code: " + IntegerToString(lastAccountHttpCode) + "\n";
+   text += "LastTickHttpCode: " + IntegerToString(lastTickHttpCode) + "\n";
+   text += "LastTickError: " + ShortText(lastTickError, 80) + "\n";
+   text += "LastDecisionHttpCode: " + IntegerToString(lastDecisionHttpCode) + "\n";
+   text += "LastAccountSyncHttpCode: " + IntegerToString(lastAccountHttpCode) + "\n";
    text += "Last error: " + ShortText(lastError, 80) + "\n";
    text += "Last response short: " + ShortText(lastResponseShort, 100) + "\n";
    text += "Broker touched: false\n";
@@ -422,6 +470,8 @@ void DrawPanel(string decision, string reason)
    text += "AllowLiveTrading: " + (AllowLiveTrading ? "true" : "false") + "\n";
    text += "DemoOnly: " + (DemoOnly ? "true" : "false") + "\n";
    text += "KillSwitch: " + (KillSwitch ? "true" : "false") + "\n";
+   text += "EnableTickPost: " + (EnableTickPost ? "true" : "false") + "\n";
+   text += "EnableSignalPost: " + (EnableSignalPost ? "true" : "false") + "\n";
    text += "Reason: " + reason;
    Comment(text);
 }

@@ -381,6 +381,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(status["last_signal_status"], "mt5_signal_recorded")
             self.assertEqual(status["last_signal_error"], "")
             self.assertEqual(status["last_tick_status"], "mt5_tick_recorded")
+            self.assertEqual(status["last_tick_ea_version"], "GenesisBridgeEA_v11_9_FORCE_TICK")
             self.assertIsNotNone(status["last_tick"])
             self.assertIsNotNone(status["last_valid_decision"])
             self.assertFalse(status["broker_touched"])
@@ -902,23 +903,34 @@ class MT5BridgeTests(unittest.TestCase):
 
         self.assertIn("input bool AllowLiveTrading = false", content)
         self.assertIn("input bool JournalOnly = true", content)
-        self.assertIn("input bool KillSwitch = true", content)
-        self.assertIn("GenesisBridgeEA_v11_tick_fix", content)
+        self.assertIn("input bool KillSwitch = false", content)
+        self.assertIn("input bool EnableTickPost = true", content)
+        self.assertIn("input bool EnableSignalPost = false", content)
+        self.assertIn("input bool EnableAccountSync = true", content)
+        self.assertIn("input bool EnableDecisionPoll = true", content)
+        self.assertIn("GenesisBridgeEA_v11_9_FORCE_TICK", content)
         self.assertIn("AllowedSymbols = \"BTC,BTCUSD", content)
         self.assertIn("bool SendTick()", content)
         self.assertIn("MT5 SendTick start", content)
+        self.assertIn("MT5 SendTick JSON=", content)
+        self.assertIn("MT5 SendTick HTTP=", content)
+        self.assertIn("MT5 SendTick response=", content)
+        self.assertIn("SendAccountSync()", content)
         self.assertIn("/api/genesis/mt5/tick", content)
         self.assertIn("/api/genesis/mt5/signal", content)
         self.assertIn("Content-Type: application/json", content)
+        self.assertIn("StringToUtf8Body", content)
         self.assertIn("JsonToCharArray", content)
         self.assertIn("int PostJson(string path, string json, string &response)", content)
         self.assertIn("int GetJson(string path, string &response)", content)
         self.assertIn("ea_version", content)
         self.assertIn("EA version", content)
-        self.assertIn("Last tick sent", content)
-        self.assertIn("Last signal HTTP code", content)
-        self.assertIn("Last tick HTTP code", content)
-        self.assertIn("Last account sync HTTP code", content)
+        self.assertIn("LastTickTime", content)
+        self.assertIn("LastSignalHttpCode", content)
+        self.assertIn("LastTickHttpCode", content)
+        self.assertIn("LastTickError", content)
+        self.assertIn("LastDecisionHttpCode", content)
+        self.assertIn("LastAccountSyncHttpCode", content)
         self.assertIn("DemoOnly", content)
         self.assertIn("WebRequest", content)
         self.assertNotIn("FMP_API_KEY", content)
@@ -961,7 +973,7 @@ def _ea_tick_payload() -> dict[str, object]:
         "server": "MetaQuotes-Demo",
         "is_demo": True,
         "source": "mt5_bridge",
-        "ea_version": "GenesisBridgeEA_v11_tick_fix",
+        "ea_version": "GenesisBridgeEA_v11_9_FORCE_TICK",
     }
 
 
