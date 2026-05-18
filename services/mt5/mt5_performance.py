@@ -296,6 +296,12 @@ def _latest_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     clean = dict(payload)
     clean["reason"] = _reason_alias(clean.get("reason") or "")
+    action = str(clean.get("decision") or clean.get("action") or "").upper().strip()
+    if action not in {"BUY", "SELL"} or not bool(clean.get("actionable")):
+        clean["entry"] = None
+        clean["stop_loss"] = None
+        clean["take_profit"] = None
+        clean["risk_reward"] = 0.0
     return clean
 
 

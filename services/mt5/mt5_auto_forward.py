@@ -117,7 +117,7 @@ class MT5AutoForward:
         confidence = _confidence(built.get("confidence") or context.get("confidence"))
         no_trade_score = _int(context.get("no_trade_score"))
         hedge_score = _int(context.get("hedge_score"))
-        entry = _number(built.get("entry")) or last
+        entry = _number(built.get("entry"))
         stop_loss = _number(built.get("stop_loss"))
         take_profit = _number(built.get("take_profit"))
         risk_reward = _number(built.get("risk_reward"))
@@ -128,6 +128,7 @@ class MT5AutoForward:
             confidence=confidence,
             no_trade_score=no_trade_score,
             hedge_score=hedge_score,
+            entry=entry,
             stop_loss=stop_loss,
             take_profit=take_profit,
             risk_reward=risk_reward,
@@ -136,6 +137,11 @@ class MT5AutoForward:
         )
         final_decision = decision_name if not block_reason else "NO_TRADE"
         final_actionable = bool(built.get("actionable")) and final_decision in {"BUY", "SELL"}
+        if final_decision not in {"BUY", "SELL"}:
+            entry = None
+            stop_loss = None
+            take_profit = None
+            risk_reward = 0.0
         decision = self._decision_payload(
             symbol=raw_symbol,
             genesis_symbol=str(symbol_info.get("genesis_symbol") or raw_symbol),
@@ -270,6 +276,7 @@ class MT5AutoForward:
         confidence: str,
         no_trade_score: int,
         hedge_score: int,
+        entry: float | None,
         stop_loss: float | None,
         take_profit: float | None,
         risk_reward: float | None,
@@ -288,6 +295,8 @@ class MT5AutoForward:
             return "hedge_score_hard_block"
         if confidence not in {"medium", "high"}:
             return "confidence_low"
+        if entry is None:
+            return "missing_risk_parameters"
         if stop_loss is None:
             return "missing_risk_parameters"
         if take_profit is None:
@@ -324,11 +333,11 @@ class MT5AutoForward:
             "action": decision,
             "confidence": confidence,
             "reason": reason,
-            "entry": entry,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
+            "entry": entry if decision in {"BUY", "SELL"} else None,
+            "stop_loss": stop_loss if decision in {"BUY", "SELL"} else None,
+            "take_profit": take_profit if decision in {"BUY", "SELL"} else None,
             "risk_pct": min(self.config.max_position_risk_pct, 0.5) if decision in {"BUY", "SELL"} else 0.0,
-            "risk_reward": risk_reward,
+            "risk_reward": risk_reward if decision in {"BUY", "SELL"} else 0.0,
             "actionable": actionable,
             "timeframe": str(tick.get("timeframe") or context.get("recommended_timeframe") or "").upper(),
             "strategy_profile": str(context.get("recommended_strategy_profile") or context.get("recommended_preset") or "Genesis Auto Forward"),
@@ -457,6 +466,12 @@ def _latest_decision_by_actionable(rows: list[dict[str, Any]], actionable: bool)
 def _clean_payload(payload: dict[str, Any]) -> dict[str, Any]:
     clean = dict(payload)
     clean["reason"] = _reason_alias(clean.get("reason") or "")
+    action = str(clean.get("decision") or clean.get("action") or "").upper().strip()
+    if action not in {"BUY", "SELL"} or not bool(clean.get("actionable")):
+        clean["entry"] = None
+        clean["stop_loss"] = None
+        clean["take_profit"] = None
+        clean["risk_reward"] = 0.0
     return clean
 
 

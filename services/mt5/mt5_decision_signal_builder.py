@@ -48,17 +48,17 @@ def build_actionable_mt5_decision(
     }
 
     if not clean_symbol:
-        return {**base, "reason": "missing_symbol"}
+        return _no_trade(base, "missing_symbol")
 
     raw_decision = _decision_from_context(clean_context)
     if raw_decision not in {"BUY", "SELL"}:
-        return {**base, "decision": raw_decision, "reason": _reason(clean_context, raw_decision)}
+        return _non_actionable(base, raw_decision, _reason(clean_context, raw_decision))
     if no_trade_score >= 70:
-        return {**base, "reason": "no_trade_score_block"}
+        return _no_trade(base, "no_trade_score_block")
     if hedge_score >= 80:
-        return {**base, "reason": "hedge_score_hard_block"}
+        return _no_trade(base, "hedge_score_hard_block")
     if confidence not in {"medium", "high"}:
-        return {**base, "reason": "confidence_low"}
+        return _no_trade(base, "confidence_low")
 
     entry = _number(
         _first_present(clean_context, ("entry", "price"))
@@ -66,7 +66,7 @@ def build_actionable_mt5_decision(
         or _price(clean_tick)
     )
     if entry is None or entry <= 0:
-        return {**base, "decision": "NO_TRADE", "reason": "missing_risk_parameters"}
+        return _no_trade(base, "missing_risk_parameters")
 
     stop_loss = _number(_first_present(clean_context, ("stop_loss", "stop", "sl")))
     take_profit = _number(_first_present(clean_context, ("take_profit", "target", "tp")))
@@ -80,34 +80,19 @@ def build_actionable_mt5_decision(
     if stop_loss is None and stop_distance is not None:
         stop_loss = round(entry - stop_distance, 8) if raw_decision == "BUY" else round(entry + stop_distance, 8)
     if stop_loss is None:
-        return {**base, "decision": "NO_TRADE", "entry": entry, "reason": "missing_risk_parameters"}
+        return _no_trade(base, "missing_risk_parameters")
 
     risk = abs(entry - stop_loss)
     if risk <= 0:
-        return {**base, "decision": "NO_TRADE", "entry": entry, "stop_loss": stop_loss, "reason": "invalid_risk_parameters"}
+        return _no_trade(base, "invalid_risk_parameters")
     if take_profit is None:
         take_profit = round(entry + risk * rr_required, 8) if raw_decision == "BUY" else round(entry - risk * rr_required, 8)
 
     risk_reward = _risk_reward(raw_decision, entry, stop_loss, take_profit)
     if risk_reward is None:
-        return {
-            **base,
-            "decision": "NO_TRADE",
-            "entry": entry,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "reason": "invalid_risk_parameters",
-        }
+        return _no_trade(base, "invalid_risk_parameters")
     if risk_reward < rr_required:
-        return {
-            **base,
-            "decision": "NO_TRADE",
-            "entry": entry,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "risk_reward": risk_reward,
-            "reason": "risk_reward_too_low",
-        }
+        return _no_trade(base, "risk_reward_too_low")
 
     return {
         **base,
@@ -143,6 +128,36 @@ def _decision_from_context(context: dict[str, Any]) -> str:
     if bias == "bearish":
         return "SELL"
     return "WAIT"
+
+
+def _no_trade(base: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        **base,
+        "decision": "NO_TRADE",
+        "actionable": False,
+        "entry": None,
+        "stop_loss": None,
+        "take_profit": None,
+        "risk_reward": 0.0,
+        "risk_pct": 0.0,
+        "reason": reason,
+    }
+
+
+def _non_actionable(base: dict[str, Any], decision: str, reason: str) -> dict[str, Any]:
+    if decision in {"HEDGE", "REDUCE", "WAIT"}:
+        return {
+            **base,
+            "decision": decision,
+            "actionable": False,
+            "entry": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "risk_reward": 0.0,
+            "risk_pct": 0.0,
+            "reason": reason,
+        }
+    return _no_trade(base, reason)
 
 
 def _stop_distance(symbol: str, context: dict[str, Any], entry: float, atr: float | None) -> float | None:

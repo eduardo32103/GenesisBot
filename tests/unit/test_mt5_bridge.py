@@ -517,8 +517,35 @@ class MT5BridgeTests(unittest.TestCase):
 
         self.assertEqual(built["decision"], "NO_TRADE")
         self.assertFalse(built["actionable"])
+        self.assertIsNone(built["entry"])
+        self.assertIsNone(built["stop_loss"])
+        self.assertIsNone(built["take_profit"])
         self.assertEqual(built["reason"], "missing_risk_parameters")
         self.assertNotEqual(built["reason"], "missing_entry")
+
+    def test_actionable_builder_does_not_return_partial_risk_on_invalid_signal(self) -> None:
+        built = build_actionable_mt5_decision(
+            "BTC",
+            {"symbol": "BTC", "last": 100, "timeframe": "H1"},
+            {
+                "ok": True,
+                "decision": "BUY",
+                "confidence": "high",
+                "no_trade_score": 0,
+                "hedge_score": 0,
+                "stop_loss": 100,
+                "take_profit": 101,
+                "recommended_strategy_profile": "Invalid Risk Test",
+            },
+            min_rr=1.2,
+        )
+
+        self.assertEqual(built["decision"], "NO_TRADE")
+        self.assertFalse(built["actionable"])
+        self.assertIsNone(built["entry"])
+        self.assertIsNone(built["stop_loss"])
+        self.assertIsNone(built["take_profit"])
+        self.assertEqual(built["reason"], "invalid_risk_parameters")
 
     def test_auto_forward_generates_buy_shadow_trade_without_context_stop_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -567,10 +594,15 @@ class MT5BridgeTests(unittest.TestCase):
                 tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
             performance = router.performance(symbol="BTC")
+            status = router.auto_forward_status(symbol="BTC")
 
             self.assertEqual(tick["auto_forward"]["decision"]["decision"], "NO_TRADE")
             self.assertFalse(tick["auto_shadow_trade_created"])
             self.assertEqual(performance["summary"]["auto_shadow_trades"], 0)
+            self.assertFalse(status["last_actionable"])
+            self.assertIsNone(status["entry"])
+            self.assertIsNone(status["stop_loss"])
+            self.assertIsNone(status["take_profit"])
             self.assertTrue(store.get_mt5_events("mt5_no_trade_outcomes", "BTC", limit=5))
             self.assertFalse(tick["broker_touched"])
             self.assertFalse(tick["order_executed"])
@@ -631,6 +663,9 @@ class MT5BridgeTests(unittest.TestCase):
                 {
                     "symbol": "BTC",
                     "decision": "NO_TRADE",
+                    "entry": 34.98,
+                    "stop_loss": None,
+                    "take_profit": None,
                     "reason": "missing_entry",
                     "broker_touched": False,
                     "order_executed": False,
@@ -643,6 +678,10 @@ class MT5BridgeTests(unittest.TestCase):
 
             self.assertEqual(performance["last_reason"], "missing_risk_parameters")
             self.assertEqual(status["last_reason"], "missing_risk_parameters")
+            self.assertIsNone(performance["last_decision"]["entry"])
+            self.assertIsNone(status["entry"])
+            self.assertIsNone(status["stop_loss"])
+            self.assertIsNone(status["take_profit"])
             self.assertNotIn("missing_entry", str(performance))
             self.assertNotIn("missing_entry", str(status))
             self.assertFalse(performance["broker_touched"])
