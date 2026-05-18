@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.instrument_resolver import normalize_mt5_symbol
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
 
@@ -37,6 +38,8 @@ class MT5Performance:
         summary_total = _summary_for_trades(included_trades)
         summary_auto = _summary_for_trades(auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
+        normalized_symbol = normalize_mt5_symbol(clean_symbol)
+        proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if not _is_excluded(trade)])
         last_valid_decision = _latest_payload_by_actionable(decisions, True)
         last_invalid_decision = _latest_payload_by_actionable(decisions, False)
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
@@ -57,11 +60,14 @@ class MT5Performance:
             "ok": True,
             "status": "mt5_performance_ready",
             "symbol": clean_symbol,
+            "normalized_symbol": normalized_symbol,
             "timeframe": clean_timeframe,
             "summary": summary,
+            "summary_btcusd_auto": {**summary_auto, "symbol": "BTCUSD", "instrument_type": "crypto_spot"} if normalized_symbol == "BTCUSD" else {},
             "summary_total": {**summary_total, "manual_shadow_trades": summary_manual["shadow_trades"], "auto_shadow_trades": summary_auto["shadow_trades"]},
             "summary_auto": summary_auto,
             "summary_manual": summary_manual,
+            "summary_proxy": proxy_summary,
             "auto_sample_warning": _sample_warning(summary_auto),
             "by_action": self._by_action(included_trades, signals, decisions, order_requests, no_trade, hedge),
             "by_timeframe": _group_trades(included_trades, "timeframe"),
@@ -100,6 +106,8 @@ class MT5Performance:
             "ok": True,
             "status": "mt5_auto_performance_ready",
             "symbol": report["symbol"],
+            "normalized_symbol": report.get("normalized_symbol") or "",
+            "instrument_type": "crypto_spot" if report.get("normalized_symbol") == "BTCUSD" else "",
             "timeframe": report["timeframe"],
             "summary": summary_auto,
             "summary_auto": summary_auto,
@@ -279,7 +287,11 @@ def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:
 
 
 def _is_excluded(trade: dict[str, Any]) -> bool:
-    return bool(trade.get("excluded_from_main_metrics"))
+    if bool(trade.get("excluded_from_main_metrics")):
+        return True
+    last_price = _number(trade.get("last_price")) or 0.0
+    exit_price = _number(trade.get("exit_price")) or 0.0
+    return last_price > 1000 and 0 < exit_price < 100
 
 
 def _sample_warning(summary: dict[str, Any]) -> str:

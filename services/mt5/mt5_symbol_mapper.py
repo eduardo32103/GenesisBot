@@ -5,10 +5,10 @@ import os
 from typing import Any
 
 from services.genesis.ticker_parser import normalize_ticker
+from services.mt5.instrument_resolver import resolve_instrument
 
 
 DEFAULT_SYMBOL_MAP = {
-    "BTC": "BTCUSD",
     "BTC-USD": "BTCUSD",
     "BTCUSD": "BTCUSD",
     "BTCUSDT": "BTCUSD",
@@ -30,9 +30,6 @@ DEFAULT_SYMBOL_MAP = {
     "USO": "USOIL",
 }
 
-BTC_PROXY_WARNING = "BTC en este broker puede ser ETF/proxy, validar instrumento antes de operar."
-
-
 class MT5SymbolMapper:
     def __init__(self, *, symbol_map: dict[str, str] | None = None, allowed_symbols: list[str] | None = None) -> None:
         self.custom_symbol_map = {**_env_symbol_map(), **_clean_symbol_map(symbol_map or {})}
@@ -42,6 +39,7 @@ class MT5SymbolMapper:
 
     def map_symbol(self, symbol: str) -> dict[str, Any]:
         raw_symbol = _clean_symbol(symbol)
+        instrument = resolve_instrument({"symbol": raw_symbol})
         genesis_symbol = normalize_ticker(raw_symbol)
         candidates = _unique(
             [
@@ -54,17 +52,24 @@ class MT5SymbolMapper:
         custom_symbol = _first_map_value(self.custom_symbol_map, candidates)
         allowed_direct_symbol = _first_allowed_symbol(self.allowed_symbols, candidates)
         default_symbol = _first_map_value(self.default_symbol_map, candidates)
-        mt5_symbol = custom_symbol or allowed_direct_symbol or default_symbol or genesis_symbol.replace("-", "")
-        mapped = bool(custom_symbol or allowed_direct_symbol or default_symbol)
+        mt5_symbol = custom_symbol or allowed_direct_symbol or default_symbol or instrument["normalized_symbol"] or genesis_symbol.replace("-", "")
+        instrument_mapped = str(instrument.get("instrument_type") or "") != "unknown"
+        mapped = bool(custom_symbol or allowed_direct_symbol or default_symbol or instrument_mapped)
         allowed = mt5_symbol in self.allowed_symbols if self.allowed_symbols else True
         ok = bool(mt5_symbol) and mapped and allowed
         reason = "ok" if ok else "symbol_not_allowed" if mapped and not allowed else "symbol_not_mapped"
-        warnings = [BTC_PROXY_WARNING] if genesis_symbol == "BTC-USD" and mt5_symbol == "BTC" else []
+        resolved = resolve_instrument({**instrument, "symbol": mt5_symbol})
+        warnings = [resolved["warning"]] if resolved.get("warning") else []
         return {
             "ok": ok,
             "raw_symbol": raw_symbol,
             "genesis_symbol": genesis_symbol,
             "mt5_symbol": mt5_symbol,
+            "original_symbol": resolved["original_symbol"],
+            "normalized_symbol": resolved["normalized_symbol"],
+            "underlying": resolved["underlying"],
+            "instrument_type": resolved["instrument_type"],
+            "is_spot_crypto": resolved["is_spot_crypto"],
             "mapped": mapped,
             "allowed": allowed,
             "reason": reason,

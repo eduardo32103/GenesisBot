@@ -557,8 +557,10 @@ def _should_route_mt5_forward_metrics(message: str) -> bool:
 
 def _mt5_metrics_symbol(message: str, explicit_ticker: str) -> str:
     text = _fold_prompt(message)
-    if "btc" in text or str(explicit_ticker or "").upper() in {"BTC", "BTC-USD", "BTCUSD", "BTCUSDT"}:
-        return "BTC"
+    if "btcusd" in text or str(explicit_ticker or "").upper() in {"BTCUSD", "BTCUSDT", "BTC-USD"}:
+        return "BTCUSD"
+    if "btc" in text or str(explicit_ticker or "").upper() == "BTC":
+        return "BTCUSD"
     return str(explicit_ticker or "").upper().strip()
 
 

@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.settings import load_settings
+from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol, payload_matches_symbol, symbol_aliases
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
 _DEFAULT_SQLITE_PATH = _ROOT_DIR / ".genesis_memory.sqlite3"
@@ -631,11 +632,12 @@ class MemoryStore:
         clean_collection = str(collection or "mt5_journal").strip()[:80]
         raw_payload = _sanitize(payload or {})
         clean_symbol = str(symbol or raw_payload.get("symbol") or raw_payload.get("ticker") or "").upper().strip()
+        enriched = enrich_payload({**raw_payload, "symbol": clean_symbol})
         clean = {
-            **raw_payload,
+            **enriched,
             "symbol": clean_symbol,
-            "original_symbol": str(raw_payload.get("original_symbol") or raw_payload.get("symbol") or clean_symbol).upper().strip(),
-            "normalized_symbol": _mt5_normalized_symbol(clean_symbol),
+            "original_symbol": str(enriched.get("original_symbol") or raw_payload.get("original_symbol") or raw_payload.get("symbol") or clean_symbol).upper().strip(),
+            "normalized_symbol": str(enriched.get("normalized_symbol") or clean_symbol).upper().strip(),
             "collection": clean_collection,
             "broker_touched": False,
             "order_executed": False,
@@ -1596,41 +1598,24 @@ def _mt5_event_type(collection: str | None) -> str:
         "mt5_risk_blocks": "mt5_risk_block",
         "mt5_journal": "mt5_journal",
         "mt5_account_sync": "mt5_account_sync",
+        "mt5_replay_runs": "mt5_replay_run",
     }
     clean = str(collection or "mt5_journal").strip()
     return mapping.get(clean, clean.rstrip("s") or "mt5_event")
 
 
 def _mt5_normalized_symbol(symbol: object) -> str:
-    clean = str(symbol or "").upper().strip()
-    if clean in {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}:
-        return "BTC"
-    return clean
+    return normalize_mt5_symbol(symbol)
 
 
 def _mt5_symbol_aliases(symbol: object) -> set[str]:
-    clean = str(symbol or "").upper().strip()
-    if not clean:
-        return set()
-    normalized = _mt5_normalized_symbol(clean)
-    if normalized == "BTC":
-        return {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}
-    return {clean, normalized}
+    return symbol_aliases(symbol)
 
 
 def _mt5_payload_symbol_match(payload: dict[str, Any], aliases: set[str]) -> bool:
     if not aliases:
         return True
-    candidates = {
-        str(payload.get("symbol") or "").upper().strip(),
-        str(payload.get("ticker") or "").upper().strip(),
-        str(payload.get("original_symbol") or "").upper().strip(),
-        str(payload.get("normalized_symbol") or "").upper().strip(),
-    }
-    normalized_aliases = set(aliases)
-    normalized_aliases.update(_mt5_normalized_symbol(alias) for alias in aliases)
-    candidates.update(_mt5_normalized_symbol(candidate) for candidate in list(candidates))
-    return bool(candidates & normalized_aliases)
+    return any(payload_matches_symbol(payload, alias) for alias in aliases)
 
 
 def _loads(value: Any) -> Any:

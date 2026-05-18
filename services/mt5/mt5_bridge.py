@@ -50,6 +50,10 @@ def mt5_debug_storage(*, memory: MemoryStore | None = None, symbol: str = "") ->
     return build_router(memory).debug_storage(symbol=symbol)
 
 
+def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return build_router(memory).instrument(symbol=symbol, payload=payload)
+
+
 def mt5_auto_forward_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     return build_router(memory).auto_forward_status(symbol=symbol)
 
@@ -81,3 +85,16 @@ def mt5_order_result(payload: dict[str, Any] | None, *, memory: MemoryStore | No
 def mt5_manual_tests_reset(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     body = payload or {}
     return build_router(memory).reset_manual_tests(symbol=str(body.get("symbol") or body.get("ticker") or ""))
+
+
+def mt5_metrics_exclude_old_proxy(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    body = payload or {}
+    return build_router(memory).exclude_old_proxy_metrics(symbol=str(body.get("symbol") or body.get("ticker") or ""))
+
+
+def mt5_replay_run(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).replay_run(payload)
+
+
+def mt5_replay_results(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).replay_results(symbol=symbol)

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol, symbol_aliases
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 
@@ -34,10 +35,11 @@ class MT5ShadowTrading:
         return {"created": False, "status": "ignored_non_actionable_signal", "action": action}
 
     def create_shadow_trade(self, payload: dict[str, Any]) -> dict[str, Any]:
-        intent = MT5OrderIntent.from_payload(payload)
+        clean_payload = enrich_payload(payload)
+        intent = MT5OrderIntent.from_payload(clean_payload)
         action = intent.action
-        symbol = _symbol(intent.symbol or payload.get("symbol") or payload.get("ticker"))
-        entry = intent.entry if intent.entry is not None else _number(payload.get("last") or payload.get("bid") or payload.get("ask"))
+        symbol = _symbol(intent.symbol or clean_payload.get("symbol") or clean_payload.get("ticker"))
+        entry = intent.entry if intent.entry is not None else _number(clean_payload.get("last") or clean_payload.get("bid") or clean_payload.get("ask"))
         if action not in {"BUY", "SELL"} or not symbol:
             return {"created": False, "status": "not_actionable", "action": action, "symbol": symbol}
         if entry is None or intent.stop_loss is None or intent.take_profit is None:
@@ -78,8 +80,12 @@ class MT5ShadowTrading:
         trade = {
             "shadow_trade_id": str(payload.get("shadow_trade_id") or f"shadow-{uuid.uuid4().hex[:12]}"),
             "symbol": symbol,
-            "original_symbol": _symbol(payload.get("original_symbol") or payload.get("symbol") or symbol),
-            "normalized_symbol": _normalized_symbol(symbol),
+            "original_symbol": _symbol(clean_payload.get("original_symbol") or clean_payload.get("symbol") or symbol),
+            "normalized_symbol": _symbol(clean_payload.get("normalized_symbol") or _normalized_symbol(symbol)),
+            "instrument_type": clean_payload.get("instrument_type") or "unknown",
+            "is_spot_crypto": bool(clean_payload.get("is_spot_crypto")),
+            "underlying": clean_payload.get("underlying") or "",
+            "instrument_warning": clean_payload.get("instrument_warning") or "",
             "action": action,
             "entry": entry,
             "stop_loss": intent.stop_loss,
@@ -92,14 +98,14 @@ class MT5ShadowTrading:
             "hedge_score": intent.hedge_score,
             "no_trade_score": intent.no_trade_score,
             "genesis_context_score": intent.genesis_context_score,
-            "opened_at": str(payload.get("timestamp") or payload.get("bar_time") or _now()),
+            "opened_at": str(clean_payload.get("timestamp") or clean_payload.get("bar_time") or _now()),
             "updated_at": _now(),
             "status": "open",
-            "source": str(payload.get("source") or "mt5_bridge"),
-            "auto_forward": bool(payload.get("auto_forward")),
-            "manual_test": not bool(payload.get("auto_forward")),
-            "excluded_from_main_metrics": bool(payload.get("excluded_from_main_metrics")),
-            "risk_reward": _number(payload.get("risk_reward")) or 0.0,
+            "source": str(clean_payload.get("source") or "mt5_bridge"),
+            "auto_forward": bool(clean_payload.get("auto_forward")),
+            "manual_test": bool(clean_payload.get("manual_test")) or not bool(clean_payload.get("auto_forward")),
+            "excluded_from_main_metrics": bool(clean_payload.get("excluded_from_main_metrics")),
+            "risk_reward": _number(clean_payload.get("risk_reward")) or 0.0,
             "max_favorable_excursion": 0.0,
             "max_adverse_excursion": 0.0,
             "unrealized_pnl": 0.0,
@@ -275,6 +281,34 @@ class MT5ShadowTrading:
             "order_policy": "journal_only_no_broker",
         }
 
+    def exclude_old_proxy(self, *, symbol: str = "") -> dict[str, Any]:
+        clean_symbol = _symbol(symbol)
+        updates = []
+        for trade in self.trades(clean_symbol or None, limit=1000):
+            if not _should_exclude_old_proxy(trade):
+                continue
+            update = {
+                **trade,
+                "excluded_from_main_metrics": True,
+                "excluded_reason": "old_proxy_or_manual_test",
+                "updated_at": _now(),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+            event = self.journal.save("mt5_shadow_trades", update["symbol"], update, confidence=update.get("confidence") or "media")
+            updates.append({"trade": update, "event": event})
+        return {
+            "ok": True,
+            "status": "old_proxy_metrics_excluded",
+            "symbol": clean_symbol,
+            "updated": len(updates),
+            "updates": updates,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
     def snapshot(self, symbol: str | None = None, limit: int = 100) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         trades = self.trades(clean_symbol, limit=limit)
@@ -439,19 +473,31 @@ def _symbol(value: object) -> str:
 
 
 def _normalized_symbol(value: object) -> str:
-    clean = _symbol(value)
-    if clean in {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}:
-        return "BTC"
-    return clean
+    return normalize_mt5_symbol(value)
 
 
 def _symbol_aliases(value: object) -> set[str]:
-    clean = _symbol(value)
-    if not clean:
-        return set()
-    if _normalized_symbol(clean) == "BTC":
-        return {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}
-    return {clean, _normalized_symbol(clean)}
+    return symbol_aliases(value)
+
+
+def _should_exclude_old_proxy(trade: dict[str, Any]) -> bool:
+    source = str(trade.get("source") or "").casefold()
+    description = str(trade.get("symbol_description") or trade.get("description") or trade.get("instrument_warning") or "").casefold()
+    original = _symbol(trade.get("original_symbol") or trade.get("symbol"))
+    entry = _number(trade.get("entry")) or 0.0
+    last_price = _number(trade.get("last_price")) or 0.0
+    exit_price = _number(trade.get("exit_price")) or 0.0
+    if bool(trade.get("manual_test")):
+        return True
+    if source in {"manual_shadow_test", "manual_tick_test"}:
+        return True
+    if original == "BTC" and 20 <= entry <= 100:
+        return True
+    if any(token in description for token in ("grayscale", "trust", "etf", "fund", "mini trust")):
+        return True
+    if last_price > 1000 and 0 < exit_price < 100:
+        return True
+    return False
 
 
 def _number(value: object) -> float | None:

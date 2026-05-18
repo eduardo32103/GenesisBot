@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.instrument_resolver import enrich_payload
 from services.mt5.mt5_auto_forward import MT5AutoForward
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
@@ -40,7 +41,7 @@ class MT5ForwardTestEngine:
                 "order_executed": False,
                 "order_policy": "journal_only_no_broker",
             }
-        tick = {
+        tick = enrich_payload({
             **clean,
             "symbol": symbol,
             "last": last,
@@ -50,7 +51,7 @@ class MT5ForwardTestEngine:
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
-        }
+        })
         logging.getLogger("genesis.mt5").info("MT5_TICK_RECEIVED symbol=%s source=%s", symbol, tick.get("source"))
         event = self.journal.save("mt5_ticks", symbol, tick)
         updates = self.shadow.update_with_tick(tick)

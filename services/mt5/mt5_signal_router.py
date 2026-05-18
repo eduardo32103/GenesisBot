@@ -5,6 +5,7 @@ from typing import Any
 
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
+from services.mt5.instrument_resolver import normalize_mt5_symbol, resolve_instrument, symbol_aliases
 from services.mt5.mt5_account_state import normalize_account_state
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
@@ -60,6 +61,16 @@ class MT5SignalRouter:
             "symbol_map": self.symbol_mapper.symbol_map,
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
+        }
+
+    def instrument(self, *, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        info = resolve_instrument({**(payload or {}), "symbol": symbol or (payload or {}).get("symbol")})
+        return {
+            **info,
+            "ok": True,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
         }
 
     def status(self) -> dict[str, Any]:
@@ -202,6 +213,10 @@ class MT5SignalRouter:
             "ok": True,
             "symbol": symbol_info["mt5_symbol"],
             "genesis_symbol": symbol_info["genesis_symbol"],
+            "original_symbol": symbol_info.get("original_symbol") or symbol_info["mt5_symbol"],
+            "normalized_symbol": symbol_info.get("normalized_symbol") or _normalized_symbol(symbol_info["mt5_symbol"]),
+            "instrument_type": symbol_info.get("instrument_type") or "",
+            "is_spot_crypto": bool(symbol_info.get("is_spot_crypto")),
             "decision": decision,
             "confidence": context.get("confidence") or "low",
             "reason": reason,
@@ -308,6 +323,7 @@ class MT5SignalRouter:
     def debug_storage(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = str(symbol or "").upper().strip()
         aliases = _symbol_aliases(clean_symbol)
+        normalized = _normalized_symbol(clean_symbol)
         collections = (
             "mt5_shadow_trades",
             "mt5_ticks",
@@ -327,11 +343,15 @@ class MT5SignalRouter:
             latest[collection] = _payload(rows[0]) if rows else None
         snapshot = self.shadow.snapshot(symbol=clean_symbol, limit=500)
         performance = self.performance(symbol=clean_symbol)
+        trades = snapshot.get("items") or []
+        auto_trades = [trade for trade in trades if trade.get("auto_forward")]
+        manual_trades = [trade for trade in trades if trade.get("manual_test")]
+        proxy_trades = [trade for trade in self.shadow.trades("BTC_PROXY", limit=500)]
         return {
             "ok": True,
             "status": "mt5_storage_debug_ready",
             "symbol": clean_symbol,
-            "normalized_symbol": _normalized_symbol(clean_symbol),
+            "normalized_symbol": normalized,
             "symbol_filters_applied": aliases,
             "symbol_aliases": aliases,
             "collections": list(collections),
@@ -339,9 +359,15 @@ class MT5SignalRouter:
             "database_enabled": getattr(self.memory, "backend", "") == "postgres",
             "memory_fallback": getattr(self.memory, "backend", "") != "postgres",
             "memory_backend": getattr(self.memory, "backend", "unknown"),
+            "active_backend": getattr(self.memory, "backend", "unknown"),
+            "persistence_backend": getattr(self.memory, "backend", "unknown"),
             "shadow_snapshot_count": snapshot["count"],
             "performance_total_shadow_trades": (performance.get("summary") or {}).get("total_shadow_trades", 0),
             "last_shadow_trade": latest["mt5_shadow_trades"],
+            "last_auto_trade": auto_trades[0] if auto_trades else None,
+            "last_manual_trade": manual_trades[0] if manual_trades else None,
+            "last_proxy_trade": proxy_trades[0] if proxy_trades else None,
+            "excluded_count": sum(1 for trade in trades if trade.get("excluded_from_main_metrics")),
             "last_tick": latest["mt5_ticks"],
             "last_decision": latest["mt5_decisions"],
             "broker_touched": False,
@@ -355,6 +381,59 @@ class MT5SignalRouter:
 
     def reset_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
         return self.shadow.exclude_manual_tests(symbol=symbol)
+
+    def exclude_old_proxy_metrics(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.shadow.exclude_old_proxy(symbol=symbol)
+
+    def replay_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = payload or {}
+        symbol = str(body.get("symbol") or "BTCUSD").upper().strip()
+        timeframe = str(body.get("timeframe") or "H1").upper().strip()
+        bars = max(1, min(int(body.get("bars") or 500), 2000))
+        result = {
+            "replay_id": f"replay-{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+            "symbol": symbol,
+            "normalized_symbol": _normalized_symbol(symbol),
+            "timeframe": timeframe,
+            "bars_requested": bars,
+            "replay_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "expectancy": 0.0,
+            "max_drawdown": 0.0,
+            "no_trade_count": 0,
+            "blocked_reasons": ["historical_market_data_not_available_locally"],
+            "genesis_reading": "Replay listo como carril separado; no toca broker y no se mezcla con forward live.",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "created_at": _now(),
+        }
+        event = self.journal.save("mt5_replay_runs", symbol, result)
+        return {"ok": True, "status": "mt5_replay_recorded", "result": result, "event": event, **{k: result[k] for k in ("broker_touched", "order_executed", "order_policy")}}
+
+    def replay_results(self, *, symbol: str = "") -> dict[str, Any]:
+        clean_symbol = str(symbol or "").upper().strip()
+        rows = self.memory.get_mt5_events("mt5_replay_runs", clean_symbol or None, limit=1)
+        payload = rows[0].get("payload") if rows and isinstance(rows[0].get("payload"), dict) else {}
+        if not payload:
+            payload = {
+                "symbol": clean_symbol,
+                "normalized_symbol": _normalized_symbol(clean_symbol),
+                "replay_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "expectancy": 0.0,
+                "max_drawdown": 0.0,
+                "no_trade_count": 0,
+                "blocked_reasons": [],
+                "genesis_reading": "Aun no hay replay historico para este simbolo.",
+            }
+        return {"ok": True, "status": "mt5_replay_results_ready", **payload, "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
@@ -472,6 +551,7 @@ _MT5_COLLECTIONS = (
     "mt5_no_trade_outcomes",
     "mt5_hedge_outcomes",
     "mt5_forward_metrics",
+    "mt5_replay_runs",
     "mt5_journal",
 )
 
@@ -534,20 +614,11 @@ def _signal_symbol(payload: dict[str, Any]) -> str:
 
 
 def _normalized_symbol(symbol: object) -> str:
-    clean = str(symbol or "").upper().strip()
-    if clean in {"BTC", "BTCUSD", "BTC-USD", "BTCUSDT", "XBTUSD"}:
-        return "BTC"
-    return clean
+    return normalize_mt5_symbol(symbol)
 
 
 def _symbol_aliases(symbol: object) -> list[str]:
-    clean = str(symbol or "").upper().strip()
-    if not clean:
-        return []
-    if _normalized_symbol(clean) == "BTC":
-        return ["BTC", "BTC-USD", "BTCUSD", "BTCUSDT", "XBTUSD"]
-    aliases = {clean, _normalized_symbol(clean)}
-    return sorted(alias for alias in aliases if alias)
+    return sorted(symbol_aliases(symbol))
 
 
 def _unique_symbols(items: list[dict[str, Any]]) -> list[str]:

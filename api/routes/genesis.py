@@ -12,13 +12,17 @@ from services.mt5.mt5_bridge import (
     mt5_decision,
     mt5_forward_test,
     mt5_health,
+    mt5_instrument,
     mt5_journal_recent,
     mt5_manual_tests_reset,
+    mt5_metrics_exclude_old_proxy,
     mt5_order_request,
     mt5_order_result,
     mt5_outcomes_recent,
     mt5_performance,
     mt5_performance_auto,
+    mt5_replay_results,
+    mt5_replay_run,
     mt5_signal,
     mt5_shadow_trades,
     mt5_status,
@@ -82,6 +86,10 @@ def get_genesis_mt5_debug_storage(symbol: str = "") -> dict[str, Any]:
     return mt5_debug_storage(symbol=symbol)
 
 
+def get_genesis_mt5_instrument(symbol: str = "") -> dict[str, Any]:
+    return mt5_instrument(symbol=symbol)
+
+
 def get_genesis_mt5_auto_forward_status(symbol: str = "") -> dict[str, Any]:
     return mt5_auto_forward_status(symbol=symbol)
 
@@ -112,3 +120,15 @@ def post_genesis_mt5_order_result(payload: dict[str, Any] | None = None) -> dict
 
 def post_genesis_mt5_manual_tests_reset(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_manual_tests_reset(payload)
+
+
+def post_genesis_mt5_metrics_exclude_old_proxy(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_metrics_exclude_old_proxy(payload)
+
+
+def post_genesis_mt5_replay_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_replay_run(payload)
+
+
+def get_genesis_mt5_replay_results(symbol: str = "") -> dict[str, Any]:
+    return mt5_replay_results(symbol=symbol)

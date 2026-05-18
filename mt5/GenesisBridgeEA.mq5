@@ -51,6 +51,9 @@ string lastAccountStatus = "never";
 string lastError = "";
 string lastTickError = "";
 string lastResponseShort = "";
+string lastInstrumentType = "";
+string lastSymbolDescription = "";
+string lastSymbolPath = "";
 
 int OnInit()
 {
@@ -113,6 +116,7 @@ void PollDecision()
    }
 
    lastDecision = JsonString(response, "decision", "WAIT");
+   lastInstrumentType = JsonString(response, "instrument_type", lastInstrumentType);
    lastConfidence = JsonString(response, "confidence", "low");
    lastReason = JsonString(response, "reason", "no_reason");
    lastRiskPct = JsonNumber(response, "risk_pct", 0.0);
@@ -190,6 +194,8 @@ bool SendTick()
       ask = last;
    if(last <= 0.0)
       last = (bid + ask) / 2.0;
+   lastSymbolDescription = SymbolInfoString(_Symbol, SYMBOL_DESCRIPTION);
+   lastSymbolPath = SymbolInfoString(_Symbol, SYMBOL_PATH);
    string payload = "{";
    payload += "\"symbol\":\"" + _Symbol + "\",";
    payload += "\"bid\":" + DoubleToString(bid, _Digits) + ",";
@@ -202,7 +208,14 @@ bool SendTick()
    payload += "\"server\":\"" + EscapeJson(AccountInfoString(ACCOUNT_SERVER)) + "\",";
    payload += "\"is_demo\":" + BoolJson(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO) + ",";
    payload += "\"source\":\"mt5_bridge\",";
-   payload += "\"ea_version\":\"" + EA_VERSION + "\"";
+   payload += "\"ea_version\":\"" + EA_VERSION + "\",";
+   payload += "\"symbol_description\":\"" + EscapeJson(lastSymbolDescription) + "\",";
+   payload += "\"symbol_path\":\"" + EscapeJson(lastSymbolPath) + "\",";
+   payload += "\"currency_base\":\"" + EscapeJson(SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE)) + "\",";
+   payload += "\"currency_profit\":\"" + EscapeJson(SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT)) + "\",";
+   payload += "\"digits\":" + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)) + ",";
+   payload += "\"point\":" + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_POINT), 10) + ",";
+   payload += "\"contract_size\":" + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE), 2);
    payload += "}";
    Print("MT5 SendTick JSON=", ShortText(payload, 350));
    string response = "";
@@ -445,6 +458,10 @@ void DrawPanel(string decision, string reason)
 {
    string text = "Genesis MT5 Bridge\n";
    text += "EA version: " + EA_VERSION + "\n";
+   text += "Symbol: " + _Symbol + "\n";
+   text += "Description: " + ShortText(lastSymbolDescription, 55) + "\n";
+   text += "Path: " + ShortText(lastSymbolPath, 55) + "\n";
+   text += "Instrument type: " + lastInstrumentType + "\n";
    text += "Status: " + (KillSwitch ? "KILL SWITCH" : "ACTIVE") + "\n";
    text += "Decision: " + decision + "\n";
    text += "Confidence: " + lastConfidence + "\n";

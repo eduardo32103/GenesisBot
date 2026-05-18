@@ -54,10 +54,12 @@ from api.routes.genesis import (
     get_genesis_mt5_config,
     get_genesis_mt5_decision,
     get_genesis_mt5_health,
+    get_genesis_mt5_instrument,
     get_genesis_mt5_journal_recent,
     get_genesis_mt5_outcomes_recent,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
+    get_genesis_mt5_replay_results,
     get_genesis_mt5_shadow_trades,
     get_genesis_mt5_status,
     get_genesis_portfolio_hedge,
@@ -66,8 +68,10 @@ from api.routes.genesis import (
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
     post_genesis_mt5_manual_tests_reset,
+    post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_signal,
     post_genesis_mt5_tick,
+    post_genesis_mt5_replay_run,
     post_genesis_tradingview_webhook,
 )
 from services.dashboard.get_genesis_answer import get_genesis_fallback_answer
@@ -197,6 +201,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_health_endpoint": "/api/genesis/mt5/health",
         "genesis_mt5_status_endpoint": "/api/genesis/mt5/status",
         "genesis_mt5_config_endpoint": "/api/genesis/mt5/config",
+        "genesis_mt5_instrument_endpoint": "/api/genesis/mt5/instrument?symbol={symbol}",
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
         "genesis_mt5_journal_recent_endpoint": "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25",
         "genesis_mt5_performance_endpoint": "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}",
@@ -212,6 +217,9 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_order_request_endpoint": "/api/genesis/mt5/order-request",
         "genesis_mt5_order_result_endpoint": "/api/genesis/mt5/order-result",
         "genesis_mt5_manual_tests_reset_endpoint": "/api/genesis/mt5/manual-tests/reset",
+        "genesis_mt5_metrics_exclude_old_proxy_endpoint": "/api/genesis/mt5/metrics/exclude-old-proxy",
+        "genesis_mt5_replay_run_endpoint": "/api/genesis/mt5/replay/run",
+        "genesis_mt5_replay_results_endpoint": "/api/genesis/mt5/replay/results?symbol={symbol}",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
@@ -4081,6 +4089,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/metrics/exclude-old-proxy":
+            result = post_genesis_mt5_metrics_exclude_old_proxy(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/replay/run":
+            result = post_genesis_mt5_replay_run(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if self._try_proxy_to_production(parsed, method="POST", body=body):
             return
 
@@ -4466,10 +4484,24 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/instrument":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_instrument(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if parsed.path == "/api/genesis/mt5/auto-forward-status":
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_auto_forward_status(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/replay/results":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_replay_results(symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
