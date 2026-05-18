@@ -128,12 +128,26 @@ class MT5SignalRouter:
 
     def signal(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         clean = sanitize_payload(payload or {})
-        symbol = str(clean.get("symbol") or clean.get("ticker") or "").upper().strip()
-        event = self.journal.save("mt5_signals", symbol, {**clean, "timestamp": _now()})
-        shadow = self.shadow.record_signal(clean) if symbol else {"created": False, "status": "missing_symbol"}
+        symbol = _signal_symbol(clean)
+        signal_status = "mt5_signal_recorded" if symbol else "missing_symbol"
+        signal_payload = {
+            **clean,
+            "symbol": symbol,
+            "status": signal_status,
+            "signal_status": signal_status,
+            "signal_error": "" if symbol else "missing_symbol",
+            "timestamp": _now(),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        event = self.journal.save("mt5_signals", symbol or "UNKNOWN", signal_payload)
+        shadow = self.shadow.record_signal(signal_payload) if symbol else {"created": False, "status": "missing_symbol", "reason": "missing_symbol"}
         return {
             "ok": bool(symbol),
-            "status": "mt5_signal_recorded" if symbol else "missing_symbol",
+            "status": signal_status,
+            "symbol": symbol,
+            "reason": "" if symbol else "missing_symbol",
             "event": event,
             "shadow": shadow,
             "order_executed": False,
@@ -440,6 +454,32 @@ def _first_event(items: list[dict[str, Any]], event_type: str) -> dict[str, Any]
         if item.get("event_type") == event_type:
             return item
     return None
+
+
+def _signal_symbol(payload: dict[str, Any]) -> str:
+    candidates: list[Any] = [
+        payload.get("symbol"),
+        payload.get("Symbol"),
+        payload.get("ticker"),
+        payload.get("Ticker"),
+    ]
+    nested_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    event_payload = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+    event_nested_payload = event_payload.get("payload") if isinstance(event_payload.get("payload"), dict) else {}
+    for container in (nested_payload, event_payload, event_nested_payload):
+        candidates.extend(
+            [
+                container.get("symbol"),
+                container.get("Symbol"),
+                container.get("ticker"),
+                container.get("Ticker"),
+            ]
+        )
+    for candidate in candidates:
+        symbol = str(candidate or "").upper().strip()
+        if symbol:
+            return symbol
+    return ""
 
 
 def _unique_symbols(items: list[dict[str, Any]]) -> list[str]:

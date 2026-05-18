@@ -4,7 +4,7 @@
 //| No real trading by default.                                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "11.10"
+#property version   "11.11"
 #property description "Genesis MT5 Bridge EA. Journal/demo bridge with kill switch enabled by default."
 
 #include <Trade/Trade.mqh>
@@ -34,6 +34,16 @@ double lastNoTradeScore = 0.0;
 datetime lastPoll = 0;
 datetime lastTickSent = 0;
 datetime lastJournalEvent = 0;
+int lastSignalHttpCode = 0;
+int lastTickHttpCode = 0;
+int lastDecisionHttpCode = 0;
+int lastAccountHttpCode = 0;
+string lastSignalStatus = "never";
+string lastTickStatus = "never";
+string lastDecisionStatus = "never";
+string lastAccountStatus = "never";
+string lastError = "";
+string lastResponseShort = "";
 
 int OnInit()
 {
@@ -65,7 +75,7 @@ void OnTimer()
 void PollDecision()
 {
    string url = GenesisBaseUrl + "/api/genesis/mt5/decision?symbol=" + _Symbol;
-   string response = HttpGet(url);
+   string response = GetJson(url, "decision", lastDecisionHttpCode, lastDecisionStatus);
    if(StringLen(response) <= 0)
    {
       DrawPanel("WAIT", "no_response_from_genesis");
@@ -120,7 +130,7 @@ void SyncAccount()
    payload += "\"trade_mode\":\"" + TradeModeText() + "\",";
    payload += "\"broker_touched\":false";
    payload += "}";
-   HttpPost(GenesisBaseUrl + "/api/genesis/mt5/account-sync", payload);
+   PostJson(GenesisBaseUrl + "/api/genesis/mt5/account-sync", payload, "account-sync", lastAccountHttpCode, lastAccountStatus);
 }
 
 void SendTick()
@@ -137,6 +147,7 @@ void SendTick()
    payload += "\"spread\":" + DoubleToString(ask - bid, _Digits) + ",";
    payload += "\"spread_points\":" + DoubleToString(CurrentSpreadPoints(), 1) + ",";
    payload += "\"timeframe\":\"" + TimeframeText() + "\",";
+   payload += "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\",";
    payload += "\"account_id\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\",";
    payload += "\"broker\":\"" + EscapeJson(AccountInfoString(ACCOUNT_COMPANY)) + "\",";
    payload += "\"server\":\"" + EscapeJson(AccountInfoString(ACCOUNT_SERVER)) + "\",";
@@ -146,16 +157,24 @@ void SendTick()
    payload += "\"order_executed\":false,";
    payload += "\"order_policy\":\"journal_only_no_broker\"";
    payload += "}";
-   HttpPost(GenesisBaseUrl + "/api/genesis/mt5/tick", payload);
+   PostJson(GenesisBaseUrl + "/api/genesis/mt5/tick", payload, "tick", lastTickHttpCode, lastTickStatus);
    lastTickSent = TimeCurrent();
 }
 
 void SendSignalJournal(string decision, string rawDecision)
 {
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double last = LastMarketPrice();
+   double spread = ask - bid;
    string payload = "{";
-   payload += "\"source\":\"mt5_ea\",";
+   payload += "\"source\":\"mt5_bridge\",";
+   payload += "\"event_type\":\"mt5_signal\",";
    payload += "\"symbol\":\"" + _Symbol + "\",";
    payload += "\"decision\":\"" + decision + "\",";
+   payload += "\"timeframe\":\"" + TimeframeText() + "\",";
+   payload += "\"price\":" + DoubleToString(last, _Digits) + ",";
+   payload += "\"message\":\"MT5 bridge signal\",";
    payload += "\"confidence\":\"" + lastConfidence + "\",";
    payload += "\"reason\":\"" + EscapeJson(lastReason) + "\",";
    payload += "\"risk_pct\":" + DoubleToString(lastRiskPct, 4) + ",";
@@ -166,10 +185,23 @@ void SendSignalJournal(string decision, string rawDecision)
    payload += "\"journal_only\":" + BoolJson(JournalOnly) + ",";
    payload += "\"allow_live_trading\":" + BoolJson(AllowLiveTrading) + ",";
    payload += "\"kill_switch\":" + BoolJson(KillSwitch) + ",";
+   payload += "\"payload\":{";
+   payload += "\"symbol\":\"" + _Symbol + "\",";
+   payload += "\"timeframe\":\"" + TimeframeText() + "\",";
+   payload += "\"price\":" + DoubleToString(last, _Digits) + ",";
+   payload += "\"bid\":" + DoubleToString(bid, _Digits) + ",";
+   payload += "\"ask\":" + DoubleToString(ask, _Digits) + ",";
+   payload += "\"spread\":" + DoubleToString(spread, _Digits) + ",";
+   payload += "\"account\":\"" + IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)) + "\",";
+   payload += "\"broker\":\"" + EscapeJson(AccountInfoString(ACCOUNT_COMPANY)) + "\",";
+   payload += "\"server\":\"" + EscapeJson(AccountInfoString(ACCOUNT_SERVER)) + "\",";
+   payload += "\"is_demo\":" + BoolJson(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO);
+   payload += "},";
    payload += "\"broker_touched\":false,";
+   payload += "\"order_executed\":false,";
    payload += "\"order_policy\":\"journal_only_no_broker\"";
    payload += "}";
-   HttpPost(GenesisBaseUrl + "/api/genesis/mt5/signal", payload);
+   PostJson(GenesisBaseUrl + "/api/genesis/mt5/signal", payload, "signal", lastSignalHttpCode, lastSignalStatus);
    lastJournalEvent = TimeCurrent();
 }
 
@@ -189,7 +221,9 @@ void RequestOrderJournal(string decision)
    payload += "\"no_trade_score\":" + DoubleToString(lastNoTradeScore, 0) + ",";
    payload += "\"broker_touched\":false";
    payload += "}";
-   HttpPost(GenesisBaseUrl + "/api/genesis/mt5/order-request", payload);
+   int orderRequestCode = 0;
+   string orderRequestStatus = "";
+   PostJson(GenesisBaseUrl + "/api/genesis/mt5/order-request", payload, "order-request", orderRequestCode, orderRequestStatus);
    lastJournalEvent = TimeCurrent();
 }
 
@@ -239,11 +273,28 @@ void ExecuteDemoOrder(string decision)
    resultPayload += "\"broker_touched\":false,";
    resultPayload += "\"order_policy\":\"demo_only\"";
    resultPayload += "}";
-   HttpPost(GenesisBaseUrl + "/api/genesis/mt5/order-result", resultPayload);
+   int orderResultCode = 0;
+   string orderResultStatus = "";
+   PostJson(GenesisBaseUrl + "/api/genesis/mt5/order-result", resultPayload, "order-result", orderResultCode, orderResultStatus);
    lastJournalEvent = TimeCurrent();
 }
 
-string HttpGet(string url)
+bool JsonToCharArray(string json, char &data[])
+{
+   ArrayResize(data, 0);
+   int copied = StringToCharArray(json, data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(copied <= 0)
+      return false;
+   int size = copied;
+   if(ArraySize(data) > 0 && data[ArraySize(data) - 1] == 0)
+      size = copied - 1;
+   if(size < 0)
+      size = 0;
+   ArrayResize(data, size);
+   return true;
+}
+
+string GetJson(string url, string label, int &httpCode, string &status)
 {
    char data[];
    char result[];
@@ -251,29 +302,62 @@ string HttpGet(string url)
    string resultHeaders = "";
    ResetLastError();
    int code = WebRequest("GET", url, headers, 5000, data, result, resultHeaders);
+   httpCode = code;
+   string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   lastResponseShort = ShortText(response, 220);
    if(code < 200 || code >= 300)
    {
-      Print("GET failed code=", code, " err=", GetLastError(), " url=", url);
+      status = "http_error";
+      lastError = label + " GET HTTP " + IntegerToString(code) + " err=" + IntegerToString(GetLastError());
+      Print("GET ", label, " failed code=", code, " err=", GetLastError(), " url=", url, " response=", lastResponseShort);
       return "";
    }
-   return CharArrayToString(result);
+   status = "ok";
+   return response;
 }
 
-string HttpPost(string url, string payload)
+string PostJson(string url, string payload, string label, int &httpCode, string &status)
 {
    char data[];
    char result[];
    string headers = "Content-Type: application/json\r\n";
    string resultHeaders = "";
-   StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
-   ResetLastError();
-   int code = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
-   if(code < 200 || code >= 300)
+   if(!JsonToCharArray(payload, data))
    {
-      Print("POST failed code=", code, " err=", GetLastError(), " url=", url);
+      httpCode = -1;
+      status = "json_encode_error";
+      lastError = label + " json_encode_error";
+      Print("POST ", label, " failed before WebRequest: json_encode_error");
       return "";
    }
-   return CharArrayToString(result);
+   ResetLastError();
+   int code = WebRequest("POST", url, headers, 5000, data, result, resultHeaders);
+   httpCode = code;
+   string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   lastResponseShort = ShortText(response, 220);
+   if(code < 200 || code >= 300)
+   {
+      status = "http_error";
+      lastError = label + " POST HTTP " + IntegerToString(code) + " err=" + IntegerToString(GetLastError());
+      Print("POST ", label, " failed code=", code, " err=", GetLastError(), " url=", url, " response=", lastResponseShort);
+      return "";
+   }
+   status = "ok";
+   return response;
+}
+
+string HttpGet(string url)
+{
+   int code = 0;
+   string status = "";
+   return GetJson(url, "compat-get", code, status);
+}
+
+string HttpPost(string url, string payload)
+{
+   int code = 0;
+   string status = "";
+   return PostJson(url, payload, "compat-post", code, status);
 }
 
 void DrawPanel(string decision, string reason)
@@ -289,6 +373,13 @@ void DrawPanel(string decision, string reason)
    text += "No-trade score: " + DoubleToString(lastNoTradeScore, 0) + "\n";
    text += "Last tick sent: " + TimeLabel(lastTickSent) + "\n";
    text += "Last journal event: " + TimeLabel(lastJournalEvent) + "\n";
+   text += "Last signal status: " + lastSignalStatus + "\n";
+   text += "Last signal HTTP code: " + IntegerToString(lastSignalHttpCode) + "\n";
+   text += "Last tick status: " + lastTickStatus + "\n";
+   text += "Last tick HTTP code: " + IntegerToString(lastTickHttpCode) + "\n";
+   text += "Last decision HTTP code: " + IntegerToString(lastDecisionHttpCode) + "\n";
+   text += "Last error: " + ShortText(lastError, 80) + "\n";
+   text += "Last response short: " + ShortText(lastResponseShort, 100) + "\n";
    text += "Broker touched: false\n";
    text += "Order executed: false\n";
    text += "JournalOnly: " + (JournalOnly ? "true" : "false") + "\n";
@@ -372,6 +463,16 @@ string TimeLabel(datetime value)
    if(value <= 0)
       return "never";
    return TimeToString(value, TIME_DATE|TIME_SECONDS);
+}
+
+string ShortText(string value, int maxLen)
+{
+   string clean = value;
+   StringReplace(clean, "\r", " ");
+   StringReplace(clean, "\n", " ");
+   if(StringLen(clean) <= maxLen)
+      return clean;
+   return StringSubstr(clean, 0, maxLen);
 }
 
 string BoolJson(bool value)

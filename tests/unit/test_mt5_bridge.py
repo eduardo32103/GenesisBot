@@ -194,6 +194,36 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertTrue(store.get_mt5_events("mt5_order_requests", "BTCUSD", limit=5))
             self.assertTrue(store.get_mt5_events("mt5_risk_blocks", "BTCUSD", limit=5))
 
+    def test_mt5_signal_accepts_ea_payload_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            direct = mt5_signal({"symbol": "BTC", "event_type": "mt5_signal", "message": "direct"}, memory=store)
+            nested = mt5_signal({"source": "mt5_bridge", "payload": {"symbol": "BTC", "price": 34.95, "is_demo": True}}, memory=store)
+            event_nested = mt5_signal({"event": {"payload": {"Symbol": "BTC", "timeframe": "H1"}}}, memory=store)
+
+            self.assertTrue(direct["ok"])
+            self.assertEqual(direct["status"], "mt5_signal_recorded")
+            self.assertEqual(direct["symbol"], "BTC")
+            self.assertTrue(nested["ok"])
+            self.assertEqual(nested["symbol"], "BTC")
+            self.assertTrue(event_nested["ok"])
+            self.assertEqual(event_nested["symbol"], "BTC")
+            self.assertFalse(nested["broker_touched"])
+            self.assertFalse(nested["order_executed"])
+
+    def test_mt5_signal_accepts_full_ea_signal_payload_without_400_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            signal = mt5_signal(_ea_signal_payload(), memory=store)
+            recent = mt5_journal_recent(memory=store, symbol="BTC", limit=5)
+
+            self.assertTrue(signal["ok"])
+            self.assertEqual(signal["status"], "mt5_signal_recorded")
+            self.assertEqual(signal["symbol"], "BTC")
+            self.assertTrue(any(item["event_type"] == "mt5_signal" for item in recent["items"]))
+            self.assertFalse(signal["broker_touched"])
+            self.assertFalse(signal["order_executed"])
+
     def test_btc_allowed_symbol_does_not_trigger_symbol_not_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MT5_ALLOWED_SYMBOLS": "BTC"}):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
@@ -330,6 +360,26 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(status["open_trades"][0]["source"], "mt5_auto_forward")
             self.assertFalse(tick["broker_touched"])
             self.assertFalse(tick["order_executed"])
+
+    def test_ea_tick_payload_updates_status_and_auto_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _auto_forward_router(store)
+            signal = router.signal(_ea_signal_payload())
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_buy_context()):
+                tick = router.tick(_ea_tick_payload())
+
+            status = router.auto_forward_status(symbol="BTC")
+
+            self.assertTrue(signal["ok"])
+            self.assertEqual(tick["status"], "mt5_tick_recorded")
+            self.assertTrue(tick["auto_shadow_trade_created"])
+            self.assertEqual(status["last_signal_status"], "mt5_signal_recorded")
+            self.assertEqual(status["last_signal_error"], "")
+            self.assertIsNotNone(status["last_tick"])
+            self.assertFalse(status["broker_touched"])
+            self.assertFalse(status["order_executed"])
 
     def test_actionable_builder_generates_btc_entry_stop_and_take_profit(self) -> None:
         built = build_actionable_mt5_decision(
@@ -848,10 +898,55 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("input bool JournalOnly = true", content)
         self.assertIn("input bool KillSwitch = true", content)
         self.assertIn("/api/genesis/mt5/tick", content)
+        self.assertIn("/api/genesis/mt5/signal", content)
+        self.assertIn("Content-Type: application/json", content)
+        self.assertIn("JsonToCharArray", content)
+        self.assertIn("PostJson", content)
         self.assertIn("Last tick sent", content)
+        self.assertIn("Last signal HTTP code", content)
+        self.assertIn("Last tick HTTP code", content)
         self.assertIn("WebRequest", content)
         self.assertNotIn("FMP_API_KEY", content)
         self.assertNotIn("OPENAI_API_KEY", content)
+
+
+def _ea_signal_payload() -> dict[str, object]:
+    return {
+        "symbol": "BTC",
+        "source": "mt5_bridge",
+        "event_type": "mt5_signal",
+        "timeframe": "H1",
+        "price": 34.95,
+        "message": "MT5 bridge signal",
+        "payload": {
+            "symbol": "BTC",
+            "timeframe": "H1",
+            "price": 34.95,
+            "bid": 34.9,
+            "ask": 35.05,
+            "spread": 0.15,
+            "account": "5050589561",
+            "broker": "MetaQuotes-Demo",
+            "server": "MetaQuotes-Demo",
+            "is_demo": True,
+        },
+    }
+
+
+def _ea_tick_payload() -> dict[str, object]:
+    return {
+        "symbol": "BTC",
+        "bid": 34.9,
+        "ask": 35.05,
+        "last": 34.95,
+        "timeframe": "H1",
+        "spread": 0.15,
+        "account": "5050589561",
+        "broker": "MetaQuotes-Demo",
+        "server": "MetaQuotes-Demo",
+        "is_demo": True,
+        "source": "mt5_bridge",
+    }
 
 
 def _auto_forward_router(store: MemoryStore) -> MT5SignalRouter:

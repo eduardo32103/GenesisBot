@@ -191,6 +191,7 @@ class MT5AutoForward:
     def status(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         last_tick = _latest_payload(self.memory, "mt5_ticks", clean_symbol)
+        last_signal = _latest_payload(self.memory, "mt5_signals", clean_symbol)
         last_decision = _latest_payload(self.memory, "mt5_decisions", clean_symbol)
         if last_decision:
             last_decision = {**last_decision, "reason": _reason_alias(last_decision.get("reason") or "")}
@@ -204,6 +205,9 @@ class MT5AutoForward:
             "symbol": clean_symbol,
             "auto_forward_enabled": not self.config.kill_switch,
             "last_tick": last_tick,
+            "last_signal": last_signal,
+            "last_signal_status": (last_signal or {}).get("signal_status") or (last_signal or {}).get("status") or "",
+            "last_signal_error": (last_signal or {}).get("signal_error") or "",
             "last_decision": last_decision,
             "last_reason": last_reason,
             "last_actionable": bool((last_decision or {}).get("actionable")),
