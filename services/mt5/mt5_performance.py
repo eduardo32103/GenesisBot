@@ -33,9 +33,15 @@ class MT5Performance:
         manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade)]
         included_trades = [trade for trade in trades if not _is_excluded(trade)]
         excluded_manual = [trade for trade in manual_trades if _is_excluded(trade)]
+        open_auto_trades = [trade for trade in auto_trades if trade.get("status") == "open"]
         summary_total = _summary_for_trades(included_trades)
         summary_auto = _summary_for_trades(auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
+        last_valid_decision = _latest_payload_by_actionable(decisions, True)
+        last_invalid_decision = _latest_payload_by_actionable(decisions, False)
+        last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
+        current_state_reason = "active_open_trade" if open_auto_trades else ""
+        last_reason = current_state_reason or _reason_alias((latest_decision or {}).get("reason") or "")
         summary = {
             **summary_auto,
             "total_signals": len(signals) + len(decisions) + len(order_requests),
@@ -69,8 +75,12 @@ class MT5Performance:
             "recent_manual_trades": sorted(manual_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "risk_blocks": [_journal_item(row) for row in risk_blocks],
             "last_decision": latest_decision,
-            "last_reason": _reason_alias((latest_decision or {}).get("reason") or ""),
-            "genesis_reading": _reading(clean_symbol, summary_auto, no_trade_metrics, hedge_metrics),
+            "last_valid_decision": last_valid_decision,
+            "last_invalid_decision": last_invalid_decision,
+            "last_block_reason": last_block_reason,
+            "current_state_reason": current_state_reason,
+            "last_reason": last_reason,
+            "genesis_reading": _reading(clean_symbol, summary_auto, no_trade_metrics, hedge_metrics, current_state_reason),
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -108,6 +118,10 @@ class MT5Performance:
             "sample_warning": report.get("auto_sample_warning") or "",
             "genesis_reading": report.get("genesis_reading") or "",
             "last_reason": report.get("last_reason") or "",
+            "last_valid_decision": report.get("last_valid_decision"),
+            "last_invalid_decision": report.get("last_invalid_decision"),
+            "last_block_reason": report.get("last_block_reason") or "",
+            "current_state_reason": report.get("current_state_reason") or "",
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -285,6 +299,16 @@ def _latest_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return clean
 
 
+def _latest_payload_by_actionable(rows: list[dict[str, Any]], actionable: bool) -> dict[str, Any] | None:
+    for row in rows:
+        payload = _latest_payload([row])
+        if not payload:
+            continue
+        if bool(payload.get("actionable")) is actionable:
+            return payload
+    return None
+
+
 def _reason_alias(value: object) -> str:
     text = str(value or "")
     aliases = {
@@ -336,8 +360,10 @@ def _number(value: object) -> float | None:
         return None
 
 
-def _reading(symbol: str, summary: dict[str, Any], no_trade: dict[str, Any], hedge: dict[str, Any]) -> str:
+def _reading(symbol: str, summary: dict[str, Any], no_trade: dict[str, Any], hedge: dict[str, Any], current_state_reason: str = "") -> str:
     scope = symbol or "MT5"
+    if current_state_reason == "active_open_trade":
+        return f"{scope}: hay una operacion sombra abierta; Genesis espera cierre por TP/SL antes de abrir otra."
     if summary["shadow_trades"] == 0:
         return f"{scope}: forward test automatico listo, pero aun no hay shadow trades automaticos para medir ventaja."
     warning = _sample_warning(summary)

@@ -211,15 +211,19 @@ class MT5AutoForward:
         clean_symbol = _symbol(symbol)
         last_tick = _latest_payload(self.memory, "mt5_ticks", clean_symbol)
         last_signal = _latest_payload(self.memory, "mt5_signals", clean_symbol)
-        last_decision = _latest_payload(self.memory, "mt5_decisions", clean_symbol)
+        decision_rows = self.memory.get_mt5_events("mt5_decisions", clean_symbol or None, limit=50)
+        last_decision = _payload_from_row(decision_rows[0]) if decision_rows else None
         if last_decision:
             last_decision = {**last_decision, "reason": _reason_alias(last_decision.get("reason") or "")}
-        last_valid_decision = last_decision if bool((last_decision or {}).get("actionable")) else None
-        last_invalid_decision = last_decision if last_decision and not bool(last_decision.get("actionable")) else None
+        last_valid_decision = _latest_decision_by_actionable(decision_rows, True)
+        last_invalid_decision = _latest_decision_by_actionable(decision_rows, False)
         snapshot = self.shadow.snapshot(symbol=clean_symbol)
         performance = self.performance.report(symbol=clean_symbol)
         summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
-        last_reason = _reason_alias((last_decision or {}).get("reason") or "no_auto_forward_decision_yet")
+        open_trades = snapshot.get("open_trades") or []
+        last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
+        current_state_reason = "active_open_trade" if open_trades else ""
+        last_reason = current_state_reason or _reason_alias((last_decision or {}).get("reason") or "no_auto_forward_decision_yet")
         return {
             "ok": True,
             "status": "mt5_auto_forward_status_ready",
@@ -234,6 +238,8 @@ class MT5AutoForward:
             "last_decision": last_decision,
             "last_valid_decision": last_valid_decision,
             "last_invalid_decision": last_invalid_decision,
+            "last_block_reason": last_block_reason,
+            "current_state_reason": current_state_reason,
             "last_reason": last_reason,
             "last_actionable": bool((last_decision or {}).get("actionable")),
             "entry": (last_decision or {}).get("entry"),
@@ -241,7 +247,7 @@ class MT5AutoForward:
             "take_profit": (last_decision or {}).get("take_profit"),
             "risk_reward": (last_decision or {}).get("risk_reward") or 0.0,
             "last_shadow_trade": snapshot["items"][0] if snapshot.get("items") else None,
-            "open_trades": snapshot.get("open_trades") or [],
+            "open_trades": open_trades,
             "closed_trades": snapshot.get("closed_trades") or [],
             "manual_shadow_trades": summary.get("manual_shadow_trades", 0),
             "auto_shadow_trades": summary.get("auto_shadow_trades", 0),
@@ -430,7 +436,28 @@ def _latest_payload(memory: MemoryStore, collection: str, symbol: str) -> dict[s
     if not rows:
         return None
     payload = rows[0].get("payload")
-    return payload if isinstance(payload, dict) else None
+    return _clean_payload(payload) if isinstance(payload, dict) else None
+
+
+def _payload_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else None
+    return _clean_payload(payload) if isinstance(payload, dict) else None
+
+
+def _latest_decision_by_actionable(rows: list[dict[str, Any]], actionable: bool) -> dict[str, Any] | None:
+    for row in rows:
+        payload = _payload_from_row(row)
+        if not payload:
+            continue
+        if bool(payload.get("actionable")) is actionable:
+            return payload
+    return None
+
+
+def _clean_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(payload)
+    clean["reason"] = _reason_alias(clean.get("reason") or "")
+    return clean
 
 
 def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
