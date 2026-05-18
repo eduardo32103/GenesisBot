@@ -413,15 +413,18 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(first_tick["status"], "mt5_tick_recorded")
             self.assertEqual(second_tick["status"], "mt5_tick_recorded")
             self.assertTrue(store.get_mt5_events("mt5_ticks", "BTC", limit=5))
-            self.assertEqual(performance["summary_manual"]["shadow_trades"], 2)
-            self.assertEqual(performance["summary_manual"]["wins"], 1)
-            self.assertEqual(performance["summary_manual"]["losses"], 1)
-            self.assertEqual(performance["summary_manual"]["win_rate"], 50.0)
-            self.assertEqual(performance["summary_manual"]["profit_factor"], 2.0)
+            self.assertEqual(performance["summary_manual"]["shadow_trades"], 0)
+            self.assertEqual(performance["summary_manual"]["wins"], 0)
+            self.assertEqual(performance["summary_manual"]["losses"], 0)
+            self.assertEqual(performance["summary_manual"]["win_rate"], 0.0)
+            self.assertEqual(performance["summary_manual"]["profit_factor"], 0.0)
+            self.assertEqual(performance["summary_manual"]["excluded_from_main_metrics"], 2)
             self.assertEqual(shadow["count"], performance["summary"]["total_shadow_trades"])
             self.assertEqual(shadow["closed"], performance["summary_manual"]["closed"])
-            self.assertEqual(shadow["items"][0]["normalized_symbol"], "BTC_PROXY")
-            self.assertEqual(shadow["items"][0]["instrument_type"], "crypto_etf_proxy")
+            self.assertEqual(shadow["count"], 0)
+            self.assertEqual(shadow["excluded_count"], 2)
+            self.assertEqual(shadow["excluded_trades"][0]["normalized_symbol"], "BTC_PROXY")
+            self.assertIn(shadow["excluded_trades"][0]["instrument_type"], {"crypto_etf_proxy", "legacy_proxy"})
             self.assertEqual(forward["status"], "mt5_forward_test_ready")
             self.assertGreaterEqual(outcomes["count"], 2)
             self.assertFalse(performance["broker_touched"])
@@ -497,10 +500,11 @@ class MT5BridgeTests(unittest.TestCase):
 
             self.assertEqual(perf_btcusd["summary"]["total_shadow_trades"], 0)
             self.assertEqual(shadow_btcusd["count"], 0)
-            self.assertEqual(perf_btc["summary"]["total_shadow_trades"], 1)
-            self.assertEqual(shadow_btc["count"], 1)
-            self.assertEqual(shadow_btc["items"][0]["symbol"], "BTC")
-            self.assertEqual(shadow_btc["items"][0]["normalized_symbol"], "BTC_PROXY")
+            self.assertEqual(perf_btc["summary"]["total_shadow_trades"], 0)
+            self.assertEqual(shadow_btc["count"], 0)
+            self.assertEqual(shadow_btc["excluded_count"], 1)
+            self.assertEqual(shadow_btc["excluded_trades"][0]["symbol"], "BTC")
+            self.assertEqual(shadow_btc["excluded_trades"][0]["normalized_symbol"], "BTC_PROXY")
             self.assertFalse(shadow_btcusd["broker_touched"])
             self.assertFalse(shadow_btcusd["order_executed"])
 
@@ -510,10 +514,10 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
-                tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                tick = router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            trades = router.shadow_trades(symbol="BTC")
-            status = router.auto_forward_status(symbol="BTC")
+            trades = router.shadow_trades(symbol="BTCUSD")
+            status = router.auto_forward_status(symbol="BTCUSD")
 
             self.assertTrue(tick["ok"])
             self.assertTrue(tick["auto_forward"]["ok"])
@@ -650,9 +654,9 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_buy_context()):
-                tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                tick = router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            trade = router.shadow_trades(symbol="BTC")["open_trades"][0]
+            trade = router.shadow_trades(symbol="BTCUSD")["open_trades"][0]
 
             self.assertTrue(tick["auto_shadow_trade_created"])
             self.assertEqual(tick["auto_forward"]["decision"]["decision"], "BUY")
@@ -669,9 +673,9 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_sell_context()):
-                tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                tick = router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            trade = router.shadow_trades(symbol="BTC")["open_trades"][0]
+            trade = router.shadow_trades(symbol="BTCUSD")["open_trades"][0]
 
             self.assertTrue(tick["auto_shadow_trade_created"])
             self.assertEqual(tick["auto_forward"]["decision"]["decision"], "SELL")
@@ -815,12 +819,12 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
-                first = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
-                second = router.tick({"symbol": "BTC", "last": 101, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                first = router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                second = router.tick({"symbol": "BTCUSD", "last": 101, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            trades = router.shadow_trades(symbol="BTC")
-            status = router.auto_forward_status(symbol="BTC")
-            auto_performance = router.performance_auto(symbol="BTC", timeframe="H1")
+            trades = router.shadow_trades(symbol="BTCUSD")
+            status = router.auto_forward_status(symbol="BTCUSD")
+            auto_performance = router.performance_auto(symbol="BTCUSD", timeframe="H1")
 
             self.assertTrue(first["auto_shadow_trade_created"])
             self.assertFalse(second["auto_shadow_trade_created"])
@@ -846,9 +850,9 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_low_confidence_buy_context()):
-                tick = router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                tick = router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            performance = router.performance(symbol="BTC", timeframe="H1")
+            performance = router.performance(symbol="BTCUSD", timeframe="H1")
 
             self.assertFalse(tick["auto_shadow_trade_created"])
             self.assertEqual(tick["auto_forward"]["reason"], "confidence_low")
@@ -920,19 +924,19 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
 
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
-                router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
-                tp_tick = router.tick({"symbol": "BTC", "last": 110.5, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                tp_tick = router.tick({"symbol": "BTCUSD", "last": 110.5, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
             loss_store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "loss.sqlite3")
             loss_router = _auto_forward_router(loss_store)
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
-                loss_router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                loss_router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
-                sl_tick = loss_router.tick({"symbol": "BTC", "last": 94.5, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                sl_tick = loss_router.tick({"symbol": "BTCUSD", "last": 94.5, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            win_perf = router.performance(symbol="BTC", timeframe="H1")
-            loss_perf = loss_router.performance(symbol="BTC", timeframe="H1")
+            win_perf = router.performance(symbol="BTCUSD", timeframe="H1")
+            loss_perf = loss_router.performance(symbol="BTCUSD", timeframe="H1")
 
             self.assertEqual(win_perf["summary"]["wins"], 1)
             self.assertEqual(win_perf["summary"]["losses"], 0)
@@ -947,7 +951,7 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
             mt5_order_request(
                 {
-                    "symbol": "BTC",
+                    "symbol": "BTCUSD",
                     "action": "BUY",
                     "entry": 100,
                     "stop_loss": 95,
@@ -960,24 +964,25 @@ class MT5BridgeTests(unittest.TestCase):
                 memory=store,
             )
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_sell_context()):
-                router.tick({"symbol": "BTC", "last": 130, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 130, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            performance = router.performance(symbol="BTC", timeframe="H1")
-            facade = mt5_auto_forward_status(memory=store, symbol="BTC")
+            performance = router.performance(symbol="BTCUSD", timeframe="H1")
+            facade = mt5_auto_forward_status(memory=store, symbol="BTCUSD")
 
-            self.assertEqual(performance["summary"]["manual_shadow_trades"], 1)
+            self.assertEqual(performance["summary"]["manual_shadow_trades"], 0)
             self.assertEqual(performance["summary"]["auto_shadow_trades"], 1)
-            self.assertEqual(performance["summary"]["total_shadow_trades"], 2)
+            self.assertEqual(performance["summary"]["total_shadow_trades"], 1)
             self.assertEqual(performance["summary"]["shadow_trades"], 1)
             self.assertEqual(performance["summary_auto"]["shadow_trades"], 1)
-            self.assertEqual(performance["summary_manual"]["shadow_trades"], 1)
-            self.assertEqual(performance["summary_total"]["shadow_trades"], 2)
+            self.assertEqual(performance["summary_manual"]["shadow_trades"], 0)
+            self.assertEqual(performance["summary_manual"]["excluded_from_main_metrics"], 1)
+            self.assertEqual(performance["summary_total"]["shadow_trades"], 1)
             self.assertTrue(facade["ok"])
             self.assertIn("entry", facade)
             self.assertIn("stop_loss", facade)
             self.assertIn("take_profit", facade)
             self.assertIn("risk_reward", facade)
-            self.assertEqual(facade["manual_shadow_trades"], 1)
+            self.assertEqual(facade["manual_shadow_trades"], 0)
             self.assertEqual(facade["auto_shadow_trades"], 1)
             self.assertFalse(performance["broker_touched"])
             self.assertFalse(performance["order_executed"])
@@ -988,7 +993,7 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
             mt5_order_request(
                 {
-                    "symbol": "BTC",
+                    "symbol": "BTCUSD",
                     "action": "BUY",
                     "entry": 100,
                     "stop_loss": 95,
@@ -1001,15 +1006,16 @@ class MT5BridgeTests(unittest.TestCase):
                 memory=store,
             )
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_buy_context()):
-                router.tick({"symbol": "BTC", "last": 120, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 120, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            auto = mt5_performance_auto(memory=store, symbol="BTC", timeframe="H1")
-            total = mt5_performance(memory=store, symbol="BTC", timeframe="H1")
+            auto = mt5_performance_auto(memory=store, symbol="BTCUSD", timeframe="H1")
+            total = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
 
             self.assertTrue(auto["ok"])
             self.assertEqual(auto["summary"]["shadow_trades"], 1)
             self.assertEqual(total["summary_auto"]["shadow_trades"], 1)
-            self.assertEqual(total["summary_manual"]["shadow_trades"], 1)
+            self.assertEqual(total["summary_manual"]["shadow_trades"], 0)
+            self.assertEqual(total["summary_manual"]["excluded_from_main_metrics"], 1)
             self.assertIn("Muestra automatica insuficiente", auto["sample_warning"])
             self.assertFalse(auto["broker_touched"])
             self.assertFalse(auto["order_executed"])
@@ -1020,7 +1026,7 @@ class MT5BridgeTests(unittest.TestCase):
             router = _auto_forward_router(store)
             mt5_order_request(
                 {
-                    "symbol": "BTC",
+                    "symbol": "BTCUSD",
                     "action": "BUY",
                     "entry": 100,
                     "stop_loss": 95,
@@ -1033,11 +1039,11 @@ class MT5BridgeTests(unittest.TestCase):
                 memory=store,
             )
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_sell_context()):
-                router.tick({"symbol": "BTC", "last": 130, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 130, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            reset = mt5_manual_tests_reset({"symbol": "BTC"}, memory=store)
-            report = mt5_performance(memory=store, symbol="BTC", timeframe="H1")
-            trades = mt5_shadow_trades(memory=store, symbol="BTC")
+            reset = mt5_manual_tests_reset({"symbol": "BTCUSD"}, memory=store)
+            report = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
+            trades = mt5_shadow_trades(memory=store, symbol="BTCUSD")
 
             self.assertTrue(reset["ok"])
             self.assertEqual(reset["updated"], 1)
@@ -1207,9 +1213,9 @@ class MT5BridgeTests(unittest.TestCase):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             router = _auto_forward_router(store)
             with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_generated_buy_context()):
-                router.tick({"symbol": "BTC", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
 
-            response = route_message("que porcentaje automatico lleva BTC e ignora pruebas manuales", memory=store)
+            response = route_message("que porcentaje automatico lleva BTCUSD e ignora pruebas manuales", memory=store)
 
             self.assertTrue(response["ok"])
             self.assertIn("auto win rate", response["answer"])
@@ -1243,10 +1249,12 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertTrue(request["shadow_trade_created"])
             self.assertTrue(request["shadow_trade_id"].startswith("shadow-"))
             self.assertEqual(request["order_policy"], "journal_only_no_broker")
-            self.assertEqual(trades["open"], 1)
+            self.assertEqual(trades["open"], 0)
+            self.assertEqual(trades["excluded_count"], 1)
             self.assertEqual(trades["closed"], 0)
             self.assertEqual(performance["summary"]["actionable_signals"], 1)
-            self.assertEqual(performance["summary_manual"]["shadow_trades"], 1)
+            self.assertEqual(performance["summary_manual"]["shadow_trades"], 0)
+            self.assertEqual(performance["summary_manual"]["excluded_from_main_metrics"], 1)
 
     def test_order_request_shadow_trade_closes_win_and_loss_from_ticks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1285,11 +1293,13 @@ class MT5BridgeTests(unittest.TestCase):
             performance = mt5_performance(memory=store, symbol="BTC", timeframe="H1")
 
             self.assertEqual(trades["open"], 0)
-            self.assertEqual(trades["closed"], 2)
-            self.assertEqual(performance["summary_manual"]["wins"], 1)
-            self.assertEqual(performance["summary_manual"]["losses"], 1)
-            self.assertEqual(performance["summary_manual"]["win_rate"], 50.0)
-            self.assertEqual(performance["summary_manual"]["profit_factor"], 2.0)
+            self.assertEqual(trades["closed"], 0)
+            self.assertEqual(trades["excluded_count"], 2)
+            self.assertEqual(performance["summary_manual"]["wins"], 0)
+            self.assertEqual(performance["summary_manual"]["losses"], 0)
+            self.assertEqual(performance["summary_manual"]["win_rate"], 0.0)
+            self.assertEqual(performance["summary_manual"]["profit_factor"], 0.0)
+            self.assertEqual(performance["summary_manual"]["excluded_from_main_metrics"], 2)
             self.assertFalse(trades["broker_touched"])
             self.assertFalse(trades["order_executed"])
 

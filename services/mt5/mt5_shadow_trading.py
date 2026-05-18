@@ -255,7 +255,7 @@ class MT5ShadowTrading:
         }
 
     def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        return [trade for trade in self.trades(symbol) if trade.get("status") == "open" and is_main_metric_trade(trade, query_symbol=symbol or "")]
+        return [trade for trade in self.trades(symbol) if trade.get("status") == "open" and _is_main_for_query(trade, symbol or "")]
 
     def exclude_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
@@ -320,8 +320,9 @@ class MT5ShadowTrading:
     def snapshot(self, symbol: str | None = None, limit: int = 100) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         raw_trades = self.trades(clean_symbol, limit=limit)
-        excluded_trades = [trade for trade in raw_trades if not is_main_metric_trade(trade, query_symbol=clean_symbol)]
-        trades = [trade for trade in raw_trades if is_main_metric_trade(trade, query_symbol=clean_symbol)]
+        trades = [trade for trade in raw_trades if _is_main_for_query(trade, clean_symbol)]
+        excluded_trades = [trade for trade in raw_trades if is_excluded_trade(trade) or trade not in trades]
+        legacy_trades = [trade for trade in excluded_trades if str(trade.get("instrument_type") or "").casefold() == "legacy_proxy"]
         open_trades = [trade for trade in trades if trade.get("status") == "open"]
         closed_trades = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
         return {
@@ -334,6 +335,7 @@ class MT5ShadowTrading:
             "open_trades": open_trades,
             "closed_trades": closed_trades,
             "excluded_trades": excluded_trades,
+            "legacy_trades": legacy_trades,
             "excluded_count": len(excluded_trades),
             "count": len(trades),
             "open": len(open_trades),
@@ -514,27 +516,56 @@ def _should_exclude_old_proxy(trade: dict[str, Any]) -> bool:
     return False
 
 
+def is_excluded_trade(trade: dict[str, Any]) -> bool:
+    source = str(trade.get("source") or "").casefold()
+    normalized_symbol = _trade_normalized_symbol(trade)
+    instrument_type = str(trade.get("instrument_type") or "").casefold()
+    original = _symbol(trade.get("original_symbol") or trade.get("symbol"))
+    last_price = _number(trade.get("last_price")) or 0.0
+    exit_price = _number(trade.get("exit_price")) or 0.0
+    if bool(trade.get("excluded_from_main_metrics")):
+        return True
+    if str(trade.get("excluded_reason") or "").strip():
+        return True
+    if normalized_symbol == "BTC_PROXY":
+        return True
+    if instrument_type in {"legacy_proxy", "crypto_etf_proxy"}:
+        return True
+    if bool(trade.get("manual_test")):
+        return True
+    if source.startswith("manual_"):
+        return True
+    if original == "BTC" and 0 < exit_price < 100 and last_price > 1000:
+        return True
+    return False
+
+
+def is_main_btcusd_trade(trade: dict[str, Any]) -> bool:
+    return (
+        _trade_normalized_symbol(trade) == "BTCUSD"
+        and str(trade.get("instrument_type") or "").casefold() == "crypto_spot"
+        and bool(trade.get("is_spot_crypto"))
+        and not is_excluded_trade(trade)
+        and not bool(trade.get("manual_test"))
+    )
+
+
 def is_main_metric_trade(trade: dict[str, Any], *, query_symbol: str = "") -> bool:
     query_normalized = _normalized_symbol(query_symbol) if query_symbol else ""
-    strict_btcusd = query_normalized == "BTCUSD"
+    if query_normalized == "BTCUSD":
+        return is_main_btcusd_trade(trade)
     trade_normalized = _trade_normalized_symbol(trade)
-    source = str(trade.get("source") or "").casefold()
-    instrument_type = str(trade.get("instrument_type") or "").casefold()
-    if bool(trade.get("excluded_from_main_metrics")):
-        return False
-    if str(trade.get("excluded_reason") or "").strip():
-        return False
-    if strict_btcusd and bool(trade.get("manual_test")):
-        return False
-    if strict_btcusd and source.startswith("manual_"):
-        return False
-    if _is_legacy_proxy_trade(trade):
-        return False
-    if strict_btcusd and instrument_type in {"crypto_etf_proxy", "legacy_proxy"}:
+    if is_excluded_trade(trade):
         return False
     if query_normalized and trade_normalized and trade_normalized != query_normalized:
         return False
     return True
+
+
+def _is_main_for_query(trade: dict[str, Any], query_symbol: str) -> bool:
+    if _normalized_symbol(query_symbol) == "BTCUSD":
+        return is_main_btcusd_trade(trade)
+    return is_main_metric_trade(trade, query_symbol=query_symbol)
 
 
 def _normalize_trade_for_read(trade: dict[str, Any]) -> dict[str, Any]:
