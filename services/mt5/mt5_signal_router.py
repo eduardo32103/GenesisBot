@@ -279,6 +279,9 @@ class MT5SignalRouter:
     def performance(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         return self.performance_engine.report(symbol=symbol, timeframe=timeframe)
 
+    def performance_auto(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return self.performance_engine.auto_report(symbol=symbol, timeframe=timeframe)
+
     def forward_test(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         return self.forward_engine.forward_test(symbol=symbol, timeframe=timeframe)
 
@@ -290,6 +293,9 @@ class MT5SignalRouter:
 
     def auto_forward_status(self, *, symbol: str = "") -> dict[str, Any]:
         return self.forward_engine.auto_forward_status(symbol=symbol)
+
+    def reset_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.shadow.exclude_manual_tests(symbol=symbol)
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}

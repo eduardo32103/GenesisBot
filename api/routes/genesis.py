@@ -12,10 +12,12 @@ from services.mt5.mt5_bridge import (
     mt5_forward_test,
     mt5_health,
     mt5_journal_recent,
+    mt5_manual_tests_reset,
     mt5_order_request,
     mt5_order_result,
     mt5_outcomes_recent,
     mt5_performance,
+    mt5_performance_auto,
     mt5_signal,
     mt5_shadow_trades,
     mt5_status,
@@ -59,6 +61,10 @@ def get_genesis_mt5_performance(symbol: str = "", timeframe: str = "") -> dict[s
     return mt5_performance(symbol=symbol, timeframe=timeframe)
 
 
+def get_genesis_mt5_performance_auto(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_performance_auto(symbol=symbol, timeframe=timeframe)
+
+
 def get_genesis_mt5_forward_test(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return mt5_forward_test(symbol=symbol, timeframe=timeframe)
 
@@ -97,3 +103,7 @@ def post_genesis_mt5_order_request(payload: dict[str, Any] | None = None) -> dic
 
 def post_genesis_mt5_order_result(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_order_result(payload)
+
+
+def post_genesis_mt5_manual_tests_reset(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_manual_tests_reset(payload)

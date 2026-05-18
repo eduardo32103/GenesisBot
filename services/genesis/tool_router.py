@@ -46,6 +46,26 @@ def route_message(
     price_agent = get_price_agent()
     composer = get_response_composer()
 
+    if route.intent != "mt5_bridge" and _should_route_mt5_forward_metrics(clean):
+        mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker)
+        performance = mt5_performance(symbol=mt5_symbol, memory=store)
+        answer = _mt5_performance_answer(performance)
+        store.save_event(
+            "mt5_forward_test_query",
+            {"message": clean, "symbol": mt5_symbol, "summary_auto": performance.get("summary_auto"), "broker_touched": False},
+            "mt5_bridge",
+            "media",
+        )
+        return _payload(
+            "mt5_bridge",
+            answer,
+            [mt5_symbol] if mt5_symbol else [],
+            extra={"mt5": performance, "performance": performance, "kind": "mt5_forward_test"},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
+
     if route.intent == "greeting":
         answer = composer.greeting()
         store.save_event("greeting", {"message": clean}, "genesis", "alta")
@@ -118,18 +138,19 @@ def route_message(
 
     if route.intent == "mt5_bridge":
         if _mentions_mt5_forward_metrics(clean):
-            performance = mt5_performance(symbol=explicit_ticker, memory=store)
+            mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker)
+            performance = mt5_performance(symbol=mt5_symbol, memory=store)
             answer = _mt5_performance_answer(performance)
             store.save_event(
                 "mt5_forward_test_query",
-                {"message": clean, "symbol": explicit_ticker, "summary": performance.get("summary"), "broker_touched": False},
+                {"message": clean, "symbol": mt5_symbol, "summary_auto": performance.get("summary_auto"), "broker_touched": False},
                 "mt5_bridge",
                 "media",
             )
             return _payload(
                 "mt5_bridge",
                 answer,
-                [explicit_ticker] if explicit_ticker else [],
+                [mt5_symbol] if mt5_symbol else [],
                 extra={"mt5": performance, "performance": performance, "kind": "mt5_forward_test"},
                 memory=store,
                 prompt=clean,
@@ -490,6 +511,12 @@ def _mentions_mt5_forward_metrics(message: str) -> bool:
         for token in (
             "forward test",
             "shadow",
+            "automatico",
+            "automático",
+            "auto trades",
+            "auto win",
+            "auto profit",
+            "ignora pruebas manuales",
             "efectividad",
             "win rate",
             "profit factor",
@@ -505,17 +532,50 @@ def _mentions_mt5_forward_metrics(message: str) -> bool:
     )
 
 
+def _should_route_mt5_forward_metrics(message: str) -> bool:
+    text = _fold_prompt(message)
+    return any(
+        token in text
+        for token in (
+            "forward test",
+            "shadow",
+            "automatico",
+            "auto trades",
+            "auto win",
+            "auto profit",
+            "ignora pruebas manuales",
+            "pruebas manuales",
+            "efectividad",
+            "win rate",
+            "profit factor",
+            "como va el test",
+            "desempeno mt5",
+            "desempeÃ±o mt5",
+        )
+    )
+
+
+def _mt5_metrics_symbol(message: str, explicit_ticker: str) -> str:
+    text = _fold_prompt(message)
+    if "btc" in text or str(explicit_ticker or "").upper() in {"BTC", "BTC-USD", "BTCUSD", "BTCUSDT"}:
+        return "BTC"
+    return str(explicit_ticker or "").upper().strip()
+
+
 def _mt5_performance_answer(performance: dict[str, Any]) -> str:
-    summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+    summary = performance.get("summary_auto") if isinstance(performance.get("summary_auto"), dict) else performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+    manual = performance.get("summary_manual") if isinstance(performance.get("summary_manual"), dict) else {}
+    warning = performance.get("auto_sample_warning") or summary.get("sample_warning") or ""
     symbol = performance.get("symbol") or "MT5"
     return (
-        f"MT5 Forward Test {symbol}: win rate {summary.get('win_rate', 0)}%, "
-        f"profit factor {summary.get('profit_factor', 0)}, expectancy {summary.get('expectancy', 0)}R, "
-        f"P/L simulado {summary.get('net_pnl', 0)}R y drawdown {summary.get('max_drawdown', 0)}R. "
-        f"Shadow trades {summary.get('shadow_trades', 0)} "
-        f"(auto {summary.get('auto_shadow_trades', 0)}, manual {summary.get('manual_shadow_trades', 0)}): "
+        f"MT5 Forward Test automatico {symbol}: auto win rate {summary.get('win_rate', 0)}%, "
+        f"auto profit factor {summary.get('profit_factor', 0)}, expectancy {summary.get('expectancy', 0)}R, "
+        f"P/L simulado auto {summary.get('net_pnl', 0)}R y drawdown {summary.get('max_drawdown', 0)}R. "
+        f"Auto trades {summary.get('shadow_trades', 0)}: "
         f"{summary.get('wins', 0)} ganadoras, "
         f"{summary.get('losses', 0)} perdedoras y {summary.get('open', 0)} abiertas. "
+        f"Pruebas manuales separadas: {manual.get('shadow_trades', 0)}. "
+        f"{warning + ' ' if warning else ''}"
         "Todo sigue journal-only: order_executed=false, broker_touched=false."
     )
 

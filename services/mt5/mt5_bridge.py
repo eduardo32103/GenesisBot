@@ -30,6 +30,10 @@ def mt5_performance(*, memory: MemoryStore | None = None, symbol: str = "", time
     return build_router(memory).performance(symbol=symbol, timeframe=timeframe)
 
 
+def mt5_performance_auto(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).performance_auto(symbol=symbol, timeframe=timeframe)
+
+
 def mt5_forward_test(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return build_router(memory).forward_test(symbol=symbol, timeframe=timeframe)
 
@@ -68,3 +72,8 @@ def mt5_order_request(payload: dict[str, Any] | None, *, memory: MemoryStore | N
 
 def mt5_order_result(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).order_result(payload)
+
+
+def mt5_manual_tests_reset(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    body = payload or {}
+    return build_router(memory).reset_manual_tests(symbol=str(body.get("symbol") or body.get("ticker") or ""))

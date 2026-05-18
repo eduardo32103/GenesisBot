@@ -95,6 +95,8 @@ class MT5ShadowTrading:
             "status": "open",
             "source": str(payload.get("source") or "mt5_bridge"),
             "auto_forward": bool(payload.get("auto_forward")),
+            "manual_test": not bool(payload.get("auto_forward")),
+            "excluded_from_main_metrics": bool(payload.get("excluded_from_main_metrics")),
             "risk_reward": _number(payload.get("risk_reward")) or 0.0,
             "max_favorable_excursion": 0.0,
             "max_adverse_excursion": 0.0,
@@ -140,6 +142,7 @@ class MT5ShadowTrading:
                 "confidence": intent.confidence,
                 "risk_reward": rr,
                 "source": clean.get("source") or "mt5_order_request_shadow",
+                "manual_test": True,
             }
         )
         if result.get("created") and isinstance(result.get("trade"), dict):
@@ -241,6 +244,34 @@ class MT5ShadowTrading:
 
     def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return [trade for trade in self.trades(symbol) if trade.get("status") == "open"]
+
+    def exclude_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
+        clean_symbol = _symbol(symbol)
+        updates = []
+        for trade in self.trades(clean_symbol):
+            if _is_auto_forward_trade(trade):
+                continue
+            update = {
+                **trade,
+                "manual_test": True,
+                "excluded_from_main_metrics": True,
+                "updated_at": _now(),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+            event = self.journal.save("mt5_shadow_trades", update["symbol"], update, confidence=update.get("confidence") or "media")
+            updates.append({"trade": update, "event": event})
+        return {
+            "ok": True,
+            "status": "manual_tests_excluded",
+            "symbol": clean_symbol,
+            "updated": len(updates),
+            "updates": updates,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
 
     def snapshot(self, symbol: str | None = None, limit: int = 100) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
@@ -439,6 +470,10 @@ def _risk_reward(action: str, entry: float, stop: float, target: float) -> float
     if action == "SELL" and not (target < entry < stop):
         return None
     return round(reward / risk, 4)
+
+
+def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:
+    return bool(trade.get("auto_forward")) or str(trade.get("source") or "").casefold() == "mt5_auto_forward"
 
 
 def _noise_threshold(reference: float, tick: dict[str, Any]) -> float:

@@ -56,6 +56,7 @@ from api.routes.genesis import (
     get_genesis_mt5_journal_recent,
     get_genesis_mt5_outcomes_recent,
     get_genesis_mt5_performance,
+    get_genesis_mt5_performance_auto,
     get_genesis_mt5_shadow_trades,
     get_genesis_mt5_status,
     get_genesis_portfolio_hedge,
@@ -63,6 +64,7 @@ from api.routes.genesis import (
     post_genesis_mt5_account_sync,
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
+    post_genesis_mt5_manual_tests_reset,
     post_genesis_mt5_signal,
     post_genesis_mt5_tick,
     post_genesis_tradingview_webhook,
@@ -197,6 +199,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
         "genesis_mt5_journal_recent_endpoint": "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25",
         "genesis_mt5_performance_endpoint": "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}",
+        "genesis_mt5_performance_auto_endpoint": "/api/genesis/mt5/performance/auto?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_forward_test_endpoint": "/api/genesis/mt5/forward-test?symbol={symbol}",
         "genesis_mt5_outcomes_recent_endpoint": "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25",
         "genesis_mt5_shadow_trades_endpoint": "/api/genesis/mt5/shadow-trades?symbol={symbol}",
@@ -206,6 +209,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_tick_endpoint": "/api/genesis/mt5/tick",
         "genesis_mt5_order_request_endpoint": "/api/genesis/mt5/order-request",
         "genesis_mt5_order_result_endpoint": "/api/genesis/mt5/order-result",
+        "genesis_mt5_manual_tests_reset_endpoint": "/api/genesis/mt5/manual-tests/reset",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
@@ -4070,6 +4074,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/manual-tests/reset":
+            result = post_genesis_mt5_manual_tests_reset(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if self._try_proxy_to_production(parsed, method="POST", body=body):
             return
 
@@ -4405,6 +4414,14 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             timeframe = (query.get("timeframe") or [""])[0]
             payload_data = get_genesis_mt5_performance(symbol=symbol, timeframe=timeframe)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/performance/auto":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_performance_auto(symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

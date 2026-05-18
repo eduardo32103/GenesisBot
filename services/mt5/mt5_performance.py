@@ -29,36 +29,21 @@ class MT5Performance:
         latest_decision = _latest_payload(decisions)
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
-        auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade)]
+        auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade) and not _is_excluded(trade)]
         manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade)]
-        closed = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
-        wins = [trade for trade in closed if trade.get("status") == "win"]
-        losses = [trade for trade in closed if trade.get("status") == "loss"]
-        open_trades = [trade for trade in trades if trade.get("status") == "open"]
-        pnls = [_pnl_value(trade) for trade in closed]
-        win_values = [value for value in pnls if value > 0]
-        loss_values = [value for value in pnls if value < 0]
-        gross_win = sum(win_values)
-        gross_loss = abs(sum(loss_values))
-        profit_factor = _profit_factor(gross_win, gross_loss)
+        included_trades = [trade for trade in trades if not _is_excluded(trade)]
+        excluded_manual = [trade for trade in manual_trades if _is_excluded(trade)]
+        summary_total = _summary_for_trades(included_trades)
+        summary_auto = _summary_for_trades(auto_trades)
+        summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
         summary = {
+            **summary_auto,
             "total_signals": len(signals) + len(decisions) + len(order_requests),
             "actionable_signals": sum(1 for row in signals + decisions + order_requests if _action(row) in {"BUY", "SELL"}),
-            "shadow_trades": len(trades),
-            "manual_shadow_trades": len(manual_trades),
-            "auto_shadow_trades": len(auto_trades),
-            "total_shadow_trades": len(trades),
-            "wins": len(wins),
-            "losses": len(losses),
-            "open": len(open_trades),
-            "win_rate": round((len(wins) / len(closed)) * 100, 2) if closed else 0.0,
-            "profit_factor": profit_factor,
-            "expectancy": round(sum(pnls) / len(closed), 4) if closed else 0.0,
-            "net_pnl": round(sum(pnls), 4),
-            "max_drawdown": _max_drawdown(closed),
-            "avg_win": round(sum(win_values) / len(win_values), 4) if win_values else 0.0,
-            "avg_loss": round(sum(loss_values) / len(loss_values), 4) if loss_values else 0.0,
-            "rr_avg": round(sum(abs(_number(trade.get("r_multiple")) or 0.0) for trade in closed) / len(closed), 4) if closed else 0.0,
+            "manual_shadow_trades": summary_manual["shadow_trades"],
+            "auto_shadow_trades": summary_auto["shadow_trades"],
+            "total_shadow_trades": summary_total["shadow_trades"],
+            "sample_warning": _sample_warning(summary_auto),
         }
         no_trade_metrics = _binary_accuracy(no_trade, correct_outcomes={"correct_sideways", "protected_loss"})
         hedge_metrics = _binary_accuracy(hedge, correct_outcomes={"hedge_correct", "hedge_watch"})
@@ -68,18 +53,24 @@ class MT5Performance:
             "symbol": clean_symbol,
             "timeframe": clean_timeframe,
             "summary": summary,
-            "by_action": self._by_action(trades, signals, decisions, order_requests, no_trade, hedge),
-            "by_timeframe": _group_trades(trades, "timeframe"),
-            "by_strategy": _group_trades(trades, "strategy_profile"),
+            "summary_total": {**summary_total, "manual_shadow_trades": summary_manual["shadow_trades"], "auto_shadow_trades": summary_auto["shadow_trades"]},
+            "summary_auto": summary_auto,
+            "summary_manual": summary_manual,
+            "auto_sample_warning": _sample_warning(summary_auto),
+            "by_action": self._by_action(included_trades, signals, decisions, order_requests, no_trade, hedge),
+            "by_timeframe": _group_trades(included_trades, "timeframe"),
+            "by_strategy": _group_trades(included_trades, "strategy_profile"),
             "no_trade_accuracy": no_trade_metrics,
             "missed_opportunity_count": no_trade_metrics["missed_opportunity_count"],
             "protected_loss_count": no_trade_metrics["protected_loss_count"],
             "hedge_accuracy": hedge_metrics,
-            "recent_trades": sorted(trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "recent_trades": sorted(included_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "recent_auto_trades": sorted(auto_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "recent_manual_trades": sorted(manual_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "risk_blocks": [_journal_item(row) for row in risk_blocks],
             "last_decision": latest_decision,
             "last_reason": _reason_alias((latest_decision or {}).get("reason") or ""),
-            "genesis_reading": _reading(clean_symbol, summary, no_trade_metrics, hedge_metrics),
+            "genesis_reading": _reading(clean_symbol, summary_auto, no_trade_metrics, hedge_metrics),
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -87,6 +78,24 @@ class MT5Performance:
         }
         self.journal.save("mt5_forward_metrics", clean_symbol or "MT5", payload)
         return payload
+
+    def auto_report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        report = self.report(symbol=symbol, timeframe=timeframe)
+        return {
+            "ok": True,
+            "status": "mt5_auto_performance_ready",
+            "symbol": report["symbol"],
+            "timeframe": report["timeframe"],
+            "summary": report["summary_auto"],
+            "summary_auto": report["summary_auto"],
+            "recent_trades": report.get("recent_auto_trades") or [],
+            "sample_warning": report.get("auto_sample_warning") or "",
+            "genesis_reading": report.get("genesis_reading") or "",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "updated_at": _now(),
+        }
 
     def outcomes_recent(self, *, symbol: str = "", limit: int = 25) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
@@ -140,19 +149,40 @@ class MT5Performance:
 
 
 def _trade_bucket(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = _summary_for_trades(trades)
+    return {
+        "trades": summary["shadow_trades"],
+        "closed": summary["closed"],
+        "wins": summary["wins"],
+        "losses": summary["losses"],
+        "win_rate": summary["win_rate"],
+        "profit_factor": summary["profit_factor"],
+        "net_pnl": summary["net_pnl"],
+    }
+
+
+def _summary_for_trades(trades: list[dict[str, Any]]) -> dict[str, Any]:
     closed = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
     wins = [trade for trade in closed if trade.get("status") == "win"]
     pnls = [_pnl_value(trade) for trade in closed]
-    gross_win = sum(value for value in pnls if value > 0)
-    gross_loss = abs(sum(value for value in pnls if value < 0))
+    win_values = [value for value in pnls if value > 0]
+    loss_values = [value for value in pnls if value < 0]
+    gross_win = sum(win_values)
+    gross_loss = abs(sum(loss_values))
     return {
-        "trades": len(trades),
+        "shadow_trades": len(trades),
         "closed": len(closed),
+        "open": sum(1 for trade in trades if trade.get("status") == "open"),
         "wins": len(wins),
         "losses": len(closed) - len(wins),
         "win_rate": round((len(wins) / len(closed)) * 100, 2) if closed else 0.0,
         "profit_factor": _profit_factor(gross_win, gross_loss),
+        "expectancy": round(sum(pnls) / len(closed), 4) if closed else 0.0,
         "net_pnl": round(sum(pnls), 4),
+        "max_drawdown": _max_drawdown(closed),
+        "avg_win": round(sum(win_values) / len(win_values), 4) if win_values else 0.0,
+        "avg_loss": round(sum(loss_values) / len(loss_values), 4) if loss_values else 0.0,
+        "rr_avg": round(sum(abs(_number(trade.get("r_multiple")) or 0.0) for trade in closed) / len(closed), 4) if closed else 0.0,
     }
 
 
@@ -215,6 +245,16 @@ def _pnl_value(trade: dict[str, Any]) -> float:
 
 def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:
     return bool(trade.get("auto_forward")) or str(trade.get("source") or "").casefold() == "mt5_auto_forward"
+
+
+def _is_excluded(trade: dict[str, Any]) -> bool:
+    return bool(trade.get("excluded_from_main_metrics"))
+
+
+def _sample_warning(summary: dict[str, Any]) -> str:
+    if int(summary.get("shadow_trades") or 0) < 30:
+        return "Muestra automatica insuficiente; no usar todavia para decidir rentabilidad."
+    return ""
 
 
 def _latest_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -281,11 +321,13 @@ def _number(value: object) -> float | None:
 def _reading(symbol: str, summary: dict[str, Any], no_trade: dict[str, Any], hedge: dict[str, Any]) -> str:
     scope = symbol or "MT5"
     if summary["shadow_trades"] == 0:
-        return f"{scope}: forward test listo, pero aun no hay shadow trades cerrados para medir ventaja."
+        return f"{scope}: forward test automatico listo, pero aun no hay shadow trades automaticos para medir ventaja."
+    warning = _sample_warning(summary)
+    suffix = f" {warning}" if warning else ""
     return (
-        f"{scope}: win rate {summary['win_rate']}%, PF {summary['profit_factor']}, "
+        f"{scope}: auto win rate {summary['win_rate']}%, auto PF {summary['profit_factor']}, "
         f"expectancy {summary['expectancy']}R. No-trade accuracy {no_trade['accuracy']}%, "
-        f"hedge accuracy {hedge['accuracy']}%. Todo sigue journal-only."
+        f"hedge accuracy {hedge['accuracy']}%. Todo sigue journal-only.{suffix}"
     )
 
 
