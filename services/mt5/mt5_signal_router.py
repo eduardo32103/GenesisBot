@@ -320,6 +320,9 @@ class MT5SignalRouter:
     def outcomes_recent(self, *, symbol: str = "", limit: int = 25) -> dict[str, Any]:
         return self.forward_engine.outcomes_recent(symbol=symbol, limit=limit)
 
+    def no_trade_report(self, *, symbol: str = "", limit: int = 50) -> dict[str, Any]:
+        return self.forward_engine.auto_forward.no_trade_report(symbol=symbol, limit=limit)
+
     def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
         return self.shadow.snapshot(symbol=symbol, limit=limit)
 
@@ -336,6 +339,7 @@ class MT5SignalRouter:
             "mt5_forward_metrics",
             "mt5_signal_outcomes",
             "mt5_no_trade_outcomes",
+            "mt5_no_trade_evaluations",
             "mt5_hedge_outcomes",
         )
         counts: dict[str, int] = {}
@@ -404,6 +408,7 @@ class MT5SignalRouter:
         body = payload or {}
         symbol = str(body.get("symbol") or "BTCUSD").upper().strip()
         timeframe = str(body.get("timeframe") or "H1").upper().strip()
+        profile = str(body.get("profile") or "BTCUSD_PAPER_EXPLORATION_V1").strip() or "BTCUSD_PAPER_EXPLORATION_V1"
         bars = max(1, min(int(body.get("bars") or 500), 2000))
         normalized = _normalized_symbol(symbol)
         source_bars = _bars_from_payload(body) or _fetch_yahoo_bars(symbol, timeframe=timeframe, bars=bars)
@@ -414,6 +419,7 @@ class MT5SignalRouter:
             timeframe=timeframe,
             bars=source_bars[:bars],
             min_rr=self.config.min_rr,
+            profile=profile,
         )
         for trade in trades:
             self.journal.save("mt5_replay_shadow_trades", symbol, trade, confidence=trade.get("confidence") or "medium")
@@ -426,6 +432,7 @@ class MT5SignalRouter:
             "normalized_symbol": normalized,
             "instrument_type": "crypto_spot" if normalized == "BTCUSD" else "",
             "timeframe": timeframe,
+            "profile": profile,
             "bars_requested": bars,
             "bars_loaded": len(source_bars),
             "replay_trades": summary["replay_trades"],
@@ -437,7 +444,7 @@ class MT5SignalRouter:
             "max_drawdown": summary["max_drawdown"],
             "no_trade_count": no_trade_count,
             "blocked_reasons": sorted(set(blocked_reasons)),
-            "best_profile": "BTCUSD replay momentum scaffold" if trades else "",
+            "best_profile": profile if trades else "",
             "recent_replay_trades": trades[-10:],
             "genesis_reading": _replay_reading(symbol, summary, len(source_bars), no_trade_count),
             "broker_touched": False,
@@ -614,6 +621,7 @@ _MT5_COLLECTIONS = (
     "mt5_shadow_trades",
     "mt5_signal_outcomes",
     "mt5_no_trade_outcomes",
+    "mt5_no_trade_evaluations",
     "mt5_hedge_outcomes",
     "mt5_forward_metrics",
     "mt5_replay_runs",
@@ -682,7 +690,7 @@ def _fetch_yahoo_bars(symbol: str, *, timeframe: str, bars: int) -> list[dict[st
     return parsed[-bars:]
 
 
-def _run_replay_engine(*, replay_id: str, symbol: str, timeframe: str, bars: list[dict[str, Any]], min_rr: float) -> tuple[list[dict[str, Any]], int, list[str]]:
+def _run_replay_engine(*, replay_id: str, symbol: str, timeframe: str, bars: list[dict[str, Any]], min_rr: float, profile: str = "BTCUSD_PAPER_EXPLORATION_V1") -> tuple[list[dict[str, Any]], int, list[str]]:
     trades: list[dict[str, Any]] = []
     blocked: list[str] = []
     no_trade_count = 0
@@ -702,8 +710,7 @@ def _run_replay_engine(*, replay_id: str, symbol: str, timeframe: str, bars: lis
         if open_trade or prev_close is None:
             prev_close = close
             continue
-        move = (close - prev_close) / prev_close if prev_close else 0.0
-        decision = "BUY" if move > 0.003 else "SELL" if move < -0.003 else "NO_TRADE"
+        decision = _replay_decision(profile, closes=[_maybe_float(item.get("close")) or close for item in bars[max(0, index - 60) : index + 1]], close=close, prev_close=prev_close)
         if decision == "NO_TRADE":
             no_trade_count += 1
             prev_close = close
@@ -720,6 +727,7 @@ def _run_replay_engine(*, replay_id: str, symbol: str, timeframe: str, bars: lis
                 "hedge_score": 0,
                 "technical_context": {"atr": atr},
                 "recommended_strategy_profile": "BTCUSD Replay Momentum",
+                "strategy_profile": profile,
                 "recommended_timeframe": timeframe,
                 "reason": "replay_momentum_signal",
             },
@@ -746,6 +754,7 @@ def _run_replay_engine(*, replay_id: str, symbol: str, timeframe: str, bars: lis
             "risk_pct": built["risk_pct"],
             "timeframe": timeframe,
             "strategy_profile": built["strategy_profile"],
+            "profile": profile,
             "confidence": built["confidence"],
             "status": "open",
             "source": "mt5_replay",
@@ -799,6 +808,45 @@ def _close_replay_trade(trade: dict[str, Any], *, high: float, low: float, close
         "closed_at": timestamp or _now(),
         "updated_at": timestamp or _now(),
     }
+
+
+def _replay_decision(profile: str, *, closes: list[float], close: float, prev_close: float) -> str:
+    if str(profile or "").upper() != "BTCUSD_PAPER_EXPLORATION_V1":
+        move = (close - prev_close) / prev_close if prev_close else 0.0
+        return "BUY" if move > 0.003 else "SELL" if move < -0.003 else "NO_TRADE"
+    ema20 = _replay_ema(closes, 20)
+    ema50 = _replay_ema(closes, 50)
+    rsi = _replay_rsi(closes, 14)
+    momentum = close - closes[max(0, len(closes) - 4)] if closes else 0.0
+    if close >= ema20 and ema20 >= ema50 and rsi > 48 and momentum >= 0:
+        return "BUY"
+    if close <= ema20 and ema20 <= ema50 and rsi < 52 and momentum <= 0:
+        return "SELL"
+    return "NO_TRADE"
+
+
+def _replay_ema(values: list[float], length: int) -> float:
+    if not values:
+        return 0.0
+    alpha = 2 / (length + 1)
+    ema = values[0]
+    for value in values[1:]:
+        ema = value * alpha + ema * (1 - alpha)
+    return ema
+
+
+def _replay_rsi(values: list[float], length: int) -> float:
+    if len(values) < 2:
+        return 50.0
+    changes = [values[index] - values[index - 1] for index in range(1, len(values))]
+    window = changes[-length:]
+    gains = [change for change in window if change > 0]
+    losses = [-change for change in window if change < 0]
+    avg_gain = sum(gains) / max(len(window), 1)
+    avg_loss = sum(losses) / max(len(window), 1)
+    if avg_loss == 0:
+        return 70.0 if avg_gain > 0 else 50.0
+    return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 
 def _replay_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:

@@ -550,7 +550,23 @@ def _should_route_mt5_forward_metrics(message: str) -> bool:
             "profit factor",
             "como va el test",
             "desempeno mt5",
+            "por que no esta operando",
+            "por qué no está operando",
+            "no-trade",
+            "no trade",
+            "exploration",
+            "exploracion",
+            "exploración",
+            "replay",
             "desempeÃ±o mt5",
+            "por que no esta operando",
+            "por qué no está operando",
+            "no-trade",
+            "no trade",
+            "exploration",
+            "exploracion",
+            "exploración",
+            "replay",
         )
     )
 
@@ -566,6 +582,8 @@ def _mt5_metrics_symbol(message: str, explicit_ticker: str) -> str:
 
 def _mt5_performance_answer(performance: dict[str, Any]) -> str:
     summary = performance.get("summary_auto") if isinstance(performance.get("summary_auto"), dict) else performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+    exploration = performance.get("summary_exploration") if isinstance(performance.get("summary_exploration"), dict) else {}
+    replay = performance.get("summary_replay") if isinstance(performance.get("summary_replay"), dict) else {}
     manual = performance.get("summary_manual") if isinstance(performance.get("summary_manual"), dict) else {}
     warning = performance.get("auto_sample_warning") or summary.get("sample_warning") or ""
     symbol = performance.get("symbol") or "MT5"
@@ -576,6 +594,8 @@ def _mt5_performance_answer(performance: dict[str, Any]) -> str:
         f"Auto trades {summary.get('shadow_trades', 0)}: "
         f"{summary.get('wins', 0)} ganadoras, "
         f"{summary.get('losses', 0)} perdedoras y {summary.get('open', 0)} abiertas. "
+        f"Exploration paper separado: {exploration.get('shadow_trades', 0)} trades, PF {exploration.get('profit_factor', 0)}. "
+        f"Replay separado: {replay.get('replay_trades', 0)} trades, PF {replay.get('profit_factor', 0)}. "
         f"Pruebas manuales separadas: {manual.get('shadow_trades', 0)}. "
         f"{warning + ' ' if warning else ''}"
         "Todo sigue journal-only: order_executed=false, broker_touched=false."

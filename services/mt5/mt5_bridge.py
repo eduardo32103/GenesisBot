@@ -42,6 +42,10 @@ def mt5_outcomes_recent(*, memory: MemoryStore | None = None, symbol: str = "", 
     return build_router(memory).outcomes_recent(symbol=symbol, limit=limit)
 
 
+def mt5_no_trade_report(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 50) -> dict[str, Any]:
+    return build_router(memory).no_trade_report(symbol=symbol, limit=limit)
+
+
 def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 100) -> dict[str, Any]:
     return build_router(memory).shadow_trades(symbol=symbol, limit=limit)
 

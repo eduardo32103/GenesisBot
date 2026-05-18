@@ -20,6 +20,7 @@ class MT5BridgeConfig:
     max_open_trades: int = 1
     max_spread_points: float = 50.0
     min_rr: float = 1.2
+    paper_exploration_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "MT5BridgeConfig":
@@ -34,6 +35,7 @@ class MT5BridgeConfig:
             max_open_trades=int(_float_env("MT5_MAX_OPEN_TRADES", 1)),
             max_spread_points=_float_env("MT5_MAX_SPREAD", _float_env("MT5_MAX_SPREAD_POINTS", 50.0)),
             min_rr=_float_env("MT5_MIN_RR", 1.2),
+            paper_exploration_enabled=_bool_env("MT5_PAPER_EXPLORATION_ENABLED", False),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -48,6 +50,7 @@ class MT5BridgeConfig:
             "MT5_MAX_OPEN_TRADES": self.max_open_trades,
             "MT5_MAX_SPREAD_POINTS": self.max_spread_points,
             "MT5_MIN_RR": self.min_rr,
+            "MT5_PAPER_EXPLORATION_ENABLED": self.paper_exploration_enabled,
         }
 
 

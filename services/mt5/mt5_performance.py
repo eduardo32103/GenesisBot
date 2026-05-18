@@ -31,13 +31,26 @@ class MT5Performance:
         no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
         hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
         replay = self._latest_replay(clean_symbol)
-        auto_trades = [trade for trade in trades if _is_auto_forward_trade(trade) and not bool(trade.get("manual_test")) and not _is_excluded(trade)]
+        strict_auto_trades = [
+            trade
+            for trade in trades
+            if _is_strict_auto_trade(trade) and not bool(trade.get("manual_test")) and not _is_excluded(trade)
+        ]
+        exploration_trades = [
+            trade
+            for trade in trades
+            if _is_exploration_trade(trade) and not bool(trade.get("manual_test")) and not _is_excluded(trade)
+        ]
+        forward_auto_trades = strict_auto_trades + exploration_trades
+        auto_trades = strict_auto_trades
         manual_trades = [trade for trade in trades if not _is_auto_forward_trade(trade) or bool(trade.get("manual_test"))]
         included_trades = [trade for trade in trades if not _is_excluded(trade)]
         excluded_manual = [trade for trade in manual_trades if _is_excluded(trade)]
         open_auto_trades = [trade for trade in auto_trades if trade.get("status") == "open"]
         summary_total = _summary_for_trades(included_trades)
         summary_auto = _summary_for_trades(auto_trades)
+        summary_exploration = _summary_for_trades(exploration_trades)
+        summary_forward_auto = _summary_for_trades(forward_auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
         normalized_symbol = normalize_mt5_symbol(clean_symbol)
         proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if not _is_excluded(trade)])
@@ -57,6 +70,9 @@ class MT5Performance:
             "actionable_signals": sum(1 for row in signals + decisions + order_requests if _action(row) in {"BUY", "SELL"}),
             "manual_shadow_trades": summary_manual["shadow_trades"],
             "auto_shadow_trades": summary_auto["shadow_trades"],
+            "strict_shadow_trades": summary_auto["shadow_trades"],
+            "exploration_shadow_trades": summary_exploration["shadow_trades"],
+            "forward_auto_shadow_trades": summary_forward_auto["shadow_trades"],
             "total_shadow_trades": summary_total["shadow_trades"],
             "sample_warning": _sample_warning(summary_auto),
         }
@@ -72,6 +88,22 @@ class MT5Performance:
             "summary_btcusd_auto": summary_auto_payload if normalized_symbol == "BTCUSD" else {},
             "summary_total": {**summary_total, "manual_shadow_trades": summary_manual["shadow_trades"], "auto_shadow_trades": summary_auto["shadow_trades"]},
             "summary_auto": summary_auto_payload,
+            "summary_strict_auto": summary_auto_payload,
+            "summary_exploration": {
+                **summary_exploration,
+                "symbol": clean_symbol,
+                "normalized_symbol": normalized_symbol,
+                "instrument_type": instrument_type,
+                "profile": "BTCUSD_PAPER_EXPLORATION_V1",
+                "paper_exploration": True,
+            },
+            "summary_forward_auto": {
+                **summary_forward_auto,
+                "symbol": clean_symbol,
+                "normalized_symbol": normalized_symbol,
+                "instrument_type": instrument_type,
+                "journal_only": True,
+            },
             "summary_manual": summary_manual,
             "summary_proxy": proxy_summary,
             "summary_replay": replay,
@@ -85,6 +117,7 @@ class MT5Performance:
             "hedge_accuracy": hedge_metrics,
             "recent_trades": sorted(included_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_auto_trades": sorted(auto_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "recent_exploration_trades": sorted(exploration_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_manual_trades": sorted(manual_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "risk_blocks": [_journal_item(row) for row in risk_blocks],
             "last_decision": latest_decision,
@@ -307,6 +340,16 @@ def _pnl_value(trade: dict[str, Any]) -> float:
 
 def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:
     return bool(trade.get("auto_forward")) or str(trade.get("source") or "").casefold() == "mt5_auto_forward"
+
+
+def _is_strict_auto_trade(trade: dict[str, Any]) -> bool:
+    source = str(trade.get("source") or "").casefold()
+    return _is_auto_forward_trade(trade) and not _is_exploration_trade(trade) and source != "mt5_replay"
+
+
+def _is_exploration_trade(trade: dict[str, Any]) -> bool:
+    source = str(trade.get("source") or "").casefold()
+    return bool(trade.get("paper_exploration")) or bool(trade.get("included_in_exploration_metrics")) or source == "mt5_auto_forward_exploration"
 
 
 def _is_excluded(trade: dict[str, Any]) -> bool:

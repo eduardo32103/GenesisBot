@@ -1594,6 +1594,7 @@ def _mt5_event_type(collection: str | None) -> str:
         "mt5_signal_outcomes": "mt5_signal_outcome",
         "mt5_forward_metrics": "mt5_forward_metric",
         "mt5_no_trade_outcomes": "mt5_no_trade_outcome",
+        "mt5_no_trade_evaluations": "mt5_no_trade_evaluation",
         "mt5_hedge_outcomes": "mt5_hedge_outcome",
         "mt5_risk_blocks": "mt5_risk_block",
         "mt5_journal": "mt5_journal",

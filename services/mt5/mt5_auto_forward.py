@@ -62,6 +62,16 @@ class MT5AutoForward:
             )
             event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence="low")
             self.shadow.record_no_trade_signal({**decision, "price": last})
+            self._record_no_trade_evaluation(
+                symbol=raw_symbol,
+                tick=clean,
+                symbol_info=symbol_info,
+                decision=decision,
+                market_scores=_market_scores(raw_symbol, clean, self.memory, {}),
+                block_reasons=[decision["reason"]],
+                has_open_trade=bool(self.shadow.open_trades(raw_symbol)),
+                exploration={"created": False, "enabled": self.config.paper_exploration_enabled, "reason": "symbol_not_mapped_or_not_allowed"},
+            )
             return {
                 "ok": True,
                 "status": "mt5_auto_forward_blocked",
@@ -92,6 +102,16 @@ class MT5AutoForward:
             )
             event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence="low")
             self.shadow.record_no_trade_signal({**decision, "price": last})
+            self._record_no_trade_evaluation(
+                symbol=raw_symbol,
+                tick=clean,
+                symbol_info=symbol_info,
+                decision=decision,
+                market_scores=_market_scores(raw_symbol, clean, self.memory, {}),
+                block_reasons=["kill_switch_active"],
+                has_open_trade=bool(self.shadow.open_trades(raw_symbol)),
+                exploration={"created": False, "enabled": self.config.paper_exploration_enabled, "reason": "kill_switch_active"},
+            )
             return {
                 "ok": True,
                 "status": "mt5_auto_forward_blocked",
@@ -106,6 +126,7 @@ class MT5AutoForward:
             }
 
         context = GenesisBrain(memory=self.memory).build_trading_context(symbol_info["genesis_symbol"])
+        market_scores = _market_scores(raw_symbol, clean, self.memory, context)
         built = build_actionable_mt5_decision(
             raw_symbol,
             clean,
@@ -135,6 +156,8 @@ class MT5AutoForward:
             spread=_number(clean.get("spread_points") or clean.get("spread")),
             is_demo=_is_demo(clean),
         )
+        open_trades_before = self.shadow.open_trades(raw_symbol)
+        block_reasons = _block_reasons(block_reason or reason, context=context, has_open_trade=bool(open_trades_before), market_scores=market_scores)
         final_decision = decision_name if not block_reason else "NO_TRADE"
         final_actionable = bool(built.get("actionable")) and final_decision in {"BUY", "SELL"}
         if final_decision not in {"BUY", "SELL"}:
@@ -167,6 +190,7 @@ class MT5AutoForward:
         event = self.journal.save("mt5_decisions", raw_symbol, decision, confidence=confidence)
 
         shadow: dict[str, Any] = {"created": False, "status": "not_actionable", "reason": decision["reason"]}
+        exploration: dict[str, Any] = {"created": False, "enabled": self.config.paper_exploration_enabled, "reason": "strict_signal_active_or_exploration_disabled"}
         if final_decision in {"BUY", "SELL"}:
             shadow = self.shadow.create_shadow_trade(
                 {
@@ -196,6 +220,25 @@ class MT5AutoForward:
         else:
             self.shadow.record_no_trade_signal({**decision, "price": last})
             logging.getLogger("genesis.mt5").info("MT5_AUTO_FORWARD_BLOCKED symbol=%s reason=%s", raw_symbol, decision["reason"])
+            exploration = self._maybe_create_exploration_trade(
+                symbol=raw_symbol,
+                tick=clean,
+                symbol_info=symbol_info,
+                context=context,
+                market_scores=market_scores,
+                strict_reason=decision["reason"],
+            )
+
+        self._record_no_trade_evaluation(
+            symbol=raw_symbol,
+            tick=clean,
+            symbol_info=symbol_info,
+            decision=decision,
+            market_scores=market_scores,
+            block_reasons=block_reasons,
+            has_open_trade=bool(open_trades_before),
+            exploration=exploration,
+        )
 
         shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
         return {
@@ -205,7 +248,9 @@ class MT5AutoForward:
             "decision": decision,
             "event": event,
             "shadow": shadow,
+            "exploration": exploration,
             "shadow_trade_created": bool(shadow.get("created")),
+            "exploration_shadow_trade_created": bool(exploration.get("created")),
             "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
             "reason": decision["reason"],
             "broker_touched": False,
@@ -226,6 +271,9 @@ class MT5AutoForward:
         snapshot = self.shadow.snapshot(symbol=clean_symbol)
         performance = self.performance.report(symbol=clean_symbol)
         summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+        report = self.no_trade_report(symbol=clean_symbol, limit=50)
+        summary_strict = performance.get("summary_strict_auto") if isinstance(performance.get("summary_strict_auto"), dict) else {}
+        summary_exploration = performance.get("summary_exploration") if isinstance(performance.get("summary_exploration"), dict) else {}
         open_trades = snapshot.get("open_trades") or []
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
         current_state_reason = "active_open_trade" if open_trades else ""
@@ -239,6 +287,7 @@ class MT5AutoForward:
             "instrument_type": (last_tick or last_decision or {}).get("instrument_type") or "",
             "is_spot_crypto": bool((last_tick or last_decision or {}).get("is_spot_crypto")),
             "auto_forward_enabled": not self.config.kill_switch,
+            "paper_exploration_enabled": self.config.paper_exploration_enabled,
             "last_tick": last_tick,
             "last_tick_status": "mt5_tick_recorded" if last_tick else "",
             "last_tick_ea_version": (last_tick or {}).get("ea_version") or "",
@@ -246,6 +295,8 @@ class MT5AutoForward:
             "last_signal_status": (last_signal or {}).get("signal_status") or (last_signal or {}).get("status") or "",
             "last_signal_error": (last_signal or {}).get("signal_error") or "",
             "last_decision": last_decision,
+            "last_strict_decision": last_decision,
+            "last_exploration_decision": _latest_exploration_decision(self.memory, clean_symbol),
             "last_valid_decision": last_valid_decision,
             "last_invalid_decision": last_invalid_decision,
             "last_block_reason": last_block_reason,
@@ -264,6 +315,11 @@ class MT5AutoForward:
             "manual_shadow_trades": summary.get("manual_shadow_trades", 0),
             "auto_shadow_trades": summary.get("auto_shadow_trades", 0),
             "total_shadow_trades": summary.get("total_shadow_trades", summary.get("shadow_trades", 0)),
+            "strict_shadow_trades": summary_strict.get("shadow_trades", summary.get("auto_shadow_trades", 0)),
+            "exploration_shadow_trades": summary_exploration.get("shadow_trades", 0),
+            "open_strict_trades": summary_strict.get("open", 0),
+            "open_exploration_trades": summary_exploration.get("open", 0),
+            "top_no_trade_reasons": report.get("top_block_reasons") or [],
             "sample_warning": summary.get("sample_warning") or "",
             "win_rate": summary.get("win_rate", 0.0),
             "profit_factor": summary.get("profit_factor", 0.0),
@@ -275,6 +331,141 @@ class MT5AutoForward:
             "order_policy": "journal_only_no_broker",
             "updated_at": _now(),
         }
+
+    def no_trade_report(self, *, symbol: str = "", limit: int = 50) -> dict[str, Any]:
+        clean_symbol = _symbol(symbol)
+        rows = self.memory.get_mt5_events("mt5_no_trade_evaluations", clean_symbol or None, limit=max(limit, 200))
+        evaluations = [_payload_from_row(row) or {} for row in rows]
+        evaluations = [item for item in evaluations if item]
+        reasons: dict[str, int] = {}
+        for item in evaluations:
+            block_reasons = item.get("block_reasons") if isinstance(item.get("block_reasons"), list) else []
+            if not block_reasons and item.get("block_reason"):
+                block_reasons = [item.get("block_reason")]
+            for reason in block_reasons:
+                clean_reason = _reason_alias(reason)
+                if clean_reason:
+                    reasons[clean_reason] = reasons.get(clean_reason, 0) + 1
+        top_reasons = [{"reason": reason, "count": count} for reason, count in sorted(reasons.items(), key=lambda item: item[1], reverse=True)]
+        last_items = evaluations[: max(1, min(limit, 100))]
+        current_regime = str((last_items[0] if last_items else {}).get("regime") or "")
+        actionable_count = sum(1 for item in evaluations if bool(item.get("actionable")))
+        return {
+            "ok": True,
+            "status": "mt5_no_trade_report_ready",
+            "symbol": clean_symbol,
+            "normalized_symbol": str((last_items[0] if last_items else {}).get("normalized_symbol") or clean_symbol),
+            "total_evaluations": len(evaluations),
+            "actionable_count": actionable_count,
+            "no_trade_count": len(evaluations) - actionable_count,
+            "top_block_reasons": top_reasons,
+            "last_50_evaluations": last_items[:50],
+            "current_regime": current_regime,
+            "genesis_reading": _no_trade_reading(clean_symbol, len(evaluations), actionable_count, top_reasons),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
+    def _maybe_create_exploration_trade(
+        self,
+        *,
+        symbol: str,
+        tick: dict[str, Any],
+        symbol_info: dict[str, Any],
+        context: dict[str, Any],
+        market_scores: dict[str, Any],
+        strict_reason: str,
+    ) -> dict[str, Any]:
+        if not self.config.paper_exploration_enabled:
+            return {"created": False, "enabled": False, "reason": "paper_exploration_disabled"}
+        if self.config.kill_switch:
+            return {"created": False, "enabled": True, "reason": "kill_switch_active"}
+        if str(symbol_info.get("normalized_symbol") or "").upper() != "BTCUSD" or str(symbol_info.get("instrument_type") or "") != "crypto_spot":
+            return {"created": False, "enabled": True, "reason": "instrument_mismatch"}
+        if self.shadow.open_trades(symbol):
+            return {"created": False, "enabled": True, "reason": "active_open_trade"}
+        spread = _number(tick.get("spread_points") or tick.get("spread"))
+        if spread is not None and spread > self.config.max_spread_points:
+            return {"created": False, "enabled": True, "reason": "spread_too_high"}
+        built = _build_exploration_decision(symbol, tick, context, market_scores, min_rr=max(self.config.min_rr, 1.2), risk_pct=min(self.config.max_position_risk_pct, 0.5))
+        if not built.get("actionable"):
+            return {"created": False, "enabled": True, "reason": built.get("reason") or strict_reason, "decision": built}
+        shadow = self.shadow.create_shadow_trade(
+            {
+                **built,
+                "symbol": symbol,
+                "original_symbol": symbol,
+                "normalized_symbol": "BTCUSD",
+                "instrument_type": "crypto_spot",
+                "is_spot_crypto": True,
+                "action": built["decision"],
+                "source": "mt5_auto_forward_exploration",
+                "auto_forward": True,
+                "manual_test": False,
+                "paper_exploration": True,
+                "excluded_from_live_grade": True,
+                "included_in_exploration_metrics": True,
+                "excluded_from_main_metrics": False,
+                "exploration_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+                "timeframe": str(tick.get("timeframe") or "H1").upper(),
+                "timestamp": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+            }
+        )
+        if shadow.get("created"):
+            self.journal.save("mt5_decisions", symbol, {**built, "source": "mt5_auto_forward_exploration", "paper_exploration": True}, confidence=built.get("confidence") or "medium")
+        return {
+            "created": bool(shadow.get("created")),
+            "enabled": True,
+            "reason": shadow.get("reason") or built.get("reason") or "exploration_shadow_trade_created",
+            "decision": built,
+            "shadow": shadow,
+            "shadow_trade_id": ((shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}) or {}).get("shadow_trade_id") or "",
+        }
+
+    def _record_no_trade_evaluation(
+        self,
+        *,
+        symbol: str,
+        tick: dict[str, Any],
+        symbol_info: dict[str, Any],
+        decision: dict[str, Any],
+        market_scores: dict[str, Any],
+        block_reasons: list[str],
+        has_open_trade: bool,
+        exploration: dict[str, Any],
+    ) -> None:
+        price = _price(tick)
+        exploration_decision = exploration.get("decision") if isinstance(exploration.get("decision"), dict) else {}
+        payload = {
+            "symbol": symbol,
+            "original_symbol": symbol_info.get("original_symbol") or symbol,
+            "normalized_symbol": symbol_info.get("normalized_symbol") or symbol,
+            "instrument_type": symbol_info.get("instrument_type") or "",
+            "timeframe": str(tick.get("timeframe") or decision.get("timeframe") or "").upper(),
+            "price": price,
+            "decision": decision.get("decision") or "NO_TRADE",
+            "actionable": bool(decision.get("actionable")),
+            "block_reason": block_reasons[0] if block_reasons else _reason_alias(decision.get("reason") or ""),
+            "block_reasons": block_reasons,
+            "confidence": decision.get("confidence") or "low",
+            "score": market_scores.get("score", 0),
+            "trend_score": market_scores.get("trend_score", 0),
+            "momentum_score": market_scores.get("momentum_score", 0),
+            "volatility_score": market_scores.get("volatility_score", 0),
+            "regime": market_scores.get("regime") or "",
+            "spread": _number(tick.get("spread_points") or tick.get("spread")) or 0.0,
+            "has_open_trade": has_open_trade,
+            "paper_exploration_enabled": self.config.paper_exploration_enabled,
+            "paper_exploration_created": bool(exploration.get("created")),
+            "exploration_decision": exploration_decision.get("decision") or "",
+            "exploration_reason": exploration.get("reason") or "",
+            "timestamp": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        self.journal.save("mt5_no_trade_evaluations", symbol, payload, confidence=payload["confidence"])
 
     def _block_reason(
         self,
@@ -475,6 +666,14 @@ def _latest_decision_by_actionable(rows: list[dict[str, Any]], actionable: bool)
     return None
 
 
+def _latest_exploration_decision(memory: MemoryStore, symbol: str) -> dict[str, Any] | None:
+    for row in memory.get_mt5_events("mt5_decisions", symbol or None, limit=50):
+        payload = _payload_from_row(row)
+        if payload and bool(payload.get("paper_exploration")):
+            return payload
+    return None
+
+
 def _clean_payload(payload: dict[str, Any]) -> dict[str, Any]:
     clean = dict(payload)
     clean["reason"] = _reason_alias(clean.get("reason") or "")
@@ -485,6 +684,235 @@ def _clean_payload(payload: dict[str, Any]) -> dict[str, Any]:
         clean["take_profit"] = None
         clean["risk_reward"] = 0.0
     return clean
+
+
+def _market_scores(symbol: str, tick: dict[str, Any], memory: MemoryStore, context: dict[str, Any]) -> dict[str, Any]:
+    prices = _recent_prices(symbol, tick, memory, limit=60)
+    current = _price(tick)
+    if current is None:
+        current = prices[-1] if prices else 0.0
+    ema20 = _ema(prices, 20) if prices else current
+    ema50 = _ema(prices, 50) if prices else current
+    rsi = _rsi(prices, 14)
+    momentum = _momentum(prices)
+    atr_pct = _atr_pct(prices, current)
+    spread = abs(_number(tick.get("spread_points") or tick.get("spread")) or 0.0)
+    trend_score = 50
+    if current > ema20 >= ema50:
+        trend_score = 72
+    elif current < ema20 <= ema50:
+        trend_score = 28
+    elif current >= ema20:
+        trend_score = 58
+    elif current <= ema20:
+        trend_score = 42
+    momentum_score = 50
+    if rsi > 55 or momentum > 0:
+        momentum_score = 65
+    if rsi < 45 or momentum < 0:
+        momentum_score = 35
+    volatility_score = 50
+    if atr_pct >= 0.15:
+        volatility_score = 65
+    elif atr_pct < 0.03:
+        volatility_score = 25
+    if spread and current and spread / current > 0.003:
+        volatility_score = min(volatility_score, 35)
+    regime = "bullish_exploration" if trend_score >= 60 and momentum_score >= 55 else "bearish_exploration" if trend_score <= 40 and momentum_score <= 45 else "chop"
+    score = round((trend_score + momentum_score + volatility_score) / 3, 2)
+    return {
+        "price": current,
+        "ema20": ema20,
+        "ema50": ema50,
+        "rsi": rsi,
+        "momentum": momentum,
+        "atr_pct": atr_pct,
+        "trend_score": trend_score,
+        "momentum_score": momentum_score,
+        "volatility_score": volatility_score,
+        "score": score,
+        "regime": str(context.get("market_regime") or regime),
+        "prices": prices,
+    }
+
+
+def _build_exploration_decision(
+    symbol: str,
+    tick: dict[str, Any],
+    context: dict[str, Any],
+    scores: dict[str, Any],
+    *,
+    min_rr: float,
+    risk_pct: float,
+) -> dict[str, Any]:
+    entry = _price(tick)
+    if entry is None or entry <= 0:
+        return _exploration_no_trade(symbol, "missing_risk_parameters")
+    spread = abs(_number(tick.get("spread_points") or tick.get("spread")) or 0.0)
+    if spread and spread / entry > 0.005:
+        return _exploration_no_trade(symbol, "spread_too_high")
+    atr = _estimated_atr(scores.get("prices") if isinstance(scores.get("prices"), list) else [], entry)
+    stop_distance = max(atr * 1.5, entry * 0.015) if atr > 0 else entry * 0.015
+    close = entry
+    ema20 = _number(scores.get("ema20")) or entry
+    ema50 = _number(scores.get("ema50")) or entry
+    rsi = _number(scores.get("rsi")) or 50.0
+    momentum = _number(scores.get("momentum")) or 0.0
+    trend_score = _number(scores.get("trend_score")) or 50.0
+    momentum_score = _number(scores.get("momentum_score")) or 50.0
+    volatility_score = _number(scores.get("volatility_score")) or 50.0
+    if volatility_score < 25:
+        return _exploration_no_trade(symbol, "volatility_too_low")
+    action = "NO_TRADE"
+    if close >= ema20 and (ema20 >= ema50 or trend_score >= 55) and rsi > 48 and (momentum >= 0 or momentum_score >= 50):
+        action = "BUY"
+    elif close <= ema20 and (ema20 <= ema50 or trend_score <= 45) and rsi < 52 and (momentum <= 0 or momentum_score <= 50):
+        action = "SELL"
+    if action == "NO_TRADE":
+        return _exploration_no_trade(symbol, "waiting_confirmation")
+    stop_loss = round(entry - stop_distance, 8) if action == "BUY" else round(entry + stop_distance, 8)
+    take_profit = round(entry + stop_distance * min_rr, 8) if action == "BUY" else round(entry - stop_distance * min_rr, 8)
+    rr = _risk_reward(action, entry, stop_loss, take_profit)
+    if rr is None or rr < min_rr:
+        return _exploration_no_trade(symbol, "risk_reward_too_low")
+    return {
+        "symbol": symbol,
+        "decision": action,
+        "action": action,
+        "actionable": True,
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "risk_reward": rr,
+        "risk_pct": risk_pct,
+        "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+        "confidence": "medium",
+        "reason": "paper_exploration_signal",
+        "score": scores.get("score", 0),
+        "trend_score": scores.get("trend_score", 0),
+        "momentum_score": scores.get("momentum_score", 0),
+        "volatility_score": scores.get("volatility_score", 0),
+        "regime": scores.get("regime") or "",
+        "hedge_score": _int(context.get("hedge_score")),
+        "no_trade_score": _int(context.get("no_trade_score")),
+        "genesis_context_score": _int(context.get("genesis_context_score")),
+        "timeframe": str(tick.get("timeframe") or context.get("recommended_timeframe") or "H1").upper(),
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+        "generated_at": _now(),
+    }
+
+
+def _exploration_no_trade(symbol: str, reason: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "decision": "NO_TRADE",
+        "action": "NO_TRADE",
+        "actionable": False,
+        "entry": None,
+        "stop_loss": None,
+        "take_profit": None,
+        "risk_reward": 0.0,
+        "risk_pct": 0.0,
+        "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+        "confidence": "low",
+        "reason": reason,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+        "generated_at": _now(),
+    }
+
+
+def _block_reasons(reason: str, *, context: dict[str, Any], has_open_trade: bool, market_scores: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    primary = _reason_alias(reason)
+    if has_open_trade:
+        reasons.append("active_open_trade")
+    if primary:
+        reasons.append(primary)
+    if _int(context.get("no_trade_score")) >= 70:
+        reasons.append("no_edge")
+    if _confidence(context.get("confidence")) == "low":
+        reasons.append("confidence_low")
+    if str(market_scores.get("regime") or "").casefold() == "chop":
+        reasons.append("regime_chop")
+    if (_number(market_scores.get("trend_score")) or 0.0) < 45 and primary in {"wait_for_better_edge", "waiting_confirmation"}:
+        reasons.append("trend_not_confirmed")
+    if (_number(market_scores.get("momentum_score")) or 0.0) < 45 and primary in {"wait_for_better_edge", "waiting_confirmation"}:
+        reasons.append("momentum_not_confirmed")
+    deduped: list[str] = []
+    for item in reasons or ["waiting_confirmation"]:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def _recent_prices(symbol: str, tick: dict[str, Any], memory: MemoryStore, *, limit: int = 60) -> list[float]:
+    rows = memory.get_mt5_events("mt5_ticks", symbol, limit=limit)
+    values: list[float] = []
+    for row in reversed(rows):
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        price = _price(payload)
+        if price is not None and price > 0:
+            values.append(price)
+    current = _price(tick)
+    if current is not None and current > 0 and (not values or values[-1] != current):
+        values.append(current)
+    return values[-limit:]
+
+
+def _ema(values: list[float], length: int) -> float:
+    if not values:
+        return 0.0
+    alpha = 2 / (length + 1)
+    ema = values[0]
+    for value in values[1:]:
+        ema = value * alpha + ema * (1 - alpha)
+    return ema
+
+
+def _rsi(values: list[float], length: int) -> float:
+    if len(values) < 2:
+        return 50.0
+    changes = [values[index] - values[index - 1] for index in range(1, len(values))]
+    window = changes[-length:]
+    gains = [change for change in window if change > 0]
+    losses = [-change for change in window if change < 0]
+    avg_gain = sum(gains) / max(len(window), 1)
+    avg_loss = sum(losses) / max(len(window), 1)
+    if avg_loss == 0:
+        return 70.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 4)
+
+
+def _momentum(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    return values[-1] - values[max(0, len(values) - 4)]
+
+
+def _estimated_atr(values: list[float], entry: float) -> float:
+    if len(values) < 2:
+        return entry * 0.015
+    ranges = [abs(values[index] - values[index - 1]) for index in range(1, len(values))]
+    return sum(ranges[-14:]) / max(len(ranges[-14:]), 1)
+
+
+def _atr_pct(values: list[float], entry: float) -> float:
+    if entry <= 0:
+        return 0.0
+    return round((_estimated_atr(values, entry) / entry) * 100, 4)
+
+
+def _no_trade_reading(symbol: str, total: int, actionable: int, top_reasons: list[dict[str, Any]]) -> str:
+    scope = symbol or "MT5"
+    if total <= 0:
+        return f"{scope}: aun no hay evaluaciones de no-trade guardadas."
+    top = top_reasons[0]["reason"] if top_reasons else "sin bloqueador dominante"
+    return f"{scope}: {total} ticks evaluados, {actionable} accionables; filtro dominante: {top}. Broker sigue sin tocarse."
 
 
 def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:

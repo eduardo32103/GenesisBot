@@ -15,6 +15,7 @@ from api.routes.genesis import (
     get_genesis_mt5_health,
     get_genesis_mt5_instrument,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_no_trade_report,
     get_genesis_mt5_outcomes_recent,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
@@ -45,6 +46,7 @@ from services.mt5.mt5_bridge import (
     mt5_journal_recent,
     mt5_manual_tests_reset,
     mt5_metrics_exclude_old_proxy,
+    mt5_no_trade_report,
     mt5_order_request,
     mt5_outcomes_recent,
     mt5_performance,
@@ -79,6 +81,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_performance_auto_endpoint"], "/api/genesis/mt5/performance/auto?symbol={symbol}&timeframe={timeframe}")
         self.assertEqual(app["genesis_mt5_forward_test_endpoint"], "/api/genesis/mt5/forward-test?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_outcomes_recent_endpoint"], "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25")
+        self.assertEqual(app["genesis_mt5_no_trade_report_endpoint"], "/api/genesis/mt5/no-trade-report?symbol={symbol}&limit=50")
         self.assertEqual(app["genesis_mt5_shadow_trades_endpoint"], "/api/genesis/mt5/shadow-trades?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_debug_storage_endpoint"], "/api/genesis/mt5/debug/storage?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_auto_forward_status_endpoint"], "/api/genesis/mt5/auto-forward-status?symbol={symbol}")
@@ -670,8 +673,70 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertIsNone(status["stop_loss"])
             self.assertIsNone(status["take_profit"])
             self.assertTrue(store.get_mt5_events("mt5_no_trade_outcomes", "BTC", limit=5))
+            self.assertTrue(store.get_mt5_events("mt5_no_trade_evaluations", "BTC", limit=5))
             self.assertFalse(tick["broker_touched"])
             self.assertFalse(tick["order_executed"])
+
+    def test_no_trade_report_counts_block_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _auto_forward_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+                router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+
+            report = mt5_no_trade_report(memory=store, symbol="BTCUSD")
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["total_evaluations"], 1)
+            self.assertEqual(report["no_trade_count"], 1)
+            self.assertTrue(report["top_block_reasons"])
+            self.assertIn(report["top_block_reasons"][0]["reason"], str(report))
+            self.assertFalse(report["broker_touched"])
+            self.assertFalse(report["order_executed"])
+
+    def test_paper_exploration_creates_separate_shadow_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _exploration_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+                tick = router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+
+            performance = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
+            status = mt5_auto_forward_status(memory=store, symbol="BTCUSD")
+            trades = mt5_shadow_trades(memory=store, symbol="BTCUSD")
+
+            self.assertFalse(tick["auto_shadow_trade_created"])
+            self.assertTrue(tick["auto_forward"]["exploration_shadow_trade_created"])
+            self.assertEqual(performance["summary_strict_auto"]["shadow_trades"], 0)
+            self.assertEqual(performance["summary_exploration"]["shadow_trades"], 1)
+            self.assertEqual(performance["summary_forward_auto"]["shadow_trades"], 1)
+            self.assertEqual(status["exploration_shadow_trades"], 1)
+            self.assertEqual(status["strict_shadow_trades"], 0)
+            self.assertTrue(trades["items"][0]["paper_exploration"])
+            self.assertTrue(trades["items"][0]["excluded_from_live_grade"])
+            self.assertGreaterEqual(trades["items"][0]["risk_reward"], 1.2)
+            self.assertFalse(tick["broker_touched"])
+            self.assertFalse(tick["order_executed"])
+
+    def test_paper_exploration_does_not_duplicate_open_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _exploration_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+                first = router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+                second = router.tick({"symbol": "BTCUSD", "last": 77010, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
+
+            performance = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertTrue(first["auto_forward"]["exploration_shadow_trade_created"])
+            self.assertFalse(second["auto_forward"]["exploration_shadow_trade_created"])
+            self.assertEqual(second["auto_forward"]["exploration"]["reason"], "active_open_trade")
+            self.assertEqual(performance["summary_exploration"]["open"], 1)
+            self.assertFalse(second["broker_touched"])
+            self.assertFalse(second["order_executed"])
 
     def test_auto_forward_does_not_create_duplicate_open_trade(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1141,6 +1206,7 @@ class MT5BridgeTests(unittest.TestCase):
         auto_performance = get_genesis_mt5_performance_auto("BTCUSD")
         forward = get_genesis_mt5_forward_test("BTCUSD")
         outcomes = get_genesis_mt5_outcomes_recent(symbol="BTCUSD", limit=5)
+        no_trade_report = get_genesis_mt5_no_trade_report(symbol="BTCUSD", limit=5)
         shadow = get_genesis_mt5_shadow_trades(symbol="BTCUSD", limit=5)
         debug = get_genesis_mt5_debug_storage(symbol="BTCUSD")
         auto_status = get_genesis_mt5_auto_forward_status(symbol="BTCUSD")
@@ -1173,6 +1239,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(auto_performance["ok"])
         self.assertTrue(forward["ok"])
         self.assertTrue(outcomes["ok"])
+        self.assertTrue(no_trade_report["ok"])
         self.assertTrue(shadow["ok"])
         self.assertTrue(debug["ok"])
         self.assertTrue(auto_status["ok"])
@@ -1199,13 +1266,14 @@ class MT5BridgeTests(unittest.TestCase):
                 {"time": "5", "open": 104, "high": 107, "low": 100, "close": 101},
             ]
 
-            run = mt5_replay_run({"symbol": "BTCUSD", "timeframe": "H1", "bars": 5, "bars_data": bars}, memory=store)
+            run = mt5_replay_run({"symbol": "BTCUSD", "timeframe": "H1", "bars": 5, "profile": "BTCUSD_PAPER_EXPLORATION_V1", "bars_data": bars}, memory=store)
             results = mt5_replay_results(memory=store, symbol="BTCUSD")
             status = mt5_replay_status(memory=store, symbol="BTCUSD")
             reset = mt5_replay_reset({"symbol": "BTCUSD"}, memory=store)
 
             self.assertTrue(run["ok"])
             self.assertEqual(run["result"]["normalized_symbol"], "BTCUSD")
+            self.assertEqual(run["result"]["profile"], "BTCUSD_PAPER_EXPLORATION_V1")
             self.assertEqual(run["result"]["instrument_type"], "crypto_spot")
             self.assertGreaterEqual(results["replay_trades"], 1)
             self.assertEqual(results["status"], "mt5_replay_results_ready")
@@ -1335,6 +1403,23 @@ def _auto_forward_router(store: MemoryStore) -> MT5SignalRouter:
             min_rr=1.2,
         ),
         symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTC", "BTCUSD"]),
+    )
+
+
+def _exploration_router(store: MemoryStore) -> MT5SignalRouter:
+    return MT5SignalRouter(
+        memory=store,
+        config=MT5BridgeConfig(
+            enabled=True,
+            demo_only=True,
+            live_trading_enabled=False,
+            order_execution_enabled=False,
+            kill_switch=False,
+            max_spread_points=50.0,
+            min_rr=1.2,
+            paper_exploration_enabled=True,
+        ),
+        symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTCUSD"]),
     )
 
 
