@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -845,7 +846,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(second["order_executed"])
 
     def test_auto_forward_does_not_create_duplicate_open_trade(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MT5_FAST_PATH_ONLY": "false"}):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             router = _auto_forward_router(store)
 
@@ -892,7 +893,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(tick["broker_touched"])
 
     def test_performance_and_status_alias_legacy_stop_loss_reason(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MT5_FAST_PATH_ONLY": "false"}):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             MT5Journal(memory=store).save(
                 "mt5_decisions",
@@ -1347,7 +1348,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertIn("order_executed=false", response["answer"])
 
     def test_order_request_creates_shadow_trade_even_when_execution_blocked(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MT5_FAST_PATH_ONLY": "false"}):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             request = mt5_order_request(
                 {
@@ -1428,7 +1429,7 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(trades["order_executed"])
 
     def test_mt5_no_trade_and_hedge_outcomes_are_measured(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"MT5_FAST_PATH_ONLY": "false"}):
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             no_trade = mt5_signal({"symbol": "BTC", "decision": "NO_TRADE", "price": 100, "reason": "no_edge"}, memory=store)
             hedge = mt5_signal({"symbol": "BTC", "decision": "HEDGE", "price": 100, "hedge_score": 72, "reason": "risk_off"}, memory=store)
@@ -1628,6 +1629,64 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(status["status"], "mt5_learning_status_ready")
             self.assertFalse(learning["broker_touched"])
             self.assertFalse(status["order_executed"])
+
+    def test_fast_path_reads_recent_shadow_trades_for_metrics_and_adaptive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            for index, status in enumerate(("win", "win", "win", "loss")):
+                _save_closed_shadow_trade(
+                    store,
+                    f"fast-path-{index}",
+                    status=status,
+                    r_multiple=1.0 if status == "win" else -1.0,
+                    pnl=1000 if status == "win" else -1000,
+                    exit_reason="take_profit" if status == "win" else "stop_loss",
+                    opened_minute=index,
+                )
+            _save_open_shadow_trade(store, "fast-path-open")
+
+            performance = mt5_performance(memory=store, symbol="BTCUSD")
+            state = mt5_adaptive_state(memory=store, symbol="BTCUSD", timeframe="H1")
+            recommendations = mt5_adaptive_recommendations(memory=store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertEqual(performance["summary"]["closed"], 4)
+            self.assertEqual(performance["summary"]["open"], 1)
+            self.assertEqual(performance["summary"]["wins"], 3)
+            self.assertEqual(performance["summary"]["losses"], 1)
+            self.assertGreater(performance["summary"]["profit_factor"], 0)
+            self.assertEqual(state["closed_trades"], 4)
+            self.assertEqual(state["data_source_used"], "shadow_trades_fast_path")
+            self.assertGreater(state["rolling_profit_factor"], 0)
+            self.assertEqual(recommendations["closed_trades"], 4)
+            self.assertNotEqual(recommendations["data_source_used"], "no_data")
+            self.assertFalse(performance["broker_touched"])
+            self.assertFalse(state["order_executed"])
+            self.assertFalse(recommendations["broker_touched"])
+
+    def test_debug_storage_fast_path_is_limited_and_does_not_call_performance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            journal = MT5Journal(memory=store)
+            for index in range(80):
+                journal.save(
+                    "mt5_ticks",
+                    "BTCUSD",
+                    {"symbol": "BTCUSD", "last": 77000 + index, "broker_touched": False, "order_executed": False},
+                )
+            _save_open_shadow_trade(store, "debug-open")
+
+            started = time.perf_counter()
+            with patch("services.mt5.mt5_signal_router.MT5SignalRouter.performance", side_effect=AssertionError("debug/storage must not call performance")):
+                debug = mt5_debug_storage(memory=store, symbol="BTCUSD", limit=20)
+            elapsed = time.perf_counter() - started
+
+            self.assertTrue(debug["ok"])
+            self.assertLess(elapsed, 3)
+            self.assertLessEqual(debug["limit"], 20)
+            self.assertTrue(debug["approximate_counts"])
+            self.assertLessEqual(debug["collection_counts"]["mt5_ticks"], 20)
+            self.assertFalse(debug["broker_touched"])
+            self.assertFalse(debug["order_executed"])
 
     def test_learning_endpoints_return_controlled_errors(self) -> None:
         with patch("api.routes.genesis.mt5_learning_run", side_effect=RuntimeError("boom")):
@@ -2021,6 +2080,45 @@ def _save_closed_shadow_trade(
     )
 
 
+def _save_open_shadow_trade(store: MemoryStore, trade_id: str, *, opened_minute: int = 30) -> None:
+    opened_at = f"2026-01-01T00:{opened_minute % 60:02d}:00+00:00"
+    MT5Journal(memory=store).save(
+        "mt5_shadow_trades",
+        "BTCUSD",
+        {
+            "shadow_trade_id": trade_id,
+            "symbol": "BTCUSD",
+            "original_symbol": "BTCUSD",
+            "normalized_symbol": "BTCUSD",
+            "instrument_type": "crypto_spot",
+            "is_spot_crypto": True,
+            "action": "BUY",
+            "entry": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 102.4,
+            "status": "open",
+            "lifecycle_status": "open",
+            "timeframe": "H1",
+            "pnl": 0.0,
+            "pnl_pct": 0.0,
+            "r_multiple": 0.0,
+            "opened_at": opened_at,
+            "updated_at": opened_at,
+            "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+            "source": "mt5_auto_forward_exploration",
+            "auto_forward": True,
+            "paper_exploration": True,
+            "manual_test": False,
+            "excluded_from_main_metrics": False,
+            "risk_reward": 1.2,
+            "initial_risk": 2.0,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        },
+    )
+
+
 def _save_adaptive_state(
     store: MemoryStore,
     *,
@@ -2118,6 +2216,7 @@ def _auto_forward_router(store: MemoryStore) -> MT5SignalRouter:
             kill_switch=False,
             max_spread_points=50.0,
             min_rr=1.2,
+            fast_path_only=False,
         ),
         symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTC", "BTCUSD"]),
     )
@@ -2145,6 +2244,7 @@ def _managed_shadow_router(
             shadow_trail_start_r=shadow_trail_start_r,
             shadow_trail_distance_r=0.30,
             shadow_signal_flip_close=True,
+            fast_path_only=False,
         ),
         symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTCUSD"]),
     )
@@ -2162,6 +2262,7 @@ def _exploration_router(store: MemoryStore) -> MT5SignalRouter:
             max_spread_points=50.0,
             min_rr=1.2,
             paper_exploration_enabled=True,
+            fast_path_only=False,
         ),
         symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTCUSD"]),
     )

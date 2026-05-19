@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_shadow_trading import get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 
 
 CLOSED_STATUSES = {"win", "loss", "breakeven"}
@@ -30,6 +31,17 @@ class MT5AdaptiveStateEngine:
             if trade.get("status") in CLOSED_STATUSES
             and (not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe)
         ]
+        data_source_used = "trade_memory"
+        if not trades:
+            trades = [
+                trade
+                for trade in get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=min(safe_limit, 100), timeframe=clean_timeframe)
+                if trade.get("status") in CLOSED_STATUSES
+                and is_main_metric_trade(trade, query_symbol=clean_symbol)
+                and not bool(trade.get("broker_touched"))
+                and not bool(trade.get("order_executed"))
+            ]
+            data_source_used = "shadow_trades_fast_path" if trades else "no_data"
         ordered = sorted(trades, key=lambda trade: str(trade.get("closed_at") or trade.get("updated_at") or ""))
         closed = len(ordered)
         win_streak, loss_streak = _current_streaks(ordered)
@@ -66,6 +78,7 @@ class MT5AdaptiveStateEngine:
             "rolling_drawdown": rolling_drawdown,
             "regime_health": regime_health,
             "recommendation_summary": recommendation_summary,
+            "data_source_used": data_source_used,
             "updated_at": _now(),
             **SAFETY_FLAGS,
         }

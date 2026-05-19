@@ -7,7 +7,7 @@ from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import normalize_mt5_symbol
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
-from services.mt5.mt5_shadow_trading import MT5ShadowTrading, is_main_metric_trade
+from services.mt5.mt5_shadow_trading import MT5ShadowTrading, get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 
 
 class MT5Performance:
@@ -22,17 +22,26 @@ class MT5Performance:
         clean_timeframe = str(timeframe or "").upper().strip()
         trades = [
             trade
-            for trade in self.shadow.trades(clean_symbol)
+            for trade in get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=100, timeframe=clean_timeframe)
             if not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe
         ]
-        signals = self._events("mt5_signals", clean_symbol, 200)
-        decisions = self._events("mt5_decisions", clean_symbol, 200)
-        order_requests = self._events("mt5_order_requests", clean_symbol, 200)
-        risk_blocks = self._events("mt5_risk_blocks", clean_symbol, 25)
+        if self.config.fast_path_only:
+            signals: list[dict[str, Any]] = []
+            decisions: list[dict[str, Any]] = []
+            order_requests: list[dict[str, Any]] = []
+            risk_blocks: list[dict[str, Any]] = []
+            no_trade: list[dict[str, Any]] = []
+            hedge: list[dict[str, Any]] = []
+            replay = {"replay_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "profit_factor": 0.0, "expectancy": 0.0, "max_drawdown": 0.0}
+        else:
+            signals = self._events("mt5_signals", clean_symbol, 100)
+            decisions = self._events("mt5_decisions", clean_symbol, 100)
+            order_requests = self._events("mt5_order_requests", clean_symbol, 100)
+            risk_blocks = self._events("mt5_risk_blocks", clean_symbol, 25)
+            no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
+            hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
+            replay = self._latest_replay(clean_symbol)
         latest_decision = _latest_payload(decisions)
-        no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
-        hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
-        replay = self._latest_replay(clean_symbol)
         main_trades = [trade for trade in trades if is_main_metric_trade(trade, query_symbol=clean_symbol)]
         excluded_trades = [trade for trade in trades if not is_main_metric_trade(trade, query_symbol=clean_symbol)]
         strict_auto_trades = [
@@ -67,7 +76,9 @@ class MT5Performance:
         }
         summary_forward_auto = _summary_for_trades(forward_auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
-        proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if is_main_metric_trade(trade, query_symbol="BTC_PROXY")])
+        proxy_summary = _summary_for_trades(
+            [trade for trade in get_recent_mt5_shadow_trades_fast(self.memory, "BTC_PROXY", limit=100) if is_main_metric_trade(trade, query_symbol="BTC_PROXY")]
+        )
         last_valid_decision = _latest_payload_by_actionable(decisions, True)
         last_invalid_decision = _latest_payload_by_actionable(decisions, False)
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
@@ -76,7 +87,7 @@ class MT5Performance:
         instrument_type = "crypto_spot" if normalized_symbol == "BTCUSD" else "crypto_etf_proxy" if normalized_symbol == "BTC_PROXY" else ""
         summary_auto_payload = {**summary_auto, "symbol": clean_symbol, "normalized_symbol": normalized_symbol, "instrument_type": instrument_type, "sample_warning": _sample_warning(summary_auto)}
         summary = {
-            **summary_auto,
+            **summary_forward_auto,
             "symbol": clean_symbol,
             "normalized_symbol": normalized_symbol,
             "instrument_type": instrument_type,
@@ -88,7 +99,7 @@ class MT5Performance:
             "exploration_shadow_trades": summary_exploration["shadow_trades"],
             "forward_auto_shadow_trades": summary_forward_auto["shadow_trades"],
             "total_shadow_trades": summary_total["shadow_trades"],
-            "sample_warning": _sample_warning(summary_auto),
+            "sample_warning": _sample_warning(summary_forward_auto),
         }
         no_trade_metrics = _binary_accuracy(no_trade, correct_outcomes={"correct_sideways", "protected_loss"})
         hedge_metrics = _binary_accuracy(hedge, correct_outcomes={"hedge_correct", "hedge_watch"})
@@ -145,7 +156,6 @@ class MT5Performance:
             "order_policy": "journal_only_no_broker",
             "updated_at": _now(),
         }
-        self.journal.save("mt5_forward_metrics", clean_symbol or "MT5", payload)
         return payload
 
     def auto_report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:

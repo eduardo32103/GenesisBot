@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -17,7 +18,7 @@ from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
-from services.mt5.mt5_shadow_trading import MT5ShadowTrading
+from services.mt5.mt5_shadow_trading import MT5ShadowTrading, get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 from services.mt5.mt5_adaptive_recommendations import MT5AdaptiveRecommendationEngine
 from services.mt5.mt5_adaptive_state import MT5AdaptiveStateEngine
@@ -338,37 +339,52 @@ class MT5SignalRouter:
     def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
         return self.shadow.snapshot(symbol=symbol, limit=limit)
 
-    def debug_storage(self, *, symbol: str = "") -> dict[str, Any]:
+    def debug_storage(self, *, symbol: str = "", limit: int = 20) -> dict[str, Any]:
+        started = time.monotonic()
         clean_symbol = str(symbol or "").upper().strip()
+        safe_limit = max(1, min(int(limit or 20), 20))
         aliases = _symbol_aliases(clean_symbol)
         normalized = _normalized_symbol(clean_symbol)
         collections = (
-            "mt5_shadow_trades",
             "mt5_ticks",
             "mt5_decisions",
             "mt5_signals",
             "mt5_order_requests",
-            "mt5_forward_metrics",
-            "mt5_signal_outcomes",
-            "mt5_no_trade_outcomes",
-            "mt5_no_trade_evaluations",
-            "mt5_hedge_outcomes",
+            "mt5_shadow_trades",
         )
         counts: dict[str, int] = {}
         latest: dict[str, dict[str, Any] | None] = {}
-        for collection in collections:
-            rows = self.memory.get_mt5_events(collection, clean_symbol or None, limit=500)
-            counts[collection] = len(rows)
-            latest[collection] = _payload(rows[0]) if rows else None
-        snapshot = self.shadow.snapshot(symbol=clean_symbol, limit=500)
-        performance = self.performance(symbol=clean_symbol)
-        trades = snapshot.get("items") or []
-        raw_trades = self.shadow.trades(clean_symbol, limit=500)
-        excluded_trades = snapshot.get("excluded_trades") or []
-        auto_trades = [trade for trade in trades if trade.get("auto_forward")]
-        manual_trades = [trade for trade in trades if trade.get("manual_test")]
-        proxy_trades = [trade for trade in self.shadow.trades("BTC_PROXY", limit=500)]
-        btcusd_real_trades = [trade for trade in trades if str(trade.get("normalized_symbol") or "").upper() == "BTCUSD" and str(trade.get("instrument_type") or "") == "crypto_spot"]
+        try:
+            for collection in collections:
+                rows = self.memory.get_mt5_events(collection, clean_symbol or None, limit=safe_limit)
+                counts[collection] = len(rows)
+                latest[collection] = _payload(rows[0]) if rows else None
+            raw_trades = get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=safe_limit)
+            trades = [trade for trade in raw_trades if is_main_metric_trade(trade, query_symbol=clean_symbol)]
+            excluded_trades = [trade for trade in raw_trades if trade not in trades]
+            auto_trades = [trade for trade in trades if trade.get("auto_forward")]
+            manual_trades = [trade for trade in raw_trades if trade.get("manual_test")]
+            proxy_trades = get_recent_mt5_shadow_trades_fast(self.memory, "BTC_PROXY", limit=safe_limit)
+            btcusd_real_trades = [
+                trade
+                for trade in trades
+                if str(trade.get("normalized_symbol") or "").upper() == "BTCUSD"
+                and str(trade.get("instrument_type") or "") == "crypto_spot"
+            ]
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "mt5_storage_debug_error",
+                "symbol": clean_symbol,
+                "normalized_symbol": normalized,
+                "symbol_aliases": aliases,
+                "limit": safe_limit,
+                "latest_error": str(exc)[:240],
+                "duration_ms": _elapsed_ms(started),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
         return {
             "ok": True,
             "status": "mt5_storage_debug_ready",
@@ -376,6 +392,8 @@ class MT5SignalRouter:
             "normalized_symbol": normalized,
             "symbol_filters_applied": aliases,
             "symbol_aliases": aliases,
+            "limit": safe_limit,
+            "approximate_counts": True,
             "collections": list(collections),
             "counts": counts,
             "collection_counts": counts,
@@ -390,8 +408,8 @@ class MT5SignalRouter:
             "memory_backend": getattr(self.memory, "backend", "unknown"),
             "active_backend": getattr(self.memory, "backend", "unknown"),
             "persistence_backend": getattr(self.memory, "backend", "unknown"),
-            "shadow_snapshot_count": snapshot["count"],
-            "performance_total_shadow_trades": (performance.get("summary") or {}).get("total_shadow_trades", 0),
+            "shadow_snapshot_count": len(trades),
+            "performance_total_shadow_trades": len(trades),
             "last_shadow_trade": trades[0] if trades else None,
             "last_shadow_trade_real": btcusd_real_trades[0] if btcusd_real_trades else None,
             "last_excluded_trade": excluded_trades[0] if excluded_trades else None,
@@ -401,6 +419,8 @@ class MT5SignalRouter:
             "excluded_count": len(excluded_trades),
             "last_tick": latest["mt5_ticks"],
             "last_decision": latest["mt5_decisions"],
+            "latest_error": "",
+            "duration_ms": _elapsed_ms(started),
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -648,6 +668,10 @@ def _maybe_float(value: Any) -> float | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.monotonic() - started) * 1000))
 
 
 _MT5_COLLECTIONS = (

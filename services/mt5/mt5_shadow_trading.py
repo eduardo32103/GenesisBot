@@ -354,14 +354,7 @@ class MT5ShadowTrading:
         }
 
     def trades(self, symbol: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-        rows = self.memory.get_mt5_events("mt5_shadow_trades", _symbol(symbol), limit=limit)
-        latest: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-            trade_id = str(payload.get("shadow_trade_id") or "")
-            if trade_id and trade_id not in latest:
-                latest[trade_id] = _normalize_trade_for_read({**payload, "created_at": row.get("created_at") or payload.get("created_at")})
-        return list(latest.values())
+        return get_recent_mt5_shadow_trades_fast(self.memory, _symbol(symbol), limit=limit)
 
     def close_on_signal_flip(
         self,
@@ -690,6 +683,28 @@ def is_main_metric_trade(trade: dict[str, Any], *, query_symbol: str = "") -> bo
     if query_normalized and trade_normalized and trade_normalized != query_normalized:
         return False
     return True
+
+
+def get_recent_mt5_shadow_trades_fast(
+    memory: MemoryStore,
+    symbol: str | None = None,
+    *,
+    limit: int = 100,
+    timeframe: str = "",
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 100), 100))
+    clean_symbol = _symbol(symbol)
+    clean_timeframe = str(timeframe or "").upper().strip()
+    rows = memory.get_mt5_events("mt5_shadow_trades", clean_symbol or None, limit=safe_limit)
+    latest: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if clean_timeframe and str(payload.get("timeframe") or "").upper() != clean_timeframe:
+            continue
+        trade_id = str(payload.get("shadow_trade_id") or row.get("created_at") or f"row-{index}")
+        if trade_id and trade_id not in latest:
+            latest[trade_id] = _normalize_trade_for_read({**payload, "created_at": row.get("created_at") or payload.get("created_at")})
+    return list(latest.values())
 
 
 def _is_main_for_query(trade: dict[str, Any], query_symbol: str) -> bool:

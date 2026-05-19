@@ -96,8 +96,8 @@ def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[st
     return mt5_shadow_trades(limit=limit, symbol=symbol)
 
 
-def get_genesis_mt5_debug_storage(symbol: str = "") -> dict[str, Any]:
-    return mt5_debug_storage(symbol=symbol)
+def get_genesis_mt5_debug_storage(symbol: str = "", limit: int = 20) -> dict[str, Any]:
+    return mt5_debug_storage(symbol=symbol, limit=limit)
 
 
 def get_genesis_mt5_instrument(symbol: str = "") -> dict[str, Any]:
