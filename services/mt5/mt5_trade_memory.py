@@ -278,14 +278,9 @@ class MT5TradeMemoryEngine:
 
     def _summary_fallback(self, symbol: str, limit: int, error: str, started: float) -> dict[str, Any]:
         warnings = ["memory summary fallback used"]
-        try:
-            state = MT5AdaptiveStateEngine(memory=self.memory).compute(symbol=symbol, limit=limit)
-        except Exception as exc:
-            state = {"error": str(exc)[:240]}
-            warnings.append("adaptive_state_fallback_failed")
         return {
-            "ok": True,
-            "status": "mt5_memory_summary_fallback",
+            "ok": False,
+            "status": "mt5_memory_summary_error",
             "symbol": symbol,
             "limit": limit,
             "total_memories": 0,
@@ -297,8 +292,7 @@ class MT5TradeMemoryEngine:
             "most_common_regimes": [],
             "best_contexts": [],
             "worst_contexts": [],
-            "fallback_adaptive_state": state,
-            "genesis_reading": f"{symbol}: memory summary uso fallback rapido; revisar error controlado.",
+            "genesis_reading": f"{symbol}: memory summary no pudo leer memoria; error controlado sin backfill.",
             "duration_ms": _elapsed_ms(started),
             "warnings": warnings,
             "error": error[:240],

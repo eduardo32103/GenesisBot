@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
@@ -320,11 +321,11 @@ class MT5SignalRouter:
     def tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         return self.forward_engine.record_tick(payload)
 
-    def performance(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-        return self.performance_engine.report(symbol=symbol, timeframe=timeframe)
+    def performance(self, *, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+        return self.performance_engine.report(symbol=symbol, timeframe=timeframe, limit=limit)
 
-    def performance_auto(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-        return self.performance_engine.auto_report(symbol=symbol, timeframe=timeframe)
+    def performance_auto(self, *, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+        return self.performance_engine.auto_report(symbol=symbol, timeframe=timeframe, limit=limit)
 
     def forward_test(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         return self.forward_engine.forward_test(symbol=symbol, timeframe=timeframe)
@@ -338,8 +339,10 @@ class MT5SignalRouter:
     def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
         return self.shadow.snapshot(symbol=symbol, limit=limit)
 
-    def debug_storage(self, *, symbol: str = "") -> dict[str, Any]:
+    def debug_storage(self, *, symbol: str = "", limit: int = 20) -> dict[str, Any]:
+        started = time.monotonic()
         clean_symbol = str(symbol or "").upper().strip()
+        safe_limit = _clamp_int(limit, 20, 1, 100)
         aliases = _symbol_aliases(clean_symbol)
         normalized = _normalized_symbol(clean_symbol)
         collections = (
@@ -357,18 +360,18 @@ class MT5SignalRouter:
         counts: dict[str, int] = {}
         latest: dict[str, dict[str, Any] | None] = {}
         for collection in collections:
-            rows = self.memory.get_mt5_events(collection, clean_symbol or None, limit=500)
+            rows = self.memory.get_mt5_events(collection, clean_symbol or None, limit=safe_limit)
             counts[collection] = len(rows)
             latest[collection] = _payload(rows[0]) if rows else None
-        snapshot = self.shadow.snapshot(symbol=clean_symbol, limit=500)
-        performance = self.performance(symbol=clean_symbol)
+        snapshot = self.shadow.snapshot(symbol=clean_symbol, limit=safe_limit)
         trades = snapshot.get("items") or []
-        raw_trades = self.shadow.trades(clean_symbol, limit=500)
+        raw_trades = self.shadow.trades(clean_symbol, limit=safe_limit)
         excluded_trades = snapshot.get("excluded_trades") or []
         auto_trades = [trade for trade in trades if trade.get("auto_forward")]
         manual_trades = [trade for trade in trades if trade.get("manual_test")]
-        proxy_trades = [trade for trade in self.shadow.trades("BTC_PROXY", limit=500)]
+        proxy_trades = [trade for trade in self.shadow.trades("BTC_PROXY", limit=safe_limit)]
         btcusd_real_trades = [trade for trade in trades if str(trade.get("normalized_symbol") or "").upper() == "BTCUSD" and str(trade.get("instrument_type") or "") == "crypto_spot"]
+        latest_error = _latest_error_from_payloads(latest)
         return {
             "ok": True,
             "status": "mt5_storage_debug_ready",
@@ -378,6 +381,7 @@ class MT5SignalRouter:
             "symbol_aliases": aliases,
             "collections": list(collections),
             "counts": counts,
+            "counts_by_collection": counts,
             "collection_counts": counts,
             "mt5_ticks_count": counts.get("mt5_ticks", 0),
             "mt5_shadow_trades_count": len(raw_trades),
@@ -391,7 +395,7 @@ class MT5SignalRouter:
             "active_backend": getattr(self.memory, "backend", "unknown"),
             "persistence_backend": getattr(self.memory, "backend", "unknown"),
             "shadow_snapshot_count": snapshot["count"],
-            "performance_total_shadow_trades": (performance.get("summary") or {}).get("total_shadow_trades", 0),
+            "performance_total_shadow_trades": snapshot["count"],
             "last_shadow_trade": trades[0] if trades else None,
             "last_shadow_trade_real": btcusd_real_trades[0] if btcusd_real_trades else None,
             "last_excluded_trade": excluded_trades[0] if excluded_trades else None,
@@ -401,9 +405,13 @@ class MT5SignalRouter:
             "excluded_count": len(excluded_trades),
             "last_tick": latest["mt5_ticks"],
             "last_decision": latest["mt5_decisions"],
+            "latest_tick": latest["mt5_ticks"],
+            "latest_shadow_trade": raw_trades[0] if raw_trades else None,
+            "latest_error": latest_error,
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
+            "duration_ms": _elapsed_ms(started),
             "updated_at": _now(),
         }
 
@@ -529,20 +537,74 @@ class MT5SignalRouter:
         return self.trade_memory_engine.learning_status(symbol=symbol)
 
     def adaptive_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-        return self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
+        started = time.monotonic()
+        clean_symbol = str(symbol or "").upper().strip()
+        clean_timeframe = str(timeframe or "").upper().strip()
+        try:
+            rows = self.memory.get_mt5_events("mt5_adaptive_state", clean_symbol or None, limit=5)
+            for row in rows:
+                payload = _payload(row)
+                if clean_timeframe and str(payload.get("timeframe") or "").upper() not in {"", clean_timeframe}:
+                    continue
+                return {
+                    **payload,
+                    "ok": True,
+                    "status": payload.get("status") or "mt5_adaptive_state_ready",
+                    "symbol": clean_symbol,
+                    "timeframe": clean_timeframe or str(payload.get("timeframe") or "").upper(),
+                    "data_source_used": "precomputed_adaptive_state",
+                    "duration_ms": _elapsed_ms(started),
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                }
+            state = self.adaptive_state_engine.compute(symbol=clean_symbol, timeframe=clean_timeframe, limit=100)
+            return {**state, "data_source_used": "limited_trade_memory", "duration_ms": _elapsed_ms(started)}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "mt5_adaptive_state_error",
+                "symbol": clean_symbol,
+                "timeframe": clean_timeframe,
+                "error": str(exc)[:500],
+                "warnings": ["adaptive-state fast-path returned controlled error"],
+                "duration_ms": _elapsed_ms(started),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "updated_at": _now(),
+            }
 
     def strategy_profiles(self, *, symbol: str = "") -> dict[str, Any]:
         return self.trade_memory_engine.strategy_profiles(symbol=symbol)
 
     def adaptive_recommendations(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-        state = self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
-        profiles = self.trade_memory_engine.strategy_profiles(symbol=symbol).get("items") or []
-        return self.adaptive_recommendation_engine.recommend(
-            symbol=symbol,
-            timeframe=timeframe,
-            state=state,
-            profile_stats=profiles,
-        )
+        started = time.monotonic()
+        clean_symbol = str(symbol or "").upper().strip()
+        clean_timeframe = str(timeframe or "").upper().strip()
+        try:
+            state = self.adaptive_state(symbol=clean_symbol, timeframe=clean_timeframe)
+            result = self.adaptive_recommendation_engine.recommend(
+                symbol=clean_symbol,
+                timeframe=clean_timeframe,
+                state=state,
+                profile_stats=[],
+            )
+            return {**result, "duration_ms": _elapsed_ms(started)}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "mt5_adaptive_recommendations_error",
+                "symbol": clean_symbol,
+                "timeframe": clean_timeframe,
+                "error": str(exc)[:500],
+                "warnings": ["adaptive-recommendations fast-path returned controlled error"],
+                "duration_ms": _elapsed_ms(started),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "updated_at": _now(),
+            }
 
     def paper_defense_status(self, *, symbol: str = "") -> dict[str, Any]:
         return self.paper_defense.state(symbol=symbol)
@@ -1016,3 +1078,25 @@ def _reason_alias(value: object) -> str:
         "open_shadow_trade_exists": "duplicate_open_trade",
     }
     return aliases.get(text, text)
+
+
+def _latest_error_from_payloads(latest: dict[str, dict[str, Any] | None]) -> str:
+    for payload in latest.values():
+        if not isinstance(payload, dict):
+            continue
+        error = payload.get("error") or payload.get("last_error") or payload.get("reason")
+        if error:
+            return str(error)[:240]
+    return ""
+
+
+def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value) if value is not None and value != "" else default
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.monotonic() - started) * 1000))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1716,6 +1717,68 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertLessEqual(limited["total_memories"], 50)
             self.assertFalse(limited["broker_touched"])
             self.assertFalse(limited["order_executed"])
+
+    def test_performance_fast_path_handles_200_trades_under_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            for index in range(200):
+                _save_closed_shadow_trade(
+                    store,
+                    f"perf-{index}",
+                    status="win" if index % 2 == 0 else "loss",
+                    r_multiple=1.0 if index % 2 == 0 else -1.0,
+                    pnl=1000 if index % 2 == 0 else -1000,
+                    exit_reason="take_profit" if index % 2 == 0 else "stop_loss",
+                    opened_minute=index,
+                )
+
+            started = time.perf_counter()
+            performance = mt5_performance(memory=store, symbol="BTCUSD", timeframe="H1")
+            elapsed = time.perf_counter() - started
+
+            self.assertTrue(performance["ok"])
+            self.assertLess(elapsed, 5.0)
+            self.assertLessEqual(performance["summary"]["total_shadow_trades"], 100)
+            self.assertIn("duration_ms", performance)
+            self.assertFalse(performance["broker_touched"])
+            self.assertFalse(performance["order_executed"])
+
+    def test_adaptive_get_endpoints_do_not_call_learning_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            _save_adaptive_state(
+                store,
+                closed_trades=16,
+                bot_state="normal",
+                rolling_profit_factor=1.7,
+                rolling_expectancy=0.02,
+                rolling_drawdown=0.1,
+                last_10_win_rate=60.0,
+            )
+
+            with patch("services.mt5.mt5_trade_memory.MT5TradeMemoryEngine.run_learning", side_effect=AssertionError("GET must not learn")):
+                state = mt5_adaptive_state(memory=store, symbol="BTCUSD", timeframe="H1")
+                recommendations = mt5_adaptive_recommendations(memory=store, symbol="BTCUSD", timeframe="H1")
+                summary = mt5_memory_summary(memory=store, symbol="BTCUSD", limit=50)
+
+            self.assertTrue(state["ok"])
+            self.assertEqual(state["data_source_used"], "precomputed_adaptive_state")
+            self.assertTrue(recommendations["ok"])
+            self.assertTrue(summary["ok"])
+            self.assertFalse(state["broker_touched"])
+            self.assertFalse(recommendations["order_executed"])
+
+    def test_learning_run_internal_error_returns_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            with patch("services.mt5.mt5_trade_memory.MT5TradeMemoryEngine._closed_main_trades", side_effect=RuntimeError("storage timeout")):
+                learning = mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=store)
+
+            self.assertFalse(learning["ok"])
+            self.assertEqual(learning["status"], "mt5_learning_error")
+            self.assertIn("storage timeout", learning["error"])
+            self.assertFalse(learning["broker_touched"])
+            self.assertFalse(learning["order_executed"])
 
     def test_adaptive_state_detects_loss_streak_and_hot_streak(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -26,12 +26,12 @@ def mt5_journal_recent(*, memory: MemoryStore | None = None, limit: int = 25, sy
     return build_router(memory).journal_recent(limit=limit, symbol=symbol)
 
 
-def mt5_performance(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-    return build_router(memory).performance(symbol=symbol, timeframe=timeframe)
+def mt5_performance(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+    return build_router(memory).performance(symbol=symbol, timeframe=timeframe, limit=limit)
 
 
-def mt5_performance_auto(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-    return build_router(memory).performance_auto(symbol=symbol, timeframe=timeframe)
+def mt5_performance_auto(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+    return build_router(memory).performance_auto(symbol=symbol, timeframe=timeframe, limit=limit)
 
 
 def mt5_forward_test(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -50,8 +50,8 @@ def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", li
     return build_router(memory).shadow_trades(symbol=symbol, limit=limit)
 
 
-def mt5_debug_storage(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
-    return build_router(memory).debug_storage(symbol=symbol)
+def mt5_debug_storage(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 20) -> dict[str, Any]:
+    return build_router(memory).debug_storage(symbol=symbol, limit=limit)
 
 
 def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:

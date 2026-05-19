@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,10 +21,11 @@ class MT5AdaptiveStateEngine:
     def __init__(self, *, memory: MemoryStore | None = None) -> None:
         self.memory = memory or MemoryStore()
 
-    def compute(self, *, symbol: str = "", timeframe: str = "", limit: int = 2000) -> dict[str, Any]:
+    def compute(self, *, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+        started = time.monotonic()
         clean_symbol = _symbol(symbol)
         clean_timeframe = str(timeframe or "").upper().strip()
-        safe_limit = _clamp_int(limit, 2000, 1, 2000)
+        safe_limit = _clamp_int(limit, 100, 1, 100)
         trades = [
             trade
             for trade in _latest_trade_memories(self.memory, clean_symbol, limit=safe_limit)
@@ -66,13 +68,14 @@ class MT5AdaptiveStateEngine:
             "rolling_drawdown": rolling_drawdown,
             "regime_health": regime_health,
             "recommendation_summary": recommendation_summary,
+            "duration_ms": _elapsed_ms(started),
             "updated_at": _now(),
             **SAFETY_FLAGS,
         }
 
 
-def _latest_trade_memories(memory: MemoryStore, symbol: str, *, limit: int = 2000) -> list[dict[str, Any]]:
-    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=_clamp_int(limit, 2000, 1, 2000))
+def _latest_trade_memories(memory: MemoryStore, symbol: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=_clamp_int(limit, 100, 1, 100))
     latest: dict[str, dict[str, Any]] = {}
     for row in rows:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -209,6 +212,10 @@ def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         number = default
     return max(minimum, min(maximum, number))
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.monotonic() - started) * 1000))
 
 
 def _symbol(value: object) -> str:

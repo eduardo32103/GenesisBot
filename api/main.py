@@ -4463,7 +4463,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             timeframe = (query.get("timeframe") or [""])[0]
-            payload_data = get_genesis_mt5_performance(symbol=symbol, timeframe=timeframe)
+            raw_limit = (query.get("limit") or ["100"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 100
+            payload_data = get_genesis_mt5_performance(symbol=symbol, timeframe=timeframe, limit=limit)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -4471,7 +4476,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             timeframe = (query.get("timeframe") or [""])[0]
-            payload_data = get_genesis_mt5_performance_auto(symbol=symbol, timeframe=timeframe)
+            raw_limit = (query.get("limit") or ["100"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 100
+            payload_data = get_genesis_mt5_performance_auto(symbol=symbol, timeframe=timeframe, limit=limit)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -4522,7 +4532,12 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/mt5/debug/storage":
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
-            payload_data = get_genesis_mt5_debug_storage(symbol=symbol)
+            raw_limit = (query.get("limit") or ["20"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 20
+            payload_data = get_genesis_mt5_debug_storage(symbol=symbol, limit=limit)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

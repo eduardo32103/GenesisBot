@@ -72,12 +72,12 @@ def get_genesis_mt5_journal_recent(limit: int = 25, symbol: str = "") -> dict[st
     return mt5_journal_recent(limit=limit, symbol=symbol)
 
 
-def get_genesis_mt5_performance(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-    return mt5_performance(symbol=symbol, timeframe=timeframe)
+def get_genesis_mt5_performance(symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+    return mt5_performance(symbol=symbol, timeframe=timeframe, limit=limit)
 
 
-def get_genesis_mt5_performance_auto(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-    return mt5_performance_auto(symbol=symbol, timeframe=timeframe)
+def get_genesis_mt5_performance_auto(symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
+    return mt5_performance_auto(symbol=symbol, timeframe=timeframe, limit=limit)
 
 
 def get_genesis_mt5_forward_test(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -96,8 +96,8 @@ def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[st
     return mt5_shadow_trades(limit=limit, symbol=symbol)
 
 
-def get_genesis_mt5_debug_storage(symbol: str = "") -> dict[str, Any]:
-    return mt5_debug_storage(symbol=symbol)
+def get_genesis_mt5_debug_storage(symbol: str = "", limit: int = 20) -> dict[str, Any]:
+    return mt5_debug_storage(symbol=symbol, limit=limit)
 
 
 def get_genesis_mt5_instrument(symbol: str = "") -> dict[str, Any]:
