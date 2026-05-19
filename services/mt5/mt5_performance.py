@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,41 +17,21 @@ class MT5Performance:
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
 
-    def report(self, *, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
-        started = time.monotonic()
+    def report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         clean_timeframe = str(timeframe or "").upper().strip()
-        safe_limit = _clamp_int(limit, 100, 1, 100)
-        try:
-            return self._report_fast(clean_symbol=clean_symbol, clean_timeframe=clean_timeframe, safe_limit=safe_limit, started=started)
-        except Exception as exc:
-            return {
-                "ok": False,
-                "status": "mt5_performance_error",
-                "symbol": clean_symbol,
-                "timeframe": clean_timeframe,
-                "error": str(exc)[:500],
-                "warnings": ["performance fast-path returned controlled error"],
-                "duration_ms": _elapsed_ms(started),
-                "broker_touched": False,
-                "order_executed": False,
-                "order_policy": "journal_only_no_broker",
-                "updated_at": _now(),
-            }
-
-    def _report_fast(self, *, clean_symbol: str, clean_timeframe: str, safe_limit: int, started: float) -> dict[str, Any]:
         trades = [
             trade
-            for trade in self.shadow.trades(clean_symbol, limit=safe_limit)
+            for trade in self.shadow.trades(clean_symbol)
             if not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe
         ]
-        signals = self._events("mt5_signals", clean_symbol, min(50, safe_limit))
-        decisions = self._events("mt5_decisions", clean_symbol, min(50, safe_limit))
-        order_requests = self._events("mt5_order_requests", clean_symbol, min(50, safe_limit))
-        risk_blocks = self._events("mt5_risk_blocks", clean_symbol, min(25, safe_limit))
+        signals = self._events("mt5_signals", clean_symbol, 200)
+        decisions = self._events("mt5_decisions", clean_symbol, 200)
+        order_requests = self._events("mt5_order_requests", clean_symbol, 200)
+        risk_blocks = self._events("mt5_risk_blocks", clean_symbol, 25)
         latest_decision = _latest_payload(decisions)
-        no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol, limit=min(50, safe_limit))
-        hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol, limit=min(50, safe_limit))
+        no_trade = self._latest_outcomes("mt5_no_trade_outcomes", clean_symbol)
+        hedge = self._latest_outcomes("mt5_hedge_outcomes", clean_symbol)
         replay = self._latest_replay(clean_symbol)
         main_trades = [trade for trade in trades if is_main_metric_trade(trade, query_symbol=clean_symbol)]
         excluded_trades = [trade for trade in trades if not is_main_metric_trade(trade, query_symbol=clean_symbol)]
@@ -88,7 +67,7 @@ class MT5Performance:
         }
         summary_forward_auto = _summary_for_trades(forward_auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
-        proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY", limit=min(50, safe_limit)) if is_main_metric_trade(trade, query_symbol="BTC_PROXY")])
+        proxy_summary = _summary_for_trades([trade for trade in self.shadow.trades("BTC_PROXY") if is_main_metric_trade(trade, query_symbol="BTC_PROXY")])
         last_valid_decision = _latest_payload_by_actionable(decisions, True)
         last_invalid_decision = _latest_payload_by_actionable(decisions, False)
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
@@ -164,16 +143,13 @@ class MT5Performance:
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
-            "duration_ms": _elapsed_ms(started),
-            "warnings": [],
             "updated_at": _now(),
         }
+        self.journal.save("mt5_forward_metrics", clean_symbol or "MT5", payload)
         return payload
 
-    def auto_report(self, *, symbol: str = "", timeframe: str = "", limit: int = 100) -> dict[str, Any]:
-        report = self.report(symbol=symbol, timeframe=timeframe, limit=limit)
-        if not report.get("ok"):
-            return {**report, "status": "mt5_auto_performance_error"}
+    def auto_report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        report = self.report(symbol=symbol, timeframe=timeframe)
         summary_auto = {
             **report["summary_auto"],
             "auto_shadow_trades": report["summary_auto"].get("shadow_trades", 0),
@@ -238,8 +214,8 @@ class MT5Performance:
     def _events(self, collection: str, symbol: str, limit: int) -> list[dict[str, Any]]:
         return self.memory.get_mt5_events(collection, symbol or None, limit=limit)
 
-    def _latest_outcomes(self, collection: str, symbol: str, *, limit: int = 50) -> list[dict[str, Any]]:
-        rows = self.memory.get_mt5_events(collection, symbol or None, limit=limit)
+    def _latest_outcomes(self, collection: str, symbol: str) -> list[dict[str, Any]]:
+        rows = self.memory.get_mt5_events(collection, symbol or None, limit=200)
         latest: dict[str, dict[str, Any]] = {}
         for row in rows:
             payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -488,18 +464,6 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
-    try:
-        number = int(value) if value is not None and value != "" else default
-    except (TypeError, ValueError):
-        number = default
-    return max(minimum, min(maximum, number))
-
-
-def _elapsed_ms(started: float) -> int:
-    return int(round((time.monotonic() - started) * 1000))
 
 
 def _reading(symbol: str, summary: dict[str, Any], no_trade: dict[str, Any], hedge: dict[str, Any], current_state_reason: str = "") -> str:

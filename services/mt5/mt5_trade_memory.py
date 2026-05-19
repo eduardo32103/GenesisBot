@@ -8,6 +8,7 @@ from typing import Any
 from services.genesis.memory_store import MemoryStore
 from services.mt5.mt5_adaptive_recommendations import MT5AdaptiveRecommendationEngine
 from services.mt5.mt5_adaptive_state import MT5AdaptiveStateEngine
+from services.mt5.mt5_config import get_mt5_config
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading, is_main_metric_trade
 
@@ -40,6 +41,16 @@ class MT5TradeMemoryEngine:
         timeframe = str(body.get("timeframe") or "").upper().strip()
         mode = str(body.get("mode") or "paper").strip().lower() or "paper"
         max_trades = _clamp_int(body.get("max_trades"), DEFAULT_MAX_TRADES, 1, MAX_TRADES_CAP)
+        runtime = get_mt5_config()
+        if runtime.fast_path_only or not runtime.learning_run_enabled or not runtime.adaptive_learning_enabled:
+            return _disabled_payload(
+                status="learning_disabled_by_fast_path",
+                message="Learning temporarily disabled to protect MT5 fast path.",
+                symbol=symbol,
+                timeframe=timeframe,
+                started=started,
+                max_trades=max_trades,
+            )
         errors: list[dict[str, Any]] = []
         warnings: list[str] = []
         memories_created = 0
@@ -149,6 +160,16 @@ class MT5TradeMemoryEngine:
         started = time.monotonic()
         clean_symbol = _symbol(symbol)
         safe_limit = _clamp_int(limit, DEFAULT_SUMMARY_LIMIT, 1, SUMMARY_LIMIT_CAP)
+        runtime = get_mt5_config()
+        if runtime.fast_path_only or not runtime.memory_summary_enabled:
+            return _disabled_payload(
+                status="memory_summary_disabled_by_fast_path",
+                message="Memory summary temporarily disabled to protect MT5 fast path.",
+                symbol=clean_symbol,
+                timeframe="",
+                started=started,
+                limit=safe_limit,
+            )
         warnings: list[str] = []
         errors: list[dict[str, Any]] = []
         try:
@@ -278,9 +299,14 @@ class MT5TradeMemoryEngine:
 
     def _summary_fallback(self, symbol: str, limit: int, error: str, started: float) -> dict[str, Any]:
         warnings = ["memory summary fallback used"]
+        try:
+            state = MT5AdaptiveStateEngine(memory=self.memory).compute(symbol=symbol, limit=limit)
+        except Exception as exc:
+            state = {"error": str(exc)[:240]}
+            warnings.append("adaptive_state_fallback_failed")
         return {
-            "ok": False,
-            "status": "mt5_memory_summary_error",
+            "ok": True,
+            "status": "mt5_memory_summary_fallback",
             "symbol": symbol,
             "limit": limit,
             "total_memories": 0,
@@ -292,7 +318,8 @@ class MT5TradeMemoryEngine:
             "most_common_regimes": [],
             "best_contexts": [],
             "worst_contexts": [],
-            "genesis_reading": f"{symbol}: memory summary no pudo leer memoria; error controlado sin backfill.",
+            "fallback_adaptive_state": state,
+            "genesis_reading": f"{symbol}: memory summary uso fallback rapido; revisar error controlado.",
             "duration_ms": _elapsed_ms(started),
             "warnings": warnings,
             "error": error[:240],
@@ -530,6 +557,41 @@ def _error_payload(
         "updated_at": _now(),
         **SAFETY_FLAGS,
     }
+
+
+def _disabled_payload(
+    *,
+    status: str,
+    message: str,
+    symbol: str,
+    timeframe: str,
+    started: float,
+    limit: int | None = None,
+    max_trades: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "status": status,
+        "message": message,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "duration_ms": _elapsed_ms(started),
+        "warnings": ["MT5_FAST_PATH_ONLY protects tick/decision/performance endpoints"],
+        "errors": [],
+        "trades_seen": 0,
+        "trades_processed": 0,
+        "memories_created": 0,
+        "lessons_created": 0,
+        "updated_at": _now(),
+        **SAFETY_FLAGS,
+    }
+    if limit is not None:
+        payload["limit"] = limit
+        payload["total_memories"] = 0
+        payload["lessons_count"] = 0
+    if max_trades is not None:
+        payload["max_trades"] = max_trades
+    return payload
 
 
 def _storage_payload(memory: MemoryStore) -> dict[str, Any]:

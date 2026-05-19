@@ -27,6 +27,10 @@ class MT5RuntimeConfig:
     shadow_trail_start_r: float = 0.70
     shadow_trail_distance_r: float = 0.30
     shadow_signal_flip_close: bool = True
+    adaptive_learning_enabled: bool = False
+    memory_summary_enabled: bool = False
+    learning_run_enabled: bool = False
+    fast_path_only: bool = True
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -47,6 +51,10 @@ class MT5RuntimeConfig:
             "MT5_SHADOW_TRAIL_START_R": self.shadow_trail_start_r,
             "MT5_SHADOW_TRAIL_DISTANCE_R": self.shadow_trail_distance_r,
             "MT5_SHADOW_SIGNAL_FLIP_CLOSE": self.shadow_signal_flip_close,
+            "MT5_ADAPTIVE_LEARNING_ENABLED": self.adaptive_learning_enabled,
+            "MT5_MEMORY_SUMMARY_ENABLED": self.memory_summary_enabled,
+            "MT5_LEARNING_RUN_ENABLED": self.learning_run_enabled,
+            "MT5_FAST_PATH_ONLY": self.fast_path_only,
         }
 
 
@@ -69,11 +77,19 @@ def get_mt5_config() -> MT5RuntimeConfig:
         shadow_trail_start_r=_float_env("MT5_SHADOW_TRAIL_START_R", 0.70),
         shadow_trail_distance_r=_float_env("MT5_SHADOW_TRAIL_DISTANCE_R", 0.30),
         shadow_signal_flip_close=_bool_env("MT5_SHADOW_SIGNAL_FLIP_CLOSE", True),
+        adaptive_learning_enabled=_bool_env("MT5_ADAPTIVE_LEARNING_ENABLED", False),
+        memory_summary_enabled=_bool_env("MT5_MEMORY_SUMMARY_ENABLED", False),
+        learning_run_enabled=_bool_env("MT5_LEARNING_RUN_ENABLED", False),
+        fast_path_only=_bool_env("MT5_FAST_PATH_ONLY", True),
     )
 
 
 def is_paper_exploration_enabled() -> bool:
     return get_mt5_config().paper_exploration_enabled
+
+
+def is_fast_path_only() -> bool:
+    return get_mt5_config().fast_path_only
 
 
 def _bool_env(name: str, default: bool) -> bool:

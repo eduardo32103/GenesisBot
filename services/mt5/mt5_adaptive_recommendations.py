@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -33,11 +32,12 @@ class MT5AdaptiveRecommendationEngine:
         state: dict[str, Any] | None = None,
         profile_stats: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        started = time.monotonic()
         clean_symbol = _symbol(symbol)
         clean_timeframe = str(timeframe or "").upper().strip()
         state_payload, data_source_used = _select_state_payload(self.memory, clean_symbol, clean_timeframe, state)
         stats = profile_stats or _latest_profile_stats(self.memory, clean_symbol)
+        if not stats:
+            stats = _profile_stats_from_memory(self.memory, clean_symbol)
         closed = int(state_payload.get("closed_trades") or 0)
         pf = _number(state_payload.get("rolling_profit_factor")) or 0.0
         expectancy = _number(state_payload.get("rolling_expectancy")) or 0.0
@@ -133,7 +133,6 @@ class MT5AdaptiveRecommendationEngine:
             "current_loss_streak": int(state_payload.get("current_loss_streak") or 0),
             "recommendations": recommendations,
             "count": len(recommendations),
-            "duration_ms": _elapsed_ms(started),
             "updated_at": _now(),
             **SAFETY_FLAGS,
         }
@@ -188,17 +187,15 @@ def _select_state_payload(
     timeframe: str,
     state: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], str]:
-    if state and int((state or {}).get("closed_trades") or 0) > 0:
-        return state, "adaptive_state"
+    computed = state or MT5AdaptiveStateEngine(memory=memory).compute(symbol=symbol, timeframe=timeframe)
+    if int((computed or {}).get("closed_trades") or 0) > 0:
+        return computed, "adaptive_state"
     persisted = _latest_adaptive_state(memory, symbol, timeframe)
     if int((persisted or {}).get("closed_trades") or 0) > 0:
         return persisted, "adaptive_state"
     fallback = _performance_state_fallback(memory, symbol, timeframe)
     if int((fallback or {}).get("closed_trades") or 0) > 0:
         return fallback, "performance_fallback"
-    computed = state or MT5AdaptiveStateEngine(memory=memory).compute(symbol=symbol, timeframe=timeframe, limit=RECOMMENDATION_READ_LIMIT)
-    if int((computed or {}).get("closed_trades") or 0) > 0:
-        return computed, "adaptive_state_limited"
     return computed or _empty_state(symbol, timeframe), "no_data"
 
 
@@ -216,7 +213,7 @@ def _latest_adaptive_state(memory: MemoryStore, symbol: str, timeframe: str) -> 
 
 
 def _performance_state_fallback(memory: MemoryStore, symbol: str, timeframe: str) -> dict[str, Any]:
-    report = MT5Performance(memory=memory).report(symbol=symbol, timeframe=timeframe, limit=RECOMMENDATION_READ_LIMIT)
+    report = MT5Performance(memory=memory).report(symbol=symbol, timeframe=timeframe)
     summary = report.get("summary_forward_auto") if isinstance(report.get("summary_forward_auto"), dict) else {}
     if not summary or int(summary.get("closed") or 0) <= 0:
         summary = report.get("summary_auto") if isinstance(report.get("summary_auto"), dict) else {}
@@ -364,7 +361,3 @@ def _empty_state(symbol: str, timeframe: str) -> dict[str, Any]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _elapsed_ms(started: float) -> int:
-    return int(round((time.monotonic() - started) * 1000))

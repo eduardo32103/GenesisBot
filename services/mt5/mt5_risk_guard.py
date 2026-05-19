@@ -27,6 +27,10 @@ class MT5BridgeConfig:
     shadow_trail_start_r: float = 0.70
     shadow_trail_distance_r: float = 0.30
     shadow_signal_flip_close: bool = True
+    adaptive_learning_enabled: bool = False
+    memory_summary_enabled: bool = False
+    learning_run_enabled: bool = False
+    fast_path_only: bool = True
 
     @classmethod
     def from_env(cls) -> "MT5BridgeConfig":
@@ -49,6 +53,10 @@ class MT5BridgeConfig:
             shadow_trail_start_r=runtime.shadow_trail_start_r,
             shadow_trail_distance_r=runtime.shadow_trail_distance_r,
             shadow_signal_flip_close=runtime.shadow_signal_flip_close,
+            adaptive_learning_enabled=runtime.adaptive_learning_enabled,
+            memory_summary_enabled=runtime.memory_summary_enabled,
+            learning_run_enabled=runtime.learning_run_enabled,
+            fast_path_only=runtime.fast_path_only,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -70,6 +78,10 @@ class MT5BridgeConfig:
             "MT5_SHADOW_TRAIL_START_R": self.shadow_trail_start_r,
             "MT5_SHADOW_TRAIL_DISTANCE_R": self.shadow_trail_distance_r,
             "MT5_SHADOW_SIGNAL_FLIP_CLOSE": self.shadow_signal_flip_close,
+            "MT5_ADAPTIVE_LEARNING_ENABLED": self.adaptive_learning_enabled,
+            "MT5_MEMORY_SUMMARY_ENABLED": self.memory_summary_enabled,
+            "MT5_LEARNING_RUN_ENABLED": self.learning_run_enabled,
+            "MT5_FAST_PATH_ONLY": self.fast_path_only,
         }
 
 

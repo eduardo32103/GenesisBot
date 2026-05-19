@@ -4126,7 +4126,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/learning/run":
             result = post_genesis_mt5_learning_run(body)
-            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            status = HTTPStatus.OK if result.get("ok") or str(result.get("status") or "").endswith("_disabled_by_fast_path") else HTTPStatus.BAD_REQUEST
+            self._write_json(result, status)
             return
 
         if self._try_proxy_to_production(parsed, method="POST", body=body):
@@ -4463,12 +4464,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             timeframe = (query.get("timeframe") or [""])[0]
-            raw_limit = (query.get("limit") or ["100"])[0]
-            try:
-                limit = int(raw_limit)
-            except (TypeError, ValueError):
-                limit = 100
-            payload_data = get_genesis_mt5_performance(symbol=symbol, timeframe=timeframe, limit=limit)
+            payload_data = get_genesis_mt5_performance(symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -4476,12 +4472,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             timeframe = (query.get("timeframe") or [""])[0]
-            raw_limit = (query.get("limit") or ["100"])[0]
-            try:
-                limit = int(raw_limit)
-            except (TypeError, ValueError):
-                limit = 100
-            payload_data = get_genesis_mt5_performance_auto(symbol=symbol, timeframe=timeframe, limit=limit)
+            payload_data = get_genesis_mt5_performance_auto(symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -4532,12 +4523,7 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/mt5/debug/storage":
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
-            raw_limit = (query.get("limit") or ["20"])[0]
-            try:
-                limit = int(raw_limit)
-            except (TypeError, ValueError):
-                limit = 20
-            payload_data = get_genesis_mt5_debug_storage(symbol=symbol, limit=limit)
+            payload_data = get_genesis_mt5_debug_storage(symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
@@ -4578,7 +4564,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             except (TypeError, ValueError):
                 limit = 50
             payload_data = get_genesis_mt5_memory_summary(symbol=symbol, limit=limit)
-            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            status = HTTPStatus.OK if payload_data.get("ok") or str(payload_data.get("status") or "").endswith("_disabled_by_fast_path") else HTTPStatus.BAD_REQUEST
+            self._write_json(payload_data, status)
             return
 
         if parsed.path == "/api/genesis/mt5/learning/status":
