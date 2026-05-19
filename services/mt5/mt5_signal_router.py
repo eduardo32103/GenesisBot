@@ -18,6 +18,9 @@ from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
+from services.mt5.mt5_adaptive_recommendations import MT5AdaptiveRecommendationEngine
+from services.mt5.mt5_adaptive_state import MT5AdaptiveStateEngine
+from services.mt5.mt5_trade_memory import MT5TradeMemoryEngine
 
 
 class MT5SignalRouter:
@@ -36,6 +39,9 @@ class MT5SignalRouter:
         self.shadow = MT5ShadowTrading(memory=self.memory)
         self.forward_engine = MT5ForwardTestEngine(memory=self.memory, config=self.config, symbol_mapper=self.symbol_mapper)
         self.performance_engine = MT5Performance(memory=self.memory, config=self.config)
+        self.trade_memory_engine = MT5TradeMemoryEngine(memory=self.memory)
+        self.adaptive_state_engine = MT5AdaptiveStateEngine(memory=self.memory)
+        self.adaptive_recommendation_engine = MT5AdaptiveRecommendationEngine(memory=self.memory)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -511,6 +517,28 @@ class MT5SignalRouter:
         event = self.journal.save("mt5_replay_runs", symbol or "MT5", reset)
         return {"ok": True, "status": "mt5_replay_reset_recorded", "event": event, **reset}
 
+    def learning_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.trade_memory_engine.run_learning(payload)
+
+    def memory_summary(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.trade_memory_engine.memory_summary(symbol=symbol)
+
+    def adaptive_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
+
+    def strategy_profiles(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.trade_memory_engine.strategy_profiles(symbol=symbol)
+
+    def adaptive_recommendations(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        state = self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
+        profiles = self.trade_memory_engine.strategy_profiles(symbol=symbol).get("items") or []
+        return self.adaptive_recommendation_engine.recommend(
+            symbol=symbol,
+            timeframe=timeframe,
+            state=state,
+            profile_stats=profiles,
+        )
+
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
         direct_keys = ("is_demo", "demo", "account_type", "trade_mode", "account_trade_mode", "mode", "server", "broker", "account_id", "login", "account")
@@ -630,6 +658,12 @@ _MT5_COLLECTIONS = (
     "mt5_forward_metrics",
     "mt5_replay_runs",
     "mt5_replay_shadow_trades",
+    "mt5_trade_memory",
+    "mt5_trade_lessons",
+    "mt5_strategy_profile_stats",
+    "mt5_adaptive_state",
+    "mt5_adaptive_recommendations",
+    "mt5_learning_runs",
     "mt5_journal",
 )
 

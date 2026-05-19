@@ -35,5 +35,11 @@ def _event_type(collection: str) -> str:
         "mt5_risk_blocks": "mt5_risk_block",
         "mt5_journal": "mt5_journal",
         "mt5_account_sync": "mt5_account_sync",
+        "mt5_trade_memory": "mt5_trade_memory",
+        "mt5_trade_lessons": "mt5_trade_lesson",
+        "mt5_strategy_profile_stats": "mt5_strategy_profile_stat",
+        "mt5_adaptive_state": "mt5_adaptive_state",
+        "mt5_adaptive_recommendations": "mt5_adaptive_recommendation",
+        "mt5_learning_runs": "mt5_learning_run",
     }
     return mapping.get(collection, collection.rstrip("s") or "mt5_event")

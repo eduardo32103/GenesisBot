@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from api.main import create_app
 from api.routes.genesis import (
+    get_genesis_mt5_adaptive_recommendations,
+    get_genesis_mt5_adaptive_state,
     get_genesis_mt5_auto_forward_status,
     get_genesis_mt5_config,
     get_genesis_mt5_debug_storage,
@@ -15,6 +17,7 @@ from api.routes.genesis import (
     get_genesis_mt5_health,
     get_genesis_mt5_instrument,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_memory_summary,
     get_genesis_mt5_no_trade_report,
     get_genesis_mt5_outcomes_recent,
     get_genesis_mt5_performance,
@@ -23,11 +26,13 @@ from api.routes.genesis import (
     get_genesis_mt5_replay_status,
     get_genesis_mt5_shadow_trades,
     get_genesis_mt5_status,
+    get_genesis_mt5_strategy_profiles,
     post_genesis_mt5_account_sync,
     post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
     post_genesis_mt5_manual_tests_reset,
+    post_genesis_mt5_learning_run,
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_replay_run,
     post_genesis_mt5_signal,
@@ -37,6 +42,8 @@ from services.genesis.agent_router import AgentRouter
 from services.genesis.memory_store import MemoryStore
 from services.genesis.tool_router import route_message
 from services.mt5.mt5_bridge import (
+    mt5_adaptive_recommendations,
+    mt5_adaptive_state,
     mt5_auto_forward_status,
     mt5_account_sync,
     mt5_config,
@@ -45,7 +52,9 @@ from services.mt5.mt5_bridge import (
     mt5_forward_test,
     mt5_instrument,
     mt5_journal_recent,
+    mt5_learning_run,
     mt5_manual_tests_reset,
+    mt5_memory_summary,
     mt5_metrics_exclude_old_proxy,
     mt5_no_trade_report,
     mt5_order_request,
@@ -59,6 +68,7 @@ from services.mt5.mt5_bridge import (
     mt5_signal,
     mt5_shadow_trades,
     mt5_status,
+    mt5_strategy_profiles,
     mt5_tick,
 )
 from services.mt5.mt5_config import is_paper_exploration_enabled
@@ -93,6 +103,11 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_replay_results_endpoint"], "/api/genesis/mt5/replay/results?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_replay_status_endpoint"], "/api/genesis/mt5/replay/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_replay_reset_endpoint"], "/api/genesis/mt5/replay/reset")
+        self.assertEqual(app["genesis_mt5_learning_run_endpoint"], "/api/genesis/mt5/learning/run")
+        self.assertEqual(app["genesis_mt5_memory_summary_endpoint"], "/api/genesis/mt5/memory/summary?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_adaptive_state_endpoint"], "/api/genesis/mt5/adaptive-state?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_strategy_profiles_endpoint"], "/api/genesis/mt5/strategy-profiles?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_adaptive_recommendations_endpoint"], "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
         self.assertEqual(app["genesis_mt5_tick_endpoint"], "/api/genesis/mt5/tick")
@@ -1463,6 +1478,11 @@ class MT5BridgeTests(unittest.TestCase):
         replay_results = get_genesis_mt5_replay_results("BTCUSD")
         replay_status = get_genesis_mt5_replay_status("BTCUSD")
         replay_reset = post_genesis_mt5_replay_reset({"symbol": "BTCUSD"})
+        learning = post_genesis_mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1", "mode": "paper"})
+        memory_summary = get_genesis_mt5_memory_summary("BTCUSD")
+        adaptive_state = get_genesis_mt5_adaptive_state("BTCUSD", "H1")
+        profiles = get_genesis_mt5_strategy_profiles("BTCUSD")
+        recommendations = get_genesis_mt5_adaptive_recommendations("BTCUSD", "H1")
 
         self.assertTrue(decision["ok"])
         self.assertTrue(account["ok"])
@@ -1486,6 +1506,11 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(replay_results["ok"])
         self.assertTrue(replay_status["ok"])
         self.assertTrue(replay_reset["ok"])
+        self.assertTrue(learning["ok"])
+        self.assertTrue(memory_summary["ok"])
+        self.assertTrue(adaptive_state["ok"])
+        self.assertTrue(profiles["ok"])
+        self.assertTrue(recommendations["ok"])
         self.assertFalse(request["order_executed"])
         self.assertFalse(request["broker_touched"])
         self.assertEqual(request["order_policy"], "journal_only_no_broker")
@@ -1518,6 +1543,92 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(results["order_executed"])
             self.assertEqual(run["order_policy"], "journal_only_no_broker")
 
+    def test_learning_run_creates_trade_memory_lesson_and_profile_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            _save_closed_shadow_trade(store, "learn-win", status="win", r_multiple=1.2, pnl=1200, exit_reason="take_profit")
+
+            learning = mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1", "mode": "paper"}, memory=store)
+            summary = mt5_memory_summary(memory=store, symbol="BTCUSD")
+            profiles = mt5_strategy_profiles(memory=store, symbol="BTCUSD")
+
+            memories = store.get_mt5_events("mt5_trade_memory", "BTCUSD", limit=10)
+            lessons = store.get_mt5_events("mt5_trade_lessons", "BTCUSD", limit=10)
+
+            self.assertTrue(learning["ok"])
+            self.assertEqual(learning["status"], "mt5_learning_run_completed")
+            self.assertEqual(learning["memories_created"], 1)
+            self.assertEqual(learning["lessons_created"], 1)
+            self.assertEqual(len(memories), 1)
+            self.assertEqual(len(lessons), 1)
+            self.assertEqual(lessons[0]["payload"]["trade_quality"], "good")
+            self.assertIn("good_risk_control", lessons[0]["payload"]["strengths"])
+            self.assertEqual(summary["total_memories"], 1)
+            self.assertGreaterEqual(profiles["count"], 1)
+            self.assertFalse(learning["broker_touched"])
+            self.assertFalse(learning["order_executed"])
+
+    def test_learning_run_marks_loss_lesson_with_mistakes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            _save_closed_shadow_trade(
+                store,
+                "learn-loss",
+                status="loss",
+                r_multiple=-1.0,
+                pnl=-1000,
+                exit_reason="time_stop",
+                confidence="low",
+                regime="chop",
+            )
+
+            learning = mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=store)
+            lesson = store.get_mt5_events("mt5_trade_lessons", "BTCUSD", limit=1)[0]["payload"]
+
+            self.assertTrue(learning["ok"])
+            self.assertEqual(lesson["trade_quality"], "bad")
+            self.assertIn("chop_market", lesson["mistakes"])
+            self.assertIn("time_stop_loss", lesson["tags"])
+            self.assertFalse(lesson["broker_touched"])
+            self.assertFalse(lesson["order_executed"])
+
+    def test_adaptive_state_detects_loss_streak_and_hot_streak(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            loss_store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "loss.sqlite3")
+            for index in range(3):
+                _save_closed_shadow_trade(loss_store, f"loss-{index}", status="loss", r_multiple=-1.0, pnl=-1000, exit_reason="stop_loss", opened_minute=index)
+            mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=loss_store)
+            loss_state = mt5_adaptive_state(memory=loss_store, symbol="BTCUSD", timeframe="H1")
+
+            hot_store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "hot.sqlite3")
+            for index in range(31):
+                _save_closed_shadow_trade(hot_store, f"win-{index}", status="win", r_multiple=1.0, pnl=1000, exit_reason="take_profit", opened_minute=index)
+            mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=hot_store)
+            hot_state = mt5_adaptive_state(memory=hot_store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertEqual(loss_state["current_loss_streak"], 3)
+            self.assertEqual(loss_state["bot_state"], "drawdown_defense")
+            self.assertGreaterEqual(hot_state["current_win_streak"], 30)
+            self.assertIn(hot_state["bot_state"], {"hot_streak", "normal"})
+            self.assertFalse(loss_state["broker_touched"])
+            self.assertFalse(hot_state["order_executed"])
+
+    def test_adaptive_recommendations_do_not_promote_small_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            for index in range(5):
+                _save_closed_shadow_trade(store, f"sample-{index}", status="win", r_multiple=1.0, pnl=1000, exit_reason="take_profit", opened_minute=index)
+
+            mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=store)
+            recommendations = mt5_adaptive_recommendations(memory=store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertTrue(recommendations["ok"])
+            self.assertTrue(any(item["recommendation_type"] == "sample_warning" for item in recommendations["recommendations"]))
+            self.assertTrue(all(item["requires_approval"] for item in recommendations["recommendations"]))
+            self.assertTrue(all(item["applied"] is False for item in recommendations["recommendations"]))
+            self.assertFalse(recommendations["broker_touched"])
+            self.assertFalse(recommendations["order_executed"])
+
     def test_genesis_chat_routes_mt5_questions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
@@ -1526,6 +1637,7 @@ class MT5BridgeTests(unittest.TestCase):
 
             status = route_message("estado de MT5", memory=store)
             decision = route_message("que decision tiene MT5 para BTC", memory=store)
+            learning = route_message("que aprendio MT5 de BTCUSD", memory=store)
 
             self.assertTrue(status["ok"])
             self.assertEqual(status["intent"], "mt5_bridge")
@@ -1533,6 +1645,10 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertTrue(decision["ok"])
             self.assertEqual(decision["intent"], "mt5_bridge")
             self.assertIn("order_executed=false", decision["answer"])
+            self.assertTrue(learning["ok"])
+            self.assertEqual(learning["intent"], "mt5_bridge")
+            self.assertIn("Memoria adaptativa MT5", learning["answer"])
+            self.assertIn("broker_touched=false", learning["answer"])
 
     def test_ea_file_exists_with_safety_defaults(self) -> None:
         ea = Path("mt5") / "GenesisBridgeEA.mq5"
@@ -1572,6 +1688,80 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("WebRequest", content)
         self.assertNotIn("FMP_API_KEY", content)
         self.assertNotIn("OPENAI_API_KEY", content)
+
+
+def _save_closed_shadow_trade(
+    store: MemoryStore,
+    trade_id: str,
+    *,
+    status: str,
+    r_multiple: float,
+    pnl: float,
+    exit_reason: str,
+    confidence: str = "high",
+    regime: str = "bull_trend",
+    opened_minute: int = 0,
+) -> None:
+    opened_at = f"2026-01-01T00:{opened_minute % 60:02d}:00+00:00"
+    closed_at = f"2026-01-01T01:{opened_minute % 60:02d}:00+00:00"
+    action = "BUY"
+    entry = 100.0
+    stop = 98.0
+    target = 102.4
+    exit_price = target if status == "win" else stop if status == "loss" else entry
+    MT5Journal(memory=store).save(
+        "mt5_shadow_trades",
+        "BTCUSD",
+        {
+            "shadow_trade_id": trade_id,
+            "symbol": "BTCUSD",
+            "original_symbol": "BTCUSD",
+            "normalized_symbol": "BTCUSD",
+            "instrument_type": "crypto_spot",
+            "is_spot_crypto": True,
+            "action": action,
+            "entry": entry,
+            "stop_loss": stop,
+            "take_profit": target,
+            "exit_price": exit_price,
+            "exit_reason": exit_reason,
+            "last_exit_reason": exit_reason,
+            "status": status,
+            "lifecycle_status": "closed",
+            "timeframe": "H1",
+            "pnl": pnl,
+            "pnl_pct": round((pnl / entry) * 100, 4),
+            "r_multiple": r_multiple,
+            "opened_at": opened_at,
+            "closed_at": closed_at,
+            "updated_at": closed_at,
+            "bars_open": 3,
+            "spread_at_entry": 8.0,
+            "spread_at_exit": 7.0,
+            "trend_score": 70,
+            "momentum_score": 65,
+            "volatility_score": 55,
+            "regime": regime,
+            "confidence": confidence,
+            "decision_reason": "unit test closed trade",
+            "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+            "source": "mt5_auto_forward_exploration",
+            "auto_forward": True,
+            "paper_exploration": True,
+            "manual_test": False,
+            "excluded_from_main_metrics": False,
+            "risk_reward": 1.2,
+            "initial_risk": 2.0,
+            "breakeven_armed": r_multiple >= 0.4,
+            "trailing_stop_active": False,
+            "virtual_stop_loss": entry if r_multiple >= 0.4 else stop,
+            "max_favorable_excursion": max(pnl, 0),
+            "max_adverse_excursion": min(pnl, 0),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        },
+    )
 
 
 def _ea_signal_payload() -> dict[str, object]:

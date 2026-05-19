@@ -6,6 +6,8 @@ from services.genesis.hedge_engine import build_hedge_context
 from services.genesis.tradingview_bridge import get_trading_context, receive_tradingview_webhook
 from services.mt5.mt5_bridge import (
     mt5_account_sync,
+    mt5_adaptive_recommendations,
+    mt5_adaptive_state,
     mt5_auto_forward_status,
     mt5_config,
     mt5_debug_storage,
@@ -14,7 +16,9 @@ from services.mt5.mt5_bridge import (
     mt5_health,
     mt5_instrument,
     mt5_journal_recent,
+    mt5_learning_run,
     mt5_manual_tests_reset,
+    mt5_memory_summary,
     mt5_metrics_exclude_old_proxy,
     mt5_no_trade_report,
     mt5_order_request,
@@ -29,6 +33,7 @@ from services.mt5.mt5_bridge import (
     mt5_signal,
     mt5_shadow_trades,
     mt5_status,
+    mt5_strategy_profiles,
     mt5_tick,
 )
 
@@ -147,3 +152,23 @@ def get_genesis_mt5_replay_status(symbol: str = "") -> dict[str, Any]:
 
 def post_genesis_mt5_replay_reset(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_replay_reset(payload)
+
+
+def post_genesis_mt5_learning_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_learning_run(payload)
+
+
+def get_genesis_mt5_memory_summary(symbol: str = "") -> dict[str, Any]:
+    return mt5_memory_summary(symbol=symbol)
+
+
+def get_genesis_mt5_adaptive_state(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_adaptive_state(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_strategy_profiles(symbol: str = "") -> dict[str, Any]:
+    return mt5_strategy_profiles(symbol=symbol)
+
+
+def get_genesis_mt5_adaptive_recommendations(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_adaptive_recommendations(symbol=symbol, timeframe=timeframe)

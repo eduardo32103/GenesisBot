@@ -1601,6 +1601,12 @@ def _mt5_event_type(collection: str | None) -> str:
         "mt5_account_sync": "mt5_account_sync",
         "mt5_replay_runs": "mt5_replay_run",
         "mt5_replay_shadow_trades": "mt5_replay_shadow_trade",
+        "mt5_trade_memory": "mt5_trade_memory",
+        "mt5_trade_lessons": "mt5_trade_lesson",
+        "mt5_strategy_profile_stats": "mt5_strategy_profile_stat",
+        "mt5_adaptive_state": "mt5_adaptive_state",
+        "mt5_adaptive_recommendations": "mt5_adaptive_recommendation",
+        "mt5_learning_runs": "mt5_learning_run",
     }
     clean = str(collection or "mt5_journal").strip()
     return mapping.get(clean, clean.rstrip("s") or "mt5_event")

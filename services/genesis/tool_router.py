@@ -21,7 +21,14 @@ from services.genesis.ticker_parser import normalize_ticker
 from services.genesis.tracking_agent import get_tracking_agent
 from services.genesis.weather_agent import get_weather_agent
 from services.genesis.weather_tool import detect_weather_request
-from services.mt5.mt5_bridge import mt5_decision, mt5_health, mt5_performance
+from services.mt5.mt5_bridge import (
+    mt5_adaptive_recommendations,
+    mt5_adaptive_state,
+    mt5_decision,
+    mt5_health,
+    mt5_memory_summary,
+    mt5_performance,
+)
 from services.genesis.whale_agent import get_whale_agent
 from services.trading_intelligence.strategy_research_lab import StrategyResearchLab
 
@@ -45,6 +52,28 @@ def route_message(
     explicit_ticker = normalize_ticker(route.primary_ticker)
     price_agent = get_price_agent()
     composer = get_response_composer()
+
+    if route.intent != "mt5_bridge" and _should_route_mt5_learning(clean):
+        mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker)
+        memory_summary = mt5_memory_summary(symbol=mt5_symbol, memory=store)
+        state = mt5_adaptive_state(symbol=mt5_symbol, memory=store)
+        recommendations = mt5_adaptive_recommendations(symbol=mt5_symbol, memory=store)
+        answer = _mt5_learning_answer(memory_summary, state, recommendations)
+        store.save_event(
+            "mt5_learning_query",
+            {"message": clean, "symbol": mt5_symbol, "broker_touched": False, "order_executed": False},
+            "mt5_bridge",
+            "media",
+        )
+        return _payload(
+            "mt5_bridge",
+            answer,
+            [mt5_symbol] if mt5_symbol else [],
+            extra={"mt5": memory_summary, "adaptive_state": state, "recommendations": recommendations, "kind": "mt5_learning"},
+            memory=store,
+            prompt=clean,
+            conversation_id=clean_conversation_id,
+        )
 
     if route.intent != "mt5_bridge" and _should_route_mt5_forward_metrics(clean):
         mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker)
@@ -137,6 +166,27 @@ def route_message(
         )
 
     if route.intent == "mt5_bridge":
+        if _should_route_mt5_learning(clean):
+            mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker)
+            memory_summary = mt5_memory_summary(symbol=mt5_symbol, memory=store)
+            state = mt5_adaptive_state(symbol=mt5_symbol, memory=store)
+            recommendations = mt5_adaptive_recommendations(symbol=mt5_symbol, memory=store)
+            answer = _mt5_learning_answer(memory_summary, state, recommendations)
+            store.save_event(
+                "mt5_learning_query",
+                {"message": clean, "symbol": mt5_symbol, "broker_touched": False, "order_executed": False},
+                "mt5_bridge",
+                "media",
+            )
+            return _payload(
+                "mt5_bridge",
+                answer,
+                [mt5_symbol] if mt5_symbol else [],
+                extra={"mt5": memory_summary, "adaptive_state": state, "recommendations": recommendations, "kind": "mt5_learning"},
+                memory=store,
+                prompt=clean,
+                conversation_id=clean_conversation_id,
+            )
         if _mentions_mt5_forward_metrics(clean):
             mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker)
             performance = mt5_performance(symbol=mt5_symbol, memory=store)
@@ -571,6 +621,28 @@ def _should_route_mt5_forward_metrics(message: str) -> bool:
     )
 
 
+def _should_route_mt5_learning(message: str) -> bool:
+    text = _fold_prompt(message)
+    return "mt5" in text and any(
+        token in text
+        for token in (
+            "aprendio",
+            "aprendizaje",
+            "memoria",
+            "learning",
+            "adaptive",
+            "adaptativo",
+            "recomendaciones",
+            "recomienda",
+            "racha",
+            "streak",
+            "estado adaptativo",
+            "que aprendio",
+            "que aprendiste",
+        )
+    )
+
+
 def _mt5_metrics_symbol(message: str, explicit_ticker: str) -> str:
     text = _fold_prompt(message)
     if "btcusd" in text or str(explicit_ticker or "").upper() in {"BTCUSD", "BTCUSDT", "BTC-USD"}:
@@ -599,6 +671,21 @@ def _mt5_performance_answer(performance: dict[str, Any]) -> str:
         f"Pruebas manuales separadas: {manual.get('shadow_trades', 0)}. "
         f"{warning + ' ' if warning else ''}"
         "Todo sigue journal-only: order_executed=false, broker_touched=false."
+    )
+
+
+def _mt5_learning_answer(summary: dict[str, Any], state: dict[str, Any], recommendations: dict[str, Any]) -> str:
+    symbol = summary.get("symbol") or state.get("symbol") or "MT5"
+    recs = recommendations.get("recommendations") if isinstance(recommendations.get("recommendations"), list) else []
+    main_rec = recs[0] if recs else {}
+    return (
+        f"Memoria adaptativa MT5 {symbol}: Genesis tiene {summary.get('total_memories', 0)} memorias "
+        f"y {summary.get('lessons_count', 0)} lecciones cerradas. "
+        f"Estado actual: {state.get('bot_state', 'normal')}, racha ganadora {state.get('current_win_streak', 0)}, "
+        f"racha perdedora {state.get('current_loss_streak', 0)}, PF rolling {state.get('rolling_profit_factor', 0)} "
+        f"y expectancy {state.get('rolling_expectancy', 0)}R. "
+        f"Recomendacion: {main_rec.get('recommendation') or state.get('recommendation_summary') or 'seguir midiendo en paper'}. "
+        "No aplica cambios automaticos: order_executed=false, broker_touched=false."
     )
 
 

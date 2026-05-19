@@ -47,6 +47,8 @@ from api.routes.dashboard import (
     simulate_dashboard_portfolio_purchase,
 )
 from api.routes.genesis import (
+    get_genesis_mt5_adaptive_recommendations,
+    get_genesis_mt5_adaptive_state,
     get_genesis_hedge_plan,
     get_genesis_mt5_auto_forward_status,
     get_genesis_mt5_debug_storage,
@@ -56,6 +58,7 @@ from api.routes.genesis import (
     get_genesis_mt5_health,
     get_genesis_mt5_instrument,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_memory_summary,
     get_genesis_mt5_no_trade_report,
     get_genesis_mt5_outcomes_recent,
     get_genesis_mt5_performance,
@@ -64,6 +67,7 @@ from api.routes.genesis import (
     get_genesis_mt5_replay_status,
     get_genesis_mt5_shadow_trades,
     get_genesis_mt5_status,
+    get_genesis_mt5_strategy_profiles,
     get_genesis_portfolio_hedge,
     get_genesis_trading_context,
     post_genesis_mt5_account_sync,
@@ -71,6 +75,7 @@ from api.routes.genesis import (
     post_genesis_mt5_order_result,
     post_genesis_mt5_manual_tests_reset,
     post_genesis_mt5_metrics_exclude_old_proxy,
+    post_genesis_mt5_learning_run,
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_signal,
     post_genesis_mt5_tick,
@@ -226,6 +231,11 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_replay_results_endpoint": "/api/genesis/mt5/replay/results?symbol={symbol}",
         "genesis_mt5_replay_status_endpoint": "/api/genesis/mt5/replay/status?symbol={symbol}",
         "genesis_mt5_replay_reset_endpoint": "/api/genesis/mt5/replay/reset",
+        "genesis_mt5_learning_run_endpoint": "/api/genesis/mt5/learning/run",
+        "genesis_mt5_memory_summary_endpoint": "/api/genesis/mt5/memory/summary?symbol={symbol}",
+        "genesis_mt5_adaptive_state_endpoint": "/api/genesis/mt5/adaptive-state?symbol={symbol}",
+        "genesis_mt5_strategy_profiles_endpoint": "/api/genesis/mt5/strategy-profiles?symbol={symbol}",
+        "genesis_mt5_adaptive_recommendations_endpoint": "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
@@ -4110,6 +4120,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/learning/run":
+            result = post_genesis_mt5_learning_run(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if self._try_proxy_to_production(parsed, method="POST", body=body):
             return
 
@@ -4532,6 +4547,36 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_replay_status(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/memory/summary":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_memory_summary(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/adaptive-state":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_adaptive_state(symbol=symbol, timeframe=timeframe)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/strategy-profiles":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_strategy_profiles(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/adaptive-recommendations":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_adaptive_recommendations(symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

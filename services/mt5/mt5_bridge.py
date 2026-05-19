@@ -110,3 +110,23 @@ def mt5_replay_status(*, memory: MemoryStore | None = None, symbol: str = "") ->
 
 def mt5_replay_reset(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).replay_reset(payload)
+
+
+def mt5_learning_run(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).learning_run(payload)
+
+
+def mt5_memory_summary(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).memory_summary(symbol=symbol)
+
+
+def mt5_adaptive_state(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).adaptive_state(symbol=symbol, timeframe=timeframe)
+
+
+def mt5_strategy_profiles(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).strategy_profiles(symbol=symbol)
+
+
+def mt5_adaptive_recommendations(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).adaptive_recommendations(symbol=symbol, timeframe=timeframe)
