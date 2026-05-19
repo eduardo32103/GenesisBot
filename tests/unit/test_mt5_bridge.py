@@ -798,8 +798,9 @@ class MT5BridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
             router = _exploration_router(store)
+            wait_context = {**_no_trade_context(), "no_trade_score": 0, "confidence": "medium", "reason": "waiting_confirmation"}
 
-            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=wait_context):
                 router.tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
                 first = router.tick({"symbol": "BTCUSD", "last": 77010, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
                 second = router.tick({"symbol": "BTCUSD", "last": 77020, "timeframe": "H1", "spread": 12, "is_demo": True, "symbol_description": "Bitcoin vs. USD", "currency_base": "BTC", "currency_profit": "USD"})
@@ -944,6 +945,99 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(loss_perf["summary"]["losses"], 1)
             self.assertFalse(tp_tick["broker_touched"])
             self.assertFalse(sl_tick["order_executed"])
+
+    def test_shadow_trade_arms_breakeven_and_updates_unrealized_pnl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _managed_shadow_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
+                router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 102.1, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            status = router.auto_forward_status(symbol="BTCUSD")
+            trade = status["open_trades"][0]
+
+            self.assertGreater(trade["unrealized_pnl"], 0)
+            self.assertGreaterEqual(trade["r_multiple"], 0.4)
+            self.assertTrue(trade["breakeven_armed"])
+            self.assertEqual(trade["virtual_stop_loss"], 100)
+            self.assertFalse(status["broker_touched"])
+            self.assertFalse(status["order_executed"])
+
+    def test_shadow_trade_trailing_stop_closes_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _managed_shadow_router(store)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
+                router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 103.6, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+                tick = router.tick({"symbol": "BTCUSD", "last": 102.0, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            status = router.auto_forward_status(symbol="BTCUSD")
+            performance = router.performance(symbol="BTCUSD", timeframe="H1")
+            closed = status["closed_trades"][0]
+
+            self.assertTrue(closed["trailing_stop_active"])
+            self.assertEqual(closed["exit_reason"], "trailing_stop")
+            self.assertEqual(closed["status"], "win")
+            self.assertEqual(status["open_trades"], [])
+            self.assertTrue(status["can_open_new_trade"])
+            self.assertEqual(performance["summary"]["wins"], 1)
+            self.assertFalse(tick["broker_touched"])
+            self.assertFalse(tick["order_executed"])
+
+    def test_shadow_trade_time_stop_closes_and_counts_performance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _managed_shadow_router(store, shadow_time_stop_bars=2, shadow_trail_start_r=9.0)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
+                router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+                router.tick({"symbol": "BTCUSD", "last": 101, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_no_trade_context()):
+                tick = router.tick({"symbol": "BTCUSD", "last": 101.5, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            status = router.auto_forward_status(symbol="BTCUSD")
+            performance = router.performance(symbol="BTCUSD", timeframe="H1")
+            closed = status["closed_trades"][0]
+
+            self.assertEqual(closed["exit_reason"], "time_stop")
+            self.assertEqual(closed["status"], "win")
+            self.assertEqual(performance["summary"]["closed"], 1)
+            self.assertEqual(performance["summary"]["wins"], 1)
+            self.assertFalse(tick["broker_touched"])
+            self.assertFalse(tick["order_executed"])
+
+    def test_shadow_trade_signal_flip_closes_and_frees_active_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            router = _managed_shadow_router(store, shadow_trail_start_r=9.0)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_buy_context()):
+                router.tick({"symbol": "BTCUSD", "last": 100, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_sell_context()):
+                flip_tick = router.tick({"symbol": "BTCUSD", "last": 99, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            status_after_flip = router.auto_forward_status(symbol="BTCUSD")
+            performance = router.performance(symbol="BTCUSD", timeframe="H1")
+
+            self.assertTrue(flip_tick["auto_forward"]["signal_flip_closed"])
+            self.assertEqual(status_after_flip["open_trades"], [])
+            self.assertTrue(status_after_flip["can_open_new_trade"])
+            self.assertEqual(status_after_flip["closed_trades"][0]["exit_reason"], "signal_flip")
+            self.assertEqual(performance["summary"]["losses"], 1)
+
+            with patch("services.mt5.mt5_auto_forward.GenesisBrain.build_trading_context", return_value=_sell_context()):
+                next_tick = router.tick({"symbol": "BTCUSD", "last": 99, "timeframe": "H1", "spread": 0.2, "is_demo": True})
+
+            reopened = router.auto_forward_status(symbol="BTCUSD")
+            self.assertTrue(next_tick["auto_shadow_trade_created"])
+            self.assertEqual(len(reopened["open_trades"]), 1)
+            self.assertFalse(next_tick["broker_touched"])
+            self.assertFalse(next_tick["order_executed"])
 
     def test_performance_separates_manual_and_auto_shadow_trades(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1544,6 +1638,33 @@ def _auto_forward_router(store: MemoryStore) -> MT5SignalRouter:
             min_rr=1.2,
         ),
         symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTC", "BTCUSD"]),
+    )
+
+
+def _managed_shadow_router(
+    store: MemoryStore,
+    *,
+    shadow_time_stop_bars: int = 99,
+    shadow_trail_start_r: float = 0.70,
+) -> MT5SignalRouter:
+    return MT5SignalRouter(
+        memory=store,
+        config=MT5BridgeConfig(
+            enabled=True,
+            demo_only=True,
+            live_trading_enabled=False,
+            order_execution_enabled=False,
+            kill_switch=False,
+            max_spread_points=50.0,
+            min_rr=1.2,
+            shadow_time_stop_hours=99.0,
+            shadow_time_stop_bars=shadow_time_stop_bars,
+            shadow_breakeven_r=0.40,
+            shadow_trail_start_r=shadow_trail_start_r,
+            shadow_trail_distance_r=0.30,
+            shadow_signal_flip_close=True,
+        ),
+        symbol_mapper=MT5SymbolMapper(allowed_symbols=["BTCUSD"]),
     )
 
 

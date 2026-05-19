@@ -21,6 +21,12 @@ class MT5BridgeConfig:
     max_spread_points: float = 50.0
     min_rr: float = 1.2
     paper_exploration_enabled: bool = False
+    shadow_time_stop_hours: float = 12.0
+    shadow_time_stop_bars: int = 12
+    shadow_breakeven_r: float = 0.40
+    shadow_trail_start_r: float = 0.70
+    shadow_trail_distance_r: float = 0.30
+    shadow_signal_flip_close: bool = True
 
     @classmethod
     def from_env(cls) -> "MT5BridgeConfig":
@@ -37,6 +43,12 @@ class MT5BridgeConfig:
             max_spread_points=runtime.max_spread_points,
             min_rr=runtime.min_rr,
             paper_exploration_enabled=runtime.paper_exploration_enabled,
+            shadow_time_stop_hours=runtime.shadow_time_stop_hours,
+            shadow_time_stop_bars=runtime.shadow_time_stop_bars,
+            shadow_breakeven_r=runtime.shadow_breakeven_r,
+            shadow_trail_start_r=runtime.shadow_trail_start_r,
+            shadow_trail_distance_r=runtime.shadow_trail_distance_r,
+            shadow_signal_flip_close=runtime.shadow_signal_flip_close,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -52,6 +64,12 @@ class MT5BridgeConfig:
             "MT5_MAX_SPREAD_POINTS": self.max_spread_points,
             "MT5_MIN_RR": self.min_rr,
             "MT5_PAPER_EXPLORATION_ENABLED": self.paper_exploration_enabled,
+            "MT5_SHADOW_TIME_STOP_HOURS": self.shadow_time_stop_hours,
+            "MT5_SHADOW_TIME_STOP_BARS": self.shadow_time_stop_bars,
+            "MT5_SHADOW_BREAKEVEN_R": self.shadow_breakeven_r,
+            "MT5_SHADOW_TRAIL_START_R": self.shadow_trail_start_r,
+            "MT5_SHADOW_TRAIL_DISTANCE_R": self.shadow_trail_distance_r,
+            "MT5_SHADOW_SIGNAL_FLIP_CLOSE": self.shadow_signal_flip_close,
         }
 
 

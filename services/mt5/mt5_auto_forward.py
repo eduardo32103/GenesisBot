@@ -240,6 +240,24 @@ class MT5AutoForward:
             exploration=exploration,
         )
 
+        signal_flip_updates = (
+            self.shadow.close_on_signal_flip(
+                symbol=raw_symbol,
+                tick=clean,
+                decision={
+                    **decision,
+                    "decision": decision_name,
+                    "action": decision_name,
+                    "confidence": confidence,
+                    "no_trade_score": no_trade_score,
+                    "hedge_score": hedge_score,
+                },
+                market_scores=market_scores,
+                config=self.config,
+            )
+            if open_trades_before
+            else []
+        )
         shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
         return {
             "ok": True,
@@ -251,6 +269,8 @@ class MT5AutoForward:
             "exploration": exploration,
             "shadow_trade_created": bool(shadow.get("created")),
             "exploration_shadow_trade_created": bool(exploration.get("created")),
+            "signal_flip_closed": bool(signal_flip_updates),
+            "signal_flip_updates": signal_flip_updates,
             "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
             "reason": decision["reason"],
             "broker_touched": False,
@@ -275,8 +295,10 @@ class MT5AutoForward:
         summary_strict = performance.get("summary_strict_auto") if isinstance(performance.get("summary_strict_auto"), dict) else {}
         summary_exploration = performance.get("summary_exploration") if isinstance(performance.get("summary_exploration"), dict) else {}
         open_trades = snapshot.get("open_trades") or []
+        closed_trades = snapshot.get("closed_trades") or []
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
         current_state_reason = "active_open_trade" if open_trades else ""
+        last_closed_trade = closed_trades[0] if closed_trades else {}
         last_reason = current_state_reason or _reason_alias((last_decision or {}).get("reason") or "no_auto_forward_decision_yet")
         return {
             "ok": True,
@@ -309,7 +331,15 @@ class MT5AutoForward:
             "risk_reward": (last_decision or {}).get("risk_reward") or 0.0,
             "last_shadow_trade": snapshot["items"][0] if snapshot.get("items") else None,
             "open_trades": open_trades,
-            "closed_trades": snapshot.get("closed_trades") or [],
+            "closed_trades": closed_trades,
+            "current_r_multiple": (open_trades[0] if open_trades else {}).get("current_r_multiple") or (open_trades[0] if open_trades else {}).get("r_multiple") or 0.0,
+            "breakeven_armed": bool((open_trades[0] if open_trades else {}).get("breakeven_armed")),
+            "trailing_stop_active": bool((open_trades[0] if open_trades else {}).get("trailing_stop_active")),
+            "virtual_stop_loss": (open_trades[0] if open_trades else {}).get("virtual_stop_loss"),
+            "bars_open": (open_trades[0] if open_trades else {}).get("bars_open") or 0,
+            "hours_open": (open_trades[0] if open_trades else {}).get("hours_open") or 0.0,
+            "last_exit_reason": last_closed_trade.get("exit_reason") or last_closed_trade.get("last_exit_reason") or "",
+            "can_open_new_trade": not bool(open_trades),
             "excluded_trades": snapshot.get("excluded_trades") or [],
             "excluded_count": snapshot.get("excluded_count", 0),
             "manual_shadow_trades": summary.get("manual_shadow_trades", 0),

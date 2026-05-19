@@ -24,10 +24,11 @@ class MT5ForwardTestEngine:
         symbol_mapper: MT5SymbolMapper | None = None,
     ) -> None:
         self.memory = memory or MemoryStore()
+        self.config = config or MT5BridgeConfig.from_env()
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
-        self.performance = MT5Performance(memory=self.memory, config=config)
-        self.auto_forward = MT5AutoForward(memory=self.memory, config=config, symbol_mapper=symbol_mapper)
+        self.performance = MT5Performance(memory=self.memory, config=self.config)
+        self.auto_forward = MT5AutoForward(memory=self.memory, config=self.config, symbol_mapper=symbol_mapper)
 
     def record_tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         clean = sanitize_payload(payload or {})
@@ -54,7 +55,7 @@ class MT5ForwardTestEngine:
         })
         logging.getLogger("genesis.mt5").info("MT5_TICK_RECEIVED symbol=%s source=%s", symbol, tick.get("source"))
         event = self.journal.save("mt5_ticks", symbol, tick)
-        updates = self.shadow.update_with_tick(tick)
+        updates = self.shadow.update_with_tick(tick, config=self.config)
         auto_forward = self.auto_forward.process_tick(tick)
         return {
             "ok": True,

@@ -110,6 +110,13 @@ class MT5ShadowTrading:
             "manual_test": bool(clean_payload.get("manual_test")) or not bool(clean_payload.get("auto_forward")),
             "excluded_from_main_metrics": bool(clean_payload.get("excluded_from_main_metrics")),
             "risk_reward": _number(clean_payload.get("risk_reward")) or 0.0,
+            "initial_risk": risk,
+            "virtual_stop_loss": intent.stop_loss,
+            "breakeven_armed": False,
+            "trailing_stop_active": False,
+            "bars_open": 0,
+            "hours_open": 0.0,
+            "last_exit_reason": "",
             "max_favorable_excursion": 0.0,
             "max_adverse_excursion": 0.0,
             "unrealized_pnl": 0.0,
@@ -209,7 +216,7 @@ class MT5ShadowTrading:
         event = self.journal.save("mt5_hedge_outcomes", symbol, event_payload)
         return {"created": True, "status": "hedge_outcome_pending", "event": event, "outcome": event_payload}
 
-    def update_with_tick(self, tick: dict[str, Any]) -> dict[str, Any]:
+    def update_with_tick(self, tick: dict[str, Any], *, config: Any | None = None) -> dict[str, Any]:
         clean_tick = sanitize_payload(tick or {})
         symbol = _symbol(clean_tick.get("symbol") or clean_tick.get("ticker"))
         last = _price_from_tick(clean_tick)
@@ -218,10 +225,10 @@ class MT5ShadowTrading:
 
         updates = []
         for trade in self.open_trades(symbol):
-            update = self._evaluate_trade(trade, clean_tick, last)
+            update = self._evaluate_trade(trade, clean_tick, last, config=config)
             event = self.journal.save("mt5_shadow_trades", symbol, update, confidence=update.get("confidence") or "media")
             updates.append({"trade": update, "event": event})
-            if update.get("status") in {"win", "loss"}:
+            if update.get("status") in _CLOSED_STATUSES:
                 self.journal.save(
                     "mt5_signal_outcomes",
                     symbol,
@@ -232,6 +239,7 @@ class MT5ShadowTrading:
                         "timeframe": update.get("timeframe") or "",
                         "strategy_profile": update.get("strategy_profile") or "",
                         "outcome": update["status"],
+                        "exit_reason": update.get("exit_reason") or "",
                         "pnl": update["pnl"],
                         "pnl_pct": update["pnl_pct"],
                         "r_multiple": update["r_multiple"],
@@ -324,7 +332,7 @@ class MT5ShadowTrading:
         excluded_trades = [trade for trade in raw_trades if is_excluded_trade(trade) or trade not in trades]
         legacy_trades = [trade for trade in excluded_trades if str(trade.get("instrument_type") or "").casefold() == "legacy_proxy"]
         open_trades = [trade for trade in trades if trade.get("status") == "open"]
-        closed_trades = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
+        closed_trades = [trade for trade in trades if trade.get("status") in _CLOSED_STATUSES]
         return {
             "ok": True,
             "status": "mt5_shadow_trades_ready",
@@ -355,27 +363,108 @@ class MT5ShadowTrading:
                 latest[trade_id] = _normalize_trade_for_read({**payload, "created_at": row.get("created_at") or payload.get("created_at")})
         return list(latest.values())
 
-    def _evaluate_trade(self, trade: dict[str, Any], tick: dict[str, Any], last: float) -> dict[str, Any]:
+    def close_on_signal_flip(
+        self,
+        *,
+        symbol: str,
+        tick: dict[str, Any],
+        decision: dict[str, Any],
+        market_scores: dict[str, Any] | None = None,
+        config: Any | None = None,
+    ) -> list[dict[str, Any]]:
+        if not _config_bool(config, "shadow_signal_flip_close", True):
+            return []
+        clean_symbol = _symbol(symbol)
+        last = _price_from_tick(tick)
+        if not clean_symbol or last is None:
+            return []
+        updates: list[dict[str, Any]] = []
+        for trade in self.open_trades(clean_symbol):
+            if not _should_signal_flip(trade, decision, market_scores or {}):
+                continue
+            update = self._close_trade(trade, tick, last, "signal_flip")
+            event = self.journal.save("mt5_shadow_trades", clean_symbol, update, confidence=update.get("confidence") or "media")
+            self.journal.save(
+                "mt5_signal_outcomes",
+                clean_symbol,
+                {
+                    "shadow_trade_id": update["shadow_trade_id"],
+                    "symbol": clean_symbol,
+                    "action": update["action"],
+                    "timeframe": update.get("timeframe") or "",
+                    "strategy_profile": update.get("strategy_profile") or "",
+                    "outcome": update["status"],
+                    "exit_reason": "signal_flip",
+                    "pnl": update["pnl"],
+                    "pnl_pct": update["pnl_pct"],
+                    "r_multiple": update["r_multiple"],
+                    "closed_at": update["closed_at"],
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                },
+            )
+            updates.append({"trade": update, "event": event})
+        return updates
+
+    def _evaluate_trade(self, trade: dict[str, Any], tick: dict[str, Any], last: float, *, config: Any | None = None) -> dict[str, Any]:
         action = _action(trade)
         entry = _number(trade.get("entry")) or last
         stop = _number(trade.get("stop_loss"))
         target = _number(trade.get("take_profit"))
         pnl = _directional_pnl(action, entry, last)
-        risk = abs(entry - stop) if stop is not None else 0.0
+        risk = _number(trade.get("initial_risk")) or (abs(entry - stop) if stop is not None else 0.0)
         r_multiple = round(pnl / risk, 6) if risk > 0 else 0.0
         mfe = max(_number(trade.get("max_favorable_excursion")) or 0.0, pnl)
         mae = min(_number(trade.get("max_adverse_excursion")) or 0.0, pnl)
+        bars_open = int(_number(trade.get("bars_open")) or 0) + 1
+        hours_open = _hours_open(trade, tick)
+        breakeven_armed = bool(trade.get("breakeven_armed"))
+        trailing_stop_active = bool(trade.get("trailing_stop_active"))
+        virtual_stop = _number(trade.get("virtual_stop_loss"))
+        if virtual_stop is None:
+            virtual_stop = stop
+        if risk > 0 and r_multiple >= _config_float(config, "shadow_breakeven_r", 0.40):
+            breakeven_armed = True
+            if action == "BUY":
+                virtual_stop = max(virtual_stop if virtual_stop is not None else entry, entry)
+            elif action == "SELL":
+                virtual_stop = min(virtual_stop if virtual_stop is not None else entry, entry)
+        if risk > 0 and r_multiple >= _config_float(config, "shadow_trail_start_r", 0.70):
+            trailing_stop_active = True
+            trail_distance = risk * _config_float(config, "shadow_trail_distance_r", 0.30)
+            if action == "BUY":
+                proposed_stop = last - trail_distance
+                virtual_stop = max(virtual_stop if virtual_stop is not None else proposed_stop, proposed_stop)
+            elif action == "SELL":
+                proposed_stop = last + trail_distance
+                virtual_stop = min(virtual_stop if virtual_stop is not None else proposed_stop, proposed_stop)
         status = "open"
         exit_price = None
         outcome = ""
-        if action == "BUY" and target is not None and last >= target:
-            status, exit_price, outcome = "win", target, "take_profit"
-        elif action == "BUY" and stop is not None and last <= stop:
+        if action == "BUY" and stop is not None and last <= stop:
             status, exit_price, outcome = "loss", stop, "stop_loss"
-        elif action == "SELL" and target is not None and last <= target:
-            status, exit_price, outcome = "win", target, "take_profit"
         elif action == "SELL" and stop is not None and last >= stop:
             status, exit_price, outcome = "loss", stop, "stop_loss"
+        elif action == "BUY" and target is not None and last >= target:
+            status, exit_price, outcome = "win", target, "take_profit"
+        elif action == "SELL" and target is not None and last <= target:
+            status, exit_price, outcome = "win", target, "take_profit"
+        elif action == "BUY" and virtual_stop is not None and (breakeven_armed or trailing_stop_active) and last <= virtual_stop:
+            exit_price = virtual_stop
+            pnl = _directional_pnl(action, entry, exit_price)
+            status = _status_from_pnl(pnl)
+            outcome = "trailing_stop" if trailing_stop_active else "stop_loss"
+        elif action == "SELL" and virtual_stop is not None and (breakeven_armed or trailing_stop_active) and last >= virtual_stop:
+            exit_price = virtual_stop
+            pnl = _directional_pnl(action, entry, exit_price)
+            status = _status_from_pnl(pnl)
+            outcome = "trailing_stop" if trailing_stop_active else "stop_loss"
+        elif _time_stop_hit(config, bars_open, hours_open):
+            exit_price = last
+            pnl = _directional_pnl(action, entry, exit_price)
+            status = _status_from_pnl(pnl)
+            outcome = "time_stop"
 
         if exit_price is not None:
             pnl = _directional_pnl(action, entry, exit_price)
@@ -390,16 +479,54 @@ class MT5ShadowTrading:
             "max_favorable_excursion": round(mfe, 8),
             "max_adverse_excursion": round(mae, 8),
             "r_multiple": r_multiple,
-            "pnl": round(pnl, 8) if status in {"win", "loss"} else 0.0,
+            "current_r_multiple": r_multiple,
+            "initial_risk": risk,
+            "breakeven_armed": breakeven_armed,
+            "trailing_stop_active": trailing_stop_active,
+            "virtual_stop_loss": virtual_stop,
+            "bars_open": bars_open,
+            "hours_open": hours_open,
+            "lifecycle_status": "closed" if status in _CLOSED_STATUSES else "open",
+            "last_exit_reason": outcome or str(trade.get("last_exit_reason") or ""),
+            "pnl": round(pnl, 8) if status in _CLOSED_STATUSES else 0.0,
             "pnl_pct": round((pnl / entry) * 100, 6) if entry else 0.0,
             "exit_price": exit_price,
             "exit_reason": outcome,
-            "closed_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()) if status in {"win", "loss"} else "",
+            "closed_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()) if status in _CLOSED_STATUSES else "",
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
         }
         return update
+
+    def _close_trade(self, trade: dict[str, Any], tick: dict[str, Any], last: float, exit_reason: str) -> dict[str, Any]:
+        action = _action(trade)
+        entry = _number(trade.get("entry")) or last
+        risk = _number(trade.get("initial_risk")) or abs(entry - (_number(trade.get("stop_loss")) or entry))
+        pnl = _directional_pnl(action, entry, last)
+        status = _status_from_pnl(pnl)
+        r_multiple = round(pnl / risk, 6) if risk > 0 else 0.0
+        return {
+            **trade,
+            "status": status,
+            "lifecycle_status": "closed",
+            "last_price": last,
+            "exit_price": last,
+            "exit_reason": exit_reason,
+            "last_exit_reason": exit_reason,
+            "closed_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+            "updated_at": str(tick.get("timestamp") or tick.get("bar_time") or _now()),
+            "pnl": round(pnl, 8),
+            "pnl_pct": round((pnl / entry) * 100, 6) if entry else 0.0,
+            "unrealized_pnl": round(pnl, 8),
+            "r_multiple": r_multiple,
+            "current_r_multiple": r_multiple,
+            "max_favorable_excursion": max(_number(trade.get("max_favorable_excursion")) or 0.0, pnl),
+            "max_adverse_excursion": min(_number(trade.get("max_adverse_excursion")) or 0.0, pnl),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
 
     def _update_no_trade_outcomes(self, symbol: str, tick: dict[str, Any], last: float) -> list[dict[str, Any]]:
         updates: list[dict[str, Any]] = []
@@ -476,6 +603,9 @@ class MT5ShadowTrading:
             event = self.journal.save("mt5_hedge_outcomes", symbol, update)
             updates.append({"outcome": update, "event": event})
         return updates
+
+
+_CLOSED_STATUSES = {"win", "loss", "breakeven"}
 
 
 def _action(payload: dict[str, Any]) -> str:
@@ -608,6 +738,80 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _status_from_pnl(pnl: float) -> str:
+    if pnl > 0:
+        return "win"
+    if pnl < 0:
+        return "loss"
+    return "breakeven"
+
+
+def _config_float(config: Any | None, name: str, default: float) -> float:
+    value = getattr(config, name, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _config_bool(config: Any | None, name: str, default: bool) -> bool:
+    value = getattr(config, name, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() in {"1", "true", "yes", "on", "si", "sÃ­", "enabled"}
+
+
+def _time_stop_hit(config: Any | None, bars_open: int, hours_open: float) -> bool:
+    max_bars = int(_config_float(config, "shadow_time_stop_bars", 12))
+    max_hours = _config_float(config, "shadow_time_stop_hours", 12.0)
+    return (max_bars > 0 and bars_open >= max_bars) or (max_hours > 0 and hours_open >= max_hours)
+
+
+def _hours_open(trade: dict[str, Any], tick: dict[str, Any]) -> float:
+    opened = _parse_datetime(trade.get("opened_at"))
+    current = _parse_datetime(tick.get("timestamp") or tick.get("bar_time"))
+    if opened is None or current is None:
+        return round(float(_number(trade.get("hours_open")) or 0.0), 4)
+    return round(max((current - opened).total_seconds(), 0.0) / 3600.0, 4)
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _should_signal_flip(trade: dict[str, Any], decision: dict[str, Any], market_scores: dict[str, Any]) -> bool:
+    trade_action = _action(trade)
+    new_decision = _action(decision)
+    confidence = str(decision.get("confidence") or "").casefold()
+    score = _number(market_scores.get("score")) or 50.0
+    trend_score = _number(market_scores.get("trend_score")) or 50.0
+    momentum_score = _number(market_scores.get("momentum_score")) or 50.0
+    regime = str(market_scores.get("regime") or decision.get("market_regime") or "").casefold()
+    no_trade_score = _number(decision.get("no_trade_score")) or 0.0
+    hedge_score = _number(decision.get("hedge_score")) or 0.0
+    opposite = (trade_action == "BUY" and new_decision == "SELL") or (trade_action == "SELL" and new_decision == "BUY")
+    if opposite and confidence in {"medium", "high"}:
+        return True
+    weak_context = (
+        score < 35
+        or trend_score < 35
+        or momentum_score < 35
+        or regime in {"not_confirmed", "risk_off"}
+        or no_trade_score >= 70
+        or hedge_score >= 80
+    )
+    return new_decision == "NO_TRADE" and weak_context
 
 
 def _price_from_tick(tick: dict[str, Any]) -> float | None:

@@ -21,6 +21,12 @@ class MT5RuntimeConfig:
     max_spread_points: float = 50.0
     min_rr: float = 1.2
     paper_exploration_enabled: bool = False
+    shadow_time_stop_hours: float = 12.0
+    shadow_time_stop_bars: int = 12
+    shadow_breakeven_r: float = 0.40
+    shadow_trail_start_r: float = 0.70
+    shadow_trail_distance_r: float = 0.30
+    shadow_signal_flip_close: bool = True
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -35,6 +41,12 @@ class MT5RuntimeConfig:
             "MT5_MAX_SPREAD_POINTS": self.max_spread_points,
             "MT5_MIN_RR": self.min_rr,
             "MT5_PAPER_EXPLORATION_ENABLED": self.paper_exploration_enabled,
+            "MT5_SHADOW_TIME_STOP_HOURS": self.shadow_time_stop_hours,
+            "MT5_SHADOW_TIME_STOP_BARS": self.shadow_time_stop_bars,
+            "MT5_SHADOW_BREAKEVEN_R": self.shadow_breakeven_r,
+            "MT5_SHADOW_TRAIL_START_R": self.shadow_trail_start_r,
+            "MT5_SHADOW_TRAIL_DISTANCE_R": self.shadow_trail_distance_r,
+            "MT5_SHADOW_SIGNAL_FLIP_CLOSE": self.shadow_signal_flip_close,
         }
 
 
@@ -51,6 +63,12 @@ def get_mt5_config() -> MT5RuntimeConfig:
         max_spread_points=_float_env("MT5_MAX_SPREAD", _float_env("MT5_MAX_SPREAD_POINTS", 50.0)),
         min_rr=_float_env("MT5_MIN_RR", 1.2),
         paper_exploration_enabled=_bool_env("MT5_PAPER_EXPLORATION_ENABLED", False),
+        shadow_time_stop_hours=_float_env("MT5_SHADOW_TIME_STOP_HOURS", 12.0),
+        shadow_time_stop_bars=int(_float_env("MT5_SHADOW_TIME_STOP_BARS", 12)),
+        shadow_breakeven_r=_float_env("MT5_SHADOW_BREAKEVEN_R", 0.40),
+        shadow_trail_start_r=_float_env("MT5_SHADOW_TRAIL_START_R", 0.70),
+        shadow_trail_distance_r=_float_env("MT5_SHADOW_TRAIL_DISTANCE_R", 0.30),
+        shadow_signal_flip_close=_bool_env("MT5_SHADOW_SIGNAL_FLIP_CLOSE", True),
     )
 
 

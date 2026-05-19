@@ -128,6 +128,7 @@ class MT5Performance:
             "hedge_accuracy": hedge_metrics,
             "recent_trades": sorted(main_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_auto_trades": sorted(auto_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
+            "recent_closed_trades": sorted([trade for trade in main_trades if trade.get("status") in _CLOSED_STATUSES], key=lambda item: str(item.get("closed_at") or item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_exploration_trades": sorted(exploration_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "recent_manual_trades": sorted(manual_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
             "excluded_trades": sorted(excluded_trades, key=lambda item: str(item.get("updated_at") or item.get("opened_at") or ""), reverse=True)[:10],
@@ -272,8 +273,10 @@ def _trade_bucket(trades: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _summary_for_trades(trades: list[dict[str, Any]]) -> dict[str, Any]:
-    closed = [trade for trade in trades if trade.get("status") in {"win", "loss"}]
+    closed = [trade for trade in trades if trade.get("status") in _CLOSED_STATUSES]
     wins = [trade for trade in closed if trade.get("status") == "win"]
+    losses = [trade for trade in closed if trade.get("status") == "loss"]
+    breakeven = [trade for trade in closed if trade.get("status") == "breakeven"]
     pnls = [_pnl_value(trade) for trade in closed]
     win_values = [value for value in pnls if value > 0]
     loss_values = [value for value in pnls if value < 0]
@@ -284,7 +287,8 @@ def _summary_for_trades(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "closed": len(closed),
         "open": sum(1 for trade in trades if trade.get("status") == "open"),
         "wins": len(wins),
-        "losses": len(closed) - len(wins),
+        "losses": len(losses),
+        "breakeven": len(breakeven),
         "win_rate": round((len(wins) / len(closed)) * 100, 2) if closed else 0.0,
         "profit_factor": _profit_factor(gross_win, gross_loss),
         "expectancy": round(sum(pnls) / len(closed), 4) if closed else 0.0,
@@ -294,6 +298,9 @@ def _summary_for_trades(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_loss": round(sum(loss_values) / len(loss_values), 4) if loss_values else 0.0,
         "rr_avg": round(sum(abs(_number(trade.get("r_multiple")) or 0.0) for trade in closed) / len(closed), 4) if closed else 0.0,
     }
+
+
+_CLOSED_STATUSES = {"win", "loss", "breakeven"}
 
 
 def _group_trades(trades: list[dict[str, Any]], key: str) -> dict[str, Any]:
