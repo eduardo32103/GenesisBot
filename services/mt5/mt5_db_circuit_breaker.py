@@ -57,6 +57,8 @@ def reset_db_circuit_breaker() -> None:
 def status_payload() -> dict[str, Any]:
     with _LOCK:
         remaining = max(0, int(round(_STATE.degraded_until - time.monotonic())))
+        operation_type = _sql_operation_type(_STATE.last_error)
+        warnings = ["runtime_ddl_detected"] if operation_type == "DDL" else []
         return {
             "db_degraded": remaining > 0,
             "db_degraded_seconds_remaining": remaining,
@@ -64,6 +66,8 @@ def status_payload() -> dict[str, Any]:
             "db_last_error_at": _STATE.last_error_at,
             "db_last_duration_ms": _STATE.last_duration_ms,
             "db_tripped_count": _STATE.tripped_count,
+            "db_last_sql_operation_type": operation_type,
+            "warnings": warnings,
         }
 
 
@@ -83,6 +87,11 @@ def _is_timeout_error(message: str, duration_ms: int) -> bool:
             "pg8000",
             "current transaction is aborted",
             "commands ignored until end of transaction block",
+            "pgrst_ddl_watch",
+            "pgst_ddl_watch",
+            "create index",
+            "create table",
+            "alter table",
         )
     )
 
@@ -98,3 +107,12 @@ def _now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def _sql_operation_type(message: str) -> str:
+    text = str(message or "").casefold()
+    if any(token in text for token in ("pgrst_ddl_watch", "pgst_ddl_watch", "create index", "create table", "alter table", "drop table")):
+        return "DDL"
+    if any(token in text for token in ("insert ", "update ", "delete ", "select ")):
+        return "DML"
+    return ""

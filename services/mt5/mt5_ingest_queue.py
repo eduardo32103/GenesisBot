@@ -31,7 +31,13 @@ class MT5IngestStats:
 
 
 class MT5IngestQueue:
-    def __init__(self, *, max_size: int | None = None, memory_factory: Callable[[], MemoryStore] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_size: int | None = None,
+        memory_factory: Callable[[], MemoryStore] | None = None,
+        auto_start_worker: bool = True,
+    ) -> None:
         self.max_size = int(max_size or _int_env("MT5_INGEST_QUEUE_MAX", DEFAULT_MAX_SIZE))
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(1, self.max_size))
         self._stats = MT5IngestStats()
@@ -39,9 +45,11 @@ class MT5IngestQueue:
         self._worker_started = False
         self._memory_factory = memory_factory or MemoryStore
         self._dead_letter: list[dict[str, Any]] = []
+        self._auto_start_worker = bool(auto_start_worker)
 
     def enqueue(self, collection: str, symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self._start_worker()
+        if self._auto_start_worker:
+            self._start_worker()
         event = {
             "collection": str(collection or "mt5_journal"),
             "symbol": str(symbol or payload.get("symbol") or "MT5").upper().strip(),

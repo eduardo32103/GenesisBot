@@ -1736,7 +1736,7 @@ class MT5BridgeTests(unittest.TestCase):
 
         reset_db_circuit_breaker()
         try:
-            ingest = MT5IngestQueue(max_size=10, memory_factory=memory_factory)
+            ingest = MT5IngestQueue(max_size=10, memory_factory=memory_factory, auto_start_worker=False)
             ingest.enqueue("mt5_ticks", "BTCUSD", {"symbol": "BTCUSD", "id": "bad"})
             ingest.enqueue("mt5_ticks", "BTCUSD", {"symbol": "BTCUSD", "id": "good"})
             ingest.flush_once_for_tests(limit=2)
@@ -1784,6 +1784,76 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(status["last_ingest_error"], "current transaction is aborted")
             self.assertFalse(status["broker_touched"])
             self.assertFalse(status["order_executed"])
+        finally:
+            reset_db_circuit_breaker()
+
+    def test_postgres_migrations_disabled_skips_runtime_schema_ddl(self) -> None:
+        with patch.dict("os.environ", {"GENESIS_DB_MIGRATIONS_ENABLED": "false"}):
+            with patch.object(MemoryStore, "_connect_postgres", return_value=object()):
+                with patch.object(MemoryStore, "_ensure_schema", side_effect=AssertionError("runtime DDL must be disabled")):
+                    store = MemoryStore(database_url="postgresql://user:pass@localhost/db")
+
+        self.assertEqual(store.backend, "postgres")
+
+    def test_postgres_migrations_enabled_runs_schema_ddl(self) -> None:
+        calls: list[str] = []
+
+        def fake_ensure(self) -> None:
+            calls.append("ensure_schema")
+
+        with patch.dict("os.environ", {"GENESIS_DB_MIGRATIONS_ENABLED": "true"}):
+            with patch.object(MemoryStore, "_connect_postgres", return_value=object()):
+                with patch.object(MemoryStore, "_ensure_schema", fake_ensure):
+                    store = MemoryStore(database_url="postgresql://user:pass@localhost/db")
+
+        self.assertEqual(store.backend, "postgres")
+        self.assertEqual(calls, ["ensure_schema"])
+
+    def test_ingest_worker_memory_store_does_not_run_runtime_ddl_when_disabled(self) -> None:
+        executed_sql: list[str] = []
+
+        class FakeCursor:
+            def execute(self, sql: str, params: object = None) -> None:
+                executed_sql.append(str(sql))
+
+            def close(self) -> None:
+                pass
+
+        class FakeConnection:
+            def cursor(self) -> FakeCursor:
+                return FakeCursor()
+
+            def commit(self) -> None:
+                pass
+
+            def rollback(self) -> None:
+                pass
+
+        with patch.dict("os.environ", {"GENESIS_DB_MIGRATIONS_ENABLED": "false"}):
+            with patch.object(MemoryStore, "_connect_postgres", return_value=FakeConnection()):
+                with patch.object(MemoryStore, "_ensure_schema", side_effect=AssertionError("ingest worker must not run DDL")):
+                    ingest = MT5IngestQueue(
+                        max_size=10,
+                        memory_factory=lambda: MemoryStore(database_url="postgresql://user:pass@localhost/db"),
+                        auto_start_worker=False,
+                    )
+                    ingest.enqueue("mt5_ticks", "BTCUSD", {"symbol": "BTCUSD", "last": 77000})
+                    ingest.flush_once_for_tests(limit=1)
+
+        self.assertEqual(ingest.status()["flushed_events"], 1)
+        self.assertTrue(any("INSERT INTO genesis_memory_events" in sql for sql in executed_sql))
+        self.assertFalse(any(token in "\n".join(executed_sql).upper() for token in ("CREATE TABLE", "CREATE INDEX", "ALTER TABLE", "DROP ")))
+
+    def test_pgrst_ddl_watch_error_trips_circuit_breaker_with_runtime_warning(self) -> None:
+        from services.mt5.mt5_db_circuit_breaker import record_db_error, reset_db_circuit_breaker, status_payload
+
+        reset_db_circuit_breaker()
+        try:
+            record_db_error("57014 canceling statement due to statement timeout PL/pgSQL function pgrst_ddl_watch() line 5 at FOR over SELECT rows")
+            status = status_payload()
+            self.assertTrue(status["db_degraded"])
+            self.assertEqual(status["db_last_sql_operation_type"], "DDL")
+            self.assertIn("runtime_ddl_detected", status["warnings"])
         finally:
             reset_db_circuit_breaker()
 

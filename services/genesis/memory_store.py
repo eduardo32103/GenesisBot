@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import hashlib
 from contextlib import closing
@@ -53,7 +54,8 @@ class MemoryStore:
             except Exception:
                 self._pg = None
                 self.backend = "sqlite"
-        self._ensure_schema()
+        if self.backend != "postgres" or _db_migrations_enabled():
+            self._ensure_schema()
 
     def save_event(self, event_type: str, payload: dict[str, Any] | None = None, source: str = "genesis", confidence: str | float = "media") -> dict[str, Any]:
         payload = _sanitize(payload or {})
@@ -1418,6 +1420,10 @@ def _learning_table_name(table_key: str) -> str:
         return _LEARNING_TABLES[table_key]
     except KeyError as exc:
         raise ValueError(f"Unknown learning table: {table_key}") from exc
+
+
+def _db_migrations_enabled() -> bool:
+    return str(os.getenv("GENESIS_DB_MIGRATIONS_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
 def _stable_learning_id(table_key: str, payload: dict[str, Any]) -> str:
