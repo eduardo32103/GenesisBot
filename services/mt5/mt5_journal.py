@@ -40,6 +40,7 @@ def _event_type(collection: str) -> str:
         "mt5_strategy_profile_stats": "mt5_strategy_profile_stat",
         "mt5_adaptive_state": "mt5_adaptive_state",
         "mt5_adaptive_recommendations": "mt5_adaptive_recommendation",
+        "mt5_paper_defense_events": "mt5_paper_defense_event",
         "mt5_learning_runs": "mt5_learning_run",
     }
     return mapping.get(collection, collection.rstrip("s") or "mt5_event")

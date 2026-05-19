@@ -9,6 +9,7 @@ from services.genesis.memory_store import MemoryStore
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
+from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
@@ -35,6 +36,7 @@ class MT5AutoForward:
         self.journal = MT5Journal(memory=self.memory)
         self.shadow = MT5ShadowTrading(memory=self.memory)
         self.performance = MT5Performance(memory=self.memory, config=self.config)
+        self.paper_defense = MT5PaperDefense(memory=self.memory)
 
     def process_tick(self, tick: dict[str, Any] | None) -> dict[str, Any]:
         clean = sanitize_payload(tick or {})
@@ -156,6 +158,24 @@ class MT5AutoForward:
             spread=_number(clean.get("spread_points") or clean.get("spread")),
             is_demo=_is_demo(clean),
         )
+        caution_filter: dict[str, Any] = {"allowed": True, "caution_mode_active": False, "reason": ""}
+        if not block_reason and decision_name in {"BUY", "SELL"}:
+            caution_filter = self.paper_defense.evaluate_new_entry(
+                symbol=raw_symbol,
+                tick=clean,
+                market_scores=market_scores,
+                decision={
+                    **built,
+                    "score": market_scores.get("score"),
+                    "trend_score": market_scores.get("trend_score"),
+                    "momentum_score": market_scores.get("momentum_score"),
+                    "volatility_score": market_scores.get("volatility_score"),
+                    "regime": market_scores.get("regime"),
+                },
+                max_spread_points=self.config.max_spread_points,
+            )
+            if not caution_filter.get("allowed"):
+                block_reason = str(caution_filter.get("reason") or "paper_caution_block")
         open_trades_before = self.shadow.open_trades(raw_symbol)
         block_reasons = _block_reasons(block_reason or reason, context=context, has_open_trade=bool(open_trades_before), market_scores=market_scores)
         final_decision = decision_name if not block_reason else "NO_TRADE"
@@ -269,6 +289,7 @@ class MT5AutoForward:
             "exploration": exploration,
             "shadow_trade_created": bool(shadow.get("created")),
             "exploration_shadow_trade_created": bool(exploration.get("created")),
+            "paper_caution_filter": caution_filter,
             "signal_flip_closed": bool(signal_flip_updates),
             "signal_flip_updates": signal_flip_updates,
             "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
@@ -290,6 +311,7 @@ class MT5AutoForward:
         last_invalid_decision = _latest_decision_by_actionable(decision_rows, False)
         snapshot = self.shadow.snapshot(symbol=clean_symbol)
         performance = self.performance.report(symbol=clean_symbol)
+        paper_defense = self.paper_defense.state(symbol=clean_symbol)
         summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
         report = self.no_trade_report(symbol=clean_symbol, limit=50)
         summary_strict = performance.get("summary_strict_auto") if isinstance(performance.get("summary_strict_auto"), dict) else {}
@@ -310,6 +332,10 @@ class MT5AutoForward:
             "is_spot_crypto": bool((last_tick or last_decision or {}).get("is_spot_crypto")),
             "auto_forward_enabled": not self.config.kill_switch,
             "paper_exploration_enabled": self.config.paper_exploration_enabled,
+            "caution_mode_active": paper_defense.get("caution_mode_active", False),
+            "paper_defense_active": paper_defense.get("paper_defense_active", False),
+            "paper_defense_reason": paper_defense.get("reason") or "",
+            "paper_defense_filters_applied": paper_defense.get("filters_applied") or [],
             "last_tick": last_tick,
             "last_tick_status": "mt5_tick_recorded" if last_tick else "",
             "last_tick_ea_version": (last_tick or {}).get("ea_version") or "",
@@ -437,6 +463,21 @@ class MT5AutoForward:
         built = _build_exploration_decision(symbol, tick, context, market_scores, min_rr=max(self.config.min_rr, 1.2), risk_pct=min(self.config.max_position_risk_pct, 0.5))
         if not built.get("actionable"):
             return {"created": False, "enabled": True, "reason": built.get("reason") or strict_reason, "decision": built}
+        caution_filter = self.paper_defense.evaluate_new_entry(
+            symbol=symbol,
+            tick=tick,
+            market_scores=market_scores,
+            decision=built,
+            max_spread_points=self.config.max_spread_points,
+        )
+        if not caution_filter.get("allowed"):
+            return {
+                "created": False,
+                "enabled": True,
+                "reason": caution_filter.get("reason") or "paper_caution_block",
+                "decision": built,
+                "paper_caution_filter": caution_filter,
+            }
         shadow = self.shadow.create_shadow_trade(
             {
                 **built,

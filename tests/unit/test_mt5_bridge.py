@@ -20,6 +20,7 @@ from api.routes.genesis import (
     get_genesis_mt5_memory_summary,
     get_genesis_mt5_no_trade_report,
     get_genesis_mt5_outcomes_recent,
+    get_genesis_mt5_paper_defense,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
     get_genesis_mt5_replay_results,
@@ -59,6 +60,7 @@ from services.mt5.mt5_bridge import (
     mt5_no_trade_report,
     mt5_order_request,
     mt5_outcomes_recent,
+    mt5_paper_defense,
     mt5_performance,
     mt5_performance_auto,
     mt5_replay_reset,
@@ -75,6 +77,7 @@ from services.mt5.mt5_config import is_paper_exploration_enabled
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent
+from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
@@ -108,6 +111,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_adaptive_state_endpoint"], "/api/genesis/mt5/adaptive-state?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_strategy_profiles_endpoint"], "/api/genesis/mt5/strategy-profiles?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_adaptive_recommendations_endpoint"], "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_paper_defense_endpoint"], "/api/genesis/mt5/paper-defense?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
         self.assertEqual(app["genesis_mt5_tick_endpoint"], "/api/genesis/mt5/tick")
@@ -1483,6 +1487,7 @@ class MT5BridgeTests(unittest.TestCase):
         adaptive_state = get_genesis_mt5_adaptive_state("BTCUSD", "H1")
         profiles = get_genesis_mt5_strategy_profiles("BTCUSD")
         recommendations = get_genesis_mt5_adaptive_recommendations("BTCUSD", "H1")
+        paper_defense = get_genesis_mt5_paper_defense("BTCUSD")
 
         self.assertTrue(decision["ok"])
         self.assertTrue(account["ok"])
@@ -1511,6 +1516,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(adaptive_state["ok"])
         self.assertTrue(profiles["ok"])
         self.assertTrue(recommendations["ok"])
+        self.assertTrue(paper_defense["ok"])
         self.assertFalse(request["order_executed"])
         self.assertFalse(request["broker_touched"])
         self.assertEqual(request["order_policy"], "journal_only_no_broker")
@@ -1684,6 +1690,72 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(recommendations["broker_touched"])
             self.assertFalse(recommendations["order_executed"])
 
+    def test_paper_defense_activates_from_bad_adaptive_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            _save_adaptive_state(
+                store,
+                closed_trades=31,
+                bot_state="caution",
+                rolling_profit_factor=0.749,
+                rolling_expectancy=-0.0106,
+                rolling_drawdown=0.4424,
+                last_10_win_rate=50.0,
+                current_loss_streak=0,
+            )
+
+            defense = mt5_paper_defense(memory=store, symbol="BTCUSD")
+            recommendations = mt5_adaptive_recommendations(memory=store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertTrue(defense["caution_mode_active"])
+            self.assertTrue(defense["paper_defense_active"])
+            self.assertIn("rolling_pf_below_1", defense["reasons"])
+            self.assertIn("negative_expectancy", defense["reasons"])
+            self.assertIn("high_drawdown", defense["reasons"])
+            self.assertIn("low_recent_win_rate", defense["reasons"])
+            self.assertTrue(any("Estado caution" in item["recommendation"] for item in recommendations["recommendations"]))
+            self.assertFalse(defense["broker_touched"])
+            self.assertFalse(defense["order_executed"])
+
+    def test_paper_defense_blocks_low_score_and_allows_high_score(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            _save_adaptive_state(
+                store,
+                closed_trades=31,
+                bot_state="caution",
+                rolling_profit_factor=0.8,
+                rolling_expectancy=-0.02,
+                rolling_drawdown=0.2,
+                last_10_win_rate=55.0,
+            )
+            defense = MT5PaperDefense(memory=store)
+
+            blocked = defense.evaluate_new_entry(
+                symbol="BTCUSD",
+                tick={"symbol": "BTCUSD", "spread": 10, "last": 77000},
+                market_scores={"score": 58, "trend_score": 50, "momentum_score": 52, "volatility_score": 50, "regime": "not_confirmed"},
+                decision={"decision": "BUY"},
+                max_spread_points=50,
+            )
+            allowed = defense.evaluate_new_entry(
+                symbol="BTCUSD",
+                tick={"symbol": "BTCUSD", "spread": 10, "last": 77000},
+                market_scores={"score": 78, "trend_score": 72, "momentum_score": 70, "volatility_score": 60, "regime": "bullish_exploration"},
+                decision={"decision": "BUY"},
+                max_spread_points=50,
+            )
+            status = mt5_paper_defense(memory=store, symbol="BTCUSD")
+
+            self.assertFalse(blocked["allowed"])
+            self.assertIn("score_too_low", blocked["block_reasons"])
+            self.assertIn("trend_not_confirmed", blocked["block_reasons"])
+            self.assertTrue(allowed["allowed"])
+            self.assertGreaterEqual(status["blocked_count"], 1)
+            self.assertGreaterEqual(status["allowed_count"], 1)
+            self.assertFalse(blocked["broker_touched"])
+            self.assertFalse(allowed["order_executed"])
+
     def test_genesis_chat_routes_mt5_questions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
@@ -1812,6 +1884,41 @@ def _save_closed_shadow_trade(
             "virtual_stop_loss": entry if r_multiple >= 0.4 else stop,
             "max_favorable_excursion": max(pnl, 0),
             "max_adverse_excursion": min(pnl, 0),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        },
+    )
+
+
+def _save_adaptive_state(
+    store: MemoryStore,
+    *,
+    closed_trades: int,
+    bot_state: str,
+    rolling_profit_factor: float,
+    rolling_expectancy: float,
+    rolling_drawdown: float,
+    last_10_win_rate: float,
+    current_loss_streak: int = 0,
+) -> None:
+    MT5Journal(memory=store).save(
+        "mt5_adaptive_state",
+        "BTCUSD",
+        {
+            "symbol": "BTCUSD",
+            "normalized_symbol": "BTCUSD",
+            "timeframe": "H1",
+            "bot_state": bot_state,
+            "closed_trades": closed_trades,
+            "current_win_streak": 0,
+            "current_loss_streak": current_loss_streak,
+            "last_10_win_rate": last_10_win_rate,
+            "last_20_win_rate": last_10_win_rate,
+            "rolling_win_rate": last_10_win_rate,
+            "rolling_profit_factor": rolling_profit_factor,
+            "rolling_expectancy": rolling_expectancy,
+            "rolling_drawdown": rolling_drawdown,
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",

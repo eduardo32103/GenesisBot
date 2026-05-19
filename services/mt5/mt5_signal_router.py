@@ -14,6 +14,7 @@ from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decisi
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
+from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
@@ -42,6 +43,7 @@ class MT5SignalRouter:
         self.trade_memory_engine = MT5TradeMemoryEngine(memory=self.memory)
         self.adaptive_state_engine = MT5AdaptiveStateEngine(memory=self.memory)
         self.adaptive_recommendation_engine = MT5AdaptiveRecommendationEngine(memory=self.memory)
+        self.paper_defense = MT5PaperDefense(memory=self.memory)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -539,6 +541,9 @@ class MT5SignalRouter:
             profile_stats=profiles,
         )
 
+    def paper_defense_status(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.paper_defense.state(symbol=symbol)
+
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
         direct_keys = ("is_demo", "demo", "account_type", "trade_mode", "account_trade_mode", "mode", "server", "broker", "account_id", "login", "account")
@@ -663,6 +668,7 @@ _MT5_COLLECTIONS = (
     "mt5_strategy_profile_stats",
     "mt5_adaptive_state",
     "mt5_adaptive_recommendations",
+    "mt5_paper_defense_events",
     "mt5_learning_runs",
     "mt5_journal",
 )

@@ -44,6 +44,16 @@ class MT5AdaptiveRecommendationEngine:
         avg_win, avg_loss = _avg_win_loss(clean_symbol, self.memory)
         recommendations: list[dict[str, Any]] = []
 
+        if str(state_payload.get("bot_state") or "").casefold() == "caution" or pf < 1.0 or expectancy < 0:
+            recommendations.append(
+                _recommendation(
+                    clean_symbol,
+                    "strategy_filter",
+                    "Estado caution: mantener paper, filtrar nuevas entradas y exigir mayor confirmacion.",
+                    f"Estado {state_payload.get('bot_state') or 'normal'} con PF {pf} y expectancy {expectancy}; no sugerir trading real.",
+                    "medium" if closed >= 30 else "low",
+                )
+            )
         if closed < 30:
             recommendations.append(
                 _recommendation(

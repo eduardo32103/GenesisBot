@@ -23,6 +23,7 @@ from services.mt5.mt5_bridge import (
     mt5_no_trade_report,
     mt5_order_request,
     mt5_order_result,
+    mt5_paper_defense,
     mt5_outcomes_recent,
     mt5_performance,
     mt5_performance_auto,
@@ -172,3 +173,7 @@ def get_genesis_mt5_strategy_profiles(symbol: str = "") -> dict[str, Any]:
 
 def get_genesis_mt5_adaptive_recommendations(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return mt5_adaptive_recommendations(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_paper_defense(symbol: str = "") -> dict[str, Any]:
+    return mt5_paper_defense(symbol=symbol)
