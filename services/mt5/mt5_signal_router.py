@@ -9,15 +9,27 @@ from urllib.request import urlopen
 
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
-from services.mt5.instrument_resolver import normalize_mt5_symbol, resolve_instrument, symbol_aliases
+from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol, resolve_instrument, symbol_aliases
 from services.mt5.mt5_account_state import normalize_account_state
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
+from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
+from services.mt5.mt5_ingest_queue import enqueue_mt5_event, ingest_status
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
+from services.mt5.mt5_runtime_snapshot import (
+    get_snapshot,
+    snapshot_status,
+    update_account_sync,
+    update_adaptive_state,
+    update_decision,
+    update_performance,
+    update_recommendations,
+    update_tick,
+)
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading, get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 from services.mt5.mt5_adaptive_recommendations import MT5AdaptiveRecommendationEngine
@@ -33,18 +45,71 @@ class MT5SignalRouter:
         config: MT5BridgeConfig | None = None,
         symbol_mapper: MT5SymbolMapper | None = None,
     ) -> None:
-        self.memory = memory or MemoryStore()
         self.config = config or MT5BridgeConfig.from_env()
+        self.memory = memory if memory is not None else None if self.config.fast_path_only else MemoryStore()
         self.symbol_mapper = symbol_mapper or MT5SymbolMapper()
         self.risk_guard = MT5RiskGuard(config=self.config, symbol_mapper=self.symbol_mapper)
-        self.journal = MT5Journal(memory=self.memory)
-        self.shadow = MT5ShadowTrading(memory=self.memory)
-        self.forward_engine = MT5ForwardTestEngine(memory=self.memory, config=self.config, symbol_mapper=self.symbol_mapper)
-        self.performance_engine = MT5Performance(memory=self.memory, config=self.config)
-        self.trade_memory_engine = MT5TradeMemoryEngine(memory=self.memory)
-        self.adaptive_state_engine = MT5AdaptiveStateEngine(memory=self.memory)
-        self.adaptive_recommendation_engine = MT5AdaptiveRecommendationEngine(memory=self.memory)
-        self.paper_defense = MT5PaperDefense(memory=self.memory)
+        self._journal: MT5Journal | None = None
+        self._shadow: MT5ShadowTrading | None = None
+        self._forward_engine: MT5ForwardTestEngine | None = None
+        self._performance_engine: MT5Performance | None = None
+        self._trade_memory_engine: MT5TradeMemoryEngine | None = None
+        self._adaptive_state_engine: MT5AdaptiveStateEngine | None = None
+        self._adaptive_recommendation_engine: MT5AdaptiveRecommendationEngine | None = None
+        self._paper_defense: MT5PaperDefense | None = None
+
+    def _memory(self) -> MemoryStore:
+        if self.memory is None:
+            self.memory = MemoryStore()
+        return self.memory
+
+    @property
+    def journal(self) -> MT5Journal:
+        if self._journal is None:
+            self._journal = MT5Journal(memory=self._memory())
+        return self._journal
+
+    @property
+    def shadow(self) -> MT5ShadowTrading:
+        if self._shadow is None:
+            self._shadow = MT5ShadowTrading(memory=self._memory())
+        return self._shadow
+
+    @property
+    def forward_engine(self) -> MT5ForwardTestEngine:
+        if self._forward_engine is None:
+            self._forward_engine = MT5ForwardTestEngine(memory=self._memory(), config=self.config, symbol_mapper=self.symbol_mapper)
+        return self._forward_engine
+
+    @property
+    def performance_engine(self) -> MT5Performance:
+        if self._performance_engine is None:
+            self._performance_engine = MT5Performance(memory=self._memory(), config=self.config)
+        return self._performance_engine
+
+    @property
+    def trade_memory_engine(self) -> MT5TradeMemoryEngine:
+        if self._trade_memory_engine is None:
+            self._trade_memory_engine = MT5TradeMemoryEngine(memory=self._memory())
+        return self._trade_memory_engine
+
+    @property
+    def adaptive_state_engine(self) -> MT5AdaptiveStateEngine:
+        if self._adaptive_state_engine is None:
+            self._adaptive_state_engine = MT5AdaptiveStateEngine(memory=self._memory())
+        return self._adaptive_state_engine
+
+    @property
+    def adaptive_recommendation_engine(self) -> MT5AdaptiveRecommendationEngine:
+        if self._adaptive_recommendation_engine is None:
+            self._adaptive_recommendation_engine = MT5AdaptiveRecommendationEngine(memory=self._memory())
+        return self._adaptive_recommendation_engine
+
+    @property
+    def paper_defense(self) -> MT5PaperDefense:
+        if self._paper_defense is None:
+            self._paper_defense = MT5PaperDefense(memory=self._memory())
+        return self._paper_defense
 
     def health(self) -> dict[str, Any]:
         return {
@@ -77,6 +142,25 @@ class MT5SignalRouter:
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
             "order_executed": False,
+        }
+
+    def ops_status(self, *, symbol: str = "") -> dict[str, Any]:
+        clean_symbol = str(symbol or "").upper().strip()
+        snap = snapshot_status(clean_symbol)
+        latest_snapshot = snap.get("latest_snapshot") if isinstance(snap.get("latest_snapshot"), dict) else {}
+        return {
+            "ok": True,
+            "status": "mt5_ops_status_ready",
+            "symbol": clean_symbol,
+            **db_status_payload(),
+            **ingest_status(),
+            "last_tick_at": latest_snapshot.get("last_tick_at") or "",
+            "last_flush_at": ingest_status().get("last_flush_at") or "",
+            "snapshot": snap,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "updated_at": _now(),
         }
 
     def instrument(self, *, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -123,6 +207,18 @@ class MT5SignalRouter:
     def journal_recent(self, *, limit: int = 25, symbol: str = "") -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 25), 200))
         clean_symbol = str(symbol or "").upper().strip()
+        if self.config.fast_path_only and self.memory is None:
+            return {
+                "ok": True,
+                "status": "mt5_journal_ready",
+                "items": [],
+                "count": 0,
+                "limit": safe_limit,
+                "symbol": clean_symbol,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
         rows: list[dict[str, Any]] = []
         for collection in _MT5_COLLECTIONS:
             rows.extend(self.memory.get_mt5_events(collection, clean_symbol or None, limit=safe_limit))
@@ -142,6 +238,21 @@ class MT5SignalRouter:
 
     def account_sync(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         state = normalize_account_state(payload)
+        if self.config.fast_path_only and self.memory is None:
+            symbol = str((payload or {}).get("symbol") or (payload or {}).get("ticker") or "MT5").upper().strip()
+            snapshot = update_account_sync(symbol, state)
+            queued = enqueue_mt5_event("mt5_account_sync", state.get("account_id") or symbol or "ACCOUNT", state)
+            return {
+                "ok": True,
+                "status": "account_state_recorded_fast_path",
+                "account_state": state,
+                "snapshot": {"updated_at": snapshot.get("updated_at"), "last_account_sync_at": snapshot.get("last_account_sync_at")},
+                "event": None,
+                "queue": queued,
+                "order_executed": False,
+                "broker_touched": False,
+                "order_policy": "journal_only_no_broker",
+            }
         event = self.journal.save("mt5_account_sync", state.get("account_id") or "ACCOUNT", state)
         return {
             "ok": True,
@@ -186,7 +297,54 @@ class MT5SignalRouter:
         symbol_info = self.symbol_mapper.map_symbol(symbol)
         if not symbol_info["ok"]:
             payload = _base_decision(symbol_info, "NO_TRADE", "low", "symbol_not_mapped_or_not_allowed")
-            self.journal.save("mt5_decisions", symbol_info.get("mt5_symbol") or symbol, payload)
+            if not (self.config.fast_path_only and self.memory is None):
+                self.journal.save("mt5_decisions", symbol_info.get("mt5_symbol") or symbol, payload)
+            return payload
+
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(symbol_info["mt5_symbol"]) or {}
+            last_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+            reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
+            payload = {
+                "ok": True,
+                "symbol": symbol_info["mt5_symbol"],
+                "genesis_symbol": symbol_info["genesis_symbol"],
+                "original_symbol": symbol_info.get("original_symbol") or symbol_info["mt5_symbol"],
+                "normalized_symbol": symbol_info.get("normalized_symbol") or _normalized_symbol(symbol_info["mt5_symbol"]),
+                "instrument_type": symbol_info.get("instrument_type") or "",
+                "is_spot_crypto": bool(symbol_info.get("is_spot_crypto")),
+                "decision": "NO_TRADE",
+                "confidence": "low",
+                "reason": reason,
+                "actionable": False,
+                "strategy_profile": "",
+                "timeframe": str(last_tick.get("timeframe") or ""),
+                "entry": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "trailing_stop": None,
+                "risk_pct": 0.0,
+                "risk_reward": 0.0,
+                "lot_size_hint": None,
+                "hedge_needed": False,
+                "hedge_score": 0,
+                "no_trade_score": 100,
+                "genesis_context_score": 0,
+                "market_regime": "fast_path_only",
+                "warnings": ["MT5_FAST_PATH_ONLY active: decision uses runtime snapshot only"],
+                "instrument_warning": symbol_info.get("instrument_warning") or "",
+                "risk_flags": ["fast_path_only", reason],
+                "what_to_watch": [],
+                "last_tick": last_tick or None,
+                "order_policy": "journal_only_no_broker",
+                "broker_touched": False,
+                "order_executed": False,
+                "generated_at": _now(),
+            }
+            update_decision(symbol_info["mt5_symbol"], payload)
+            queued = enqueue_mt5_event("mt5_decisions", symbol_info["mt5_symbol"], payload)
+            payload["event"] = None
+            payload["queue"] = queued
             return payload
 
         context = GenesisBrain(memory=self.memory).build_trading_context(symbol_info["genesis_symbol"])
@@ -319,9 +477,17 @@ class MT5SignalRouter:
         return {"ok": bool(symbol), "status": "mt5_order_result_recorded" if symbol else "missing_symbol", "event": event, **result}
 
     def tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if self.config.fast_path_only and self.memory is None:
+            return _fast_tick(payload)
         return self.forward_engine.record_tick(payload)
 
     def performance(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(symbol) or {}
+            cached = snapshot.get("latest_performance_payload") if isinstance(snapshot.get("latest_performance_payload"), dict) else {}
+            if cached:
+                return {**cached, "data_source_used": "runtime_snapshot", "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+            return _empty_performance_from_snapshot(symbol, timeframe, reason="snapshot_missing")
         return self.performance_engine.report(symbol=symbol, timeframe=timeframe)
 
     def performance_auto(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -345,6 +511,41 @@ class MT5SignalRouter:
         safe_limit = max(1, min(int(limit or 20), 20))
         aliases = _symbol_aliases(clean_symbol)
         normalized = _normalized_symbol(clean_symbol)
+        snap = snapshot_status(clean_symbol)
+        if self.config.fast_path_only and self.memory is None:
+            return {
+                "ok": True,
+                "status": "mt5_storage_debug_snapshot_only",
+                "symbol": clean_symbol,
+                "normalized_symbol": normalized,
+                "symbol_aliases": aliases,
+                "limit": safe_limit,
+                "approximate_counts_only": True,
+                "latest_snapshot": snap.get("latest_snapshot"),
+                **db_status_payload(),
+                **ingest_status(),
+                "duration_ms": _elapsed_ms(started),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        if is_db_degraded():
+            return {
+                "ok": True,
+                "status": "mt5_storage_debug_degraded",
+                "symbol": clean_symbol,
+                "normalized_symbol": normalized,
+                "symbol_aliases": aliases,
+                "limit": safe_limit,
+                "approximate_counts_only": True,
+                "latest_snapshot": snap.get("latest_snapshot"),
+                **db_status_payload(),
+                **ingest_status(),
+                "duration_ms": _elapsed_ms(started),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
         collections = (
             "mt5_ticks",
             "mt5_decisions",
@@ -394,6 +595,10 @@ class MT5SignalRouter:
             "symbol_aliases": aliases,
             "limit": safe_limit,
             "approximate_counts": True,
+            "approximate_counts_only": True,
+            "latest_snapshot": snap.get("latest_snapshot"),
+            **db_status_payload(),
+            **ingest_status(),
             "collections": list(collections),
             "counts": counts,
             "collection_counts": counts,
@@ -489,6 +694,22 @@ class MT5SignalRouter:
 
     def replay_results(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = str(symbol or "").upper().strip()
+        if self.memory is None:
+            payload = {
+                "symbol": clean_symbol,
+                "normalized_symbol": _normalized_symbol(clean_symbol),
+                "replay_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "expectancy": 0.0,
+                "max_drawdown": 0.0,
+                "no_trade_count": 0,
+                "blocked_reasons": [],
+                "genesis_reading": "Aun no hay replay historico para este simbolo.",
+            }
+            return {"ok": True, "status": "mt5_replay_results_ready", **payload, "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
         rows = self.memory.get_mt5_events("mt5_replay_runs", clean_symbol or None, limit=1)
         payload = rows[0].get("payload") if rows and isinstance(rows[0].get("payload"), dict) else {}
         if not payload:
@@ -549,6 +770,13 @@ class MT5SignalRouter:
         return self.trade_memory_engine.learning_status(symbol=symbol)
 
     def adaptive_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(symbol) or {}
+            state = snapshot.get("latest_adaptive_state") if isinstance(snapshot.get("latest_adaptive_state"), dict) else {}
+            if state:
+                return {**state, "data_source_used": "runtime_snapshot", "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+            summary = snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {}
+            return _fast_state_from_summary(symbol=symbol, timeframe=timeframe, summary=summary, reason="snapshot_missing" if not summary else "performance_snapshot")
         return self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
 
     def strategy_profiles(self, *, symbol: str = "") -> dict[str, Any]:
@@ -556,6 +784,10 @@ class MT5SignalRouter:
 
     def adaptive_recommendations(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         state = self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
+        if self.config.fast_path_only and self.memory is None:
+            recommendations = _fast_recommendations(symbol=symbol, timeframe=timeframe, state=state)
+            update_recommendations(symbol, recommendations)
+            return recommendations
         profiles = self.trade_memory_engine.strategy_profiles(symbol=symbol).get("items") or []
         return self.adaptive_recommendation_engine.recommend(
             symbol=symbol,
@@ -574,6 +806,8 @@ class MT5SignalRouter:
             return normalize_account_state(account_payload)
         if any(key in payload for key in direct_keys):
             return normalize_account_state({key: payload.get(key) for key in direct_keys if key in payload})
+        if self.memory is None:
+            return None
         recent = self.memory.get_mt5_events("mt5_account_sync", symbol, limit=10)
         if not recent:
             recent = self.memory.get_mt5_events("mt5_account_sync", None, limit=10)
@@ -610,6 +844,218 @@ def _base_decision(symbol_info: dict[str, Any], decision: str, confidence: str, 
         "order_policy": "journal_only_no_broker",
         "broker_touched": False,
         "order_executed": False,
+    }
+
+
+def _fast_recommendations(*, symbol: str, timeframe: str, state: dict[str, Any]) -> dict[str, Any]:
+    clean_symbol = str(symbol or "").upper().strip()
+    clean_timeframe = str(timeframe or "").upper().strip()
+    closed = int(state.get("closed_trades") or 0)
+    pf = _maybe_float(state.get("rolling_profit_factor")) or 0.0
+    expectancy = _maybe_float(state.get("rolling_expectancy")) or 0.0
+    bot_state = str(state.get("bot_state") or "normal")
+    recommendations: list[dict[str, Any]] = []
+    if closed < 30:
+        recommendations.append(
+            {
+                "symbol": clean_symbol,
+                "recommendation_type": "sample_warning",
+                "recommendation": "Mantener paper exploration, no usar todavia para decidir rentabilidad.",
+                "reason": f"Muestra insuficiente: {closed} trades cerrados; Genesis exige minimo 30.",
+                "confidence": "low",
+                "requires_approval": True,
+                "applied": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        )
+    if bot_state == "caution" or pf < 1.0 or expectancy < 0:
+        recommendations.append(
+            {
+                "symbol": clean_symbol,
+                "recommendation_type": "strategy_filter",
+                "recommendation": "Estado caution: mantener paper, filtrar nuevas entradas y exigir mayor confirmacion.",
+                "reason": f"Fast path detecta estado {bot_state}, PF {pf} y expectancy {expectancy}.",
+                "confidence": "medium" if closed >= 30 else "low",
+                "requires_approval": True,
+                "applied": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        )
+    if not recommendations:
+        recommendations.append(
+            {
+                "symbol": clean_symbol,
+                "recommendation_type": "risk_adjustment",
+                "recommendation": "Mantener configuracion paper actual y seguir midiendo.",
+                "reason": f"Estado {bot_state}, PF {pf}, closed {closed}.",
+                "confidence": "medium" if closed >= 30 else "low",
+                "requires_approval": True,
+                "applied": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        )
+    return {
+        "ok": True,
+        "status": "mt5_adaptive_recommendations_ready",
+        "symbol": clean_symbol,
+        "timeframe": clean_timeframe,
+        "closed_trades": closed,
+        "bot_state": bot_state,
+        "profile_stats_count": 0,
+        "data_source_used": state.get("data_source_used") or "snapshot_fast_path",
+        "rolling_win_rate": _maybe_float(state.get("rolling_win_rate")) or 0.0,
+        "rolling_profit_factor": pf,
+        "rolling_expectancy": expectancy,
+        "rolling_drawdown": _maybe_float(state.get("rolling_drawdown")) or 0.0,
+        "current_win_streak": int(state.get("current_win_streak") or 0),
+        "current_loss_streak": int(state.get("current_loss_streak") or 0),
+        "recommendations": recommendations,
+        "count": len(recommendations),
+        "updated_at": _now(),
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _fast_tick(payload: dict[str, Any] | None) -> dict[str, Any]:
+    clean = sanitize_payload(payload or {})
+    symbol = str(clean.get("symbol") or clean.get("ticker") or "").upper().strip()
+    last = _fast_price(clean)
+    if not symbol or last is None:
+        return {
+            "ok": False,
+            "status": "tick_missing_symbol_or_price",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    tick = enrich_payload(
+        {
+            **clean,
+            "symbol": symbol,
+            "last": last,
+            "timeframe": str(clean.get("timeframe") or "").upper(),
+            "source": str(clean.get("source") or "mt5_bridge"),
+            "timestamp": str(clean.get("timestamp") or clean.get("bar_time") or _now()),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    )
+    snapshot = update_tick(symbol, tick)
+    queued = enqueue_mt5_event("mt5_ticks", symbol, tick)
+    return {
+        "ok": True,
+        "status": "mt5_tick_recorded_fast_path",
+        "symbol": symbol,
+        "tick_saved": bool(queued.get("queued")),
+        "auto_forward_checked": False,
+        "tick": tick,
+        "snapshot": {"updated_at": snapshot.get("updated_at"), "last_tick_at": snapshot.get("last_tick_at")},
+        "queue": queued,
+        "warning": queued.get("warning") or "",
+        "shadow_updates": [],
+        "auto_forward": {"status": "skipped_fast_path_only", "reason": "fast_path_only"},
+        "auto_shadow_trade_created": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _fast_price(payload: dict[str, Any]) -> float | None:
+    for key in ("last", "price"):
+        value = _maybe_float(payload.get(key))
+        if value is not None:
+            return value
+    bid = _maybe_float(payload.get("bid"))
+    ask = _maybe_float(payload.get("ask"))
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+    return bid if bid is not None else ask
+
+
+def _empty_performance_from_snapshot(symbol: str, timeframe: str, *, reason: str) -> dict[str, Any]:
+    clean_symbol = str(symbol or "").upper().strip()
+    normalized = _normalized_symbol(clean_symbol)
+    empty = {
+        "shadow_trades": 0,
+        "closed": 0,
+        "open": 0,
+        "wins": 0,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "expectancy": 0.0,
+        "net_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "rr_avg": 0.0,
+        "symbol": clean_symbol,
+        "normalized_symbol": normalized,
+        "instrument_type": "crypto_spot" if normalized == "BTCUSD" else "",
+        "total_signals": 0,
+        "actionable_signals": 0,
+        "manual_shadow_trades": 0,
+        "auto_shadow_trades": 0,
+        "strict_shadow_trades": 0,
+        "exploration_shadow_trades": 0,
+        "forward_auto_shadow_trades": 0,
+        "total_shadow_trades": 0,
+    }
+    return {
+        "ok": True,
+        "status": "no_snapshot_yet",
+        "symbol": clean_symbol,
+        "normalized_symbol": normalized,
+        "timeframe": str(timeframe or "").upper().strip(),
+        "summary": empty,
+        "summary_auto": empty,
+        "summary_forward_auto": empty,
+        "summary_total": empty,
+        "data_source_used": reason,
+        "genesis_reading": f"{clean_symbol or 'MT5'}: sin snapshot MT5 todavia; hot path protegido.",
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+        "updated_at": _now(),
+    }
+
+
+def _fast_state_from_summary(*, symbol: str, timeframe: str, summary: dict[str, Any], reason: str) -> dict[str, Any]:
+    closed = int(summary.get("closed") or 0)
+    pf = _maybe_float(summary.get("profit_factor")) or 0.0
+    return {
+        "ok": True,
+        "status": "mt5_adaptive_state_ready" if summary else "no_snapshot_yet",
+        "symbol": str(symbol or "").upper().strip(),
+        "timeframe": str(timeframe or "").upper().strip(),
+        "bot_state": "normal" if closed < 20 or pf >= 1.0 else "caution",
+        "closed_trades": closed,
+        "current_win_streak": 0,
+        "current_loss_streak": 0,
+        "last_10_win_rate": _maybe_float(summary.get("win_rate")) or 0.0,
+        "last_20_win_rate": _maybe_float(summary.get("win_rate")) or 0.0,
+        "rolling_win_rate": _maybe_float(summary.get("win_rate")) or 0.0,
+        "rolling_profit_factor": pf,
+        "rolling_expectancy": _maybe_float(summary.get("expectancy")) or 0.0,
+        "rolling_drawdown": _maybe_float(summary.get("max_drawdown") or summary.get("drawdown")) or 0.0,
+        "regime_health": {},
+        "recommendation_summary": "Fast path usa snapshot; learning pesado aislado.",
+        "data_source_used": reason,
+        "updated_at": _now(),
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
     }
 
 

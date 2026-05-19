@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, record_db_success
+from services.mt5.mt5_runtime_snapshot import get_snapshot, update_adaptive_state
 from services.mt5.mt5_shadow_trading import get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 
 
@@ -22,25 +25,37 @@ class MT5AdaptiveStateEngine:
         self.memory = memory or MemoryStore()
 
     def compute(self, *, symbol: str = "", timeframe: str = "", limit: int = 2000) -> dict[str, Any]:
+        started = time.monotonic()
         clean_symbol = _symbol(symbol)
         clean_timeframe = str(timeframe or "").upper().strip()
         safe_limit = _clamp_int(limit, 2000, 1, 2000)
-        trades = [
-            trade
-            for trade in _latest_trade_memories(self.memory, clean_symbol, limit=safe_limit)
-            if trade.get("status") in CLOSED_STATUSES
-            and (not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe)
-        ]
-        data_source_used = "trade_memory"
-        if not trades:
+        if is_db_degraded():
+            return _state_from_snapshot(clean_symbol, clean_timeframe, reason="db_degraded_snapshot")
+        try:
             trades = [
                 trade
-                for trade in get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=min(safe_limit, 100), timeframe=clean_timeframe)
+                for trade in _latest_trade_memories(self.memory, clean_symbol, limit=safe_limit)
                 if trade.get("status") in CLOSED_STATUSES
-                and is_main_metric_trade(trade, query_symbol=clean_symbol)
-                and not bool(trade.get("broker_touched"))
-                and not bool(trade.get("order_executed"))
+                and (not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe)
             ]
+            record_db_success(_elapsed_ms(started))
+        except Exception as exc:
+            record_db_error(exc, duration_ms=_elapsed_ms(started))
+            return _state_from_snapshot(clean_symbol, clean_timeframe, reason="adaptive_state_db_error", error=str(exc))
+        data_source_used = "trade_memory"
+        if not trades:
+            try:
+                trades = [
+                    trade
+                    for trade in get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=min(safe_limit, 100), timeframe=clean_timeframe)
+                    if trade.get("status") in CLOSED_STATUSES
+                    and is_main_metric_trade(trade, query_symbol=clean_symbol)
+                    and not bool(trade.get("broker_touched"))
+                    and not bool(trade.get("order_executed"))
+                ]
+            except Exception as exc:
+                record_db_error(exc, duration_ms=_elapsed_ms(started))
+                return _state_from_snapshot(clean_symbol, clean_timeframe, reason="adaptive_state_shadow_db_error", error=str(exc))
             data_source_used = "shadow_trades_fast_path" if trades else "no_data"
         ordered = sorted(trades, key=lambda trade: str(trade.get("closed_at") or trade.get("updated_at") or ""))
         closed = len(ordered)
@@ -61,7 +76,7 @@ class MT5AdaptiveStateEngine:
             rolling_drawdown=rolling_drawdown,
         )
         recommendation_summary = _recommendation_summary(bot_state, closed, rolling_profit_factor, rolling_expectancy)
-        return {
+        payload = {
             "ok": True,
             "status": "mt5_adaptive_state_ready",
             "symbol": clean_symbol,
@@ -80,8 +95,11 @@ class MT5AdaptiveStateEngine:
             "recommendation_summary": recommendation_summary,
             "data_source_used": data_source_used,
             "updated_at": _now(),
+            "duration_ms": _elapsed_ms(started),
             **SAFETY_FLAGS,
         }
+        update_adaptive_state(clean_symbol, payload)
+        return payload
 
 
 def _latest_trade_memories(memory: MemoryStore, symbol: str, *, limit: int = 2000) -> list[dict[str, Any]]:
@@ -230,3 +248,69 @@ def _symbol(value: object) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.monotonic() - started) * 1000))
+
+
+def _state_from_snapshot(symbol: str, timeframe: str, *, reason: str, error: str = "") -> dict[str, Any]:
+    snapshot = get_snapshot(symbol) or {}
+    state = snapshot.get("latest_adaptive_state") if isinstance(snapshot.get("latest_adaptive_state"), dict) else {}
+    if state:
+        payload = dict(state)
+        payload["data_source_used"] = reason
+        payload["warning"] = "using cached runtime snapshot"
+        if error:
+            payload["error"] = error[:240]
+        payload["broker_touched"] = False
+        payload["order_executed"] = False
+        payload["order_policy"] = "journal_only_no_broker"
+        return payload
+    summary = snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {}
+    if summary:
+        closed = int(summary.get("closed") or 0)
+        return {
+            "ok": True,
+            "status": "mt5_adaptive_state_ready",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "bot_state": "normal" if closed < 20 or (_number(summary.get("profit_factor")) or 0.0) >= 1.0 else "caution",
+            "closed_trades": closed,
+            "current_win_streak": 0,
+            "current_loss_streak": 0,
+            "last_10_win_rate": _number(summary.get("win_rate")) or 0.0,
+            "last_20_win_rate": _number(summary.get("win_rate")) or 0.0,
+            "rolling_win_rate": _number(summary.get("win_rate")) or 0.0,
+            "rolling_profit_factor": _number(summary.get("profit_factor")) or 0.0,
+            "rolling_expectancy": _number(summary.get("expectancy")) or 0.0,
+            "rolling_drawdown": _number(summary.get("max_drawdown") or summary.get("drawdown")) or 0.0,
+            "regime_health": {},
+            "recommendation_summary": "Fast path usa performance snapshot; learning pesado aislado.",
+            "data_source_used": reason,
+            "error": error[:240] if error else "",
+            "updated_at": _now(),
+            **SAFETY_FLAGS,
+        }
+    return {
+        "ok": True,
+        "status": "no_snapshot_yet",
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "bot_state": "normal",
+        "closed_trades": 0,
+        "current_win_streak": 0,
+        "current_loss_streak": 0,
+        "last_10_win_rate": 0.0,
+        "last_20_win_rate": 0.0,
+        "rolling_win_rate": 0.0,
+        "rolling_profit_factor": 0.0,
+        "rolling_expectancy": 0.0,
+        "rolling_drawdown": 0.0,
+        "regime_health": {},
+        "recommendation_summary": "Sin snapshot MT5 todavia; hot path protegido.",
+        "data_source_used": reason,
+        "error": error[:240] if error else "",
+        "updated_at": _now(),
+        **SAFETY_FLAGS,
+    }

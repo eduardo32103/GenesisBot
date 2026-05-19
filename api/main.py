@@ -61,6 +61,7 @@ from api.routes.genesis import (
     get_genesis_mt5_learning_status,
     get_genesis_mt5_memory_summary,
     get_genesis_mt5_no_trade_report,
+    get_genesis_mt5_ops_status,
     get_genesis_mt5_outcomes_recent,
     get_genesis_mt5_paper_defense,
     get_genesis_mt5_performance,
@@ -211,6 +212,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_health_endpoint": "/api/genesis/mt5/health",
         "genesis_mt5_status_endpoint": "/api/genesis/mt5/status",
         "genesis_mt5_config_endpoint": "/api/genesis/mt5/config",
+        "genesis_mt5_ops_status_endpoint": "/api/genesis/mt5/ops/status?symbol={symbol}",
         "genesis_mt5_instrument_endpoint": "/api/genesis/mt5/instrument?symbol={symbol}",
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
         "genesis_mt5_journal_recent_endpoint": "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25",
@@ -4445,6 +4447,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/status":
             payload_data = get_genesis_mt5_status()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/ops/status":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_ops_status(symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

@@ -31,6 +31,7 @@ class MT5RuntimeConfig:
     memory_summary_enabled: bool = False
     learning_run_enabled: bool = False
     fast_path_only: bool = True
+    ingest_queue_max: int = 5000
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class MT5RuntimeConfig:
             "MT5_MEMORY_SUMMARY_ENABLED": self.memory_summary_enabled,
             "MT5_LEARNING_RUN_ENABLED": self.learning_run_enabled,
             "MT5_FAST_PATH_ONLY": self.fast_path_only,
+            "MT5_INGEST_QUEUE_MAX": self.ingest_queue_max,
         }
 
 
@@ -81,6 +83,7 @@ def get_mt5_config() -> MT5RuntimeConfig:
         memory_summary_enabled=_bool_env("MT5_MEMORY_SUMMARY_ENABLED", False),
         learning_run_enabled=_bool_env("MT5_LEARNING_RUN_ENABLED", False),
         fast_path_only=_bool_env("MT5_FAST_PATH_ONLY", True),
+        ingest_queue_max=int(_float_env("MT5_INGEST_QUEUE_MAX", 5000)),
     )
 
 

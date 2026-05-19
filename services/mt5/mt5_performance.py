@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import normalize_mt5_symbol
+from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, record_db_success
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
+from services.mt5.mt5_runtime_snapshot import get_snapshot, update_performance
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading, get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 
 
@@ -18,13 +21,21 @@ class MT5Performance:
         self.shadow = MT5ShadowTrading(memory=self.memory)
 
     def report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        started = time.monotonic()
         clean_symbol = _symbol(symbol)
         clean_timeframe = str(timeframe or "").upper().strip()
-        trades = [
-            trade
-            for trade in get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=100, timeframe=clean_timeframe)
-            if not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe
-        ]
+        if self.config.fast_path_only and is_db_degraded():
+            return _snapshot_or_empty_performance(clean_symbol, clean_timeframe, reason="db_degraded_snapshot")
+        try:
+            trades = [
+                trade
+                for trade in get_recent_mt5_shadow_trades_fast(self.memory, clean_symbol, limit=100, timeframe=clean_timeframe)
+                if not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe
+            ]
+            record_db_success(_elapsed_ms(started))
+        except Exception as exc:
+            record_db_error(exc, duration_ms=_elapsed_ms(started))
+            return _snapshot_or_empty_performance(clean_symbol, clean_timeframe, reason="performance_fast_path_db_error", error=str(exc))
         if self.config.fast_path_only:
             signals: list[dict[str, Any]] = []
             decisions: list[dict[str, Any]] = []
@@ -76,9 +87,13 @@ class MT5Performance:
         }
         summary_forward_auto = _summary_for_trades(forward_auto_trades)
         summary_manual = {**_summary_for_trades(manual_trades), "excluded_from_main_metrics": len(excluded_manual)}
-        proxy_summary = _summary_for_trades(
-            [trade for trade in get_recent_mt5_shadow_trades_fast(self.memory, "BTC_PROXY", limit=100) if is_main_metric_trade(trade, query_symbol="BTC_PROXY")]
-        )
+        try:
+            proxy_summary = _summary_for_trades(
+                [trade for trade in get_recent_mt5_shadow_trades_fast(self.memory, "BTC_PROXY", limit=100) if is_main_metric_trade(trade, query_symbol="BTC_PROXY")]
+            )
+        except Exception as exc:
+            record_db_error(exc)
+            proxy_summary = _summary_for_trades([])
         last_valid_decision = _latest_payload_by_actionable(decisions, True)
         last_invalid_decision = _latest_payload_by_actionable(decisions, False)
         last_block_reason = _reason_alias((last_invalid_decision or {}).get("reason") or "")
@@ -156,6 +171,10 @@ class MT5Performance:
             "order_policy": "journal_only_no_broker",
             "updated_at": _now(),
         }
+        if self.config.fast_path_only:
+            payload["data_source_used"] = "shadow_trades_fast_path"
+            payload["duration_ms"] = _elapsed_ms(started)
+            update_performance(clean_symbol, summary, payload)
         return payload
 
     def auto_report(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -493,3 +512,57 @@ def _reading(symbol: str, summary: dict[str, Any], no_trade: dict[str, Any], hed
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.monotonic() - started) * 1000))
+
+
+def _snapshot_or_empty_performance(symbol: str, timeframe: str, *, reason: str, error: str = "") -> dict[str, Any]:
+    snapshot = get_snapshot(symbol) or {}
+    cached = snapshot.get("latest_performance_payload") if isinstance(snapshot.get("latest_performance_payload"), dict) else {}
+    if cached:
+        payload = dict(cached)
+        payload["status"] = payload.get("status") or "mt5_performance_ready"
+        payload["data_source_used"] = reason
+        payload["warning"] = "using cached runtime snapshot"
+        if error:
+            payload["error"] = error[:240]
+        payload["broker_touched"] = False
+        payload["order_executed"] = False
+        payload["order_policy"] = "journal_only_no_broker"
+        return payload
+    empty = _summary_for_trades([])
+    summary = {
+        **empty,
+        "symbol": symbol,
+        "normalized_symbol": normalize_mt5_symbol(symbol),
+        "instrument_type": "crypto_spot" if normalize_mt5_symbol(symbol) == "BTCUSD" else "",
+        "total_signals": 0,
+        "actionable_signals": 0,
+        "manual_shadow_trades": 0,
+        "auto_shadow_trades": 0,
+        "strict_shadow_trades": 0,
+        "exploration_shadow_trades": 0,
+        "forward_auto_shadow_trades": 0,
+        "total_shadow_trades": 0,
+        "sample_warning": _sample_warning(empty),
+    }
+    return {
+        "ok": True,
+        "status": "no_snapshot_yet",
+        "symbol": symbol,
+        "normalized_symbol": normalize_mt5_symbol(symbol),
+        "timeframe": timeframe,
+        "summary": summary,
+        "summary_auto": summary,
+        "summary_forward_auto": summary,
+        "summary_total": summary,
+        "data_source_used": reason,
+        "error": error[:240] if error else "",
+        "genesis_reading": f"{symbol or 'MT5'}: sin snapshot MT5 todavia; hot path protegido.",
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+        "updated_at": _now(),
+    }

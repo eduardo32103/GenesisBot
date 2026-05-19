@@ -18,6 +18,10 @@ def mt5_config(*, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).config_payload()
 
 
+def mt5_ops_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).ops_status(symbol=symbol)
+
+
 def mt5_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).status()
 

@@ -22,6 +22,7 @@ from services.mt5.mt5_bridge import (
     mt5_memory_summary,
     mt5_metrics_exclude_old_proxy,
     mt5_no_trade_report,
+    mt5_ops_status,
     mt5_order_request,
     mt5_order_result,
     mt5_paper_defense,
@@ -66,6 +67,10 @@ def get_genesis_mt5_config() -> dict[str, Any]:
 
 def get_genesis_mt5_status() -> dict[str, Any]:
     return mt5_status()
+
+
+def get_genesis_mt5_ops_status(symbol: str = "") -> dict[str, Any]:
+    return mt5_ops_status(symbol=symbol)
 
 
 def get_genesis_mt5_journal_recent(limit: int = 25, symbol: str = "") -> dict[str, Any]:

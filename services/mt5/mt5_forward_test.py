@@ -7,10 +7,12 @@ from typing import Any
 from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import enrich_payload
 from services.mt5.mt5_auto_forward import MT5AutoForward
+from services.mt5.mt5_ingest_queue import enqueue_mt5_event
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
+from services.mt5.mt5_runtime_snapshot import update_tick
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 
@@ -23,6 +25,7 @@ class MT5ForwardTestEngine:
         config: MT5BridgeConfig | None = None,
         symbol_mapper: MT5SymbolMapper | None = None,
     ) -> None:
+        self._memory_injected = memory is not None
         self.memory = memory or MemoryStore()
         self.config = config or MT5BridgeConfig.from_env()
         self.journal = MT5Journal(memory=self.memory)
@@ -54,6 +57,26 @@ class MT5ForwardTestEngine:
             "order_policy": "journal_only_no_broker",
         })
         logging.getLogger("genesis.mt5").info("MT5_TICK_RECEIVED symbol=%s source=%s", symbol, tick.get("source"))
+        if self.config.fast_path_only and not self._memory_injected:
+            snapshot = update_tick(symbol, tick)
+            queued = enqueue_mt5_event("mt5_ticks", symbol, tick)
+            return {
+                "ok": True,
+                "status": "mt5_tick_recorded_fast_path",
+                "symbol": symbol,
+                "tick_saved": bool(queued.get("queued")),
+                "auto_forward_checked": False,
+                "tick": tick,
+                "snapshot": {"updated_at": snapshot.get("updated_at"), "last_tick_at": snapshot.get("last_tick_at")},
+                "queue": queued,
+                "warning": queued.get("warning") or "",
+                "shadow_updates": [],
+                "auto_forward": {"status": "skipped_fast_path_only", "reason": "fast_path_only"},
+                "auto_shadow_trade_created": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
         event = self.journal.save("mt5_ticks", symbol, tick)
         updates = self.shadow.update_with_tick(tick, config=self.config)
         auto_forward = self.auto_forward.process_tick(tick)

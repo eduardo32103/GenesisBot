@@ -1175,6 +1175,7 @@ class MemoryStore:
                     """,
                     (),
                 )
+            self._ensure_hot_path_indexes()
             return
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._sqlite()) as conn:
@@ -1310,7 +1311,21 @@ class MemoryStore:
                     )
                     """
                 )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_genesis_memory_events_type_id_desc ON genesis_memory_events (event_type, id DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_genesis_memory_events_created_at ON genesis_memory_events (created_at)")
             conn.commit()
+
+    def _ensure_hot_path_indexes(self) -> None:
+        if self.backend != "postgres" or self._pg is None:
+            return
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS idx_genesis_memory_events_type_id_desc ON genesis_memory_events (event_type, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_genesis_memory_events_created_at ON genesis_memory_events (created_at)",
+        ):
+            try:
+                self._pg_execute(sql, ())
+            except Exception:
+                continue
 
     def _sqlite(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.sqlite_path)
@@ -1321,7 +1336,7 @@ class MemoryStore:
         import pg8000.dbapi
 
         parsed = urlparse(database_url)
-        return pg8000.dbapi.connect(
+        conn = pg8000.dbapi.connect(
             user=parsed.username,
             password=parsed.password,
             host=parsed.hostname,
@@ -1329,6 +1344,14 @@ class MemoryStore:
             database=(parsed.path or "/").lstrip("/"),
             ssl_context=True if parsed.scheme.endswith("+ssl") else None,
         )
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SET statement_timeout TO 1500")
+            conn.commit()
+            cursor.close()
+        except Exception:
+            pass
+        return conn
 
     def _pg_execute(self, sql: str, params: tuple) -> None:
         cursor = self._pg.cursor()

@@ -31,6 +31,7 @@ class MT5BridgeConfig:
     memory_summary_enabled: bool = False
     learning_run_enabled: bool = False
     fast_path_only: bool = True
+    ingest_queue_max: int = 5000
 
     @classmethod
     def from_env(cls) -> "MT5BridgeConfig":
@@ -57,6 +58,7 @@ class MT5BridgeConfig:
             memory_summary_enabled=runtime.memory_summary_enabled,
             learning_run_enabled=runtime.learning_run_enabled,
             fast_path_only=runtime.fast_path_only,
+            ingest_queue_max=runtime.ingest_queue_max,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -82,6 +84,7 @@ class MT5BridgeConfig:
             "MT5_MEMORY_SUMMARY_ENABLED": self.memory_summary_enabled,
             "MT5_LEARNING_RUN_ENABLED": self.learning_run_enabled,
             "MT5_FAST_PATH_ONLY": self.fast_path_only,
+            "MT5_INGEST_QUEUE_MAX": self.ingest_queue_max,
         }
 
 

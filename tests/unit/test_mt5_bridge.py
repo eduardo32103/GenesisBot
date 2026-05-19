@@ -101,6 +101,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_health_endpoint"], "/api/genesis/mt5/health")
         self.assertEqual(app["genesis_mt5_status_endpoint"], "/api/genesis/mt5/status")
         self.assertEqual(app["genesis_mt5_config_endpoint"], "/api/genesis/mt5/config")
+        self.assertEqual(app["genesis_mt5_ops_status_endpoint"], "/api/genesis/mt5/ops/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_decision_endpoint"], "/api/genesis/mt5/decision?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_journal_recent_endpoint"], "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25")
         self.assertEqual(app["genesis_mt5_performance_endpoint"], "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}")
@@ -1629,6 +1630,45 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertEqual(status["status"], "mt5_learning_status_ready")
             self.assertFalse(learning["broker_touched"])
             self.assertFalse(status["order_executed"])
+
+    def test_hot_path_tick_does_not_instantiate_memory_and_handles_queue_full(self) -> None:
+        with patch("services.mt5.mt5_signal_router.MemoryStore", side_effect=AssertionError("hot path must not open MemoryStore")):
+            with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": False, "dropped": True, "warning": "ingest_queue_full", "queue_depth": 5000}):
+                tick = mt5_tick({"symbol": "BTCUSD", "last": 77000, "timeframe": "H1"})
+                decision = mt5_decision("BTCUSD")
+
+        self.assertTrue(tick["ok"])
+        self.assertEqual(tick["status"], "mt5_tick_recorded_fast_path")
+        self.assertFalse(tick["tick_saved"])
+        self.assertEqual(tick["warning"], "ingest_queue_full")
+        self.assertTrue(decision["ok"])
+        self.assertFalse(decision["broker_touched"])
+        self.assertFalse(tick["order_executed"])
+
+    def test_db_circuit_breaker_returns_snapshot_without_db(self) -> None:
+        from services.mt5.mt5_db_circuit_breaker import record_db_error, reset_db_circuit_breaker
+        from services.mt5.mt5_runtime_snapshot import update_performance
+
+        reset_db_circuit_breaker()
+        try:
+            update_performance(
+                "BTCUSD",
+                {"shadow_trades": 5, "closed": 4, "open": 1, "wins": 3, "losses": 1, "win_rate": 75.0, "profit_factor": 3.0, "expectancy": 0.5},
+                {"ok": True, "status": "mt5_performance_ready", "symbol": "BTCUSD", "summary": {"closed": 4, "open": 1}, "broker_touched": False, "order_executed": False},
+            )
+            record_db_error({"C": "57014", "M": "canceling statement due to statement timeout"}, duration_ms=2000)
+            with patch("services.mt5.mt5_signal_router.MemoryStore", side_effect=AssertionError("degraded hot path must not open MemoryStore")):
+                performance = mt5_performance(symbol="BTCUSD")
+                debug = mt5_debug_storage(symbol="BTCUSD", limit=20)
+
+            self.assertEqual(performance["data_source_used"], "runtime_snapshot")
+            self.assertEqual(performance["summary"]["closed"], 4)
+            self.assertTrue(debug["db_degraded"])
+            self.assertEqual(debug["status"], "mt5_storage_debug_snapshot_only")
+            self.assertFalse(performance["broker_touched"])
+            self.assertFalse(debug["order_executed"])
+        finally:
+            reset_db_circuit_breaker()
 
     def test_fast_path_reads_recent_shadow_trades_for_metrics_and_adaptive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
