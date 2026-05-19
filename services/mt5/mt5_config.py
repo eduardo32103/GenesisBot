@@ -21,6 +21,13 @@ class MT5RuntimeConfig:
     max_spread_points: float = 50.0
     min_rr: float = 1.2
     paper_exploration_enabled: bool = False
+    paper_exploration_max_open: int = 1
+    paper_exploration_cooldown_sec: int = 300
+    paper_exploration_min_score: float = 45.0
+    paper_exploration_max_spread_points: float = 60.0
+    paper_exploration_time_stop_min: float = 15.0
+    paper_exploration_min_rr: float = 1.2
+    paper_exploration_risk_pct: float = 0.1
     shadow_time_stop_hours: float = 12.0
     shadow_time_stop_bars: int = 12
     shadow_breakeven_r: float = 0.40
@@ -46,6 +53,13 @@ class MT5RuntimeConfig:
             "MT5_MAX_SPREAD_POINTS": self.max_spread_points,
             "MT5_MIN_RR": self.min_rr,
             "MT5_PAPER_EXPLORATION_ENABLED": self.paper_exploration_enabled,
+            "MT5_PAPER_EXPLORATION_MAX_OPEN": self.paper_exploration_max_open,
+            "MT5_PAPER_EXPLORATION_COOLDOWN_SEC": self.paper_exploration_cooldown_sec,
+            "MT5_PAPER_EXPLORATION_MIN_SCORE": self.paper_exploration_min_score,
+            "MT5_PAPER_EXPLORATION_MAX_SPREAD_POINTS": self.paper_exploration_max_spread_points,
+            "MT5_PAPER_EXPLORATION_TIME_STOP_MIN": self.paper_exploration_time_stop_min,
+            "MT5_PAPER_EXPLORATION_MIN_RR": self.paper_exploration_min_rr,
+            "MT5_PAPER_EXPLORATION_RISK_PCT": self.paper_exploration_risk_pct,
             "MT5_SHADOW_TIME_STOP_HOURS": self.shadow_time_stop_hours,
             "MT5_SHADOW_TIME_STOP_BARS": self.shadow_time_stop_bars,
             "MT5_SHADOW_BREAKEVEN_R": self.shadow_breakeven_r,
@@ -73,6 +87,13 @@ def get_mt5_config() -> MT5RuntimeConfig:
         max_spread_points=_float_env("MT5_MAX_SPREAD", _float_env("MT5_MAX_SPREAD_POINTS", 50.0)),
         min_rr=_float_env("MT5_MIN_RR", 1.2),
         paper_exploration_enabled=_bool_env("MT5_PAPER_EXPLORATION_ENABLED", False),
+        paper_exploration_max_open=int(_float_env("MT5_PAPER_EXPLORATION_MAX_OPEN", 1)),
+        paper_exploration_cooldown_sec=int(_float_env("MT5_PAPER_EXPLORATION_COOLDOWN_SEC", 300)),
+        paper_exploration_min_score=_float_env("MT5_PAPER_EXPLORATION_MIN_SCORE", 45.0),
+        paper_exploration_max_spread_points=_float_env("MT5_PAPER_EXPLORATION_MAX_SPREAD_POINTS", 60.0),
+        paper_exploration_time_stop_min=_float_env("MT5_PAPER_EXPLORATION_TIME_STOP_MIN", 15.0),
+        paper_exploration_min_rr=_float_env("MT5_PAPER_EXPLORATION_MIN_RR", 1.2),
+        paper_exploration_risk_pct=_float_env("MT5_PAPER_EXPLORATION_RISK_PCT", 0.1),
         shadow_time_stop_hours=_float_env("MT5_SHADOW_TIME_STOP_HOURS", 12.0),
         shadow_time_stop_bars=int(_float_env("MT5_SHADOW_TIME_STOP_BARS", 12)),
         shadow_breakeven_r=_float_env("MT5_SHADOW_BREAKEVEN_R", 0.40),

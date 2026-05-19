@@ -18,6 +18,7 @@ from services.mt5.mt5_ingest_queue import enqueue_mt5_event, ingest_status
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
+from services.mt5.mt5_paper_exploration import evaluate_paper_exploration
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_runtime_snapshot import (
@@ -148,12 +149,21 @@ class MT5SignalRouter:
         clean_symbol = str(symbol or "").upper().strip()
         snap = snapshot_status(clean_symbol)
         latest_snapshot = snap.get("latest_snapshot") if isinstance(snap.get("latest_snapshot"), dict) else {}
+        open_trade = latest_snapshot.get("open_shadow_trade") if isinstance(latest_snapshot.get("open_shadow_trade"), dict) else {}
+        closed_trades = latest_snapshot.get("recent_closed_shadow_trades") if isinstance(latest_snapshot.get("recent_closed_shadow_trades"), list) else []
+        paper_state = latest_snapshot.get("paper_exploration_state") if isinstance(latest_snapshot.get("paper_exploration_state"), dict) else {}
         return {
             "ok": True,
             "status": "mt5_ops_status_ready",
             "symbol": clean_symbol,
             **db_status_payload(),
             **ingest_status(),
+            "paper_exploration_enabled": self.config.paper_exploration_enabled,
+            "open_shadow_trades": 1 if open_trade else 0,
+            "closed_shadow_trades": len(closed_trades),
+            "last_shadow_trade_opened_at": open_trade.get("opened_at") or paper_state.get("last_opened_at") or "",
+            "last_shadow_trade_closed_at": paper_state.get("last_closed_at") or latest_snapshot.get("last_shadow_trade_closed_at") or "",
+            "last_shadow_trade_reason": paper_state.get("last_reason") or latest_snapshot.get("last_shadow_trade_reason") or "",
             "last_tick_at": latest_snapshot.get("last_tick_at") or "",
             "last_flush_at": ingest_status().get("last_flush_at") or "",
             "snapshot": snap,
@@ -304,7 +314,10 @@ class MT5SignalRouter:
         if self.config.fast_path_only and self.memory is None:
             snapshot = get_snapshot(symbol_info["mt5_symbol"]) or {}
             last_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+            exploration = evaluate_paper_exploration(symbol_info["mt5_symbol"], config=self.config, trigger="decision")
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
+            if exploration.get("paper_exploration_created"):
+                reason = "real_trade_disabled_paper_probe_created"
             payload = {
                 "ok": True,
                 "symbol": symbol_info["mt5_symbol"],
@@ -336,6 +349,11 @@ class MT5SignalRouter:
                 "risk_flags": ["fast_path_only", reason],
                 "what_to_watch": [],
                 "last_tick": last_tick or None,
+                "paper_exploration_enabled": self.config.paper_exploration_enabled,
+                "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
+                "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+                "open_shadow_trade_id": exploration.get("shadow_trade_id") or "",
+                "shadow_trade_id": exploration.get("shadow_trade_id") if exploration.get("paper_exploration_created") else "",
                 "order_policy": "journal_only_no_broker",
                 "broker_touched": False,
                 "order_executed": False,
@@ -478,7 +496,7 @@ class MT5SignalRouter:
 
     def tick(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         if self.config.fast_path_only and self.memory is None:
-            return _fast_tick(payload)
+            return _fast_tick(payload, config=self.config)
         return self.forward_engine.record_tick(payload)
 
     def performance(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -491,6 +509,36 @@ class MT5SignalRouter:
         return self.performance_engine.report(symbol=symbol, timeframe=timeframe)
 
     def performance_auto(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        if self.config.fast_path_only and self.memory is None:
+            report = self.performance(symbol=symbol, timeframe=timeframe)
+            summary_auto = {
+                **(report.get("summary_auto") or report.get("summary") or {}),
+                "auto_shadow_trades": (report.get("summary_auto") or report.get("summary") or {}).get("shadow_trades", 0),
+                "drawdown": (report.get("summary_auto") or report.get("summary") or {}).get("max_drawdown", 0.0),
+            }
+            return {
+                "ok": True,
+                "status": "mt5_auto_performance_ready",
+                "symbol": report.get("symbol") or str(symbol or "").upper().strip(),
+                "normalized_symbol": report.get("normalized_symbol") or "",
+                "summary": summary_auto,
+                "summary_auto": summary_auto,
+                "auto_shadow_trades": summary_auto.get("auto_shadow_trades", 0),
+                "closed": summary_auto.get("closed", 0),
+                "open": summary_auto.get("open", 0),
+                "wins": summary_auto.get("wins", 0),
+                "losses": summary_auto.get("losses", 0),
+                "win_rate": summary_auto.get("win_rate", 0.0),
+                "profit_factor": summary_auto.get("profit_factor", 0.0),
+                "expectancy": summary_auto.get("expectancy", 0.0),
+                "net_pnl": summary_auto.get("net_pnl", 0.0),
+                "drawdown": summary_auto.get("drawdown", 0.0),
+                "recent_trades": report.get("recent_auto_trades") or report.get("recent_trades") or [],
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "updated_at": _now(),
+            }
         return self.performance_engine.auto_report(symbol=symbol, timeframe=timeframe)
 
     def forward_test(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -503,6 +551,25 @@ class MT5SignalRouter:
         return self.forward_engine.auto_forward.no_trade_report(symbol=symbol, limit=limit)
 
     def shadow_trades(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(symbol) or {}
+            open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+            closed = snapshot.get("recent_closed_shadow_trades") if isinstance(snapshot.get("recent_closed_shadow_trades"), list) else []
+            items = ([open_trade] if open_trade else []) + [trade for trade in closed if isinstance(trade, dict)]
+            return {
+                "ok": True,
+                "status": "mt5_shadow_trades_ready",
+                "symbol": str(symbol or "").upper().strip(),
+                "items": items[: max(1, min(int(limit or 100), 100))],
+                "open_trades": [open_trade] if open_trade else [],
+                "closed_trades": [trade for trade in closed if isinstance(trade, dict)],
+                "count": len(items),
+                "open": 1 if open_trade else 0,
+                "closed": len([trade for trade in closed if isinstance(trade, dict)]),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
         return self.shadow.snapshot(symbol=symbol, limit=limit)
 
     def debug_storage(self, *, symbol: str = "", limit: int = 20) -> dict[str, Any]:
@@ -633,6 +700,31 @@ class MT5SignalRouter:
         }
 
     def auto_forward_status(self, *, symbol: str = "") -> dict[str, Any]:
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(symbol) or {}
+            open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+            closed = snapshot.get("recent_closed_shadow_trades") if isinstance(snapshot.get("recent_closed_shadow_trades"), list) else []
+            paper_state = snapshot.get("paper_exploration_state") if isinstance(snapshot.get("paper_exploration_state"), dict) else {}
+            summary = snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {}
+            return {
+                "ok": True,
+                "status": "mt5_auto_forward_status_ready",
+                "symbol": str(symbol or "").upper().strip(),
+                "paper_exploration_enabled": self.config.paper_exploration_enabled,
+                "last_tick": snapshot.get("last_tick"),
+                "last_decision": snapshot.get("last_decision"),
+                "last_actionable": bool(open_trade),
+                "last_reason": paper_state.get("last_reason") or "",
+                "open_trades": [open_trade] if open_trade else [],
+                "closed_trades": [trade for trade in closed if isinstance(trade, dict)],
+                "open_shadow_trades": 1 if open_trade else 0,
+                "closed_shadow_trades": len(closed),
+                "auto_shadow_trades": int(summary.get("shadow_trades") or ((1 if open_trade else 0) + len(closed))),
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "updated_at": _now(),
+            }
         return self.forward_engine.auto_forward_status(symbol=symbol)
 
     def reset_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
@@ -783,11 +875,12 @@ class MT5SignalRouter:
         return self.trade_memory_engine.strategy_profiles(symbol=symbol)
 
     def adaptive_recommendations(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-        state = self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
         if self.config.fast_path_only and self.memory is None:
+            state = self.adaptive_state(symbol=symbol, timeframe=timeframe)
             recommendations = _fast_recommendations(symbol=symbol, timeframe=timeframe, state=state)
             update_recommendations(symbol, recommendations)
             return recommendations
+        state = self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)
         profiles = self.trade_memory_engine.strategy_profiles(symbol=symbol).get("items") or []
         return self.adaptive_recommendation_engine.recommend(
             symbol=symbol,
@@ -924,7 +1017,7 @@ def _fast_recommendations(*, symbol: str, timeframe: str, state: dict[str, Any])
     }
 
 
-def _fast_tick(payload: dict[str, Any] | None) -> dict[str, Any]:
+def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None = None) -> dict[str, Any]:
     clean = sanitize_payload(payload or {})
     symbol = str(clean.get("symbol") or clean.get("ticker") or "").upper().strip()
     last = _fast_price(clean)
@@ -951,19 +1044,25 @@ def _fast_tick(payload: dict[str, Any] | None) -> dict[str, Any]:
     )
     snapshot = update_tick(symbol, tick)
     queued = enqueue_mt5_event("mt5_ticks", symbol, tick)
+    exploration = evaluate_paper_exploration(symbol, tick=tick, config=config or MT5BridgeConfig.from_env(), trigger="tick")
     return {
         "ok": True,
         "status": "mt5_tick_recorded_fast_path",
         "symbol": symbol,
         "tick_saved": bool(queued.get("queued")),
-        "auto_forward_checked": False,
+        "auto_forward_checked": True,
         "tick": tick,
         "snapshot": {"updated_at": snapshot.get("updated_at"), "last_tick_at": snapshot.get("last_tick_at")},
         "queue": queued,
         "warning": queued.get("warning") or "",
-        "shadow_updates": [],
-        "auto_forward": {"status": "skipped_fast_path_only", "reason": "fast_path_only"},
-        "auto_shadow_trade_created": False,
+        "shadow_updates": [exploration.get("open_shadow_trade")] if exploration.get("open_shadow_trade") else [],
+        "auto_forward": exploration,
+        "auto_shadow_trade_created": bool(exploration.get("paper_exploration_created")),
+        "paper_exploration_enabled": bool(exploration.get("paper_exploration_enabled")),
+        "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
+        "paper_exploration_closed": bool(exploration.get("paper_exploration_closed")),
+        "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+        "shadow_trade_id": exploration.get("shadow_trade_id") or "",
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",

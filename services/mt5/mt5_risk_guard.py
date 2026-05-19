@@ -21,6 +21,13 @@ class MT5BridgeConfig:
     max_spread_points: float = 50.0
     min_rr: float = 1.2
     paper_exploration_enabled: bool = False
+    paper_exploration_max_open: int = 1
+    paper_exploration_cooldown_sec: int = 300
+    paper_exploration_min_score: float = 45.0
+    paper_exploration_max_spread_points: float = 60.0
+    paper_exploration_time_stop_min: float = 15.0
+    paper_exploration_min_rr: float = 1.2
+    paper_exploration_risk_pct: float = 0.1
     shadow_time_stop_hours: float = 12.0
     shadow_time_stop_bars: int = 12
     shadow_breakeven_r: float = 0.40
@@ -48,6 +55,13 @@ class MT5BridgeConfig:
             max_spread_points=runtime.max_spread_points,
             min_rr=runtime.min_rr,
             paper_exploration_enabled=runtime.paper_exploration_enabled,
+            paper_exploration_max_open=runtime.paper_exploration_max_open,
+            paper_exploration_cooldown_sec=runtime.paper_exploration_cooldown_sec,
+            paper_exploration_min_score=runtime.paper_exploration_min_score,
+            paper_exploration_max_spread_points=runtime.paper_exploration_max_spread_points,
+            paper_exploration_time_stop_min=runtime.paper_exploration_time_stop_min,
+            paper_exploration_min_rr=runtime.paper_exploration_min_rr,
+            paper_exploration_risk_pct=runtime.paper_exploration_risk_pct,
             shadow_time_stop_hours=runtime.shadow_time_stop_hours,
             shadow_time_stop_bars=runtime.shadow_time_stop_bars,
             shadow_breakeven_r=runtime.shadow_breakeven_r,
@@ -74,6 +88,13 @@ class MT5BridgeConfig:
             "MT5_MAX_SPREAD_POINTS": self.max_spread_points,
             "MT5_MIN_RR": self.min_rr,
             "MT5_PAPER_EXPLORATION_ENABLED": self.paper_exploration_enabled,
+            "MT5_PAPER_EXPLORATION_MAX_OPEN": self.paper_exploration_max_open,
+            "MT5_PAPER_EXPLORATION_COOLDOWN_SEC": self.paper_exploration_cooldown_sec,
+            "MT5_PAPER_EXPLORATION_MIN_SCORE": self.paper_exploration_min_score,
+            "MT5_PAPER_EXPLORATION_MAX_SPREAD_POINTS": self.paper_exploration_max_spread_points,
+            "MT5_PAPER_EXPLORATION_TIME_STOP_MIN": self.paper_exploration_time_stop_min,
+            "MT5_PAPER_EXPLORATION_MIN_RR": self.paper_exploration_min_rr,
+            "MT5_PAPER_EXPLORATION_RISK_PCT": self.paper_exploration_risk_pct,
             "MT5_SHADOW_TIME_STOP_HOURS": self.shadow_time_stop_hours,
             "MT5_SHADOW_TIME_STOP_BARS": self.shadow_time_stop_bars,
             "MT5_SHADOW_BREAKEVEN_R": self.shadow_breakeven_r,

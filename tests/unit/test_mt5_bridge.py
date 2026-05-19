@@ -1857,6 +1857,158 @@ class MT5BridgeTests(unittest.TestCase):
         finally:
             reset_db_circuit_breaker()
 
+    def test_paper_exploration_creates_one_shadow_trade_and_updates_performance(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, "timeframe": "H1"})
+                second = router.tick({"symbol": "BTCUSD", "last": 100.2, "spread": 10, "timeframe": "H1"})
+                performance = router.performance(symbol="BTCUSD")
+
+        self.assertTrue(tick["paper_exploration_created"])
+        self.assertFalse(second["paper_exploration_created"])
+        self.assertEqual(performance["summary"]["shadow_trades"], 1)
+        self.assertEqual(performance["summary"]["open"], 1)
+        self.assertFalse(tick["broker_touched"])
+        self.assertFalse(performance["order_executed"])
+
+    def test_paper_exploration_respects_cooldown_after_open_cleared(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_open_shadow_trade
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(
+            config=MT5BridgeConfig(
+                fast_path_only=True,
+                paper_exploration_enabled=True,
+                paper_exploration_cooldown_sec=300,
+            )
+        )
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                first = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                update_open_shadow_trade("BTCUSD", None)
+                second = router.tick({"symbol": "BTCUSD", "last": 100.1, "spread": 10})
+
+        self.assertTrue(first["paper_exploration_created"])
+        self.assertFalse(second["paper_exploration_created"])
+        self.assertEqual(second["paper_exploration_reason"], "cooldown_active")
+
+    def test_paper_exploration_blocks_high_spread(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(
+            config=MT5BridgeConfig(
+                fast_path_only=True,
+                paper_exploration_enabled=True,
+                paper_exploration_max_spread_points=5,
+            )
+        )
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+
+        self.assertFalse(tick["paper_exploration_created"])
+        self.assertEqual(tick["paper_exploration_reason"], "spread_too_high")
+        self.assertFalse(tick["order_executed"])
+
+    def test_paper_exploration_updates_unrealized_pnl_mfe_mae(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick({"symbol": "BTCUSD", "last": 100.6, "spread": 10})
+        trade = (get_snapshot("BTCUSD") or {}).get("open_shadow_trade") or {}
+
+        self.assertGreater(trade.get("unrealized_pnl", 0), 0)
+        self.assertGreater(trade.get("r_multiple", 0), 0)
+        self.assertGreater(trade.get("max_favorable_excursion", 0), 0)
+        self.assertEqual(trade.get("max_adverse_excursion"), 0.0)
+
+    def test_paper_exploration_closes_by_time_stop(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(
+            config=MT5BridgeConfig(
+                fast_path_only=True,
+                paper_exploration_enabled=True,
+                paper_exploration_time_stop_min=0,
+                paper_exploration_cooldown_sec=300,
+            )
+        )
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick({"symbol": "BTCUSD", "last": 100.1, "spread": 10})
+                performance = router.performance(symbol="BTCUSD")
+
+        self.assertEqual(performance["summary"]["closed"], 1)
+        self.assertEqual(performance["summary"]["open"], 0)
+        self.assertEqual(performance["recent_closed_trades"][0]["exit_reason"], "time_stop")
+
+    def test_paper_exploration_closes_by_stop_loss_and_take_profit(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True, paper_exploration_cooldown_sec=300))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick({"symbol": "BTCUSD", "last": 98.0, "spread": 10})
+                stop_performance = router.performance(symbol="BTCUSD")
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True, paper_exploration_cooldown_sec=300))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick({"symbol": "BTCUSD", "last": 102.0, "spread": 10})
+                target_performance = router.performance(symbol="BTCUSD")
+
+        self.assertEqual(stop_performance["recent_closed_trades"][0]["exit_reason"], "stop_loss")
+        self.assertEqual(stop_performance["summary"]["losses"], 1)
+        self.assertEqual(target_performance["recent_closed_trades"][0]["exit_reason"], "take_profit")
+        self.assertEqual(target_performance["summary"]["wins"], 1)
+
+    def test_decision_can_create_paper_probe_without_broker_touch(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_tick
+
+        reset_runtime_snapshots_for_tests()
+        update_tick("BTCUSD", {"symbol": "BTCUSD", "last": 100.0, "spread": 10, "timeframe": "H1"})
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+            decision = router.decision("BTCUSD")
+
+        self.assertEqual(decision["decision"], "NO_TRADE")
+        self.assertTrue(decision["paper_exploration_created"])
+        self.assertEqual(decision["reason"], "real_trade_disabled_paper_probe_created")
+        self.assertFalse(decision["broker_touched"])
+        self.assertFalse(decision["order_executed"])
+
+    def test_paper_exploration_enqueues_shadow_event_and_tick_stays_fast(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        started = time.monotonic()
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}) as shadow_enqueue:
+                tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.0)
+        self.assertTrue(tick["paper_exploration_created"])
+        shadow_enqueue.assert_called()
+        self.assertEqual(shadow_enqueue.call_args.args[0], "mt5_shadow_trades")
+        self.assertFalse(tick["broker_touched"])
+        self.assertFalse(tick["order_executed"])
+
     def test_debug_storage_fast_path_is_limited_and_does_not_call_performance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
