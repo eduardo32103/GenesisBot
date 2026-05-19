@@ -81,6 +81,8 @@ def _is_timeout_error(message: str, duration_ms: int) -> bool:
             "timed out",
             "databaseerror",
             "pg8000",
+            "current transaction is aborted",
+            "commands ignored until end of transaction block",
         )
     )
 

@@ -79,6 +79,7 @@ from services.mt5.mt5_bridge import (
 from services.mt5.mt5_config import is_paper_exploration_enabled
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
+from services.mt5.mt5_ingest_queue import MT5IngestQueue
 from services.mt5.mt5_order_model import MT5OrderIntent
 from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
@@ -1702,6 +1703,89 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(performance["broker_touched"])
             self.assertFalse(state["order_executed"])
             self.assertFalse(recommendations["broker_touched"])
+
+    def test_ingest_queue_rolls_back_dead_letters_bad_event_and_recovers(self) -> None:
+        from services.mt5.mt5_db_circuit_breaker import is_db_degraded, reset_db_circuit_breaker
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.rollbacks = 0
+
+            def rollback(self) -> None:
+                self.rollbacks += 1
+
+        fake_connection = FakeConnection()
+        saved: list[str] = []
+
+        class FailingMemory:
+            _pg = fake_connection
+
+            def save_mt5_event(self, collection: str, symbol: str, payload: dict[str, object]) -> None:
+                raise RuntimeError("current transaction is aborted, commands ignored until end of transaction block")
+
+        class WorkingMemory:
+            _pg = fake_connection
+
+            def save_mt5_event(self, collection: str, symbol: str, payload: dict[str, object]) -> None:
+                saved.append(str(payload.get("id")))
+
+        memories = [FailingMemory(), WorkingMemory()]
+
+        def memory_factory():
+            return memories.pop(0)
+
+        reset_db_circuit_breaker()
+        try:
+            ingest = MT5IngestQueue(max_size=10, memory_factory=memory_factory)
+            ingest.enqueue("mt5_ticks", "BTCUSD", {"symbol": "BTCUSD", "id": "bad"})
+            ingest.enqueue("mt5_ticks", "BTCUSD", {"symbol": "BTCUSD", "id": "good"})
+            ingest.flush_once_for_tests(limit=2)
+            status = ingest.status()
+
+            self.assertEqual(fake_connection.rollbacks, 1)
+            self.assertEqual(status["failed_flushes"], 1)
+            self.assertEqual(status["dead_letter_count"], 1)
+            self.assertEqual(status["flushed_events"], 1)
+            self.assertEqual(saved, ["good"])
+            self.assertTrue(is_db_degraded())
+            self.assertIn("current transaction is aborted", status["last_ingest_error"])
+            self.assertEqual(ingest.dead_letters_for_tests()[0]["payload"]["id"], "bad")
+        finally:
+            reset_db_circuit_breaker()
+
+    def test_ops_status_reports_ingest_failures_and_db_degraded(self) -> None:
+        from services.mt5.mt5_db_circuit_breaker import record_db_error, reset_db_circuit_breaker
+
+        reset_db_circuit_breaker()
+        try:
+            record_db_error(RuntimeError("current transaction is aborted, commands ignored until end of transaction block"))
+            router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True))
+            ingest_payload = {
+                "queue_depth": 0,
+                "queue_max_size": 5000,
+                "dropped_events": 0,
+                "enqueued_events": 2,
+                "flushed_events": 1,
+                "failed_flushes": 1,
+                "dead_letter_count": 1,
+                "last_enqueue_at": "",
+                "last_drop_at": "",
+                "last_flush_at": "",
+                "last_successful_flush_at": "2026-05-19T00:00:00+00:00",
+                "last_failed_flush_at": "2026-05-19T00:01:00+00:00",
+                "last_ingest_error": "current transaction is aborted",
+            }
+            with patch("services.mt5.mt5_signal_router.ingest_status", return_value=ingest_payload):
+                status = router.ops_status(symbol="BTCUSD")
+
+            self.assertTrue(status["db_degraded"])
+            self.assertEqual(status["failed_flushes"], 1)
+            self.assertEqual(status["dead_letter_count"], 1)
+            self.assertEqual(status["last_ingest_error"], "current transaction is aborted")
+            self.assertFalse(status["broker_touched"])
+            self.assertFalse(status["order_executed"])
+        finally:
+            reset_db_circuit_breaker()
 
     def test_debug_storage_fast_path_is_limited_and_does_not_call_performance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

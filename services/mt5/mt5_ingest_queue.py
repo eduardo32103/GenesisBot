@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from services.genesis.memory_store import MemoryStore
 from services.mt5 import mt5_db_circuit_breaker as circuit
@@ -21,19 +21,24 @@ class MT5IngestStats:
     dropped: int = 0
     flushed: int = 0
     failed_flushes: int = 0
+    dead_letter: int = 0
     last_enqueue_at: str = ""
     last_drop_at: str = ""
     last_flush_at: str = ""
+    last_successful_flush_at: str = ""
+    last_failed_flush_at: str = ""
     last_error: str = ""
 
 
 class MT5IngestQueue:
-    def __init__(self, *, max_size: int | None = None) -> None:
+    def __init__(self, *, max_size: int | None = None, memory_factory: Callable[[], MemoryStore] | None = None) -> None:
         self.max_size = int(max_size or _int_env("MT5_INGEST_QUEUE_MAX", DEFAULT_MAX_SIZE))
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(1, self.max_size))
         self._stats = MT5IngestStats()
         self._lock = threading.Lock()
         self._worker_started = False
+        self._memory_factory = memory_factory or MemoryStore
+        self._dead_letter: list[dict[str, Any]] = []
 
     def enqueue(self, collection: str, symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._start_worker()
@@ -63,9 +68,12 @@ class MT5IngestQueue:
                 "enqueued_events": self._stats.enqueued,
                 "flushed_events": self._stats.flushed,
                 "failed_flushes": self._stats.failed_flushes,
+                "dead_letter_count": self._stats.dead_letter,
                 "last_enqueue_at": self._stats.last_enqueue_at,
                 "last_drop_at": self._stats.last_drop_at,
                 "last_flush_at": self._stats.last_flush_at,
+                "last_successful_flush_at": self._stats.last_successful_flush_at,
+                "last_failed_flush_at": self._stats.last_failed_flush_at,
                 "last_ingest_error": self._stats.last_error,
             }
         return stats
@@ -87,26 +95,80 @@ class MT5IngestQueue:
                 started = time.monotonic()
                 if circuit.is_db_degraded():
                     time.sleep(0.25)
-                    self._queue.put_nowait(event)
+                    self._requeue_or_dead_letter(event, "db_degraded")
                     continue
-                memory = MemoryStore()
-                memory.save_mt5_event(event["collection"], event["symbol"], event["payload"])
-                duration_ms = int(round((time.monotonic() - started) * 1000))
-                circuit.record_db_success(duration_ms)
-                with self._lock:
-                    self._stats.flushed += 1
-                    self._stats.last_flush_at = _now()
-            except queue.Full:
-                with self._lock:
-                    self._stats.dropped += 1
-                    self._stats.last_drop_at = _now()
+                self._flush_event(event, started=started)
             except Exception as exc:
-                circuit.record_db_error(exc)
-                with self._lock:
-                    self._stats.failed_flushes += 1
-                    self._stats.last_error = str(exc)[:500]
+                self._record_failed_event(event, exc)
             finally:
                 self._queue.task_done()
+
+    def flush_once_for_tests(self, *, limit: int = 25) -> None:
+        for _ in range(max(1, int(limit or 1))):
+            try:
+                event = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._flush_event(event, started=time.monotonic())
+            except Exception as exc:
+                self._record_failed_event(event, exc)
+            finally:
+                self._queue.task_done()
+
+    def dead_letters_for_tests(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._dead_letter)
+
+    def _flush_event(self, event: dict[str, Any], *, started: float) -> None:
+        memory = self._memory_factory()
+        try:
+            memory.save_mt5_event(event["collection"], event["symbol"], event["payload"])
+        except Exception:
+            self._rollback_memory(memory)
+            raise
+        duration_ms = int(round((time.monotonic() - started) * 1000))
+        circuit.record_db_success(duration_ms)
+        timestamp = _now()
+        with self._lock:
+            self._stats.flushed += 1
+            self._stats.last_flush_at = timestamp
+            self._stats.last_successful_flush_at = timestamp
+
+    def _record_failed_event(self, event: dict[str, Any], exc: Exception) -> None:
+        circuit.record_db_error(exc)
+        message = str(exc)[:500]
+        timestamp = _now()
+        dead_letter = {**event, "error": message, "failed_at": timestamp}
+        with self._lock:
+            self._stats.failed_flushes += 1
+            self._stats.dead_letter += 1
+            self._stats.last_error = message
+            self._stats.last_failed_flush_at = timestamp
+            self._dead_letter.append(dead_letter)
+            self._dead_letter = self._dead_letter[-100:]
+
+    def _requeue_or_dead_letter(self, event: dict[str, Any], reason: str) -> None:
+        try:
+            self._queue.put_nowait(event)
+        except queue.Full:
+            self._record_failed_event(event, RuntimeError(reason))
+            with self._lock:
+                self._stats.dropped += 1
+                self._stats.last_drop_at = _now()
+
+    @staticmethod
+    def _rollback_memory(memory: MemoryStore) -> None:
+        conn = getattr(memory, "_pg", None)
+        if conn is None:
+            return
+        try:
+            conn.rollback()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _int_env(name: str, default: int) -> int:

@@ -1344,27 +1344,63 @@ class MemoryStore:
             database=(parsed.path or "/").lstrip("/"),
             ssl_context=True if parsed.scheme.endswith("+ssl") else None,
         )
+        cursor = None
         try:
             cursor = conn.cursor()
             cursor.execute("SET statement_timeout TO 1500")
             conn.commit()
-            cursor.close()
         except Exception:
-            pass
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                if cursor is not None:
+                    cursor.close()
+            except Exception:
+                pass
         return conn
 
     def _pg_execute(self, sql: str, params: tuple) -> None:
         cursor = self._pg.cursor()
-        cursor.execute(sql, params)
-        self._pg.commit()
-        cursor.close()
+        try:
+            cursor.execute(sql, params)
+            self._pg.commit()
+        except Exception:
+            self._pg_rollback()
+            raise
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
     def _pg_fetch(self, sql: str, params: tuple) -> list:
         cursor = self._pg.cursor()
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        cursor.close()
-        return rows
+        try:
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            return rows
+        except Exception:
+            self._pg_rollback()
+            raise
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+    def _pg_rollback(self) -> None:
+        try:
+            self._pg.rollback()
+        except Exception:
+            try:
+                self._pg.close()
+            except Exception:
+                pass
+            self._pg = None
+            self.backend = "sqlite"
 
 
 def _event_row(row: Any) -> dict[str, Any]:
