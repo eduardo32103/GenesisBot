@@ -15,6 +15,7 @@ SAFETY_FLAGS = {
     "order_executed": False,
     "order_policy": "journal_only_no_broker",
 }
+RECOMMENDATION_READ_LIMIT = 100
 
 
 class MT5AdaptiveRecommendationEngine:
@@ -151,7 +152,7 @@ def _recommendation(symbol: str, recommendation_type: str, recommendation: str, 
 
 
 def _latest_profile_stats(memory: MemoryStore, symbol: str) -> list[dict[str, Any]]:
-    rows = memory.get_mt5_events("mt5_strategy_profile_stats", symbol or None, limit=500)
+    rows = memory.get_mt5_events("mt5_strategy_profile_stats", symbol or None, limit=RECOMMENDATION_READ_LIMIT)
     stats = []
     for row in rows:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -161,7 +162,7 @@ def _latest_profile_stats(memory: MemoryStore, symbol: str) -> list[dict[str, An
 
 
 def _avg_win_loss(symbol: str, memory: MemoryStore) -> tuple[float, float]:
-    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=2000)
+    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=RECOMMENDATION_READ_LIMIT)
     wins: list[float] = []
     losses: list[float] = []
     for row in rows:
@@ -240,7 +241,7 @@ def _closed_shadow_trades(memory: MemoryStore, symbol: str, timeframe: str) -> l
     clean_timeframe = str(timeframe or "").upper().strip()
     trades = [
         trade
-        for trade in MT5ShadowTrading(memory=memory).trades(symbol, limit=2000)
+        for trade in MT5ShadowTrading(memory=memory).trades(symbol, limit=RECOMMENDATION_READ_LIMIT)
         if _is_valid_closed_trade(trade, symbol)
         and is_main_metric_trade(trade, query_symbol=symbol)
         and (not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe)
@@ -264,7 +265,7 @@ def _current_streaks(trades: list[dict[str, Any]]) -> tuple[int, int]:
 
 
 def _profile_stats_from_memory(memory: MemoryStore, symbol: str) -> list[dict[str, Any]]:
-    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=2000)
+    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=RECOMMENDATION_READ_LIMIT)
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         trade = row.get("payload") if isinstance(row.get("payload"), dict) else {}

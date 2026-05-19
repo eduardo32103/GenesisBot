@@ -17,6 +17,7 @@ from api.routes.genesis import (
     get_genesis_mt5_health,
     get_genesis_mt5_instrument,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_learning_status,
     get_genesis_mt5_memory_summary,
     get_genesis_mt5_no_trade_report,
     get_genesis_mt5_outcomes_recent,
@@ -54,6 +55,7 @@ from services.mt5.mt5_bridge import (
     mt5_instrument,
     mt5_journal_recent,
     mt5_learning_run,
+    mt5_learning_status,
     mt5_manual_tests_reset,
     mt5_memory_summary,
     mt5_metrics_exclude_old_proxy,
@@ -107,7 +109,8 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_replay_status_endpoint"], "/api/genesis/mt5/replay/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_replay_reset_endpoint"], "/api/genesis/mt5/replay/reset")
         self.assertEqual(app["genesis_mt5_learning_run_endpoint"], "/api/genesis/mt5/learning/run")
-        self.assertEqual(app["genesis_mt5_memory_summary_endpoint"], "/api/genesis/mt5/memory/summary?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_learning_status_endpoint"], "/api/genesis/mt5/learning/status?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_memory_summary_endpoint"], "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50")
         self.assertEqual(app["genesis_mt5_adaptive_state_endpoint"], "/api/genesis/mt5/adaptive-state?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_strategy_profiles_endpoint"], "/api/genesis/mt5/strategy-profiles?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_adaptive_recommendations_endpoint"], "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}")
@@ -1483,6 +1486,7 @@ class MT5BridgeTests(unittest.TestCase):
         replay_status = get_genesis_mt5_replay_status("BTCUSD")
         replay_reset = post_genesis_mt5_replay_reset({"symbol": "BTCUSD"})
         learning = post_genesis_mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1", "mode": "paper"})
+        learning_status = get_genesis_mt5_learning_status("BTCUSD")
         memory_summary = get_genesis_mt5_memory_summary("BTCUSD")
         adaptive_state = get_genesis_mt5_adaptive_state("BTCUSD", "H1")
         profiles = get_genesis_mt5_strategy_profiles("BTCUSD")
@@ -1512,6 +1516,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(replay_status["ok"])
         self.assertTrue(replay_reset["ok"])
         self.assertTrue(learning["ok"])
+        self.assertTrue(learning_status["ok"])
         self.assertTrue(memory_summary["ok"])
         self.assertTrue(adaptive_state["ok"])
         self.assertTrue(profiles["ok"])
@@ -1598,6 +1603,120 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(lesson["broker_touched"])
             self.assertFalse(lesson["order_executed"])
 
+    def test_learning_run_empty_is_fast_and_journal_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+
+            learning = mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1", "mode": "paper", "max_trades": 25}, memory=store)
+            status = mt5_learning_status(memory=store, symbol="BTCUSD")
+
+            self.assertTrue(learning["ok"])
+            self.assertEqual(learning["trades_seen"], 0)
+            self.assertEqual(learning["trades_processed"], 0)
+            self.assertLess(learning["duration_ms"], 8000)
+            self.assertEqual(status["status"], "mt5_learning_status_ready")
+            self.assertFalse(learning["broker_touched"])
+            self.assertFalse(status["order_executed"])
+
+    def test_learning_endpoints_return_controlled_errors(self) -> None:
+        with patch("api.routes.genesis.mt5_learning_run", side_effect=RuntimeError("boom")):
+            learning = post_genesis_mt5_learning_run({"symbol": "BTCUSD"})
+        with patch("api.routes.genesis.mt5_memory_summary", side_effect=RuntimeError("summary boom")):
+            summary = get_genesis_mt5_memory_summary("BTCUSD", limit=50)
+
+        self.assertFalse(learning["ok"])
+        self.assertEqual(learning["status"], "mt5_learning_error")
+        self.assertFalse(learning["broker_touched"])
+        self.assertFalse(learning["order_executed"])
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["status"], "mt5_learning_error")
+        self.assertEqual(summary["order_policy"], "journal_only_no_broker")
+
+    def test_learning_run_caps_default_max_trades(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            for index in range(200):
+                _save_closed_shadow_trade(
+                    store,
+                    f"cap-{index}",
+                    status="win" if index % 2 == 0 else "loss",
+                    r_multiple=1.0 if index % 2 == 0 else -1.0,
+                    pnl=1000 if index % 2 == 0 else -1000,
+                    exit_reason="take_profit" if index % 2 == 0 else "stop_loss",
+                    opened_minute=index,
+                )
+
+            learning = mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=store)
+
+            self.assertTrue(learning["ok"])
+            self.assertEqual(learning["max_trades"], 25)
+            self.assertLessEqual(learning["trades_processed"], 25)
+            self.assertLessEqual(learning["memories_created"], 25)
+            self.assertFalse(learning["broker_touched"])
+            self.assertFalse(learning["order_executed"])
+
+    def test_learning_run_incomplete_trade_records_error_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            _save_closed_shadow_trade(store, "complete-win", status="win", r_multiple=1.0, pnl=1000, exit_reason="take_profit")
+            _save_closed_shadow_trade(store, "bad-snapshot", status="win", r_multiple=1.0, pnl=1000, exit_reason="take_profit", opened_minute=1)
+
+            from services.mt5 import mt5_trade_memory as trade_memory_module
+
+            original_snapshot = trade_memory_module.build_trade_memory_snapshot
+
+            def flaky_snapshot(trade: dict) -> dict:
+                if trade.get("shadow_trade_id") == "bad-snapshot":
+                    raise ValueError("incomplete_trade")
+                return original_snapshot(trade)
+
+            with patch("services.mt5.mt5_trade_memory.build_trade_memory_snapshot", side_effect=flaky_snapshot):
+                learning = mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=store)
+
+            self.assertTrue(learning["ok"])
+            self.assertGreaterEqual(learning["trades_processed"], 1)
+            self.assertTrue(learning["errors"])
+            self.assertIn("incomplete_trade", learning["errors"][0]["error"])
+            self.assertFalse(learning["broker_touched"])
+            self.assertFalse(learning["order_executed"])
+
+    def test_memory_summary_empty_many_and_no_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            empty = mt5_memory_summary(memory=store, symbol="BTCUSD", limit=50)
+            self.assertTrue(empty["ok"])
+            self.assertEqual(empty["total_memories"], 0)
+            self.assertLess(empty["duration_ms"], 5000)
+
+            journal = MT5Journal(memory=store)
+            for index in range(150):
+                journal.save(
+                    "mt5_trade_memory",
+                    "BTCUSD",
+                    {
+                        "trade_id": f"memory-{index}",
+                        "symbol": "BTCUSD",
+                        "normalized_symbol": "BTCUSD",
+                        "timeframe": "H1",
+                        "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+                        "status": "win",
+                        "r_multiple": 1.0,
+                        "pnl": 100,
+                        "regime": "bull_trend",
+                        "broker_touched": False,
+                        "order_executed": False,
+                    },
+                )
+
+            with patch("services.mt5.mt5_trade_memory.MT5TradeMemoryEngine.run_learning", side_effect=AssertionError("memory summary must be read-only")):
+                limited = mt5_memory_summary(memory=store, symbol="BTCUSD", limit=50)
+
+            self.assertTrue(limited["ok"])
+            self.assertEqual(limited["limit"], 50)
+            self.assertLessEqual(limited["total_memories"], 50)
+            self.assertFalse(limited["broker_touched"])
+            self.assertFalse(limited["order_executed"])
+
     def test_adaptive_state_detects_loss_streak_and_hot_streak(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             loss_store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "loss.sqlite3")
@@ -1609,7 +1728,7 @@ class MT5BridgeTests(unittest.TestCase):
             hot_store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "hot.sqlite3")
             for index in range(31):
                 _save_closed_shadow_trade(hot_store, f"win-{index}", status="win", r_multiple=1.0, pnl=1000, exit_reason="take_profit", opened_minute=index)
-            mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1"}, memory=hot_store)
+            mt5_learning_run({"symbol": "BTCUSD", "timeframe": "H1", "max_trades": 50}, memory=hot_store)
             hot_state = mt5_adaptive_state(memory=hot_store, symbol="BTCUSD", timeframe="H1")
 
             self.assertEqual(loss_state["current_loss_streak"], 3)

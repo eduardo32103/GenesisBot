@@ -522,8 +522,11 @@ class MT5SignalRouter:
     def learning_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.trade_memory_engine.run_learning(payload)
 
-    def memory_summary(self, *, symbol: str = "") -> dict[str, Any]:
-        return self.trade_memory_engine.memory_summary(symbol=symbol)
+    def memory_summary(self, *, symbol: str = "", limit: int = 50) -> dict[str, Any]:
+        return self.trade_memory_engine.memory_summary(symbol=symbol, limit=limit)
+
+    def learning_status(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.trade_memory_engine.learning_status(symbol=symbol)
 
     def adaptive_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         return self.adaptive_state_engine.compute(symbol=symbol, timeframe=timeframe)

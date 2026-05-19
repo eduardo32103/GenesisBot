@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +18,11 @@ SAFETY_FLAGS = {
     "order_executed": False,
     "order_policy": "journal_only_no_broker",
 }
+LEARNING_TIMEOUT_SECONDS = 8.0
+DEFAULT_MAX_TRADES = 25
+MAX_TRADES_CAP = 50
+DEFAULT_SUMMARY_LIMIT = 50
+SUMMARY_LIMIT_CAP = 100
 
 
 class MT5TradeMemoryEngine:
@@ -28,97 +34,205 @@ class MT5TradeMemoryEngine:
         self.shadow = MT5ShadowTrading(memory=self.memory)
 
     def run_learning(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        body = payload or {}
+        started = time.monotonic()
+        body = payload if isinstance(payload, dict) else {}
         symbol = _symbol(body.get("symbol") or body.get("ticker") or "BTCUSD")
         timeframe = str(body.get("timeframe") or "").upper().strip()
         mode = str(body.get("mode") or "paper").strip().lower() or "paper"
-        closed_trades = self._closed_main_trades(symbol=symbol, timeframe=timeframe)
-        existing_memory_ids = _existing_ids(self.memory, "mt5_trade_memory", symbol, "trade_id")
-        existing_lesson_ids = _existing_ids(self.memory, "mt5_trade_lessons", symbol, "trade_id")
+        max_trades = _clamp_int(body.get("max_trades"), DEFAULT_MAX_TRADES, 1, MAX_TRADES_CAP)
+        errors: list[dict[str, Any]] = []
+        warnings: list[str] = []
         memories_created = 0
         lessons_created = 0
+        trades_seen = 0
+        trades_processed = 0
+        profile_stats: list[dict[str, Any]] = []
+        adaptive_state: dict[str, Any] = {}
+        recommendations: dict[str, Any] = {}
+        status = "mt5_learning_run_completed"
+        try:
+            closed_trades = self._closed_main_trades(symbol=symbol, timeframe=timeframe, limit=max_trades)
+            trades_seen = len(closed_trades)
+            existing_limit = max(100, max_trades * 4)
+            existing_memory_ids = _existing_ids(self.memory, "mt5_trade_memory", symbol, "trade_id", limit=existing_limit)
+            existing_lesson_ids = _existing_ids(self.memory, "mt5_trade_lessons", symbol, "trade_id", limit=existing_limit)
 
-        for trade in closed_trades:
-            snapshot = build_trade_memory_snapshot(trade)
-            trade_id = str(snapshot.get("trade_id") or "")
-            if trade_id and trade_id not in existing_memory_ids:
-                self.journal.save("mt5_trade_memory", symbol, snapshot, confidence=snapshot.get("confidence") or "media")
-                existing_memory_ids.add(trade_id)
-                memories_created += 1
-            if trade_id and trade_id not in existing_lesson_ids:
-                lesson = analyze_closed_trade(snapshot)
-                self.journal.save("mt5_trade_lessons", symbol, lesson, confidence=lesson.get("confidence") or "media")
-                existing_lesson_ids.add(trade_id)
-                lessons_created += 1
+            for index, trade in enumerate(closed_trades):
+                if _elapsed_ms(started) > LEARNING_TIMEOUT_SECONDS * 1000:
+                    status = "partial_completed_timeout_guard"
+                    warnings.append("processing capped to avoid Railway timeout")
+                    break
+                try:
+                    snapshot = build_trade_memory_snapshot(trade)
+                    trade_id = str(snapshot.get("trade_id") or "")
+                    if not trade_id:
+                        raise ValueError("missing_trade_id")
+                    if trade_id and trade_id not in existing_memory_ids:
+                        self.journal.save("mt5_trade_memory", symbol, snapshot, confidence=snapshot.get("confidence") or "media")
+                        existing_memory_ids.add(trade_id)
+                        memories_created += 1
+                    if trade_id and trade_id not in existing_lesson_ids:
+                        lesson = analyze_closed_trade(snapshot)
+                        self.journal.save("mt5_trade_lessons", symbol, lesson, confidence=lesson.get("confidence") or "media")
+                        existing_lesson_ids.add(trade_id)
+                        lessons_created += 1
+                    trades_processed += 1
+                except Exception as exc:
+                    errors.append({"trade_index": index, "trade_id": str(trade.get("shadow_trade_id") or ""), "error": str(exc)[:240]})
+                    continue
 
-        memories = self._memories(symbol=symbol, timeframe=timeframe)
-        profile_stats = build_strategy_profile_stats(memories)
-        for stat in profile_stats:
-            self.journal.save("mt5_strategy_profile_stats", symbol, stat, confidence="media")
-
-        adaptive_state = MT5AdaptiveStateEngine(memory=self.memory).compute(symbol=symbol, timeframe=timeframe)
-        self.journal.save("mt5_adaptive_state", symbol, adaptive_state, confidence="media")
-
-        recommendations = MT5AdaptiveRecommendationEngine(memory=self.memory).recommend(
-            symbol=symbol,
-            timeframe=timeframe,
-            state=adaptive_state,
-            profile_stats=profile_stats,
-        )
-        self.journal.save("mt5_adaptive_recommendations", symbol, recommendations, confidence="media")
+            if closed_trades and _elapsed_ms(started) <= LEARNING_TIMEOUT_SECONDS * 1000:
+                memories = self._memories(symbol=symbol, timeframe=timeframe, limit=max(50, max_trades * 2))
+                profile_stats = build_strategy_profile_stats(memories)
+                for stat in profile_stats[:MAX_TRADES_CAP]:
+                    self.journal.save("mt5_strategy_profile_stats", symbol, stat, confidence="media")
+                adaptive_state = MT5AdaptiveStateEngine(memory=self.memory).compute(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    limit=max(50, max_trades * 2),
+                )
+                self.journal.save("mt5_adaptive_state", symbol, adaptive_state, confidence="media")
+                recommendations = MT5AdaptiveRecommendationEngine(memory=self.memory).recommend(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    state=adaptive_state,
+                    profile_stats=profile_stats,
+                )
+                self.journal.save("mt5_adaptive_recommendations", symbol, recommendations, confidence="media")
+            elif _elapsed_ms(started) > LEARNING_TIMEOUT_SECONDS * 1000:
+                status = "partial_completed_timeout_guard"
+                if "processing capped to avoid Railway timeout" not in warnings:
+                    warnings.append("processing capped to avoid Railway timeout")
+        except Exception as exc:
+            result = _error_payload(
+                status="mt5_learning_error",
+                symbol=symbol,
+                timeframe=timeframe,
+                error=str(exc),
+                started=started,
+                trades_seen=trades_seen,
+                trades_processed=trades_processed,
+                memories_created=memories_created,
+                lessons_created=lessons_created,
+                warnings=warnings,
+                errors=errors,
+                memory=self.memory,
+            )
+            self._safe_save_learning_run(symbol, result)
+            return result
 
         result = {
             "ok": True,
-            "status": "mt5_learning_run_completed",
+            "status": status,
             "symbol": symbol,
             "timeframe": timeframe,
             "mode": mode,
-            "trades_seen": len(closed_trades),
-            "trades_processed": len(closed_trades),
+            "max_trades": max_trades,
+            "trades_seen": trades_seen,
+            "trades_processed": trades_processed,
             "memories_created": memories_created,
             "lessons_created": lessons_created,
             "profile_stats_updated": len(profile_stats),
             "adaptive_state": adaptive_state,
             "recommendations": recommendations.get("recommendations") or [],
+            "duration_ms": _elapsed_ms(started),
+            "errors": errors,
+            "warnings": warnings,
+            **_storage_payload(self.memory),
             "updated_at": _now(),
             **SAFETY_FLAGS,
         }
-        self.journal.save("mt5_learning_runs", symbol, result, confidence="media")
+        self._safe_save_learning_run(symbol, result)
         return result
 
-    def memory_summary(self, *, symbol: str = "") -> dict[str, Any]:
+    def memory_summary(self, *, symbol: str = "", limit: int = DEFAULT_SUMMARY_LIMIT) -> dict[str, Any]:
+        started = time.monotonic()
         clean_symbol = _symbol(symbol)
-        memories = self._memories(symbol=clean_symbol)
-        lessons = self._lessons(symbol=clean_symbol)
-        win_reasons = Counter(_compact(item.get("primary_win_reason")) for item in lessons if item.get("primary_win_reason"))
-        loss_reasons = Counter(_compact(item.get("primary_loss_reason")) for item in lessons if item.get("primary_loss_reason"))
-        mistakes = Counter(reason for item in lessons for reason in _as_list(item.get("mistakes")))
-        strengths = Counter(reason for item in lessons for reason in _as_list(item.get("strengths")))
-        regimes = Counter(_compact(item.get("market_regime_label") or item.get("regime")) for item in memories if item.get("regime") or item.get("market_regime_label"))
-        stats = build_strategy_profile_stats(memories)
-        best_contexts = sorted(stats, key=lambda item: (_number(item.get("profit_factor")) or 0.0, _number(item.get("expectancy")) or 0.0), reverse=True)[:5]
-        worst_contexts = sorted(stats, key=lambda item: (_number(item.get("profit_factor")) or 0.0, _number(item.get("expectancy")) or 0.0))[:5]
-        return {
-            "ok": True,
-            "status": "mt5_memory_summary_ready",
-            "symbol": clean_symbol,
-            "total_memories": len(memories),
-            "lessons_count": len(lessons),
-            "top_win_reasons": _top(win_reasons),
-            "top_loss_reasons": _top(loss_reasons),
-            "top_mistakes": _top(mistakes),
-            "top_strengths": _top(strengths),
-            "most_common_regimes": _top(regimes),
-            "best_contexts": best_contexts,
-            "worst_contexts": worst_contexts,
-            "genesis_reading": _summary_reading(clean_symbol, len(memories), lessons, best_contexts),
-            "updated_at": _now(),
-            **SAFETY_FLAGS,
-        }
+        safe_limit = _clamp_int(limit, DEFAULT_SUMMARY_LIMIT, 1, SUMMARY_LIMIT_CAP)
+        warnings: list[str] = []
+        errors: list[dict[str, Any]] = []
+        try:
+            memories = self._memories(symbol=clean_symbol, limit=safe_limit)
+            lessons = self._lessons(symbol=clean_symbol, limit=safe_limit)
+            win_reasons = Counter(_compact(item.get("primary_win_reason")) for item in lessons if item.get("primary_win_reason"))
+            loss_reasons = Counter(_compact(item.get("primary_loss_reason")) for item in lessons if item.get("primary_loss_reason"))
+            mistakes = Counter(reason for item in lessons for reason in _as_list(item.get("mistakes")))
+            strengths = Counter(reason for item in lessons for reason in _as_list(item.get("strengths")))
+            regimes = Counter(_compact(item.get("market_regime_label") or item.get("regime")) for item in memories if item.get("regime") or item.get("market_regime_label"))
+            stats = build_strategy_profile_stats(memories[:safe_limit])
+            best_contexts = sorted(stats, key=lambda item: (_number(item.get("profit_factor")) or 0.0, _number(item.get("expectancy")) or 0.0), reverse=True)[:5]
+            worst_contexts = sorted(stats, key=lambda item: (_number(item.get("profit_factor")) or 0.0, _number(item.get("expectancy")) or 0.0))[:5]
+            return {
+                "ok": True,
+                "status": "mt5_memory_summary_ready",
+                "symbol": clean_symbol,
+                "limit": safe_limit,
+                "total_memories": len(memories),
+                "lessons_count": len(lessons),
+                "top_win_reasons": _top(win_reasons),
+                "top_loss_reasons": _top(loss_reasons),
+                "top_mistakes": _top(mistakes),
+                "top_strengths": _top(strengths),
+                "most_common_regimes": _top(regimes),
+                "best_contexts": best_contexts,
+                "worst_contexts": worst_contexts,
+                "genesis_reading": _summary_reading(clean_symbol, len(memories), lessons, best_contexts),
+                "duration_ms": _elapsed_ms(started),
+                "errors": errors,
+                "warnings": warnings,
+                **_storage_payload(self.memory),
+                "updated_at": _now(),
+                **SAFETY_FLAGS,
+            }
+        except Exception as exc:
+            fallback = self._summary_fallback(clean_symbol, safe_limit, str(exc), started)
+            fallback["errors"] = [{"error": str(exc)[:240]}]
+            return fallback
+
+    def learning_status(self, *, symbol: str = "") -> dict[str, Any]:
+        started = time.monotonic()
+        clean_symbol = _symbol(symbol)
+        try:
+            rows = self.memory.get_mt5_events("mt5_learning_runs", clean_symbol or None, limit=5)
+            last = rows[0].get("payload") if rows and isinstance(rows[0].get("payload"), dict) else {}
+            errors = last.get("errors") if isinstance(last.get("errors"), list) else []
+            last_error = ""
+            if not last.get("ok"):
+                last_error = str(last.get("error") or "")
+            elif errors:
+                last_error = str(errors[0].get("error") if isinstance(errors[0], dict) else errors[0])
+            return {
+                "ok": True,
+                "status": "mt5_learning_status_ready",
+                "symbol": clean_symbol,
+                "last_learning_run": last or None,
+                "last_error": last_error,
+                "last_duration_ms": last.get("duration_ms", 0) if isinstance(last, dict) else 0,
+                "trades_seen": last.get("trades_seen", 0) if isinstance(last, dict) else 0,
+                "trades_processed": last.get("trades_processed", 0) if isinstance(last, dict) else 0,
+                "duration_ms": _elapsed_ms(started),
+                **_storage_payload(self.memory),
+                **SAFETY_FLAGS,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "mt5_learning_status_error",
+                "symbol": clean_symbol,
+                "last_learning_run": None,
+                "last_error": str(exc)[:240],
+                "last_duration_ms": 0,
+                "trades_seen": 0,
+                "trades_processed": 0,
+                "duration_ms": _elapsed_ms(started),
+                "warnings": [],
+                **_storage_payload(self.memory),
+                **SAFETY_FLAGS,
+            }
 
     def strategy_profiles(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
-        memories = self._memories(symbol=clean_symbol)
+        memories = self._memories(symbol=clean_symbol, limit=SUMMARY_LIMIT_CAP)
         items = build_strategy_profile_stats(memories)
         return {
             "ok": True,
@@ -130,20 +244,22 @@ class MT5TradeMemoryEngine:
             **SAFETY_FLAGS,
         }
 
-    def _closed_main_trades(self, *, symbol: str, timeframe: str = "") -> list[dict[str, Any]]:
+    def _closed_main_trades(self, *, symbol: str, timeframe: str = "", limit: int = DEFAULT_MAX_TRADES) -> list[dict[str, Any]]:
         clean_timeframe = str(timeframe or "").upper().strip()
+        safe_limit = _clamp_int(limit, DEFAULT_MAX_TRADES, 1, MAX_TRADES_CAP)
         trades = [
             trade
-            for trade in self.shadow.trades(symbol, limit=2000)
+            for trade in self.shadow.trades(symbol, limit=max(100, safe_limit * 4))
             if trade.get("status") in CLOSED_STATUSES
             and is_main_metric_trade(trade, query_symbol=symbol)
             and (not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe)
         ]
-        return sorted(trades, key=lambda trade: str(trade.get("closed_at") or trade.get("updated_at") or ""))
+        return sorted(trades, key=lambda trade: str(trade.get("closed_at") or trade.get("updated_at") or ""), reverse=True)[:safe_limit]
 
-    def _memories(self, *, symbol: str = "", timeframe: str = "") -> list[dict[str, Any]]:
+    def _memories(self, *, symbol: str = "", timeframe: str = "", limit: int = DEFAULT_SUMMARY_LIMIT) -> list[dict[str, Any]]:
         clean_timeframe = str(timeframe or "").upper().strip()
-        rows = self.memory.get_mt5_events("mt5_trade_memory", _symbol(symbol) or None, limit=2000)
+        safe_limit = _clamp_int(limit, DEFAULT_SUMMARY_LIMIT, 1, SUMMARY_LIMIT_CAP)
+        rows = self.memory.get_mt5_events("mt5_trade_memory", _symbol(symbol) or None, limit=safe_limit)
         latest: dict[str, dict[str, Any]] = {}
         for row in rows:
             payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -153,11 +269,49 @@ class MT5TradeMemoryEngine:
             if clean_timeframe and str(payload.get("timeframe") or "").upper() != clean_timeframe:
                 continue
             latest[trade_id] = payload
-        return list(latest.values())
+        return list(latest.values())[:safe_limit]
 
-    def _lessons(self, *, symbol: str = "") -> list[dict[str, Any]]:
-        rows = self.memory.get_mt5_events("mt5_trade_lessons", _symbol(symbol) or None, limit=2000)
+    def _lessons(self, *, symbol: str = "", limit: int = DEFAULT_SUMMARY_LIMIT) -> list[dict[str, Any]]:
+        safe_limit = _clamp_int(limit, DEFAULT_SUMMARY_LIMIT, 1, SUMMARY_LIMIT_CAP)
+        rows = self.memory.get_mt5_events("mt5_trade_lessons", _symbol(symbol) or None, limit=safe_limit)
         return [row.get("payload") for row in rows if isinstance(row.get("payload"), dict)]
+
+    def _summary_fallback(self, symbol: str, limit: int, error: str, started: float) -> dict[str, Any]:
+        warnings = ["memory summary fallback used"]
+        try:
+            state = MT5AdaptiveStateEngine(memory=self.memory).compute(symbol=symbol, limit=limit)
+        except Exception as exc:
+            state = {"error": str(exc)[:240]}
+            warnings.append("adaptive_state_fallback_failed")
+        return {
+            "ok": True,
+            "status": "mt5_memory_summary_fallback",
+            "symbol": symbol,
+            "limit": limit,
+            "total_memories": 0,
+            "lessons_count": 0,
+            "top_win_reasons": [],
+            "top_loss_reasons": [],
+            "top_mistakes": [],
+            "top_strengths": [],
+            "most_common_regimes": [],
+            "best_contexts": [],
+            "worst_contexts": [],
+            "fallback_adaptive_state": state,
+            "genesis_reading": f"{symbol}: memory summary uso fallback rapido; revisar error controlado.",
+            "duration_ms": _elapsed_ms(started),
+            "warnings": warnings,
+            "error": error[:240],
+            **_storage_payload(self.memory),
+            "updated_at": _now(),
+            **SAFETY_FLAGS,
+        }
+
+    def _safe_save_learning_run(self, symbol: str, result: dict[str, Any]) -> None:
+        try:
+            self.journal.save("mt5_learning_runs", symbol or "MT5", result, confidence="media")
+        except Exception:
+            return
 
 
 def build_trade_memory_snapshot(trade: dict[str, Any]) -> dict[str, Any]:
@@ -338,8 +492,9 @@ def build_strategy_profile_stats(memories: list[dict[str, Any]]) -> list[dict[st
     return sorted(stats, key=lambda item: (int(item.get("trades") or 0), _number(item.get("profit_factor")) or 0.0), reverse=True)
 
 
-def _existing_ids(memory: MemoryStore, collection: str, symbol: str, key: str) -> set[str]:
-    rows = memory.get_mt5_events(collection, symbol or None, limit=2000)
+def _existing_ids(memory: MemoryStore, collection: str, symbol: str, key: str, *, limit: int = DEFAULT_SUMMARY_LIMIT) -> set[str]:
+    safe_limit = _clamp_int(limit, DEFAULT_SUMMARY_LIMIT, 1, SUMMARY_LIMIT_CAP * 2)
+    rows = memory.get_mt5_events(collection, symbol or None, limit=safe_limit)
     ids = set()
     for row in rows:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -347,6 +502,61 @@ def _existing_ids(memory: MemoryStore, collection: str, symbol: str, key: str) -
         if value:
             ids.add(value)
     return ids
+
+
+def _error_payload(
+    *,
+    status: str,
+    symbol: str,
+    timeframe: str,
+    error: str,
+    started: float,
+    trades_seen: int,
+    trades_processed: int,
+    memories_created: int,
+    lessons_created: int,
+    warnings: list[str],
+    errors: list[dict[str, Any]],
+    memory: MemoryStore,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": status,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "error": str(error or "")[:500],
+        "warnings": warnings,
+        "errors": errors,
+        "trades_seen": trades_seen,
+        "trades_processed": trades_processed,
+        "memories_created": memories_created,
+        "lessons_created": lessons_created,
+        "duration_ms": _elapsed_ms(started),
+        **_storage_payload(memory),
+        "updated_at": _now(),
+        **SAFETY_FLAGS,
+    }
+
+
+def _storage_payload(memory: MemoryStore) -> dict[str, Any]:
+    backend = str(getattr(memory, "backend", "") or "unknown")
+    return {
+        "storage_backend": backend,
+        "database_enabled": backend == "postgres",
+        "memory_fallback": backend != "postgres",
+    }
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.monotonic() - started) * 1000))
+
+
+def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value) if value is not None and value != "" else default
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
 
 
 def _win_reason(exit_reason: str, trade: dict[str, Any]) -> str:

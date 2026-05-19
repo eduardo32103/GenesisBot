@@ -17,6 +17,7 @@ from services.mt5.mt5_bridge import (
     mt5_instrument,
     mt5_journal_recent,
     mt5_learning_run,
+    mt5_learning_status,
     mt5_manual_tests_reset,
     mt5_memory_summary,
     mt5_metrics_exclude_old_proxy,
@@ -156,11 +157,35 @@ def post_genesis_mt5_replay_reset(payload: dict[str, Any] | None = None) -> dict
 
 
 def post_genesis_mt5_learning_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    return mt5_learning_run(payload)
+    try:
+        return mt5_learning_run(payload)
+    except Exception as exc:
+        return _mt5_learning_error(exc)
 
 
-def get_genesis_mt5_memory_summary(symbol: str = "") -> dict[str, Any]:
-    return mt5_memory_summary(symbol=symbol)
+def get_genesis_mt5_learning_status(symbol: str = "") -> dict[str, Any]:
+    return mt5_learning_status(symbol=symbol)
+
+
+def get_genesis_mt5_memory_summary(symbol: str = "", limit: int = 50) -> dict[str, Any]:
+    try:
+        return mt5_memory_summary(symbol=symbol, limit=limit)
+    except Exception as exc:
+        return _mt5_learning_error(exc, symbol=symbol)
+
+
+def _mt5_learning_error(exc: Exception, *, symbol: str = "") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "mt5_learning_error",
+        "symbol": str(symbol or "").upper().strip(),
+        "error": str(exc)[:500],
+        "warnings": [],
+        "errors": [{"error": str(exc)[:240]}],
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
 
 
 def get_genesis_mt5_adaptive_state(symbol: str = "", timeframe: str = "") -> dict[str, Any]:

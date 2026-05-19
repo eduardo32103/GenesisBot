@@ -116,8 +116,12 @@ def mt5_learning_run(payload: dict[str, Any] | None = None, *, memory: MemorySto
     return build_router(memory).learning_run(payload)
 
 
-def mt5_memory_summary(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
-    return build_router(memory).memory_summary(symbol=symbol)
+def mt5_memory_summary(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 50) -> dict[str, Any]:
+    return build_router(memory).memory_summary(symbol=symbol, limit=limit)
+
+
+def mt5_learning_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    return build_router(memory).learning_status(symbol=symbol)
 
 
 def mt5_adaptive_state(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:

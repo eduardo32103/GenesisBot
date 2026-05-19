@@ -20,12 +20,13 @@ class MT5AdaptiveStateEngine:
     def __init__(self, *, memory: MemoryStore | None = None) -> None:
         self.memory = memory or MemoryStore()
 
-    def compute(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    def compute(self, *, symbol: str = "", timeframe: str = "", limit: int = 2000) -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         clean_timeframe = str(timeframe or "").upper().strip()
+        safe_limit = _clamp_int(limit, 2000, 1, 2000)
         trades = [
             trade
-            for trade in _latest_trade_memories(self.memory, clean_symbol)
+            for trade in _latest_trade_memories(self.memory, clean_symbol, limit=safe_limit)
             if trade.get("status") in CLOSED_STATUSES
             and (not clean_timeframe or str(trade.get("timeframe") or "").upper() == clean_timeframe)
         ]
@@ -70,8 +71,8 @@ class MT5AdaptiveStateEngine:
         }
 
 
-def _latest_trade_memories(memory: MemoryStore, symbol: str) -> list[dict[str, Any]]:
-    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=2000)
+def _latest_trade_memories(memory: MemoryStore, symbol: str, *, limit: int = 2000) -> list[dict[str, Any]]:
+    rows = memory.get_mt5_events("mt5_trade_memory", symbol or None, limit=_clamp_int(limit, 2000, 1, 2000))
     latest: dict[str, dict[str, Any]] = {}
     for row in rows:
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -200,6 +201,14 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value) if value is not None and value != "" else default
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
 
 
 def _symbol(value: object) -> str:

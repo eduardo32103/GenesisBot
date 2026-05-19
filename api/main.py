@@ -58,6 +58,7 @@ from api.routes.genesis import (
     get_genesis_mt5_health,
     get_genesis_mt5_instrument,
     get_genesis_mt5_journal_recent,
+    get_genesis_mt5_learning_status,
     get_genesis_mt5_memory_summary,
     get_genesis_mt5_no_trade_report,
     get_genesis_mt5_outcomes_recent,
@@ -233,7 +234,8 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_replay_status_endpoint": "/api/genesis/mt5/replay/status?symbol={symbol}",
         "genesis_mt5_replay_reset_endpoint": "/api/genesis/mt5/replay/reset",
         "genesis_mt5_learning_run_endpoint": "/api/genesis/mt5/learning/run",
-        "genesis_mt5_memory_summary_endpoint": "/api/genesis/mt5/memory/summary?symbol={symbol}",
+        "genesis_mt5_learning_status_endpoint": "/api/genesis/mt5/learning/status?symbol={symbol}",
+        "genesis_mt5_memory_summary_endpoint": "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50",
         "genesis_mt5_adaptive_state_endpoint": "/api/genesis/mt5/adaptive-state?symbol={symbol}",
         "genesis_mt5_strategy_profiles_endpoint": "/api/genesis/mt5/strategy-profiles?symbol={symbol}",
         "genesis_mt5_adaptive_recommendations_endpoint": "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}",
@@ -4555,7 +4557,19 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/mt5/memory/summary":
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
-            payload_data = get_genesis_mt5_memory_summary(symbol=symbol)
+            raw_limit = (query.get("limit") or ["50"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 50
+            payload_data = get_genesis_mt5_memory_summary(symbol=symbol, limit=limit)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/learning/status":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_learning_status(symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
