@@ -1629,6 +1629,61 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(recommendations["broker_touched"])
             self.assertFalse(recommendations["order_executed"])
 
+    def test_adaptive_recommendations_use_latest_state_and_profile_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
+            journal = MT5Journal(memory=store)
+            journal.save(
+                "mt5_adaptive_state",
+                "BTCUSD",
+                {
+                    "symbol": "BTCUSD",
+                    "normalized_symbol": "BTCUSD",
+                    "timeframe": "H1",
+                    "bot_state": "normal",
+                    "closed_trades": 16,
+                    "current_win_streak": 1,
+                    "current_loss_streak": 0,
+                    "rolling_win_rate": 68.75,
+                    "rolling_profit_factor": 1.7,
+                    "rolling_expectancy": 0.0169,
+                    "rolling_drawdown": 0.25,
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                },
+            )
+            journal.save(
+                "mt5_strategy_profile_stats",
+                "BTCUSD",
+                {
+                    "symbol": "BTCUSD",
+                    "normalized_symbol": "BTCUSD",
+                    "timeframe": "H1",
+                    "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+                    "regime": "mixed",
+                    "trades": 16,
+                    "wins": 11,
+                    "losses": 5,
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                },
+            )
+
+            recommendations = mt5_adaptive_recommendations(memory=store, symbol="BTCUSD", timeframe="H1")
+
+            self.assertEqual(recommendations["closed_trades"], 16)
+            self.assertEqual(recommendations["profile_stats_count"], 1)
+            self.assertEqual(recommendations["data_source_used"], "adaptive_state")
+            self.assertEqual(recommendations["current_loss_streak"], 0)
+            self.assertEqual(recommendations["bot_state"], "normal")
+            self.assertTrue(any("16 trades cerrados" in item["reason"] for item in recommendations["recommendations"]))
+            self.assertTrue(any(item["recommendation_type"] == "sample_warning" for item in recommendations["recommendations"]))
+            self.assertFalse(any(item["recommendation_type"] == "risk_adjustment" and "Racha de 3" in item["reason"] for item in recommendations["recommendations"]))
+            self.assertFalse(recommendations["broker_touched"])
+            self.assertFalse(recommendations["order_executed"])
+
     def test_genesis_chat_routes_mt5_questions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
