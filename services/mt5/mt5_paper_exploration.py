@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
+from services.mt5.mt5_promoted_profile import active_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
 from services.mt5.mt5_runtime_snapshot import (
     append_closed_shadow_trade,
@@ -31,6 +32,8 @@ def evaluate_paper_exploration(
     active_tick = tick if isinstance(tick, dict) and tick else snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
     state = snapshot.get("paper_exploration_state") if isinstance(snapshot.get("paper_exploration_state"), dict) else {}
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    timeframe = str(active_tick.get("timeframe") or "").upper().strip()
+    promoted_profile = active_promoted_profile(clean_symbol, timeframe, snapshot=snapshot) if timeframe else {}
     closed_event: dict[str, Any] | None = None
     opened_event: dict[str, Any] | None = None
 
@@ -48,9 +51,9 @@ def evaluate_paper_exploration(
         else:
             update_open_shadow_trade(clean_symbol, open_trade)
 
-    can_open, block_reason = _can_open(clean_symbol, normalized, active_tick, cfg, state, bool(open_trade and not closed_event))
+    can_open, block_reason = _can_open(clean_symbol, normalized, active_tick, cfg, state, bool(open_trade and not closed_event), promoted_profile)
     if can_open:
-        opened_event = _open_trade(clean_symbol, normalized, active_tick, cfg, snapshot)
+        opened_event = _open_trade(clean_symbol, normalized, active_tick, cfg, snapshot, promoted_profile)
         update_open_shadow_trade(clean_symbol, opened_event)
         enqueue_mt5_event("mt5_shadow_trades", clean_symbol, opened_event)
         state = {
@@ -71,6 +74,8 @@ def evaluate_paper_exploration(
         "paper_exploration_reason": (opened_event or closed_event or {}).get("reason")
         or (closed_event or {}).get("exit_reason")
         or block_reason,
+        "promoted_profile": promoted_profile or None,
+        "paper_forward_candidate_profile": promoted_profile.get("profile") if promoted_profile else "",
         "shadow_trade_id": (opened_event or open_trade or {}).get("shadow_trade_id") or "",
         "open_shadow_trade": opened_event or ({} if closed_event else open_trade),
         "closed_shadow_trade": closed_event,
@@ -142,6 +147,7 @@ def _can_open(
     cfg: MT5BridgeConfig,
     state: dict[str, Any],
     has_open_trade: bool,
+    promoted_profile: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     snapshot = get_snapshot(symbol) or {}
     closed_trades = snapshot.get("recent_closed_shadow_trades") if isinstance(snapshot.get("recent_closed_shadow_trades"), list) else []
@@ -170,23 +176,24 @@ def _can_open(
     if defense["negative_recent_edge"]:
         return False, "negative_recent_edge"
     score = _score(tick)
-    min_score = cfg.paper_exploration_min_score + (10 if defense["caution_mode"] else 0)
+    rules = _profile_rules(promoted_profile or {}, cfg)
+    min_score = rules["min_score"] + (10 if defense["caution_mode"] else 0)
     if score is not None and score < min_score:
         return False, "score_too_low"
     momentum = _number(tick.get("momentum_score"))
-    if momentum is not None and momentum < 55:
+    if momentum is not None and momentum < rules["min_momentum_score"]:
         return False, "momentum_score_low"
     trend = _number(tick.get("trend_score"))
-    if trend is not None and trend < 55:
+    if trend is not None and trend < rules["min_trend_score"]:
         return False, "trend_score_low"
     volatility = _number(tick.get("volatility_score"))
     if volatility is not None and volatility < 35:
         return False, "volatility_too_low"
     side = _candidate_side(tick, snapshot)
     rsi = _number(tick.get("rsi") or tick.get("rsi14"))
-    if rsi is not None and side == "sell" and rsi < 25 and not _explicit_confirmation(tick, "sell"):
+    if rsi is not None and side == "sell" and rsi < rules["min_rsi_for_sell"] and not _explicit_confirmation(tick, "sell"):
         return False, "rsi_extreme_block"
-    if rsi is not None and side == "buy" and rsi > 75 and not _explicit_confirmation(tick, "buy"):
+    if rsi is not None and side == "buy" and rsi > rules["max_rsi_for_buy"] and not _explicit_confirmation(tick, "buy"):
         return False, "rsi_extreme_block"
     if _late_entry_risk(tick, side=side, price=price, rsi=rsi) and not _explicit_confirmation(tick, side):
         return False, "late_entry_risk"
@@ -201,10 +208,17 @@ def _can_open(
         or trend is None
     ):
         return False, "time_stop_cluster"
-    return True, "paper_exploration_probe"
+    return True, "paper_forward_candidate_probe" if promoted_profile else "paper_exploration_probe"
 
 
-def _open_trade(symbol: str, normalized: str, tick: dict[str, Any], cfg: MT5BridgeConfig, snapshot: dict[str, Any]) -> dict[str, Any]:
+def _open_trade(
+    symbol: str,
+    normalized: str,
+    tick: dict[str, Any],
+    cfg: MT5BridgeConfig,
+    snapshot: dict[str, Any],
+    promoted_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     entry = _price(tick) or 0.0
     previous_tick = snapshot.get("previous_tick") if isinstance(snapshot.get("previous_tick"), dict) else {}
     previous_price = _price(previous_tick)
@@ -250,8 +264,13 @@ def _open_trade(symbol: str, normalized: str, tick: dict[str, Any], cfg: MT5Brid
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
-            "reason": "paper_exploration_probe",
+            "reason": "paper_forward_candidate_probe" if promoted_profile else "paper_exploration_probe",
             "confidence": "low",
+            "strategy_profile": promoted_profile.get("profile") if promoted_profile else "BTCUSD_PAPER_EXPLORATION_V1",
+            "filter_profile": promoted_profile.get("profile") if promoted_profile else "",
+            "profile_mode": promoted_profile.get("mode") if promoted_profile else "",
+            "promoted_by": promoted_profile.get("promoted_by") if promoted_profile else "",
+            "paper_forward_candidate": bool(promoted_profile),
             "features_snapshot": {
                 "spread": _spread(tick),
                 "score": _score(tick),
@@ -262,6 +281,7 @@ def _open_trade(symbol: str, normalized: str, tick: dict[str, Any], cfg: MT5Brid
                 "regime": str(tick.get("regime") or tick.get("market_regime") or ""),
                 "previous_price": previous_price,
                 "trigger": "fast_path_snapshot",
+                "promoted_profile": promoted_profile.get("profile") if promoted_profile else "",
             },
             "updated_at": now,
         }
@@ -527,6 +547,24 @@ def _candidate_side(tick: dict[str, Any], snapshot: dict[str, Any]) -> str:
     previous_tick = snapshot.get("previous_tick") if isinstance(snapshot.get("previous_tick"), dict) else {}
     previous_price = _price(previous_tick)
     return "sell" if price is not None and previous_price is not None and price < previous_price else "buy"
+
+
+def _profile_rules(promoted_profile: dict[str, Any], cfg: MT5BridgeConfig) -> dict[str, float]:
+    if promoted_profile.get("active") and promoted_profile.get("profile") == "quality_loose":
+        return {
+            "min_score": 50.0,
+            "min_momentum_score": 35.0,
+            "min_trend_score": 35.0,
+            "max_rsi_for_buy": 80.0,
+            "min_rsi_for_sell": 20.0,
+        }
+    return {
+        "min_score": float(cfg.paper_exploration_min_score or 45.0),
+        "min_momentum_score": 55.0,
+        "min_trend_score": 55.0,
+        "max_rsi_for_buy": 75.0,
+        "min_rsi_for_sell": 25.0,
+    }
 
 
 def _explicit_confirmation(tick: dict[str, Any], side: str) -> bool:

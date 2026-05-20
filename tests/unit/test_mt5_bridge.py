@@ -28,6 +28,7 @@ from api.routes.genesis import (
     get_genesis_mt5_paper_defense,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
+    get_genesis_mt5_promoted_profile,
     get_genesis_mt5_replay_results,
     get_genesis_mt5_replay_status,
     get_genesis_mt5_shadow_trades,
@@ -74,6 +75,7 @@ from services.mt5.mt5_bridge import (
     mt5_paper_defense,
     mt5_performance,
     mt5_performance_auto,
+    mt5_promoted_profile,
     mt5_replay_reset,
     mt5_replay_results,
     mt5_replay_run,
@@ -91,6 +93,7 @@ from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_ingest_queue import MT5IngestQueue
 from services.mt5.mt5_order_model import MT5OrderIntent
 from services.mt5.mt5_paper_defense import MT5PaperDefense
+from services.mt5.mt5_promoted_profile import record_promoted_profile, reset_promoted_profiles_for_tests
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
@@ -138,6 +141,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_strategy_profiles_endpoint"], "/api/genesis/mt5/strategy-profiles?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_adaptive_recommendations_endpoint"], "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_paper_defense_endpoint"], "/api/genesis/mt5/paper-defense?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_promoted_profile_endpoint"], "/api/genesis/mt5/promoted-profile?symbol={symbol}&timeframe={timeframe}")
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
         self.assertEqual(app["genesis_mt5_tick_endpoint"], "/api/genesis/mt5/tick")
@@ -2002,6 +2006,87 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "real_trade_disabled_paper_probe_created")
         self.assertFalse(decision["broker_touched"])
         self.assertFalse(decision["order_executed"])
+
+    def test_promoted_profile_endpoint_returns_quality_loose_candidate(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        profile = get_genesis_mt5_promoted_profile(symbol="BTCUSD", timeframe="M30")
+        repeated = mt5_promoted_profile(symbol="BTCUSD", timeframe="M30")
+
+        self.assertTrue(profile["ok"])
+        self.assertEqual(profile["profile"], "quality_loose")
+        self.assertEqual(profile["mode"], "paper_forward_candidate")
+        self.assertEqual(profile["promoted_by"], "walk_forward_optimizer")
+        self.assertTrue(profile["applies_to_paper_shadow"])
+        self.assertFalse(profile["applies_to_real_trading"])
+        self.assertEqual(repeated["profile"], "quality_loose")
+        self.assertFalse(profile["broker_touched"])
+        self.assertFalse(profile["order_executed"])
+
+    def test_quality_loose_candidate_applies_only_to_btcusd_m30_paper_shadow(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        weak_but_quality_loose_ok = {
+            "symbol": "BTCUSD",
+            "last": 100.0,
+            "spread": 10,
+            "score": 50,
+            "momentum_score": 40,
+            "trend_score": 40,
+            "volatility_score": 60,
+            "timeframe": "M30",
+        }
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                m30_tick = router.tick(weak_but_quality_loose_ok)
+                open_trade = (get_snapshot("BTCUSD") or {}).get("open_shadow_trade") or {}
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        router_h1 = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            h1_tick = router_h1.tick({**weak_but_quality_loose_ok, "timeframe": "H1"})
+
+        self.assertTrue(m30_tick["paper_exploration_created"])
+        self.assertEqual(m30_tick["paper_forward_candidate_profile"], "quality_loose")
+        self.assertEqual(open_trade["strategy_profile"], "quality_loose")
+        self.assertEqual(open_trade["profile_mode"], "paper_forward_candidate")
+        self.assertFalse(open_trade["broker_touched"])
+        self.assertFalse(open_trade["order_executed"])
+        self.assertFalse(h1_tick["paper_exploration_created"])
+        self.assertIn(h1_tick["paper_exploration_reason"], {"momentum_score_low", "trend_score_low"})
+
+    def test_promoted_profile_does_not_affect_h1_endpoint(self) -> None:
+        reset_promoted_profiles_for_tests()
+        h1 = get_genesis_mt5_promoted_profile(symbol="BTCUSD", timeframe="H1")
+
+        self.assertTrue(h1["ok"])
+        self.assertFalse(h1["active"])
+        self.assertEqual(h1["mode"], "observation_only")
+        self.assertEqual(h1["reason"], "no_candidate_for_symbol_timeframe")
+        self.assertFalse(h1["broker_touched"])
+        self.assertFalse(h1["order_executed"])
+
+    def test_promoted_profile_degrades_when_forward_stats_fail_guardrails(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        record_promoted_profile(symbol="BTCUSD", timeframe="M30", profile="quality_loose", mode="paper_forward_candidate")
+        update_snapshot("BTCUSD", {"latest_performance_summary": {"closed": 50, "profit_factor": 1.05, "expectancy": 0.04}})
+
+        profile = get_genesis_mt5_promoted_profile(symbol="BTCUSD", timeframe="M30")
+
+        self.assertEqual(profile["mode"], "observation_only")
+        self.assertFalse(profile["active"])
+        self.assertEqual(profile["degrade_reason"], "forward_pf_below_1_1")
+        self.assertFalse(profile["broker_touched"])
+        self.assertFalse(profile["order_executed"])
 
     def test_paper_exploration_enqueues_shadow_event_and_tick_stays_fast(self) -> None:
         from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests

@@ -154,3 +154,7 @@ def mt5_adaptive_recommendations(*, memory: MemoryStore | None = None, symbol: s
 
 def mt5_paper_defense(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     return build_router(memory).paper_defense_status(symbol=symbol)
+
+
+def mt5_promoted_profile(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).promoted_profile(symbol=symbol, timeframe=timeframe)

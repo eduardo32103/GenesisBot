@@ -32,6 +32,7 @@ from services.mt5.mt5_bridge import (
     mt5_outcomes_recent,
     mt5_performance,
     mt5_performance_auto,
+    mt5_promoted_profile,
     mt5_replay_results,
     mt5_replay_reset,
     mt5_replay_run,
@@ -222,3 +223,7 @@ def get_genesis_mt5_adaptive_recommendations(symbol: str = "", timeframe: str = 
 
 def get_genesis_mt5_paper_defense(symbol: str = "") -> dict[str, Any]:
     return mt5_paper_defense(symbol=symbol)
+
+
+def get_genesis_mt5_promoted_profile(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_promoted_profile(symbol=symbol, timeframe=timeframe)

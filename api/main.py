@@ -67,6 +67,7 @@ from api.routes.genesis import (
     get_genesis_mt5_paper_defense,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
+    get_genesis_mt5_promoted_profile,
     get_genesis_mt5_replay_results,
     get_genesis_mt5_replay_status,
     get_genesis_mt5_shadow_trades,
@@ -248,6 +249,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_strategy_profiles_endpoint": "/api/genesis/mt5/strategy-profiles?symbol={symbol}",
         "genesis_mt5_adaptive_recommendations_endpoint": "/api/genesis/mt5/adaptive-recommendations?symbol={symbol}",
         "genesis_mt5_paper_defense_endpoint": "/api/genesis/mt5/paper-defense?symbol={symbol}",
+        "genesis_mt5_promoted_profile_endpoint": "/api/genesis/mt5/promoted-profile?symbol={symbol}&timeframe={timeframe}",
         "dashboard_chart_endpoint": "/api/dashboard/chart?ticker={symbol}&range={range}",
         "money_flow_model_endpoint": "/api/dashboard/money-flow/model",
         "money_flow_detection_endpoint": "/api/dashboard/money-flow/detection",
@@ -4639,6 +4641,14 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_paper_defense(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/promoted-profile":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or ["M30"])[0]
+            payload_data = get_genesis_mt5_promoted_profile(symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

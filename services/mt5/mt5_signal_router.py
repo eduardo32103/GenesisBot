@@ -21,6 +21,7 @@ from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_paper_exploration import evaluate_paper_exploration, update_runtime_performance
 from services.mt5.mt5_performance import MT5Performance
+from services.mt5.mt5_promoted_profile import get_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_runtime_snapshot import (
     get_snapshot,
@@ -323,6 +324,7 @@ class MT5SignalRouter:
             snapshot = get_snapshot(symbol_info["mt5_symbol"]) or {}
             last_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
             exploration = evaluate_paper_exploration(symbol_info["mt5_symbol"], config=self.config, trigger="decision")
+            promoted_profile = exploration.get("promoted_profile") if isinstance(exploration.get("promoted_profile"), dict) else None
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
             if exploration.get("paper_exploration_created"):
                 reason = "real_trade_disabled_paper_probe_created"
@@ -360,6 +362,8 @@ class MT5SignalRouter:
                 "paper_exploration_enabled": self.config.paper_exploration_enabled,
                 "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
                 "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+                "promoted_profile": promoted_profile,
+                "paper_forward_candidate_profile": exploration.get("paper_forward_candidate_profile") or "",
                 "open_shadow_trade_id": exploration.get("shadow_trade_id") or "",
                 "shadow_trade_id": exploration.get("shadow_trade_id") if exploration.get("paper_exploration_created") else "",
                 "order_policy": "journal_only_no_broker",
@@ -911,6 +915,9 @@ class MT5SignalRouter:
     def paper_defense_status(self, *, symbol: str = "") -> dict[str, Any]:
         return self.paper_defense.state(symbol=symbol)
 
+    def promoted_profile(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return get_promoted_profile(symbol=symbol or "BTCUSD", timeframe=timeframe or "M30", memory=self.memory)
+
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
         direct_keys = ("is_demo", "demo", "account_type", "trade_mode", "account_trade_mode", "mode", "server", "broker", "account_id", "login", "account")
@@ -1081,6 +1088,8 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
         "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
         "paper_exploration_closed": bool(exploration.get("paper_exploration_closed")),
         "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+        "promoted_profile": exploration.get("promoted_profile") if isinstance(exploration.get("promoted_profile"), dict) else None,
+        "paper_forward_candidate_profile": exploration.get("paper_forward_candidate_profile") or "",
         "shadow_trade_id": exploration.get("shadow_trade_id") or "",
         "broker_touched": False,
         "order_executed": False,
