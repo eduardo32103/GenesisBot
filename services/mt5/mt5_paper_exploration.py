@@ -182,6 +182,14 @@ def _can_open(
     volatility = _number(tick.get("volatility_score"))
     if volatility is not None and volatility < 35:
         return False, "volatility_too_low"
+    side = _candidate_side(tick, snapshot)
+    rsi = _number(tick.get("rsi") or tick.get("rsi14"))
+    if rsi is not None and side == "sell" and rsi < 25 and not _explicit_confirmation(tick, "sell"):
+        return False, "rsi_extreme_block"
+    if rsi is not None and side == "buy" and rsi > 75 and not _explicit_confirmation(tick, "buy"):
+        return False, "rsi_extreme_block"
+    if _late_entry_risk(tick, side=side, price=price, rsi=rsi) and not _explicit_confirmation(tick, side):
+        return False, "late_entry_risk"
     regime = str(tick.get("regime") or tick.get("market_regime") or "").casefold().strip()
     if regime in {"chop", "range", "sideways"}:
         return False, "regime_chop"
@@ -250,6 +258,7 @@ def _open_trade(symbol: str, normalized: str, tick: dict[str, Any], cfg: MT5Brid
                 "momentum_score": _number(tick.get("momentum_score")),
                 "trend_score": _number(tick.get("trend_score")),
                 "volatility_score": _number(tick.get("volatility_score")),
+                "rsi": _number(tick.get("rsi") or tick.get("rsi14")),
                 "regime": str(tick.get("regime") or tick.get("market_regime") or ""),
                 "previous_price": previous_price,
                 "trigger": "fast_path_snapshot",
@@ -508,6 +517,49 @@ def _score(tick: dict[str, Any]) -> float | None:
         if value is not None:
             return value
     return None
+
+
+def _candidate_side(tick: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    action = str(tick.get("action") or tick.get("decision") or tick.get("side") or "").casefold().strip()
+    if action in {"buy", "sell"}:
+        return action
+    price = _price(tick)
+    previous_tick = snapshot.get("previous_tick") if isinstance(snapshot.get("previous_tick"), dict) else {}
+    previous_price = _price(previous_tick)
+    return "sell" if price is not None and previous_price is not None and price < previous_price else "buy"
+
+
+def _explicit_confirmation(tick: dict[str, Any], side: str) -> bool:
+    if bool(tick.get("breakout_confirmed")) or bool(tick.get("breakdown_confirmed")) or bool(tick.get("retest_confirmed")):
+        return True
+    confirmation = str(tick.get("confirmation") or tick.get("setup_confirmation") or "").casefold()
+    if side == "buy":
+        return "breakout" in confirmation or "retest" in confirmation
+    if side == "sell":
+        return "breakdown" in confirmation or "retest" in confirmation
+    return False
+
+
+def _late_entry_risk(tick: dict[str, Any], *, side: str, price: float, rsi: float | None) -> bool:
+    distance = _number(tick.get("ema20_distance_pct") or tick.get("distance_from_ema20_pct"))
+    if distance is None:
+        ema20 = _number(tick.get("ema20"))
+        if ema20 and price:
+            distance = abs(price - ema20) / price * 100
+    distance50 = _number(tick.get("ema50_distance_pct") or tick.get("distance_from_ema50_pct"))
+    if distance50 is None:
+        ema50 = _number(tick.get("ema50"))
+        if ema50 and price:
+            distance50 = abs(price - ema50) / price * 100
+    if distance is not None and abs(distance) > 3.5:
+        return True
+    if distance50 is not None and abs(distance50) > 7.0:
+        return True
+    if side == "sell" and rsi is not None and rsi < 30:
+        return True
+    if side == "buy" and rsi is not None and rsi > 70:
+        return True
+    return False
 
 
 def _minutes_open(trade: dict[str, Any]) -> float:

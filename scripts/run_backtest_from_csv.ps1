@@ -6,7 +6,8 @@ param(
     [double]$InitialBalance = 100000,
     [double]$SpreadPoints = 30,
     [double]$SlippagePoints = 5,
-    [double]$Commission = 0
+    [double]$Commission = 0,
+    [string]$FilterProfile = "quality_v2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,6 +41,7 @@ $body = [ordered]@{
     spread_points   = $SpreadPoints
     slippage_points = $SlippagePoints
     commission      = $Commission
+    filter_profile  = $FilterProfile
     mode            = "paper"
     save_results    = $true
 }
@@ -54,6 +56,7 @@ $response = Invoke-RestMethod -Method Post -Uri $url -ContentType "application/j
     status         = $response.status
     symbol         = $response.symbol
     timeframe      = $response.timeframe
+    filter_profile = $response.filter_profile
     total_trades   = $response.total_trades
     closed         = $response.closed
     wins           = $response.wins
@@ -62,6 +65,8 @@ $response = Invoke-RestMethod -Method Post -Uri $url -ContentType "application/j
     profit_factor  = $response.profit_factor
     expectancy     = $response.expectancy
     max_drawdown   = $response.max_drawdown
+    baseline_pf    = $response.filter_comparison.baseline_pf
+    quality_v2_pf  = $response.filter_comparison.quality_v2_pf
     broker_touched = $response.broker_touched
     order_executed = $response.order_executed
 } | Format-List

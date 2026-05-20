@@ -4,7 +4,7 @@ import csv
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -41,6 +41,7 @@ class BacktestSettings:
     max_bars: int
     timeout_seconds: float
     profile: str
+    filter_profile: str
     save_results: bool
 
 
@@ -71,6 +72,8 @@ class MT5Backtester:
                 trades, no_trade_count, blocked = _simulate(settings, bars, started)
                 summary = _metrics(trades, initial_balance=settings.initial_balance)
                 result = _result_payload(settings, bars, trades, summary, no_trade_count, blocked, started, warnings)
+                if body.get("compare_filters", True) is not False:
+                    result["filter_comparison"] = _filter_comparison(settings, bars)
             _store_latest(settings.normalized_symbol, result)
             if settings.save_results and self.memory is not None:
                 try:
@@ -165,11 +168,18 @@ def _settings(body: dict[str, Any], config: MT5RuntimeConfig) -> BacktestSetting
     symbol = str(body.get("symbol") or "BTCUSD").upper().strip()
     normalized = normalize_mt5_symbol(symbol) or symbol
     timeframe = str(body.get("timeframe") or "H1").upper().strip()
+    filter_profile = str(body.get("filter_profile") or "quality_v2").strip().casefold() or "quality_v2"
+    if filter_profile not in {"baseline", "quality_v2"}:
+        filter_profile = "quality_v2"
     max_bars = int(_number(body.get("max_bars") or body.get("bars")) or _number(os.getenv("MT5_BACKTEST_MAX_BARS")) or 2000)
     max_bars = max(10, min(max_bars, 10000))
     timeout_seconds = float(_number(body.get("timeout_seconds")) or _number(os.getenv("MT5_BACKTEST_TIMEOUT_SECONDS")) or 8.0)
     time_stop_min = float(_number(body.get("time_stop_min")) or config.paper_exploration_time_stop_min or 15.0)
     time_stop_bars = max(1, int((time_stop_min + _timeframe_minutes(timeframe) - 1) // _timeframe_minutes(timeframe)))
+    requested_min_score = _number(body.get("min_score"))
+    min_score = float(requested_min_score if requested_min_score is not None else config.paper_exploration_min_score or 45.0)
+    if filter_profile == "quality_v2" and requested_min_score is None:
+        min_score = max(min_score, 60.0)
     return BacktestSettings(
         symbol=symbol,
         normalized_symbol=normalized,
@@ -183,11 +193,12 @@ def _settings(body: dict[str, Any], config: MT5RuntimeConfig) -> BacktestSetting
         min_rr=max(1.0, float(_number(body.get("min_rr")) or config.paper_exploration_min_rr or 1.2)),
         risk_pct=float(_number(body.get("risk_pct")) or config.paper_exploration_risk_pct or 0.1),
         max_spread_points=float(_number(body.get("max_spread_points")) or config.paper_exploration_max_spread_points or 60.0),
-        min_score=float(_number(body.get("min_score")) or config.paper_exploration_min_score or 45.0),
+        min_score=min_score,
         time_stop_bars=time_stop_bars,
         max_bars=max_bars,
         timeout_seconds=max(1.0, min(timeout_seconds, 20.0)),
         profile=str(body.get("profile") or "BTCUSD_PAPER_EXPLORATION_V1").strip() or "BTCUSD_PAPER_EXPLORATION_V1",
+        filter_profile=filter_profile,
         save_results=bool(body.get("save_results") is True),
     )
 
@@ -303,7 +314,7 @@ def _simulate(
             no_trade_count += 1
             blocked.append("cooldown_active")
             continue
-        history = bars[:index]
+        history = bars[max(0, index - 80) : index]
         decision = _decision_from_history(history, settings)
         if not decision["actionable"]:
             no_trade_count += 1
@@ -347,14 +358,19 @@ def _decision_from_history(history: list[dict[str, Any]], settings: BacktestSett
     min_score = max(0.0, float(settings.min_score or 45.0))
     side = ""
     score = max(buy_score, sell_score)
+    raw_score = score
+    if settings.filter_profile == "quality_v2" and (trend_score < 40 or momentum_score < 40):
+        score = min(score, 60.0)
     if close > prev_close and close >= ema20 and momentum_score >= 55 and trend_score >= 55 and buy_score >= min_score:
         side = "buy"
-        score = buy_score
+        score = min(buy_score, score) if settings.filter_profile == "quality_v2" else buy_score
     elif close < prev_close and close <= ema20 and momentum_score <= 45 and trend_score <= 55 and sell_score >= min_score:
         side = "sell"
-        score = sell_score
+        score = min(sell_score, score) if settings.filter_profile == "quality_v2" else sell_score
     if not side:
-        if score < min_score:
+        if settings.filter_profile == "quality_v2" and (trend_score < 40 or momentum_score < 40):
+            reason = "weak_internal_scores"
+        elif score < min_score:
             reason = "score_too_low"
         else:
             reason = "waiting_confirmation"
@@ -365,12 +381,40 @@ def _decision_from_history(history: list[dict[str, Any]], settings: BacktestSett
             "trend_score": round(trend_score, 2),
             "momentum_score": round(momentum_score, 2),
             "volatility_score": round(volatility_score, 2),
+            "raw_score": raw_score,
+        }
+    quality_block = _quality_v2_block(
+        side=side,
+        close=close,
+        ema20=ema20,
+        ema50=ema50,
+        rsi=rsi,
+        trend_score=trend_score,
+        momentum_score=momentum_score,
+        score=score,
+        min_score=min_score,
+        history=history,
+        filter_profile=settings.filter_profile,
+    )
+    if quality_block:
+        return {
+            "actionable": False,
+            "reason": quality_block,
+            "score": round(score, 2),
+            "raw_score": raw_score,
+            "trend_score": round(trend_score, 2),
+            "momentum_score": round(momentum_score, 2),
+            "volatility_score": round(volatility_score, 2),
+            "rsi": round(rsi, 2),
+            "ema20": round(ema20, 6),
+            "ema50": round(ema50, 6),
         }
     regime = "trend" if volatility_score >= 35 else "chop"
     return {
         "actionable": True,
         "side": side,
-        "score": score,
+        "score": round(score, 2),
+        "raw_score": raw_score,
         "trend_score": round(trend_score, 2),
         "momentum_score": round(momentum_score, 2),
         "volatility_score": round(volatility_score, 2),
@@ -431,8 +475,10 @@ def _open_trade(settings: BacktestSettings, decision: dict[str, Any], bar: dict[
         "excluded_from_main_metrics": False,
         "confidence": decision.get("confidence") or "low",
         "reason": decision.get("reason") or "paper_exploration_backtest_signal",
+        "filter_profile": settings.filter_profile,
         "features_snapshot": {
             "score": decision.get("score"),
+            "raw_score": decision.get("raw_score"),
             "trend_score": decision.get("trend_score"),
             "momentum_score": decision.get("momentum_score"),
             "volatility_score": decision.get("volatility_score"),
@@ -555,6 +601,12 @@ def _metrics(trades: list[dict[str, Any]], *, initial_balance: float) -> dict[st
         "sell_win_rate": sell_stats["win_rate"],
         "buy_pf": buy_stats["profit_factor"],
         "sell_pf": sell_stats["profit_factor"],
+        "side_stats": {
+            "buy": _group_metric([trade for trade in closed if str(trade.get("side") or "").lower() == "buy"]),
+            "sell": _group_metric([trade for trade in closed if str(trade.get("side") or "").lower() == "sell"]),
+        },
+        "regime_stats": _group_stats(closed, "regime"),
+        "hour_stats": _hour_stats(closed),
         "trades_by_hour": _trades_by_hour(closed),
         "trades_by_regime": _trades_by_regime(closed),
         "equity_curve": equity_curve[-500:],
@@ -594,7 +646,12 @@ def _result_payload(
         "warnings": warnings,
         "save_results": settings.save_results,
         "saved": False,
+        "filter_profile": settings.filter_profile,
         **summary,
+        "blocked_reason_counts": _reason_counts(blocked),
+        "weak_internal_scores_count": blocked.count("weak_internal_scores"),
+        "late_entry_risk_count": blocked.count("late_entry_risk"),
+        "rsi_extreme_block_count": blocked.count("rsi_extreme_block"),
         **_safety(),
         "duration_ms": _elapsed_ms(started),
         "created_at": _now(),
@@ -620,6 +677,7 @@ def _empty_result(
         "timeframe": settings.timeframe,
         "source": settings.source,
         "mode": "paper",
+        "filter_profile": settings.filter_profile,
         "bars_loaded": 0,
         "warnings": warnings,
         "errors": errors or [],
@@ -636,6 +694,88 @@ def _empty_result(
 def _store_latest(symbol: str, result: dict[str, Any]) -> None:
     with _LATEST_LOCK:
         _LATEST_RESULTS[str(symbol or "").upper().strip() or "BTCUSD"] = dict(result)
+
+
+def _filter_comparison(settings: BacktestSettings, bars: list[dict[str, Any]]) -> dict[str, Any]:
+    baseline = _profile_summary(replace(settings, filter_profile="baseline", min_score=45.0), bars)
+    quality = _profile_summary(replace(settings, filter_profile="quality_v2", min_score=max(settings.min_score, 60.0)), bars)
+    return {
+        "baseline": baseline,
+        "quality_v2": quality,
+        "baseline_pf": baseline["profit_factor"],
+        "quality_v2_pf": quality["profit_factor"],
+        "baseline_drawdown": baseline["max_drawdown"],
+        "quality_v2_drawdown": quality["max_drawdown"],
+        "baseline_trades": baseline["total_trades"],
+        "quality_v2_trades": quality["total_trades"],
+        "pf_delta": round(quality["profit_factor"] - baseline["profit_factor"], 4),
+        "drawdown_delta": round(quality["max_drawdown"] - baseline["max_drawdown"], 6),
+        "trades_delta": int(quality["total_trades"] - baseline["total_trades"]),
+    }
+
+
+def _profile_summary(settings: BacktestSettings, bars: list[dict[str, Any]]) -> dict[str, Any]:
+    started = time.monotonic()
+    trades, _no_trade, blocked = _simulate(settings, bars, started)
+    summary = _metrics(trades, initial_balance=settings.initial_balance)
+    return {
+        "filter_profile": settings.filter_profile,
+        "total_trades": summary["total_trades"],
+        "closed": summary["closed"],
+        "wins": summary["wins"],
+        "losses": summary["losses"],
+        "win_rate": summary["win_rate"],
+        "profit_factor": summary["profit_factor"],
+        "expectancy": summary["expectancy"],
+        "net_pnl": summary["net_pnl"],
+        "max_drawdown": summary["max_drawdown"],
+        "blocked_reason_counts": _reason_counts(blocked),
+    }
+
+
+def _quality_v2_block(
+    *,
+    side: str,
+    close: float,
+    ema20: float,
+    ema50: float,
+    rsi: float,
+    trend_score: float,
+    momentum_score: float,
+    score: float,
+    min_score: float,
+    history: list[dict[str, Any]],
+    filter_profile: str,
+) -> str:
+    if filter_profile != "quality_v2":
+        return ""
+    confirmed_retest = _confirmed_breakout_or_retest(side, close, history, trend_score, momentum_score)
+    if side == "sell" and rsi < 25 and not confirmed_retest:
+        return "rsi_extreme_block"
+    if side == "buy" and rsi > 75 and not confirmed_retest:
+        return "rsi_extreme_block"
+    if (trend_score < 45 or momentum_score < 45) and not confirmed_retest:
+        return "weak_internal_scores"
+    if score < min_score:
+        return "weak_internal_scores"
+    distance20 = abs(close - ema20) / close * 100 if close and ema20 else 0.0
+    distance50 = abs(close - ema50) / close * 100 if close and ema50 else 0.0
+    if (distance20 > 3.5 or distance50 > 7.0 or (side == "sell" and rsi < 30) or (side == "buy" and rsi > 70)) and not confirmed_retest:
+        return "late_entry_risk"
+    return ""
+
+
+def _confirmed_breakout_or_retest(side: str, close: float, history: list[dict[str, Any]], trend_score: float, momentum_score: float) -> bool:
+    previous = history[:-1]
+    if len(previous) < 5:
+        return False
+    recent_high = max(float(row.get("high") or row.get("close") or close) for row in previous[-5:])
+    recent_low = min(float(row.get("low") or row.get("close") or close) for row in previous[-5:])
+    if side == "buy":
+        return close > recent_high and trend_score >= 55 and momentum_score >= 55
+    if side == "sell":
+        return close < recent_low and trend_score >= 45 and momentum_score >= 45
+    return False
 
 
 def _ema(values: list[float], length: int) -> float:
@@ -659,8 +799,25 @@ def _rsi(values: list[float], length: int) -> float:
     avg_gain = sum(gains) / max(len(window), 1)
     avg_loss = sum(losses) / max(len(window), 1)
     if avg_loss == 0:
-        return 70.0 if avg_gain > 0 else 50.0
+        return 100.0 if avg_gain > 0 else 50.0
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
+
+
+def _group_metric(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    wins = [trade for trade in trades if trade.get("status") == "win"]
+    losses = [trade for trade in trades if trade.get("status") == "loss"]
+    pnls = [float(_number(trade.get("pnl")) or 0.0) for trade in trades]
+    r_values = [float(_number(trade.get("r_multiple")) or 0.0) for trade in trades]
+    gross_win = sum(value for value in pnls if value > 0)
+    gross_loss = abs(sum(value for value in pnls if value < 0))
+    return {
+        "trades": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round((len(wins) / len(trades)) * 100, 2) if trades else 0.0,
+        "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else round(gross_win, 4) if gross_win else 0.0,
+        "expectancy": round(sum(r_values) / len(r_values), 4) if r_values else 0.0,
+    }
 
 
 def _side_stats(trades: list[dict[str, Any]], side: str) -> dict[str, float]:
@@ -672,6 +829,23 @@ def _side_stats(trades: list[dict[str, Any]], side: str) -> dict[str, float]:
         "win_rate": round((len(wins) / len(scoped)) * 100, 2) if scoped else 0.0,
         "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else round(gross_win, 4) if gross_win else 0.0,
     }
+
+
+def _group_stats(trades: list[dict[str, Any]], feature_key: str) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for trade in trades:
+        features = trade.get("features_snapshot") if isinstance(trade.get("features_snapshot"), dict) else {}
+        value = str(features.get(feature_key) or "unknown")
+        groups.setdefault(value, []).append(trade)
+    return {key: _group_metric(items) for key, items in sorted(groups.items())}
+
+
+def _hour_stats(trades: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for trade in trades:
+        hour = _hour_from_time(str(trade.get("opened_at") or ""))
+        groups.setdefault(hour, []).append(trade)
+    return {key: _group_metric(items) for key, items in sorted(groups.items())}
 
 
 def _equity_curve(trades: list[dict[str, Any]], initial_balance: float) -> list[dict[str, Any]]:
@@ -724,6 +898,14 @@ def _top_reasons(reasons: list[str]) -> list[dict[str, Any]]:
         clean = str(reason or "unknown")
         counts[clean] = counts.get(clean, 0) + 1
     return [{"reason": reason, "count": count} for reason, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]]
+
+
+def _reason_counts(reasons: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        clean = str(reason or "unknown")
+        counts[clean] = counts.get(clean, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: item[1], reverse=True))
 
 
 def _recent_loss_cluster(trades: list[dict[str, Any]]) -> bool:

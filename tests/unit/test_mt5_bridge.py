@@ -2480,6 +2480,7 @@ class MT5BridgeTests(unittest.TestCase):
                 "symbol": "BTCUSD",
                 "timeframe": "H1",
                 "bars_data": _backtest_buy_take_profit_bars(),
+                "filter_profile": "baseline",
                 "spread_points": 0,
                 "slippage_points": 0,
                 "commission": 0,
@@ -2504,6 +2505,7 @@ class MT5BridgeTests(unittest.TestCase):
                 "symbol": "BTCUSD",
                 "timeframe": "H1",
                 "bars_data": _backtest_buy_take_profit_bars(),
+                "filter_profile": "baseline",
                 "spread_points": 0,
                 "slippage_points": 0,
             }
@@ -2524,6 +2526,7 @@ class MT5BridgeTests(unittest.TestCase):
                 "symbol": "BTCUSD",
                 "timeframe": "H1",
                 "bars_data": _backtest_sell_take_profit_bars(),
+                "filter_profile": "baseline",
                 "spread_points": 0,
                 "slippage_points": 0,
             }
@@ -2542,6 +2545,7 @@ class MT5BridgeTests(unittest.TestCase):
                 "symbol": "BTCUSD",
                 "timeframe": "H1",
                 "bars_data": _backtest_buy_stop_loss_bars(),
+                "filter_profile": "baseline",
                 "spread_points": 0,
                 "slippage_points": 0,
             }
@@ -2558,6 +2562,7 @@ class MT5BridgeTests(unittest.TestCase):
                 "symbol": "BTCUSD",
                 "timeframe": "H1",
                 "bars_data": _backtest_time_stop_bars(),
+                "filter_profile": "baseline",
                 "spread_points": 0,
                 "slippage_points": 0,
                 "time_stop_min": 60,
@@ -2570,18 +2575,86 @@ class MT5BridgeTests(unittest.TestCase):
 
     def test_mt5_backtest_metrics_include_profit_factor_drawdown_and_sides(self) -> None:
         bars = _backtest_buy_take_profit_bars() + _backtest_sell_take_profit_bars()[1:] + _backtest_buy_stop_loss_bars()[1:]
-        result = MT5Backtester().run({"symbol": "BTCUSD", "timeframe": "H1", "bars_data": bars, "spread_points": 0})
+        result = MT5Backtester().run({"symbol": "BTCUSD", "timeframe": "H1", "bars_data": bars, "filter_profile": "baseline", "spread_points": 0})
 
         self.assertTrue(result["ok"])
         self.assertIn("profit_factor", result)
         self.assertIn("max_drawdown", result)
         self.assertIn("buy_win_rate", result)
         self.assertIn("sell_win_rate", result)
+        self.assertIn("side_stats", result)
+        self.assertIn("regime_stats", result)
+        self.assertIn("hour_stats", result)
         self.assertIn("trades_by_hour", result)
         self.assertIn("trades_by_regime", result)
         self.assertIsInstance(result["equity_curve"], list)
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
+
+    def test_mt5_backtest_quality_v2_blocks_sell_with_extreme_oversold_rsi(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "filter_profile": "quality_v2",
+                "bars_data": _backtest_oversold_sell_bars(),
+                "spread_points": 0,
+            }
+        )
+
+        self.assertEqual(result["total_trades"], 0)
+        self.assertGreaterEqual(result["blocked_reason_counts"].get("rsi_extreme_block", 0), 1)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_mt5_backtest_quality_v2_blocks_buy_with_extreme_overbought_rsi(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "filter_profile": "quality_v2",
+                "bars_data": _backtest_overbought_buy_bars(),
+                "spread_points": 0,
+            }
+        )
+
+        self.assertEqual(result["total_trades"], 0)
+        self.assertGreaterEqual(result["blocked_reason_counts"].get("rsi_extreme_block", 0), 1)
+
+    def test_mt5_backtest_quality_v2_blocks_weak_internal_scores_and_score_inflation(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "filter_profile": "quality_v2",
+                "bars_data": _backtest_weak_internal_high_vol_bars(),
+                "spread_points": 0,
+            }
+        )
+
+        self.assertEqual(result["total_trades"], 0)
+        self.assertGreaterEqual(result["weak_internal_scores_count"], 1)
+        self.assertGreaterEqual(result["blocked_reason_counts"].get("weak_internal_scores", 0), 1)
+
+    def test_mt5_backtest_filter_profiles_return_comparable_metrics(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "filter_profile": "quality_v2",
+                "bars_data": _backtest_weak_internal_high_vol_bars(),
+                "spread_points": 0,
+            }
+        )
+        comparison = result["filter_comparison"]
+
+        self.assertIn("baseline_pf", comparison)
+        self.assertIn("quality_v2_pf", comparison)
+        self.assertIn("baseline_drawdown", comparison)
+        self.assertIn("quality_v2_drawdown", comparison)
+        self.assertIn("baseline_trades", comparison)
+        self.assertIn("quality_v2_trades", comparison)
+        self.assertGreaterEqual(comparison["baseline_trades"], comparison["quality_v2_trades"])
 
     def test_mt5_backtest_avoids_first_bar_lookahead(self) -> None:
         result = mt5_backtest_run(
@@ -2609,6 +2682,7 @@ class MT5BridgeTests(unittest.TestCase):
                     "symbol": "BTCUSD",
                     "timeframe": "H1",
                     "bars_data": _backtest_buy_take_profit_bars() * 4,
+                    "filter_profile": "baseline",
                     "walk_forward": True,
                     "train_months": 1,
                     "test_months": 1,
@@ -2664,6 +2738,36 @@ def _backtest_time_stop_bars() -> list[dict[str, object]]:
         {"time": "2026-04-01T02:00:00+00:00", "open": 101.5, "high": 102.5, "low": 101.2, "close": 102.0},
         {"time": "2026-04-01T03:00:00+00:00", "open": 103.0, "high": 103.4, "low": 102.8, "close": 103.0},
         {"time": "2026-04-01T04:00:00+00:00", "open": 103.1, "high": 103.6, "low": 102.5, "close": 103.3},
+    ]
+
+
+def _backtest_overbought_buy_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-05-01T00:00:00+00:00", "open": 100.0, "high": 100.5, "low": 99.8, "close": 100.0},
+        {"time": "2026-05-01T01:00:00+00:00", "open": 101.0, "high": 101.5, "low": 100.8, "close": 101.0},
+        {"time": "2026-05-01T02:00:00+00:00", "open": 102.0, "high": 102.5, "low": 101.8, "close": 102.0},
+        {"time": "2026-05-01T03:00:00+00:00", "open": 103.0, "high": 103.5, "low": 102.8, "close": 103.0},
+        {"time": "2026-05-01T04:00:00+00:00", "open": 103.2, "high": 104.0, "low": 102.8, "close": 103.5},
+    ]
+
+
+def _backtest_oversold_sell_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-06-01T00:00:00+00:00", "open": 100.0, "high": 100.2, "low": 99.5, "close": 100.0},
+        {"time": "2026-06-01T01:00:00+00:00", "open": 99.0, "high": 99.2, "low": 98.5, "close": 99.0},
+        {"time": "2026-06-01T02:00:00+00:00", "open": 98.0, "high": 98.2, "low": 97.5, "close": 98.0},
+        {"time": "2026-06-01T03:00:00+00:00", "open": 97.0, "high": 97.2, "low": 96.5, "close": 97.0},
+        {"time": "2026-06-01T04:00:00+00:00", "open": 96.8, "high": 97.1, "low": 96.0, "close": 96.5},
+    ]
+
+
+def _backtest_weak_internal_high_vol_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-07-01T00:00:00+00:00", "open": 100.0, "high": 110.0, "low": 90.0, "close": 100.0},
+        {"time": "2026-07-01T01:00:00+00:00", "open": 101.0, "high": 112.0, "low": 91.0, "close": 101.0},
+        {"time": "2026-07-01T02:00:00+00:00", "open": 99.0, "high": 113.0, "low": 90.0, "close": 99.0},
+        {"time": "2026-07-01T03:00:00+00:00", "open": 98.0, "high": 115.0, "low": 89.0, "close": 98.0},
+        {"time": "2026-07-01T04:00:00+00:00", "open": 98.5, "high": 100.0, "low": 96.0, "close": 97.5},
     ]
 
 
