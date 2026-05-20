@@ -28,6 +28,11 @@ _DEFAULT_PROFILE = {
         "test_expectancy": 0.0612,
     },
     "guardrails": {
+        "early_guardrail_active": True,
+        "early_guardrail_min_trades": 10,
+        "early_guardrail_pf_min": 0.8,
+        "early_guardrail_expectancy_min": 0.0,
+        "early_guardrail_win_rate_min": 35.0,
         "min_forward_profit_factor": 1.1,
         "min_forward_expectancy": 0.0,
         "min_new_trades_before_degrade": 50,
@@ -131,6 +136,10 @@ def forward_profile_state(
         "expectancy": float(_number(stats.get("expectancy")) or 0.0),
         "max_drawdown": float(_number(stats.get("max_drawdown") or stats.get("drawdown")) or 0.0),
         "guardrails": profile.get("guardrails") or {},
+        "early_guardrail_active": bool((profile.get("guardrails") or {}).get("early_guardrail_active", True)),
+        "early_guardrail_min_trades": int(_number((profile.get("guardrails") or {}).get("early_guardrail_min_trades")) or 10),
+        "early_guardrail_pf_min": float(_number((profile.get("guardrails") or {}).get("early_guardrail_pf_min")) or 0.8),
+        "early_guardrail_win_rate_min": float(_number((profile.get("guardrails") or {}).get("early_guardrail_win_rate_min")) or 35.0),
         "degradation_reason": profile.get("degrade_reason") or "",
         "degraded": bool(profile.get("degraded")),
         "promoted_by": profile.get("promoted_by") or "",
@@ -208,11 +217,25 @@ def _degrade_if_needed(key: tuple[str, str], state: dict[str, Any], stats: dict[
     baseline = int(_number(state.get("forward_baseline_closed")) or 0)
     closed = int(_number(stats.get("closed") or stats.get("closed_trades")) or 0)
     new_trades = max(0, closed - baseline)
+    pf_value = _number(stats.get("profit_factor"))
+    expectancy_value = _number(stats.get("expectancy"))
+    win_rate_value = _number(stats.get("win_rate"))
+    pf = float(pf_value or 0.0)
+    expectancy = float(expectancy_value or 0.0)
+    win_rate = float(win_rate_value or 0.0)
+    early_active = bool(guardrails.get("early_guardrail_active", True))
+    early_min_trades = int(_number(guardrails.get("early_guardrail_min_trades")) or 10)
+    early_pf_min = float(_number(guardrails.get("early_guardrail_pf_min")) or 0.8)
+    early_expectancy_min = float(_number(guardrails.get("early_guardrail_expectancy_min")) or 0.0)
+    early_win_rate_min = float(_number(guardrails.get("early_guardrail_win_rate_min")) or 35.0)
+    early_bad_pf = pf_value is not None and pf < early_pf_min
+    early_bad_expectancy = expectancy_value is not None and expectancy < early_expectancy_min
+    early_bad_win_rate = win_rate_value is not None and win_rate < early_win_rate_min
+    if early_active and new_trades >= early_min_trades and (early_bad_pf or early_bad_expectancy or early_bad_win_rate):
+        return _apply_degradation(key, state, "early_forward_underperformance", guardrails)
     min_trades = int(_number(guardrails.get("min_new_trades_before_degrade")) or 50)
     if new_trades < min_trades:
         return False, ""
-    pf = float(_number(stats.get("profit_factor")) or 0.0)
-    expectancy = float(_number(stats.get("expectancy")) or 0.0)
     min_pf = float(_number(guardrails.get("min_forward_profit_factor")) or 1.1)
     min_exp = float(_number(guardrails.get("min_forward_expectancy")) or 0.0)
     max_drawdown = float(_number(guardrails.get("max_forward_drawdown")) or _max_drawdown_limit())
@@ -226,6 +249,10 @@ def _degrade_if_needed(key: tuple[str, str], state: dict[str, Any], stats: dict[
         reason = "forward_drawdown_limit_exceeded"
     if not reason:
         return False, ""
+    return _apply_degradation(key, state, reason, guardrails)
+
+
+def _apply_degradation(key: tuple[str, str], state: dict[str, Any], reason: str, guardrails: dict[str, Any]) -> tuple[bool, str]:
     updated = {
         **state,
         "mode": str(guardrails.get("degrade_to") or "observation_only"),

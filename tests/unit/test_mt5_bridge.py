@@ -2082,6 +2082,119 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertFalse(m15["broker_touched"])
         self.assertFalse(m15["order_executed"])
 
+    def test_promoted_profile_early_guardrail_degrades_on_low_profit_factor(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        record_promoted_profile(symbol="BTCUSD", timeframe="M30", profile="quality_loose", mode="paper_forward_candidate")
+        update_snapshot(
+            "BTCUSD",
+            {
+                "latest_performance_summary": {
+                    "closed": 10,
+                    "wins": 4,
+                    "losses": 6,
+                    "win_rate": 40.0,
+                    "profit_factor": 0.79,
+                    "expectancy": 0.01,
+                }
+            },
+        )
+
+        state = get_genesis_mt5_forward_profile_state(symbol="BTCUSD", timeframe="M30")
+
+        self.assertEqual(state["status"], "observation_only")
+        self.assertEqual(state["degradation_reason"], "early_forward_underperformance")
+        self.assertTrue(state["early_guardrail_active"])
+        self.assertEqual(state["early_guardrail_min_trades"], 10)
+        self.assertEqual(state["early_guardrail_pf_min"], 0.8)
+        self.assertEqual(state["early_guardrail_win_rate_min"], 35.0)
+        self.assertFalse(state["broker_touched"])
+        self.assertFalse(state["order_executed"])
+
+    def test_promoted_profile_early_guardrail_degrades_on_negative_expectancy(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        record_promoted_profile(symbol="BTCUSD", timeframe="M30", profile="quality_loose", mode="paper_forward_candidate")
+        update_snapshot(
+            "BTCUSD",
+            {
+                "latest_performance_summary": {
+                    "closed": 10,
+                    "wins": 4,
+                    "losses": 6,
+                    "win_rate": 40.0,
+                    "profit_factor": 0.9,
+                    "expectancy": -0.01,
+                }
+            },
+        )
+
+        state = mt5_forward_profile_state(symbol="BTCUSD", timeframe="M30")
+
+        self.assertEqual(state["status"], "observation_only")
+        self.assertEqual(state["degradation_reason"], "early_forward_underperformance")
+        self.assertFalse(state["broker_touched"])
+        self.assertFalse(state["order_executed"])
+
+    def test_promoted_profile_early_guardrail_degrades_on_low_win_rate(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        record_promoted_profile(symbol="BTCUSD", timeframe="M30", profile="quality_loose", mode="paper_forward_candidate")
+        update_snapshot(
+            "BTCUSD",
+            {
+                "latest_performance_summary": {
+                    "closed": 10,
+                    "wins": 3,
+                    "losses": 7,
+                    "win_rate": 34.0,
+                    "profit_factor": 0.9,
+                    "expectancy": 0.01,
+                }
+            },
+        )
+
+        state = mt5_forward_profile_state(symbol="BTCUSD", timeframe="M30")
+
+        self.assertEqual(state["status"], "observation_only")
+        self.assertEqual(state["degradation_reason"], "early_forward_underperformance")
+        self.assertFalse(state["broker_touched"])
+        self.assertFalse(state["order_executed"])
+
+    def test_promoted_profile_early_guardrail_waits_for_min_trades(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        record_promoted_profile(symbol="BTCUSD", timeframe="M30", profile="quality_loose", mode="paper_forward_candidate")
+        update_snapshot(
+            "BTCUSD",
+            {
+                "latest_performance_summary": {
+                    "closed": 9,
+                    "wins": 1,
+                    "losses": 8,
+                    "win_rate": 11.11,
+                    "profit_factor": 0.1,
+                    "expectancy": -0.2,
+                }
+            },
+        )
+
+        state = get_genesis_mt5_forward_profile_state(symbol="BTCUSD", timeframe="M30")
+
+        self.assertEqual(state["status"], "paper_forward_candidate")
+        self.assertEqual(state["degradation_reason"], "")
+        self.assertEqual(state["trades_forward"], 9)
+        self.assertFalse(state["broker_touched"])
+        self.assertFalse(state["order_executed"])
+
     def test_promoted_profile_degrades_when_forward_stats_fail_guardrails(self) -> None:
         from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
 
