@@ -16,6 +16,7 @@ from services.mt5.mt5_bridge import (
     mt5_debug_storage,
     mt5_decision,
     mt5_forward_test,
+    mt5_forward_replay_run,
     mt5_forward_profile_state,
     mt5_health,
     mt5_instrument,
@@ -176,6 +177,10 @@ def post_genesis_mt5_backtest_optimize(payload: dict[str, Any] | None = None) ->
 
 def get_genesis_mt5_backtest_latest(symbol: str = "") -> dict[str, Any]:
     return mt5_backtest_latest(symbol=symbol)
+
+
+def post_genesis_mt5_forward_replay_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_forward_replay_run(payload)
 
 
 def post_genesis_mt5_learning_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:

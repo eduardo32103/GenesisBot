@@ -128,6 +128,10 @@ def mt5_backtest_latest(*, memory: MemoryStore | None = None, symbol: str = "") 
     return build_router(memory).backtest_latest(symbol=symbol)
 
 
+def mt5_forward_replay_run(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).forward_replay_run(payload)
+
+
 def mt5_learning_run(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).learning_run(payload)
 

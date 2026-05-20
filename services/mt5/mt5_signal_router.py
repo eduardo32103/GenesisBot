@@ -14,6 +14,7 @@ from services.mt5.mt5_account_state import normalize_account_state
 from services.mt5.mt5_backtester import MT5Backtester
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
+from services.mt5.mt5_forward_replay import MT5ForwardReplay
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event, ingest_status
 from services.mt5.mt5_journal import MT5Journal
@@ -61,6 +62,7 @@ class MT5SignalRouter:
         self._adaptive_recommendation_engine: MT5AdaptiveRecommendationEngine | None = None
         self._paper_defense: MT5PaperDefense | None = None
         self._backtester: MT5Backtester | None = None
+        self._forward_replay: MT5ForwardReplay | None = None
 
     def _memory(self) -> MemoryStore:
         if self.memory is None:
@@ -120,6 +122,12 @@ class MT5SignalRouter:
         if self._backtester is None:
             self._backtester = MT5Backtester(memory=self.memory, config=self.config)
         return self._backtester
+
+    @property
+    def forward_replay(self) -> MT5ForwardReplay:
+        if self._forward_replay is None:
+            self._forward_replay = MT5ForwardReplay(memory=self.memory, config=self.config)
+        return self._forward_replay
 
     def health(self) -> dict[str, Any]:
         return {
@@ -933,6 +941,9 @@ class MT5SignalRouter:
 
     def backtest_latest(self, *, symbol: str = "") -> dict[str, Any]:
         return self.backtester.latest(symbol=symbol)
+
+    def forward_replay_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.forward_replay.run(payload)
 
     def learning_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.trade_memory_engine.run_learning(payload)

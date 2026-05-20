@@ -38,6 +38,7 @@ from api.routes.genesis import (
     post_genesis_mt5_account_sync,
     post_genesis_mt5_backtest_optimize,
     post_genesis_mt5_backtest_run,
+    post_genesis_mt5_forward_replay_run,
     post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
@@ -63,6 +64,7 @@ from services.mt5.mt5_bridge import (
     mt5_debug_storage,
     mt5_decision,
     mt5_forward_test,
+    mt5_forward_replay_run,
     mt5_forward_profile_state,
     mt5_instrument,
     mt5_journal_recent,
@@ -136,6 +138,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_backtest_run_endpoint"], "/api/genesis/mt5/backtest/run")
         self.assertEqual(app["genesis_mt5_backtest_optimize_endpoint"], "/api/genesis/mt5/backtest/optimize")
         self.assertEqual(app["genesis_mt5_backtest_latest_endpoint"], "/api/genesis/mt5/backtest/latest?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_forward_replay_run_endpoint"], "/api/genesis/mt5/forward-replay/run")
         self.assertEqual(app["genesis_mt5_learning_run_endpoint"], "/api/genesis/mt5/learning/run")
         self.assertEqual(app["genesis_mt5_learning_status_endpoint"], "/api/genesis/mt5/learning/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_memory_summary_endpoint"], "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50")
@@ -2782,17 +2785,24 @@ class MT5BridgeTests(unittest.TestCase):
     def test_mt5_history_export_scripts_are_read_only(self) -> None:
         exporter = Path("scripts") / "export_mt5_history.py"
         runner = Path("scripts") / "run_backtest_from_csv.ps1"
+        forward_replay_runner = Path("scripts") / "run_forward_replay_from_csv.ps1"
         exporter_content = exporter.read_text(encoding="utf-8")
         runner_content = runner.read_text(encoding="utf-8")
+        forward_replay_content = forward_replay_runner.read_text(encoding="utf-8")
 
         self.assertIn("copy_rates_from_pos", exporter_content)
         self.assertIn('"time", "open", "high", "low", "close", "volume"', exporter_content)
         self.assertIn("data/backtests/BTCUSD_H1.csv", exporter_content)
         self.assertIn("/api/genesis/mt5/backtest/run", runner_content)
+        self.assertIn("/api/genesis/mt5/forward-replay/run", forward_replay_content)
+        self.assertIn("data/backtests/BTCUSD_M30_5000.csv", forward_replay_content)
+        self.assertIn("checkpoints", forward_replay_content)
         self.assertIn("save_results    = $true", runner_content)
         self.assertIn("broker_touched", runner_content)
         self.assertIn("order_executed", runner_content)
-        combined = f"{exporter_content}\n{runner_content}".casefold()
+        self.assertIn("broker_touched", forward_replay_content)
+        self.assertIn("order_executed", forward_replay_content)
+        combined = f"{exporter_content}\n{runner_content}\n{forward_replay_content}".casefold()
         self.assertNotIn("order_send", combined)
         self.assertNotIn("ordersend", combined)
         self.assertNotIn("mt5.login", combined)
@@ -2823,6 +2833,68 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(latest["result"]["symbol"], "BTCUSD")
         self.assertFalse(latest["broker_touched"])
         self.assertFalse(latest["order_executed"])
+
+    def test_mt5_forward_replay_endpoint_is_isolated_and_paper_only(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        result = post_genesis_mt5_forward_replay_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M30",
+                "profile": "quality_loose",
+                "bars_data": _forward_replay_loss_bars(160),
+                "spread_points": 0,
+                "slippage_points": 0,
+                "commission": 0,
+                "checkpoints": [10, 25, 50, 100],
+                "persist": False,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["api_status"], "mt5_forward_replay_completed")
+        self.assertEqual(result["status"], "observation_only")
+        self.assertEqual(result["profile"], "quality_loose")
+        self.assertEqual(result["timeframe"], "M30")
+        self.assertEqual(result["closed"], 10)
+        self.assertTrue(result["degraded"])
+        self.assertEqual(result["degradation_reason"], "early_forward_underperformance")
+        self.assertTrue(result["checkpoints"][0]["reached"])
+        self.assertTrue(result["checkpoints"][0]["degraded"])
+        self.assertIn("stop_loss", result["exit_reason_counts"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+        self.assertFalse(result["live_runtime_mutated"])
+        self.assertFalse(result["promoted_profile_mutated"])
+        self.assertFalse(result["shadow_trades_mutated"])
+        self.assertIsNone(get_snapshot("BTCUSD", "M30"))
+
+    def test_mt5_forward_replay_accepts_csv_text_and_defaults_to_no_persist(self) -> None:
+        csv_text = _bars_to_csv(_forward_replay_loss_bars(80))
+        result = mt5_forward_replay_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M30",
+                "profile": "quality_loose",
+                "csv_text": csv_text,
+                "spread_points": 0,
+                "slippage_points": 0,
+                "checkpoints": [10],
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["api_status"], "mt5_forward_replay_completed")
+        self.assertGreaterEqual(result["bars_loaded"], 10)
+        self.assertFalse(result["persist"])
+        self.assertFalse(result["saved"])
+        self.assertIn("recent_trades", result)
+        self.assertIn("buy_win_rate", result)
+        self.assertIn("sell_pf", result)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
 
     def test_mt5_backtest_buy_take_profit_calculates_pnl(self) -> None:
         result = mt5_backtest_run(
@@ -3140,6 +3212,44 @@ def _backtest_optimizer_bars(count: int = 120) -> list[dict[str, object]]:
         )
         price = close
     return bars
+
+
+def _forward_replay_loss_bars(count: int = 160) -> list[dict[str, object]]:
+    bars: list[dict[str, object]] = []
+    price = 100.0
+    for index in range(count):
+        close = price + 1.0 if index % 5 < 4 else price - 4.0
+        open_price = price
+        bars.append(
+            {
+                "time": f"2026-07-{(index // 48) + 1:02d}T{(index % 48) // 2:02d}:{'30' if index % 2 else '00'}:00+00:00",
+                "open": round(open_price, 6),
+                "high": round(max(open_price, close) + 0.5, 6),
+                "low": round(min(open_price, close) - 2.0, 6),
+                "close": round(close, 6),
+                "volume": 1000 + index,
+            }
+        )
+        price = close
+    return bars
+
+
+def _bars_to_csv(bars: list[dict[str, object]]) -> str:
+    lines = ["time,open,high,low,close,volume"]
+    for bar in bars:
+        lines.append(
+            ",".join(
+                [
+                    str(bar.get("time") or ""),
+                    str(bar.get("open") or ""),
+                    str(bar.get("high") or ""),
+                    str(bar.get("low") or ""),
+                    str(bar.get("close") or ""),
+                    str(bar.get("volume") or 0),
+                ]
+            )
+        )
+    return "\n".join(lines)
 
 
 def _backtest_buy_take_profit_bars() -> list[dict[str, object]]:

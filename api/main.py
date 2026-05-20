@@ -84,6 +84,7 @@ from api.routes.genesis import (
     post_genesis_mt5_learning_run,
     post_genesis_mt5_backtest_optimize,
     post_genesis_mt5_backtest_run,
+    post_genesis_mt5_forward_replay_run,
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_signal,
     post_genesis_mt5_tick,
@@ -243,6 +244,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_backtest_run_endpoint": "/api/genesis/mt5/backtest/run",
         "genesis_mt5_backtest_optimize_endpoint": "/api/genesis/mt5/backtest/optimize",
         "genesis_mt5_backtest_latest_endpoint": "/api/genesis/mt5/backtest/latest?symbol={symbol}",
+        "genesis_mt5_forward_replay_run_endpoint": "/api/genesis/mt5/forward-replay/run",
         "genesis_mt5_learning_run_endpoint": "/api/genesis/mt5/learning/run",
         "genesis_mt5_learning_status_endpoint": "/api/genesis/mt5/learning/status?symbol={symbol}",
         "genesis_mt5_memory_summary_endpoint": "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50",
@@ -4138,6 +4140,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/backtest/optimize":
             result = post_genesis_mt5_backtest_optimize(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/forward-replay/run":
+            result = post_genesis_mt5_forward_replay_run(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
