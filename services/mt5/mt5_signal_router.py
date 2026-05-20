@@ -11,6 +11,7 @@ from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol, resolve_instrument, symbol_aliases
 from services.mt5.mt5_account_state import normalize_account_state
+from services.mt5.mt5_backtester import MT5Backtester
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
@@ -58,6 +59,7 @@ class MT5SignalRouter:
         self._adaptive_state_engine: MT5AdaptiveStateEngine | None = None
         self._adaptive_recommendation_engine: MT5AdaptiveRecommendationEngine | None = None
         self._paper_defense: MT5PaperDefense | None = None
+        self._backtester: MT5Backtester | None = None
 
     def _memory(self) -> MemoryStore:
         if self.memory is None:
@@ -111,6 +113,12 @@ class MT5SignalRouter:
         if self._paper_defense is None:
             self._paper_defense = MT5PaperDefense(memory=self._memory())
         return self._paper_defense
+
+    @property
+    def backtester(self) -> MT5Backtester:
+        if self._backtester is None:
+            self._backtester = MT5Backtester(memory=self.memory, config=self.config)
+        return self._backtester
 
     def health(self) -> dict[str, Any]:
         return {
@@ -853,6 +861,12 @@ class MT5SignalRouter:
         }
         event = self.journal.save("mt5_replay_runs", symbol or "MT5", reset)
         return {"ok": True, "status": "mt5_replay_reset_recorded", "event": event, **reset}
+
+    def backtest_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.backtester.run(payload)
+
+    def backtest_latest(self, *, symbol: str = "") -> dict[str, Any]:
+        return self.backtester.latest(symbol=symbol)
 
     def learning_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.trade_memory_engine.run_learning(payload)

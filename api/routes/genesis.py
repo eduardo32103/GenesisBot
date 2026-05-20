@@ -9,6 +9,8 @@ from services.mt5.mt5_bridge import (
     mt5_adaptive_recommendations,
     mt5_adaptive_state,
     mt5_auto_forward_status,
+    mt5_backtest_latest,
+    mt5_backtest_run,
     mt5_config,
     mt5_debug_storage,
     mt5_decision,
@@ -159,6 +161,14 @@ def get_genesis_mt5_replay_status(symbol: str = "") -> dict[str, Any]:
 
 def post_genesis_mt5_replay_reset(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_replay_reset(payload)
+
+
+def post_genesis_mt5_backtest_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_backtest_run(payload)
+
+
+def get_genesis_mt5_backtest_latest(symbol: str = "") -> dict[str, Any]:
+    return mt5_backtest_latest(symbol=symbol)
 
 
 def post_genesis_mt5_learning_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:

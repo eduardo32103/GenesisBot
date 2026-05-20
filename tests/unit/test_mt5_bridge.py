@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
@@ -12,6 +13,7 @@ from api.routes.genesis import (
     get_genesis_mt5_adaptive_recommendations,
     get_genesis_mt5_adaptive_state,
     get_genesis_mt5_auto_forward_status,
+    get_genesis_mt5_backtest_latest,
     get_genesis_mt5_config,
     get_genesis_mt5_debug_storage,
     get_genesis_mt5_decision,
@@ -32,6 +34,7 @@ from api.routes.genesis import (
     get_genesis_mt5_status,
     get_genesis_mt5_strategy_profiles,
     post_genesis_mt5_account_sync,
+    post_genesis_mt5_backtest_run,
     post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
@@ -50,6 +53,8 @@ from services.mt5.mt5_bridge import (
     mt5_adaptive_state,
     mt5_auto_forward_status,
     mt5_account_sync,
+    mt5_backtest_latest,
+    mt5_backtest_run,
     mt5_config,
     mt5_debug_storage,
     mt5_decision,
@@ -79,6 +84,7 @@ from services.mt5.mt5_bridge import (
 )
 from services.mt5.mt5_config import is_paper_exploration_enabled
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
+from services.mt5.mt5_backtester import MT5Backtester
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_ingest_queue import MT5IngestQueue
 from services.mt5.mt5_order_model import MT5OrderIntent
@@ -120,6 +126,8 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_replay_results_endpoint"], "/api/genesis/mt5/replay/results?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_replay_status_endpoint"], "/api/genesis/mt5/replay/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_replay_reset_endpoint"], "/api/genesis/mt5/replay/reset")
+        self.assertEqual(app["genesis_mt5_backtest_run_endpoint"], "/api/genesis/mt5/backtest/run")
+        self.assertEqual(app["genesis_mt5_backtest_latest_endpoint"], "/api/genesis/mt5/backtest/latest?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_learning_run_endpoint"], "/api/genesis/mt5/learning/run")
         self.assertEqual(app["genesis_mt5_learning_status_endpoint"], "/api/genesis/mt5/learning/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_memory_summary_endpoint"], "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50")
@@ -2445,6 +2453,198 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("WebRequest", content)
         self.assertNotIn("FMP_API_KEY", content)
         self.assertNotIn("OPENAI_API_KEY", content)
+
+    def test_mt5_backtest_endpoint_is_paper_only_and_exposes_latest(self) -> None:
+        result = post_genesis_mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_buy_take_profit_bars(),
+                "spread_points": 0,
+                "slippage_points": 0,
+                "commission": 0,
+                "save_results": False,
+            }
+        )
+        latest = get_genesis_mt5_backtest_latest(symbol="BTCUSD")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "mt5_backtest_completed")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+        self.assertGreaterEqual(result["total_trades"], 1)
+        self.assertEqual(latest["result"]["symbol"], "BTCUSD")
+        self.assertFalse(latest["broker_touched"])
+        self.assertFalse(latest["order_executed"])
+
+    def test_mt5_backtest_buy_take_profit_calculates_pnl(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_buy_take_profit_bars(),
+                "spread_points": 0,
+                "slippage_points": 0,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["wins"], 1)
+        self.assertEqual(result["losses"], 0)
+        self.assertEqual(result["exit_reason_counts"].get("take_profit"), 1)
+        self.assertGreater(result["net_pnl"], 0)
+        self.assertGreaterEqual(result["profit_factor"], 1.0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_mt5_backtest_sell_take_profit_calculates_pnl(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_sell_take_profit_bars(),
+                "spread_points": 0,
+                "slippage_points": 0,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["wins"], 1)
+        self.assertEqual(result["losses"], 0)
+        self.assertEqual(result["exit_reason_counts"].get("take_profit"), 1)
+        self.assertEqual(result["recent_trades"][0]["side"], "sell")
+        self.assertGreater(result["net_pnl"], 0)
+
+    def test_mt5_backtest_closes_by_stop_loss(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_buy_stop_loss_bars(),
+                "spread_points": 0,
+                "slippage_points": 0,
+            }
+        )
+
+        self.assertEqual(result["losses"], 1)
+        self.assertEqual(result["exit_reason_counts"].get("stop_loss"), 1)
+        self.assertLess(result["net_pnl"], 0)
+        self.assertFalse(result["order_executed"])
+
+    def test_mt5_backtest_closes_by_time_stop(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_time_stop_bars(),
+                "spread_points": 0,
+                "slippage_points": 0,
+                "time_stop_min": 60,
+            }
+        )
+
+        self.assertEqual(result["closed"], 1)
+        self.assertEqual(result["exit_reason_counts"].get("time_stop"), 1)
+        self.assertIn(result["recent_trades"][0]["status"], {"win", "loss", "breakeven"})
+
+    def test_mt5_backtest_metrics_include_profit_factor_drawdown_and_sides(self) -> None:
+        bars = _backtest_buy_take_profit_bars() + _backtest_sell_take_profit_bars()[1:] + _backtest_buy_stop_loss_bars()[1:]
+        result = MT5Backtester().run({"symbol": "BTCUSD", "timeframe": "H1", "bars_data": bars, "spread_points": 0})
+
+        self.assertTrue(result["ok"])
+        self.assertIn("profit_factor", result)
+        self.assertIn("max_drawdown", result)
+        self.assertIn("buy_win_rate", result)
+        self.assertIn("sell_win_rate", result)
+        self.assertIn("trades_by_hour", result)
+        self.assertIn("trades_by_regime", result)
+        self.assertIsInstance(result["equity_curve"], list)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_mt5_backtest_avoids_first_bar_lookahead(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": [
+                    {"time": "2026-01-01T00:00:00+00:00", "open": 100, "high": 200, "low": 100, "close": 100},
+                    {"time": "2026-01-01T01:00:00+00:00", "open": 100, "high": 100, "low": 100, "close": 100},
+                    {"time": "2026-01-01T02:00:00+00:00", "open": 100, "high": 100, "low": 100, "close": 100},
+                    {"time": "2026-01-01T03:00:00+00:00", "open": 100, "high": 100, "low": 100, "close": 100},
+                ],
+                "spread_points": 0,
+            }
+        )
+
+        self.assertEqual(result["total_trades"], 0)
+        self.assertGreaterEqual(result["no_trade_count"], 1)
+        self.assertNotIn("take_profit", result["exit_reason_counts"])
+
+    def test_mt5_backtest_walk_forward_and_fast_path_remain_separate(self) -> None:
+        with patch.dict(os.environ, {"MT5_FAST_PATH_ONLY": "true", "MT5_PAPER_EXPLORATION_ENABLED": "false"}, clear=False):
+            backtest = mt5_backtest_run(
+                {
+                    "symbol": "BTCUSD",
+                    "timeframe": "H1",
+                    "bars_data": _backtest_buy_take_profit_bars() * 4,
+                    "walk_forward": True,
+                    "train_months": 1,
+                    "test_months": 1,
+                    "spread_points": 0,
+                }
+            )
+            tick = mt5_tick({"symbol": "BTCUSD", "bid": 100, "ask": 100.1, "last": 100.05, "timeframe": "H1", "source": "unit"})
+            decision = mt5_decision("BTCUSD")
+
+        self.assertTrue(backtest["ok"])
+        self.assertTrue(backtest["walk_forward"])
+        self.assertIn("walk_forward_results", backtest)
+        self.assertTrue(tick["ok"])
+        self.assertTrue(decision["ok"])
+        self.assertFalse(tick["broker_touched"])
+        self.assertFalse(decision["order_executed"])
+
+
+def _backtest_buy_take_profit_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-01-01T00:00:00+00:00", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+        {"time": "2026-01-01T01:00:00+00:00", "open": 100.5, "high": 101.5, "low": 100.2, "close": 101.0},
+        {"time": "2026-01-01T02:00:00+00:00", "open": 101.5, "high": 102.5, "low": 101.2, "close": 102.0},
+        {"time": "2026-01-01T03:00:00+00:00", "open": 103.0, "high": 103.4, "low": 102.8, "close": 103.0},
+        {"time": "2026-01-01T04:00:00+00:00", "open": 103.2, "high": 105.8, "low": 103.0, "close": 105.2},
+    ]
+
+
+def _backtest_sell_take_profit_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-02-01T00:00:00+00:00", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+        {"time": "2026-02-01T01:00:00+00:00", "open": 99.5, "high": 99.8, "low": 98.8, "close": 99.0},
+        {"time": "2026-02-01T02:00:00+00:00", "open": 98.5, "high": 98.8, "low": 97.8, "close": 98.0},
+        {"time": "2026-02-01T03:00:00+00:00", "open": 97.0, "high": 97.2, "low": 96.8, "close": 97.0},
+        {"time": "2026-02-01T04:00:00+00:00", "open": 96.8, "high": 97.1, "low": 94.8, "close": 95.2},
+    ]
+
+
+def _backtest_buy_stop_loss_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-03-01T00:00:00+00:00", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+        {"time": "2026-03-01T01:00:00+00:00", "open": 100.5, "high": 101.5, "low": 100.2, "close": 101.0},
+        {"time": "2026-03-01T02:00:00+00:00", "open": 101.5, "high": 102.5, "low": 101.2, "close": 102.0},
+        {"time": "2026-03-01T03:00:00+00:00", "open": 103.0, "high": 103.4, "low": 102.8, "close": 103.0},
+        {"time": "2026-03-01T04:00:00+00:00", "open": 102.8, "high": 103.0, "low": 101.0, "close": 101.2},
+    ]
+
+
+def _backtest_time_stop_bars() -> list[dict[str, object]]:
+    return [
+        {"time": "2026-04-01T00:00:00+00:00", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+        {"time": "2026-04-01T01:00:00+00:00", "open": 100.5, "high": 101.5, "low": 100.2, "close": 101.0},
+        {"time": "2026-04-01T02:00:00+00:00", "open": 101.5, "high": 102.5, "low": 101.2, "close": 102.0},
+        {"time": "2026-04-01T03:00:00+00:00", "open": 103.0, "high": 103.4, "low": 102.8, "close": 103.0},
+        {"time": "2026-04-01T04:00:00+00:00", "open": 103.1, "high": 103.6, "low": 102.5, "close": 103.3},
+    ]
 
 
 def _save_closed_shadow_trade(

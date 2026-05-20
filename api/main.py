@@ -51,6 +51,7 @@ from api.routes.genesis import (
     get_genesis_mt5_adaptive_state,
     get_genesis_hedge_plan,
     get_genesis_mt5_auto_forward_status,
+    get_genesis_mt5_backtest_latest,
     get_genesis_mt5_debug_storage,
     get_genesis_mt5_forward_test,
     get_genesis_mt5_config,
@@ -79,6 +80,7 @@ from api.routes.genesis import (
     post_genesis_mt5_manual_tests_reset,
     post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_learning_run,
+    post_genesis_mt5_backtest_run,
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_signal,
     post_genesis_mt5_tick,
@@ -235,6 +237,8 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_replay_results_endpoint": "/api/genesis/mt5/replay/results?symbol={symbol}",
         "genesis_mt5_replay_status_endpoint": "/api/genesis/mt5/replay/status?symbol={symbol}",
         "genesis_mt5_replay_reset_endpoint": "/api/genesis/mt5/replay/reset",
+        "genesis_mt5_backtest_run_endpoint": "/api/genesis/mt5/backtest/run",
+        "genesis_mt5_backtest_latest_endpoint": "/api/genesis/mt5/backtest/latest?symbol={symbol}",
         "genesis_mt5_learning_run_endpoint": "/api/genesis/mt5/learning/run",
         "genesis_mt5_learning_status_endpoint": "/api/genesis/mt5/learning/status?symbol={symbol}",
         "genesis_mt5_memory_summary_endpoint": "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50",
@@ -4121,6 +4125,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/backtest/run":
+            result = post_genesis_mt5_backtest_run(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
         if parsed.path == "/api/genesis/mt5/replay/reset":
             result = post_genesis_mt5_replay_reset(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
@@ -4566,6 +4575,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_replay_status(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/backtest/latest":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            payload_data = get_genesis_mt5_backtest_latest(symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
