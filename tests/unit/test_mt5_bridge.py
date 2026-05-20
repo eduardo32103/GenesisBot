@@ -2454,6 +2454,26 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertNotIn("FMP_API_KEY", content)
         self.assertNotIn("OPENAI_API_KEY", content)
 
+    def test_mt5_history_export_scripts_are_read_only(self) -> None:
+        exporter = Path("scripts") / "export_mt5_history.py"
+        runner = Path("scripts") / "run_backtest_from_csv.ps1"
+        exporter_content = exporter.read_text(encoding="utf-8")
+        runner_content = runner.read_text(encoding="utf-8")
+
+        self.assertIn("copy_rates_from_pos", exporter_content)
+        self.assertIn('"time", "open", "high", "low", "close", "volume"', exporter_content)
+        self.assertIn("data/backtests/BTCUSD_H1.csv", exporter_content)
+        self.assertIn("/api/genesis/mt5/backtest/run", runner_content)
+        self.assertIn("save_results    = $true", runner_content)
+        self.assertIn("broker_touched", runner_content)
+        self.assertIn("order_executed", runner_content)
+        combined = f"{exporter_content}\n{runner_content}".casefold()
+        self.assertNotIn("order_send", combined)
+        self.assertNotIn("ordersend", combined)
+        self.assertNotIn("mt5.login", combined)
+        self.assertNotIn("password", combined)
+        self.assertNotIn("api_key", combined)
+
     def test_mt5_backtest_endpoint_is_paper_only_and_exposes_latest(self) -> None:
         result = post_genesis_mt5_backtest_run(
             {
