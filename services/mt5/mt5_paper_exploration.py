@@ -24,24 +24,27 @@ def evaluate_paper_exploration(
     tick: dict[str, Any] | None = None,
     config: MT5BridgeConfig | None = None,
     trigger: str = "tick",
+    timeframe: str = "",
 ) -> dict[str, Any]:
     cfg = config or MT5BridgeConfig.from_env()
     clean_symbol = str(symbol or (tick or {}).get("symbol") or "").upper().strip()
     normalized = normalize_mt5_symbol(clean_symbol)
-    snapshot = get_snapshot(clean_symbol) or {}
+    requested_timeframe = str(timeframe or (tick or {}).get("timeframe") or "").upper().strip()
+    snapshot = get_snapshot(clean_symbol, requested_timeframe) if requested_timeframe else get_snapshot(clean_symbol)
+    snapshot = snapshot or {}
     active_tick = tick if isinstance(tick, dict) and tick else snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
     state = snapshot.get("paper_exploration_state") if isinstance(snapshot.get("paper_exploration_state"), dict) else {}
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
-    timeframe = str(active_tick.get("timeframe") or "").upper().strip()
-    promoted_profile = active_promoted_profile(clean_symbol, timeframe, snapshot=snapshot) if timeframe else {}
+    active_timeframe = str(requested_timeframe or active_tick.get("timeframe") or "").upper().strip()
+    promoted_profile = active_promoted_profile(clean_symbol, active_timeframe, snapshot=snapshot) if active_timeframe else {}
     closed_event: dict[str, Any] | None = None
     opened_event: dict[str, Any] | None = None
 
     if open_trade:
         open_trade, closed_event = _update_open_trade(open_trade, active_tick, cfg)
         if closed_event:
-            update_open_shadow_trade(clean_symbol, None)
-            append_closed_shadow_trade(clean_symbol, closed_event)
+            update_open_shadow_trade(clean_symbol, None, timeframe=active_timeframe)
+            append_closed_shadow_trade(clean_symbol, closed_event, timeframe=active_timeframe)
             enqueue_mt5_event("mt5_shadow_trades", clean_symbol, closed_event)
             state = {
                 **state,
@@ -49,12 +52,12 @@ def evaluate_paper_exploration(
                 "last_reason": closed_event.get("exit_reason") or "",
             }
         else:
-            update_open_shadow_trade(clean_symbol, open_trade)
+            update_open_shadow_trade(clean_symbol, open_trade, timeframe=active_timeframe)
 
     can_open, block_reason = _can_open(clean_symbol, normalized, active_tick, cfg, state, bool(open_trade and not closed_event), promoted_profile)
     if can_open:
         opened_event = _open_trade(clean_symbol, normalized, active_tick, cfg, snapshot, promoted_profile)
-        update_open_shadow_trade(clean_symbol, opened_event)
+        update_open_shadow_trade(clean_symbol, opened_event, timeframe=active_timeframe)
         enqueue_mt5_event("mt5_shadow_trades", clean_symbol, opened_event)
         state = {
             **state,

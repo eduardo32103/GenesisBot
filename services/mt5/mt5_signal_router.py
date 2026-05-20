@@ -312,8 +312,9 @@ class MT5SignalRouter:
             "order_policy": "journal_only_no_broker",
         }
 
-    def decision(self, symbol: str) -> dict[str, Any]:
+    def decision(self, symbol: str, timeframe: str = "") -> dict[str, Any]:
         symbol_info = self.symbol_mapper.map_symbol(symbol)
+        requested_timeframe = str(timeframe or "").upper().strip()
         if not symbol_info["ok"]:
             payload = _base_decision(symbol_info, "NO_TRADE", "low", "symbol_not_mapped_or_not_allowed")
             if not (self.config.fast_path_only and self.memory is None):
@@ -321,9 +322,64 @@ class MT5SignalRouter:
             return payload
 
         if self.config.fast_path_only and self.memory is None:
-            snapshot = get_snapshot(symbol_info["mt5_symbol"]) or {}
+            snapshot = get_snapshot(symbol_info["mt5_symbol"], requested_timeframe) if requested_timeframe else get_snapshot(symbol_info["mt5_symbol"])
+            snapshot = snapshot or {}
+            generic_snapshot = get_snapshot(symbol_info["mt5_symbol"]) or {}
             last_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
-            exploration = evaluate_paper_exploration(symbol_info["mt5_symbol"], config=self.config, trigger="decision")
+            available_tick = generic_snapshot.get("last_tick") if isinstance(generic_snapshot.get("last_tick"), dict) else {}
+            available_timeframe = str(available_tick.get("timeframe") or generic_snapshot.get("timeframe") or "").upper().strip()
+            promoted_status = self.promoted_profile(symbol=symbol_info["mt5_symbol"], timeframe=requested_timeframe) if requested_timeframe else {}
+            if requested_timeframe and not last_tick:
+                reason = "no_runtime_snapshot_for_requested_timeframe"
+                payload = {
+                    "ok": True,
+                    "symbol": symbol_info["mt5_symbol"],
+                    "genesis_symbol": symbol_info["genesis_symbol"],
+                    "original_symbol": symbol_info.get("original_symbol") or symbol_info["mt5_symbol"],
+                    "normalized_symbol": symbol_info.get("normalized_symbol") or _normalized_symbol(symbol_info["mt5_symbol"]),
+                    "instrument_type": symbol_info.get("instrument_type") or "",
+                    "is_spot_crypto": bool(symbol_info.get("is_spot_crypto")),
+                    "decision": "NO_TRADE",
+                    "confidence": "low",
+                    "reason": reason,
+                    "actionable": False,
+                    "strategy_profile": promoted_status.get("profile") if promoted_status.get("active") else "",
+                    "timeframe": requested_timeframe,
+                    "requested_timeframe": requested_timeframe,
+                    "available_timeframe": available_timeframe,
+                    "entry": None,
+                    "stop_loss": None,
+                    "take_profit": None,
+                    "risk_pct": 0.0,
+                    "risk_reward": 0.0,
+                    "no_trade_score": 100,
+                    "market_regime": "fast_path_only",
+                    "warnings": ["Requested MT5 timeframe has no runtime snapshot yet."],
+                    "risk_flags": ["fast_path_only", reason],
+                    "last_tick": None,
+                    "promoted_profile": promoted_status if promoted_status.get("active") else None,
+                    "paper_forward_candidate_profile": promoted_status.get("profile") if promoted_status.get("active") else "",
+                    "applies_to_real_trading": False,
+                    "paper_exploration_enabled": self.config.paper_exploration_enabled,
+                    "paper_exploration_created": False,
+                    "paper_exploration_reason": reason,
+                    "order_policy": "journal_only_no_broker",
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "generated_at": _now(),
+                }
+                update_decision(symbol_info["mt5_symbol"], payload)
+                queued = enqueue_mt5_event("mt5_decisions", symbol_info["mt5_symbol"], payload)
+                payload["event"] = None
+                payload["queue"] = queued
+                return payload
+            exploration = evaluate_paper_exploration(
+                symbol_info["mt5_symbol"],
+                tick=last_tick if requested_timeframe else None,
+                config=self.config,
+                trigger="decision",
+                timeframe=requested_timeframe,
+            )
             promoted_profile = exploration.get("promoted_profile") if isinstance(exploration.get("promoted_profile"), dict) else None
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
             if exploration.get("paper_exploration_created"):
@@ -340,8 +396,10 @@ class MT5SignalRouter:
                 "confidence": "low",
                 "reason": reason,
                 "actionable": False,
-                "strategy_profile": "",
-                "timeframe": str(last_tick.get("timeframe") or ""),
+                "strategy_profile": promoted_profile.get("profile") if promoted_profile else "",
+                "timeframe": str(requested_timeframe or last_tick.get("timeframe") or ""),
+                "requested_timeframe": requested_timeframe,
+                "available_timeframe": available_timeframe,
                 "entry": None,
                 "stop_loss": None,
                 "take_profit": None,
@@ -364,6 +422,7 @@ class MT5SignalRouter:
                 "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
                 "promoted_profile": promoted_profile,
                 "paper_forward_candidate_profile": exploration.get("paper_forward_candidate_profile") or "",
+                "applies_to_real_trading": False,
                 "open_shadow_trade_id": exploration.get("shadow_trade_id") or "",
                 "shadow_trade_id": exploration.get("shadow_trade_id") if exploration.get("paper_exploration_created") else "",
                 "order_policy": "journal_only_no_broker",

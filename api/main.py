@@ -219,7 +219,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_config_endpoint": "/api/genesis/mt5/config",
         "genesis_mt5_ops_status_endpoint": "/api/genesis/mt5/ops/status?symbol={symbol}",
         "genesis_mt5_instrument_endpoint": "/api/genesis/mt5/instrument?symbol={symbol}",
-        "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}",
+        "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_journal_recent_endpoint": "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25",
         "genesis_mt5_performance_endpoint": "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_performance_auto_endpoint": "/api/genesis/mt5/performance/auto?symbol={symbol}&timeframe={timeframe}",
@@ -4668,8 +4668,10 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/genesis/mt5/decision":
-            symbol = (parse_qs(parsed.query).get("symbol") or parse_qs(parsed.query).get("ticker") or [""])[0]
-            payload_data = get_genesis_mt5_decision(symbol)
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_decision(symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

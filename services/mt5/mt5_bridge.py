@@ -78,8 +78,8 @@ def mt5_tick(payload: dict[str, Any] | None, *, memory: MemoryStore | None = Non
     return build_router(memory).tick(payload)
 
 
-def mt5_decision(symbol: str, *, memory: MemoryStore | None = None) -> dict[str, Any]:
-    return build_router(memory).decision(symbol)
+def mt5_decision(symbol: str, *, memory: MemoryStore | None = None, timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).decision(symbol, timeframe=timeframe)
 
 
 def mt5_order_request(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:

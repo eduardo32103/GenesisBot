@@ -117,7 +117,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_status_endpoint"], "/api/genesis/mt5/status")
         self.assertEqual(app["genesis_mt5_config_endpoint"], "/api/genesis/mt5/config")
         self.assertEqual(app["genesis_mt5_ops_status_endpoint"], "/api/genesis/mt5/ops/status?symbol={symbol}")
-        self.assertEqual(app["genesis_mt5_decision_endpoint"], "/api/genesis/mt5/decision?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_decision_endpoint"], "/api/genesis/mt5/decision?symbol={symbol}&timeframe={timeframe}")
         self.assertEqual(app["genesis_mt5_journal_recent_endpoint"], "/api/genesis/mt5/journal/recent?symbol={symbol}&limit=25")
         self.assertEqual(app["genesis_mt5_performance_endpoint"], "/api/genesis/mt5/performance?symbol={symbol}&timeframe={timeframe}")
         self.assertEqual(app["genesis_mt5_performance_auto_endpoint"], "/api/genesis/mt5/performance/auto?symbol={symbol}&timeframe={timeframe}")
@@ -2134,6 +2134,83 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(state["max_drawdown"], 6000.0)
         self.assertFalse(state["broker_touched"])
         self.assertFalse(state["order_executed"])
+
+    def test_decision_m30_does_not_use_h1_snapshot_when_m30_requested(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_tick
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        update_tick("BTCUSD", {"symbol": "BTCUSD", "last": 100.0, "spread": 10, "timeframe": "H1"})
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            decision = router.decision("BTCUSD", timeframe="M30")
+
+        self.assertEqual(decision["decision"], "NO_TRADE")
+        self.assertEqual(decision["reason"], "no_runtime_snapshot_for_requested_timeframe")
+        self.assertEqual(decision["requested_timeframe"], "M30")
+        self.assertEqual(decision["available_timeframe"], "H1")
+        self.assertEqual(decision["strategy_profile"], "quality_loose")
+        self.assertEqual(decision["paper_forward_candidate_profile"], "quality_loose")
+        self.assertFalse(decision["broker_touched"])
+        self.assertFalse(decision["order_executed"])
+
+    def test_decision_m30_applies_quality_loose_when_m30_snapshot_exists(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_tick
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        update_tick("BTCUSD", {"symbol": "BTCUSD", "last": 100.0, "spread": 10, "timeframe": "H1"})
+        update_tick(
+            "BTCUSD",
+            {
+                "symbol": "BTCUSD",
+                "last": 101.0,
+                "spread": 10,
+                "timeframe": "M30",
+                "score": 50,
+                "momentum_score": 40,
+                "trend_score": 40,
+                "volatility_score": 60,
+            },
+        )
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                decision = router.decision("BTCUSD", timeframe="M30")
+
+        self.assertEqual(decision["timeframe"], "M30")
+        self.assertEqual(decision["requested_timeframe"], "M30")
+        self.assertEqual(decision["strategy_profile"], "quality_loose")
+        self.assertEqual(decision["paper_forward_candidate_profile"], "quality_loose")
+        self.assertEqual(decision["promoted_profile"]["profile"], "quality_loose")
+        self.assertFalse(decision["applies_to_real_trading"])
+        self.assertFalse(decision["broker_touched"])
+        self.assertFalse(decision["order_executed"])
+
+    def test_decision_h1_and_m15_do_not_apply_quality_loose(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_tick
+
+        reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
+        tick_base = {"symbol": "BTCUSD", "last": 100.0, "spread": 10, "score": 80, "momentum_score": 80, "trend_score": 80, "volatility_score": 80}
+        update_tick("BTCUSD", {**tick_base, "timeframe": "H1"})
+        update_tick("BTCUSD", {**tick_base, "timeframe": "M15", "last": 100.5})
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
+                h1 = router.decision("BTCUSD", timeframe="H1")
+                m15 = router.decision("BTCUSD", timeframe="M15")
+
+        self.assertEqual(h1["timeframe"], "H1")
+        self.assertEqual(m15["timeframe"], "M15")
+        self.assertEqual(h1["strategy_profile"], "")
+        self.assertEqual(m15["strategy_profile"], "")
+        self.assertEqual(h1["paper_forward_candidate_profile"], "")
+        self.assertEqual(m15["paper_forward_candidate_profile"], "")
+        self.assertFalse(h1["broker_touched"])
+        self.assertFalse(m15["broker_touched"])
+        self.assertFalse(h1["order_executed"])
+        self.assertFalse(m15["order_executed"])
 
     def test_paper_exploration_enqueues_shadow_event_and_tick_stays_fast(self) -> None:
         from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests

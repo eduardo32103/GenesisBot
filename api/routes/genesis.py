@@ -118,8 +118,8 @@ def get_genesis_mt5_auto_forward_status(symbol: str = "") -> dict[str, Any]:
     return mt5_auto_forward_status(symbol=symbol)
 
 
-def get_genesis_mt5_decision(symbol: str = "") -> dict[str, Any]:
-    return mt5_decision(symbol)
+def get_genesis_mt5_decision(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_decision(symbol, timeframe=timeframe)
 
 
 def post_genesis_mt5_account_sync(payload: dict[str, Any] | None = None) -> dict[str, Any]:
