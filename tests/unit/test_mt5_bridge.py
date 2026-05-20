@@ -34,6 +34,7 @@ from api.routes.genesis import (
     get_genesis_mt5_status,
     get_genesis_mt5_strategy_profiles,
     post_genesis_mt5_account_sync,
+    post_genesis_mt5_backtest_optimize,
     post_genesis_mt5_backtest_run,
     post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_order_request,
@@ -54,6 +55,7 @@ from services.mt5.mt5_bridge import (
     mt5_auto_forward_status,
     mt5_account_sync,
     mt5_backtest_latest,
+    mt5_backtest_optimize,
     mt5_backtest_run,
     mt5_config,
     mt5_debug_storage,
@@ -127,6 +129,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_replay_status_endpoint"], "/api/genesis/mt5/replay/status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_replay_reset_endpoint"], "/api/genesis/mt5/replay/reset")
         self.assertEqual(app["genesis_mt5_backtest_run_endpoint"], "/api/genesis/mt5/backtest/run")
+        self.assertEqual(app["genesis_mt5_backtest_optimize_endpoint"], "/api/genesis/mt5/backtest/optimize")
         self.assertEqual(app["genesis_mt5_backtest_latest_endpoint"], "/api/genesis/mt5/backtest/latest?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_learning_run_endpoint"], "/api/genesis/mt5/learning/run")
         self.assertEqual(app["genesis_mt5_learning_status_endpoint"], "/api/genesis/mt5/learning/status?symbol={symbol}")
@@ -2699,6 +2702,122 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(decision["ok"])
         self.assertFalse(tick["broker_touched"])
         self.assertFalse(decision["order_executed"])
+
+    def test_mt5_backtest_optimize_runs_profiles_without_broker(self) -> None:
+        result = mt5_backtest_optimize(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_optimizer_bars(90),
+                "profiles": ["baseline", "quality_v2", "quality_loose"],
+                "walk_forward": True,
+                "spread_points": 0,
+                "slippage_points": 0,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "mt5_backtest_optimize_completed")
+        self.assertEqual(len(result["ranking"]), 3)
+        self.assertIn("table_markdown", result)
+        for row in result["ranking"]:
+            self.assertIn("test_profit_factor", row)
+            self.assertIn("test_expectancy", row)
+            self.assertIn("robustness_score", row)
+            self.assertFalse(row["broker_touched"])
+            self.assertFalse(row["order_executed"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_mt5_backtest_walk_forward_reports_train_and_test_metrics(self) -> None:
+        result = mt5_backtest_run(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_optimizer_bars(80),
+                "filter_profile": "baseline",
+                "walk_forward": True,
+                "train_ratio": 0.6,
+                "spread_points": 0,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["walk_forward"])
+        self.assertIn("train_pf", result)
+        self.assertIn("test_pf", result)
+        self.assertIn("train_expectancy", result)
+        self.assertIn("test_expectancy", result)
+        self.assertGreater(result["train_bars"], 0)
+        self.assertGreater(result["test_bars"], 0)
+
+    def test_mt5_backtest_optimizer_does_not_promote_weak_or_small_samples(self) -> None:
+        result = post_genesis_mt5_backtest_optimize(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M30",
+                "bars_data": _backtest_buy_take_profit_bars() * 4,
+                "profiles": ["baseline", "quality_v2"],
+                "walk_forward": True,
+                "spread_points": 0,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["timeframe"], "M30")
+        for row in result["ranking"]:
+            self.assertFalse(row["promoted"])
+            self.assertIn("test_trades_below_50", row["promotion_reasons"])
+
+    def test_mt5_backtest_optimizer_rejects_low_test_pf(self) -> None:
+        result = mt5_backtest_optimize(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "H1",
+                "bars_data": _backtest_buy_stop_loss_bars() * 30,
+                "profiles": ["baseline", "quality_v2"],
+                "walk_forward": True,
+                "spread_points": 0,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        low_pf_rows = [row for row in result["ranking"] if row["test_profit_factor"] < 1.25]
+        self.assertTrue(low_pf_rows)
+        self.assertTrue(all(not row["promoted"] for row in low_pf_rows))
+
+    def test_mt5_backtest_optimizer_script_exists_and_is_paper_only(self) -> None:
+        content = Path("scripts/run_backtest_optimize_from_csv.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("/api/genesis/mt5/backtest/optimize", content)
+        self.assertIn("profiles", content)
+        self.assertIn("save_results", content)
+        self.assertNotIn("order_send", content.lower())
+        self.assertNotIn("OrderSend", content)
+
+
+def _backtest_optimizer_bars(count: int = 120) -> list[dict[str, object]]:
+    bars: list[dict[str, object]] = []
+    price = 100.0
+    for index in range(count):
+        wave = (index % 18) - 9
+        drift = 0.18 if (index // 18) % 2 == 0 else -0.12
+        open_price = price
+        close = max(20.0, open_price + drift + wave * 0.03)
+        high = max(open_price, close) + 1.2
+        low = min(open_price, close) - 1.2
+        bars.append(
+            {
+                "time": f"2026-06-{(index // 24) + 1:02d}T{index % 24:02d}:00:00+00:00",
+                "open": round(open_price, 6),
+                "high": round(high, 6),
+                "low": round(low, 6),
+                "close": round(close, 6),
+                "volume": 1000 + index,
+            }
+        )
+        price = close
+    return bars
 
 
 def _backtest_buy_take_profit_bars() -> list[dict[str, object]]:

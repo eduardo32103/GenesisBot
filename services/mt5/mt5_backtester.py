@@ -20,6 +20,98 @@ from services.mt5.mt5_config import MT5RuntimeConfig, get_mt5_config
 
 _LATEST_LOCK = Lock()
 _LATEST_RESULTS: dict[str, dict[str, Any]] = {}
+_DEFAULT_PROFILES = [
+    "baseline",
+    "quality_v2",
+    "quality_loose",
+    "quality_strict",
+    "momentum_v1",
+    "trend_v1",
+    "anti_chop_v1",
+    "rsi_reversal_safe",
+]
+_FILTER_PROFILES: dict[str, dict[str, Any]] = {
+    "baseline": {
+        "min_trend_score": 0.0,
+        "min_momentum_score": 0.0,
+        "max_rsi_for_buy": 100.0,
+        "min_rsi_for_sell": 0.0,
+        "score_cap_when_weak": 0.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 45.0,
+    },
+    "quality_v2": {
+        "min_trend_score": 45.0,
+        "min_momentum_score": 45.0,
+        "max_rsi_for_buy": 75.0,
+        "min_rsi_for_sell": 25.0,
+        "score_cap_when_weak": 60.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 60.0,
+    },
+    "quality_loose": {
+        "min_trend_score": 35.0,
+        "min_momentum_score": 35.0,
+        "max_rsi_for_buy": 80.0,
+        "min_rsi_for_sell": 20.0,
+        "score_cap_when_weak": 65.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 50.0,
+    },
+    "quality_strict": {
+        "min_trend_score": 55.0,
+        "min_momentum_score": 55.0,
+        "max_rsi_for_buy": 70.0,
+        "min_rsi_for_sell": 30.0,
+        "score_cap_when_weak": 55.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 65.0,
+    },
+    "momentum_v1": {
+        "min_trend_score": 35.0,
+        "min_momentum_score": 60.0,
+        "max_rsi_for_buy": 78.0,
+        "min_rsi_for_sell": 22.0,
+        "score_cap_when_weak": 60.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 60.0,
+    },
+    "trend_v1": {
+        "min_trend_score": 60.0,
+        "min_momentum_score": 35.0,
+        "max_rsi_for_buy": 78.0,
+        "min_rsi_for_sell": 22.0,
+        "score_cap_when_weak": 60.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 60.0,
+    },
+    "anti_chop_v1": {
+        "min_trend_score": 50.0,
+        "min_momentum_score": 50.0,
+        "max_rsi_for_buy": 76.0,
+        "min_rsi_for_sell": 24.0,
+        "score_cap_when_weak": 58.0,
+        "allow_reversal": True,
+        "avoid_chop": True,
+        "min_score": 62.0,
+    },
+    "rsi_reversal_safe": {
+        "min_trend_score": 45.0,
+        "min_momentum_score": 45.0,
+        "max_rsi_for_buy": 72.0,
+        "min_rsi_for_sell": 28.0,
+        "score_cap_when_weak": 58.0,
+        "allow_reversal": False,
+        "avoid_chop": False,
+        "min_score": 58.0,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -42,6 +134,7 @@ class BacktestSettings:
     timeout_seconds: float
     profile: str
     filter_profile: str
+    filter_params: dict[str, Any]
     save_results: bool
 
 
@@ -113,6 +206,79 @@ class MT5Backtester:
             **_safety(),
         }
 
+    def optimize(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        started = time.monotonic()
+        body = payload or {}
+        settings = _settings(body, self.config)
+        warnings: list[str] = []
+        try:
+            bars, load_warnings = _load_bars(body, settings)
+            warnings.extend(load_warnings)
+            bars = bars[: settings.max_bars]
+            if not bars:
+                return {
+                    "ok": False,
+                    "status": "mt5_backtest_optimize_no_data",
+                    "symbol": settings.symbol,
+                    "normalized_symbol": settings.normalized_symbol,
+                    "timeframe": settings.timeframe,
+                    "warnings": warnings + ["historical_data_not_available"],
+                    "ranking": [],
+                    "table": [],
+                    "table_markdown": "",
+                    **_safety(),
+                    "duration_ms": _elapsed_ms(started),
+                }
+            profiles = _requested_profiles(body)
+            ranking: list[dict[str, Any]] = []
+            for profile in profiles:
+                profile_settings = _settings_for_profile(settings, profile, body)
+                ranked = _rank_profile(profile_settings, bars, body)
+                ranking.append(ranked)
+            ranking.sort(key=lambda item: (bool(item.get("promoted")), float(item.get("robustness_score") or 0.0)), reverse=True)
+            result = {
+                "ok": True,
+                "status": "mt5_backtest_optimize_completed",
+                "symbol": settings.symbol,
+                "normalized_symbol": settings.normalized_symbol,
+                "instrument_type": "crypto_spot" if settings.normalized_symbol == "BTCUSD" else "unknown",
+                "timeframe": settings.timeframe,
+                "source": settings.source,
+                "profiles": profiles,
+                "walk_forward": bool(body.get("walk_forward", True)),
+                "bars_loaded": len(bars),
+                "ranking": ranking,
+                "table": ranking,
+                "table_markdown": _ranking_markdown(ranking),
+                "best_profile": ranking[0].get("profile") if ranking else "",
+                "promoted_profiles": [item["profile"] for item in ranking if item.get("promoted")],
+                "warnings": warnings,
+                **_safety(),
+                "duration_ms": _elapsed_ms(started),
+                "created_at": _now(),
+            }
+            _store_latest(f"{settings.normalized_symbol}:OPTIMIZE", result)
+            if settings.save_results and self.memory is not None:
+                try:
+                    self.memory.save_mt5_event("mt5_backtest_runs", settings.symbol, result, "mt5_backtest_optimizer", "media")
+                    result["saved"] = True
+                except Exception as exc:
+                    result["saved"] = False
+                    result.setdefault("warnings", []).append(f"save_results_failed:{str(exc)[:160]}")
+            return result
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "mt5_backtest_optimize_error",
+                "symbol": settings.symbol,
+                "normalized_symbol": settings.normalized_symbol,
+                "timeframe": settings.timeframe,
+                "error": str(exc)[:500],
+                "ranking": [],
+                **_safety(),
+                "duration_ms": _elapsed_ms(started),
+            }
+
     def _run_walk_forward(
         self,
         settings: BacktestSettings,
@@ -121,46 +287,14 @@ class MT5Backtester:
         warnings: list[str],
         body: dict[str, Any],
     ) -> dict[str, Any]:
-        train_months = max(1, int(_number(body.get("train_months")) or 3))
-        test_months = max(1, int(_number(body.get("test_months")) or 1))
-        bars_per_month = _rough_bars_per_month(settings.timeframe)
-        train_size = max(5, train_months * bars_per_month)
-        test_size = max(5, test_months * bars_per_month)
-        periods: list[dict[str, Any]] = []
-        combined_trades: list[dict[str, Any]] = []
-        no_trade_count = 0
-        blocked: list[str] = []
-        index = train_size
-        period_index = 1
-        while index < len(bars) and not _timed_out(started, settings.timeout_seconds):
-            test_bars = bars[index : index + test_size]
-            if len(test_bars) < 2:
-                break
-            period_settings = settings
-            trades, period_no_trade, period_blocked = _simulate(period_settings, test_bars, started, prefix=f"wf{period_index}")
-            period_summary = _metrics(trades, initial_balance=settings.initial_balance)
-            periods.append(
-                {
-                    "period": period_index,
-                    "train_bars": min(train_size, index),
-                    "test_bars": len(test_bars),
-                    "from": test_bars[0].get("time") or "",
-                    "to": test_bars[-1].get("time") or "",
-                    "summary": period_summary,
-                    "trades": len(trades),
-                }
-            )
-            combined_trades.extend(trades)
-            no_trade_count += period_no_trade
-            blocked.extend(period_blocked)
-            index += test_size
-            period_index += 1
-        summary = _metrics(combined_trades, initial_balance=settings.initial_balance)
-        result = _result_payload(settings, bars, combined_trades, summary, no_trade_count, blocked, started, warnings)
+        split = _walk_forward_metrics(settings, bars, body)
+        full_trades = list(split["train_trades_items"]) + list(split["test_trades_items"])
+        summary = _metrics(full_trades, initial_balance=settings.initial_balance)
+        no_trade_count = int(split.get("train_no_trade_count") or 0) + int(split.get("test_no_trade_count") or 0)
+        blocked = list(split.get("train_blocked") or []) + list(split.get("test_blocked") or [])
+        result = _result_payload(settings, bars, full_trades, summary, no_trade_count, blocked, started, warnings)
         result["walk_forward"] = True
-        result["walk_forward_results"] = periods
-        result["train_months"] = train_months
-        result["test_months"] = test_months
+        result.update(_walk_forward_public_payload(split))
         return result
 
 
@@ -170,7 +304,7 @@ def _settings(body: dict[str, Any], config: MT5RuntimeConfig) -> BacktestSetting
     timeframe = str(body.get("timeframe") or "H1").upper().strip()
     filter_profile = str(body.get("filter_profile") or "quality_v2").strip().casefold() or "quality_v2"
     if filter_profile not in {"baseline", "quality_v2"}:
-        filter_profile = "quality_v2"
+        filter_profile = filter_profile if filter_profile in _FILTER_PROFILES else "quality_v2"
     max_bars = int(_number(body.get("max_bars") or body.get("bars")) or _number(os.getenv("MT5_BACKTEST_MAX_BARS")) or 2000)
     max_bars = max(10, min(max_bars, 10000))
     timeout_seconds = float(_number(body.get("timeout_seconds")) or _number(os.getenv("MT5_BACKTEST_TIMEOUT_SECONDS")) or 8.0)
@@ -178,8 +312,13 @@ def _settings(body: dict[str, Any], config: MT5RuntimeConfig) -> BacktestSetting
     time_stop_bars = max(1, int((time_stop_min + _timeframe_minutes(timeframe) - 1) // _timeframe_minutes(timeframe)))
     requested_min_score = _number(body.get("min_score"))
     min_score = float(requested_min_score if requested_min_score is not None else config.paper_exploration_min_score or 45.0)
+    profile_params = _profile_params(filter_profile, body)
+    if requested_min_score is None and "min_score" in profile_params:
+        min_score = float(profile_params["min_score"])
     if filter_profile == "quality_v2" and requested_min_score is None:
         min_score = max(min_score, 60.0)
+    if requested_min_score is not None:
+        profile_params["min_score"] = float(requested_min_score)
     return BacktestSettings(
         symbol=symbol,
         normalized_symbol=normalized,
@@ -199,6 +338,7 @@ def _settings(body: dict[str, Any], config: MT5RuntimeConfig) -> BacktestSetting
         timeout_seconds=max(1.0, min(timeout_seconds, 20.0)),
         profile=str(body.get("profile") or "BTCUSD_PAPER_EXPLORATION_V1").strip() or "BTCUSD_PAPER_EXPLORATION_V1",
         filter_profile=filter_profile,
+        filter_params=profile_params,
         save_results=bool(body.get("save_results") is True),
     )
 
@@ -353,22 +493,25 @@ def _decision_from_history(history: list[dict[str, Any]], settings: BacktestSett
     volatility_score = min(80.0, max(20.0, range_pct * 20.0))
     buy_score = round((trend_score + momentum_score + volatility_score) / 3, 2)
     sell_score = round(((100.0 - trend_score) + (100.0 - momentum_score) + volatility_score) / 3, 2)
-    if settings.spread_points > settings.max_spread_points:
+    params = settings.filter_params or _profile_params(settings.filter_profile, {})
+    max_spread = _param_number(params, "max_spread_points", settings.max_spread_points)
+    if settings.spread_points > max_spread:
         return {"actionable": False, "reason": "spread_too_high", "score": max(buy_score, sell_score)}
-    min_score = max(0.0, float(settings.min_score or 45.0))
+    min_score = max(0.0, _param_number(params, "min_score", settings.min_score or 45.0))
     side = ""
     score = max(buy_score, sell_score)
     raw_score = score
-    if settings.filter_profile == "quality_v2" and (trend_score < 40 or momentum_score < 40):
-        score = min(score, 60.0)
+    score_cap = _param_number(params, "score_cap_when_weak", 0.0)
+    if settings.filter_profile != "baseline" and score_cap > 0 and (trend_score < 40 or momentum_score < 40):
+        score = min(score, score_cap)
     if close > prev_close and close >= ema20 and momentum_score >= 55 and trend_score >= 55 and buy_score >= min_score:
         side = "buy"
-        score = min(buy_score, score) if settings.filter_profile == "quality_v2" else buy_score
+        score = min(buy_score, score) if settings.filter_profile != "baseline" else buy_score
     elif close < prev_close and close <= ema20 and momentum_score <= 45 and trend_score <= 55 and sell_score >= min_score:
         side = "sell"
-        score = min(sell_score, score) if settings.filter_profile == "quality_v2" else sell_score
+        score = min(sell_score, score) if settings.filter_profile != "baseline" else sell_score
     if not side:
-        if settings.filter_profile == "quality_v2" and (trend_score < 40 or momentum_score < 40):
+        if settings.filter_profile != "baseline" and (trend_score < 40 or momentum_score < 40):
             reason = "weak_internal_scores"
         elif score < min_score:
             reason = "score_too_low"
@@ -383,7 +526,7 @@ def _decision_from_history(history: list[dict[str, Any]], settings: BacktestSett
             "volatility_score": round(volatility_score, 2),
             "raw_score": raw_score,
         }
-    quality_block = _quality_v2_block(
+    quality_block = _profile_block(
         side=side,
         close=close,
         ema20=ema20,
@@ -391,9 +534,11 @@ def _decision_from_history(history: list[dict[str, Any]], settings: BacktestSett
         rsi=rsi,
         trend_score=trend_score,
         momentum_score=momentum_score,
+        volatility_score=volatility_score,
         score=score,
         min_score=min_score,
         history=history,
+        params=params,
         filter_profile=settings.filter_profile,
     )
     if quality_block:
@@ -697,8 +842,8 @@ def _store_latest(symbol: str, result: dict[str, Any]) -> None:
 
 
 def _filter_comparison(settings: BacktestSettings, bars: list[dict[str, Any]]) -> dict[str, Any]:
-    baseline = _profile_summary(replace(settings, filter_profile="baseline", min_score=45.0), bars)
-    quality = _profile_summary(replace(settings, filter_profile="quality_v2", min_score=max(settings.min_score, 60.0)), bars)
+    baseline = _profile_summary(_settings_for_profile(settings, "baseline", {}), bars)
+    quality = _profile_summary(_settings_for_profile(settings, "quality_v2", {}), bars)
     return {
         "baseline": baseline,
         "quality_v2": quality,
@@ -712,6 +857,303 @@ def _filter_comparison(settings: BacktestSettings, bars: list[dict[str, Any]]) -
         "drawdown_delta": round(quality["max_drawdown"] - baseline["max_drawdown"], 6),
         "trades_delta": int(quality["total_trades"] - baseline["total_trades"]),
     }
+
+
+def _requested_profiles(body: dict[str, Any]) -> list[str]:
+    raw = body.get("profiles") or _DEFAULT_PROFILES
+    if isinstance(raw, str):
+        candidates = [part.strip().casefold() for part in raw.split(",")]
+    elif isinstance(raw, list):
+        candidates = [str(part or "").strip().casefold() for part in raw]
+    else:
+        candidates = list(_DEFAULT_PROFILES)
+    profiles: list[str] = []
+    for candidate in candidates:
+        if candidate in _FILTER_PROFILES and candidate not in profiles:
+            profiles.append(candidate)
+    return profiles or list(_DEFAULT_PROFILES)
+
+
+def _profile_params(profile: str, body: dict[str, Any]) -> dict[str, Any]:
+    clean_profile = str(profile or "quality_v2").strip().casefold()
+    params = dict(_FILTER_PROFILES.get(clean_profile) or _FILTER_PROFILES["quality_v2"])
+    raw_profile_params = body.get("profile_params") if isinstance(body, dict) else None
+    overrides: dict[str, Any] = {}
+    if isinstance(raw_profile_params, dict):
+        scoped = raw_profile_params.get(clean_profile)
+        if isinstance(scoped, dict):
+            overrides.update(scoped)
+        else:
+            overrides.update({key: value for key, value in raw_profile_params.items() if key in params})
+    raw_filter_params = body.get("filter_params") if isinstance(body, dict) else None
+    if isinstance(raw_filter_params, dict):
+        overrides.update({key: value for key, value in raw_filter_params.items() if key in params})
+    for key in params:
+        if key in body:
+            overrides[key] = body[key]
+    for key, value in overrides.items():
+        if key in {"allow_reversal", "avoid_chop"}:
+            params[key] = _truthy(value)
+        elif key in params:
+            parsed = _number(value)
+            if parsed is not None:
+                params[key] = float(parsed)
+    return params
+
+
+def _settings_for_profile(settings: BacktestSettings, profile: str, body: dict[str, Any]) -> BacktestSettings:
+    clean_profile = str(profile or "quality_v2").strip().casefold()
+    if clean_profile not in _FILTER_PROFILES:
+        clean_profile = "quality_v2"
+    params = _profile_params(clean_profile, body or {})
+    min_score = _param_number(params, "min_score", settings.min_score)
+    max_spread = _param_number(params, "max_spread_points", settings.max_spread_points)
+    return replace(
+        settings,
+        filter_profile=clean_profile,
+        filter_params=params,
+        min_score=min_score,
+        max_spread_points=max_spread,
+    )
+
+
+def _rank_profile(settings: BacktestSettings, bars: list[dict[str, Any]], body: dict[str, Any]) -> dict[str, Any]:
+    full_started = time.monotonic()
+    trades, no_trade_count, blocked = _simulate(settings, bars, full_started, prefix=settings.filter_profile)
+    summary = _metrics(trades, initial_balance=settings.initial_balance)
+    split = _walk_forward_metrics(settings, bars, body)
+    train_summary = dict(split.get("train_summary") or {})
+    test_summary = dict(split.get("test_summary") or {})
+    promotion = _promotion_decision(train_summary, test_summary, settings)
+    robustness_score = _robustness_score(train_summary, test_summary, settings)
+    return {
+        "profile": settings.filter_profile,
+        "timeframe": settings.timeframe,
+        "trades": summary["total_trades"],
+        "closed": summary["closed"],
+        "wins": summary["wins"],
+        "losses": summary["losses"],
+        "win_rate": summary["win_rate"],
+        "profit_factor": summary["profit_factor"],
+        "expectancy": summary["expectancy"],
+        "max_drawdown": summary["max_drawdown"],
+        "net_pnl": summary["net_pnl"],
+        "train_trades": train_summary.get("closed", 0),
+        "train_profit_factor": train_summary.get("profit_factor", 0.0),
+        "train_pf": train_summary.get("profit_factor", 0.0),
+        "train_expectancy": train_summary.get("expectancy", 0.0),
+        "train_drawdown": train_summary.get("max_drawdown", 0.0),
+        "test_trades": test_summary.get("closed", 0),
+        "test_profit_factor": test_summary.get("profit_factor", 0.0),
+        "test_pf": test_summary.get("profit_factor", 0.0),
+        "test_expectancy": test_summary.get("expectancy", 0.0),
+        "test_drawdown": test_summary.get("max_drawdown", 0.0),
+        "test_max_drawdown": test_summary.get("max_drawdown", 0.0),
+        "robustness_score": robustness_score,
+        "promoted": promotion["promoted"],
+        "promotion_reasons": promotion["reasons"],
+        "no_trade_count": no_trade_count,
+        "blocked_reason_counts": _reason_counts(blocked),
+        "weak_internal_scores_count": blocked.count("weak_internal_scores"),
+        "late_entry_risk_count": blocked.count("late_entry_risk"),
+        "rsi_extreme_block_count": blocked.count("rsi_extreme_block"),
+        **_safety(),
+    }
+
+
+def _walk_forward_metrics(settings: BacktestSettings, bars: list[dict[str, Any]], body: dict[str, Any]) -> dict[str, Any]:
+    if _truthy(body.get("rolling_windows")) or _truthy(body.get("rolling")):
+        return _rolling_walk_forward_metrics(settings, bars, body)
+    train_bars = int(_number(body.get("train_bars")) or 0)
+    test_bars = int(_number(body.get("test_bars")) or 0)
+    if train_bars <= 0 and test_bars <= 0:
+        train_months = int(_number(body.get("train_months")) or 0)
+        test_months = int(_number(body.get("test_months")) or 0)
+        rough = _rough_bars_per_month(settings.timeframe)
+        train_bars = train_months * rough if train_months > 0 else 0
+        test_bars = test_months * rough if test_months > 0 else 0
+    if train_bars > 0 and test_bars > 0 and len(bars) >= train_bars + test_bars:
+        train_count = train_bars
+        test_count = test_bars
+    else:
+        train_ratio = float(_number(body.get("train_ratio")) or 0.6)
+        train_ratio = min(0.9, max(0.1, train_ratio))
+        train_count = max(3, min(len(bars) - 2, int(len(bars) * train_ratio))) if len(bars) >= 6 else max(1, len(bars) // 2)
+        test_count = max(0, len(bars) - train_count)
+    train_slice = bars[:train_count]
+    test_slice = bars[train_count : train_count + test_count]
+    train_trades, train_no_trade, train_blocked = _simulate(settings, train_slice, time.monotonic(), prefix=f"{settings.filter_profile}-train")
+    test_trades, test_no_trade, test_blocked = _simulate(settings, test_slice, time.monotonic(), prefix=f"{settings.filter_profile}-test")
+    train_summary = _metrics(train_trades, initial_balance=settings.initial_balance)
+    test_summary = _metrics(test_trades, initial_balance=settings.initial_balance)
+    return {
+        "train_bars": len(train_slice),
+        "test_bars": len(test_slice),
+        "train_trades_items": train_trades,
+        "test_trades_items": test_trades,
+        "train_summary": train_summary,
+        "test_summary": test_summary,
+        "train_no_trade_count": train_no_trade,
+        "test_no_trade_count": test_no_trade,
+        "train_blocked": train_blocked,
+        "test_blocked": test_blocked,
+        "walk_forward_results": [
+            {
+                "window": 1,
+                "train_bars": len(train_slice),
+                "test_bars": len(test_slice),
+                "train_pf": train_summary["profit_factor"],
+                "test_pf": test_summary["profit_factor"],
+                "train_expectancy": train_summary["expectancy"],
+                "test_expectancy": test_summary["expectancy"],
+                "train_drawdown": train_summary["max_drawdown"],
+                "test_drawdown": test_summary["max_drawdown"],
+                "train_trades": train_summary["closed"],
+                "test_trades": test_summary["closed"],
+            }
+        ],
+    }
+
+
+def _rolling_walk_forward_metrics(settings: BacktestSettings, bars: list[dict[str, Any]], body: dict[str, Any]) -> dict[str, Any]:
+    train_window = int(_number(body.get("train_window_bars") or body.get("train_bars")) or 500)
+    test_window = int(_number(body.get("test_window_bars") or body.get("test_bars")) or 250)
+    train_window = max(10, min(train_window, max(10, len(bars) - 2)))
+    test_window = max(5, min(test_window, max(5, len(bars) - train_window)))
+    train_trades_all: list[dict[str, Any]] = []
+    test_trades_all: list[dict[str, Any]] = []
+    train_blocked_all: list[str] = []
+    test_blocked_all: list[str] = []
+    train_no_trade = 0
+    test_no_trade = 0
+    windows: list[dict[str, Any]] = []
+    start = 0
+    window_index = 1
+    while start + train_window + test_window <= len(bars) and window_index <= 12:
+        train_slice = bars[start : start + train_window]
+        test_slice = bars[start + train_window : start + train_window + test_window]
+        train_trades, train_nt, train_blocked = _simulate(settings, train_slice, time.monotonic(), prefix=f"{settings.filter_profile}-rw{window_index}-train")
+        test_trades, test_nt, test_blocked = _simulate(settings, test_slice, time.monotonic(), prefix=f"{settings.filter_profile}-rw{window_index}-test")
+        train_summary = _metrics(train_trades, initial_balance=settings.initial_balance)
+        test_summary = _metrics(test_trades, initial_balance=settings.initial_balance)
+        windows.append(
+            {
+                "window": window_index,
+                "start_index": start,
+                "train_bars": len(train_slice),
+                "test_bars": len(test_slice),
+                "train_pf": train_summary["profit_factor"],
+                "test_pf": test_summary["profit_factor"],
+                "train_expectancy": train_summary["expectancy"],
+                "test_expectancy": test_summary["expectancy"],
+                "train_drawdown": train_summary["max_drawdown"],
+                "test_drawdown": test_summary["max_drawdown"],
+                "train_trades": train_summary["closed"],
+                "test_trades": test_summary["closed"],
+            }
+        )
+        train_trades_all.extend(train_trades)
+        test_trades_all.extend(test_trades)
+        train_blocked_all.extend(train_blocked)
+        test_blocked_all.extend(test_blocked)
+        train_no_trade += train_nt
+        test_no_trade += test_nt
+        start += test_window
+        window_index += 1
+    if not windows:
+        return _walk_forward_metrics(settings, bars, {**body, "rolling_windows": False, "rolling": False})
+    return {
+        "train_bars": sum(int(item["train_bars"]) for item in windows),
+        "test_bars": sum(int(item["test_bars"]) for item in windows),
+        "train_trades_items": train_trades_all,
+        "test_trades_items": test_trades_all,
+        "train_summary": _metrics(train_trades_all, initial_balance=settings.initial_balance),
+        "test_summary": _metrics(test_trades_all, initial_balance=settings.initial_balance),
+        "train_no_trade_count": train_no_trade,
+        "test_no_trade_count": test_no_trade,
+        "train_blocked": train_blocked_all,
+        "test_blocked": test_blocked_all,
+        "walk_forward_results": windows,
+    }
+
+
+def _walk_forward_public_payload(split: dict[str, Any]) -> dict[str, Any]:
+    train_summary = dict(split.get("train_summary") or {})
+    test_summary = dict(split.get("test_summary") or {})
+    return {
+        "train_summary": train_summary,
+        "test_summary": test_summary,
+        "train_pf": train_summary.get("profit_factor", 0.0),
+        "test_pf": test_summary.get("profit_factor", 0.0),
+        "train_expectancy": train_summary.get("expectancy", 0.0),
+        "test_expectancy": test_summary.get("expectancy", 0.0),
+        "train_drawdown": train_summary.get("max_drawdown", 0.0),
+        "test_drawdown": test_summary.get("max_drawdown", 0.0),
+        "train_trades": train_summary.get("closed", 0),
+        "test_trades": test_summary.get("closed", 0),
+        "train_bars": split.get("train_bars", 0),
+        "test_bars": split.get("test_bars", 0),
+        "walk_forward_results": split.get("walk_forward_results") or [],
+    }
+
+
+def _promotion_decision(train_summary: dict[str, Any], test_summary: dict[str, Any], settings: BacktestSettings) -> dict[str, Any]:
+    reasons: list[str] = []
+    train_pf = float(_number(train_summary.get("profit_factor")) or 0.0)
+    test_pf = float(_number(test_summary.get("profit_factor")) or 0.0)
+    test_expectancy = float(_number(test_summary.get("expectancy")) or 0.0)
+    test_trades = int(_number(test_summary.get("closed")) or 0)
+    test_drawdown = float(_number(test_summary.get("max_drawdown")) or 0.0)
+    max_allowed_drawdown = settings.initial_balance * 0.12
+    if test_pf < 1.25:
+        reasons.append("test_pf_below_1_25")
+    if test_expectancy <= 0:
+        reasons.append("test_expectancy_not_positive")
+    if test_trades < 50:
+        reasons.append("test_trades_below_50")
+    if test_drawdown > max_allowed_drawdown:
+        reasons.append("test_drawdown_too_high")
+    if train_pf >= 1.25 and test_pf < train_pf * 0.75:
+        reasons.append("train_test_decay")
+    return {"promoted": not reasons, "reasons": reasons or ["passes_promotion_rules"]}
+
+
+def _robustness_score(train_summary: dict[str, Any], test_summary: dict[str, Any], settings: BacktestSettings) -> float:
+    train_pf = float(_number(train_summary.get("profit_factor")) or 0.0)
+    test_pf = float(_number(test_summary.get("profit_factor")) or 0.0)
+    test_expectancy = float(_number(test_summary.get("expectancy")) or 0.0)
+    test_trades = int(_number(test_summary.get("closed")) or 0)
+    test_drawdown = float(_number(test_summary.get("max_drawdown")) or 0.0)
+    decay_penalty = max(0.0, train_pf - test_pf) * 8.0
+    drawdown_penalty = (test_drawdown / max(settings.initial_balance, 1.0)) * 120.0
+    trade_credit = min(test_trades, 200) / 4.0
+    score = (test_pf * 35.0) + (max(test_expectancy, 0.0) * 100.0) + trade_credit - drawdown_penalty - decay_penalty
+    return round(max(0.0, score), 4)
+
+
+def _ranking_markdown(ranking: list[dict[str, Any]]) -> str:
+    if not ranking:
+        return ""
+    lines = [
+        "profile | trades | WR | PF | expectancy | DD | test_PF | test_exp | test_DD | robustness_score | promoted",
+        "--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---",
+    ]
+    for item in ranking:
+        lines.append(
+            f"{item.get('profile')} | {item.get('trades', 0)} | {item.get('win_rate', 0)} | "
+            f"{item.get('profit_factor', 0)} | {item.get('expectancy', 0)} | {item.get('max_drawdown', 0)} | "
+            f"{item.get('test_profit_factor', 0)} | {item.get('test_expectancy', 0)} | "
+            f"{item.get('test_max_drawdown', 0)} | {item.get('robustness_score', 0)} | {bool(item.get('promoted'))}"
+        )
+    return "\n".join(lines)
+
+
+def _param_number(params: dict[str, Any], key: str, default: float) -> float:
+    value = params.get(key)
+    parsed = _number(value)
+    if parsed is None:
+        return float(default)
+    return float(parsed)
 
 
 def _profile_summary(settings: BacktestSettings, bars: list[dict[str, Any]]) -> dict[str, Any]:
@@ -733,7 +1175,7 @@ def _profile_summary(settings: BacktestSettings, bars: list[dict[str, Any]]) -> 
     }
 
 
-def _quality_v2_block(
+def _profile_block(
     *,
     side: str,
     close: float,
@@ -742,19 +1184,29 @@ def _quality_v2_block(
     rsi: float,
     trend_score: float,
     momentum_score: float,
+    volatility_score: float,
     score: float,
     min_score: float,
     history: list[dict[str, Any]],
+    params: dict[str, Any],
     filter_profile: str,
 ) -> str:
-    if filter_profile != "quality_v2":
+    if filter_profile == "baseline":
         return ""
-    confirmed_retest = _confirmed_breakout_or_retest(side, close, history, trend_score, momentum_score)
-    if side == "sell" and rsi < 25 and not confirmed_retest:
+    allow_reversal = bool(params.get("allow_reversal"))
+    avoid_chop = bool(params.get("avoid_chop"))
+    min_trend = _param_number(params, "min_trend_score", 45.0)
+    min_momentum = _param_number(params, "min_momentum_score", 45.0)
+    max_rsi_for_buy = _param_number(params, "max_rsi_for_buy", 75.0)
+    min_rsi_for_sell = _param_number(params, "min_rsi_for_sell", 25.0)
+    confirmed_retest = allow_reversal and _confirmed_breakout_or_retest(side, close, history, trend_score, momentum_score)
+    if avoid_chop and volatility_score < 35:
+        return "regime_chop"
+    if side == "sell" and rsi < min_rsi_for_sell and not confirmed_retest:
         return "rsi_extreme_block"
-    if side == "buy" and rsi > 75 and not confirmed_retest:
+    if side == "buy" and rsi > max_rsi_for_buy and not confirmed_retest:
         return "rsi_extreme_block"
-    if (trend_score < 45 or momentum_score < 45) and not confirmed_retest:
+    if (trend_score < min_trend or momentum_score < min_momentum) and not confirmed_retest:
         return "weak_internal_scores"
     if score < min_score:
         return "weak_internal_scores"
@@ -943,6 +1395,12 @@ def _number(value: object) -> float | None:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "y", "si", "sí"}
 
 
 def _hour_from_time(value: str) -> str:

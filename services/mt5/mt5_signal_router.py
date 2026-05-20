@@ -865,6 +865,9 @@ class MT5SignalRouter:
     def backtest_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.backtester.run(payload)
 
+    def backtest_optimize(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.backtester.optimize(payload)
+
     def backtest_latest(self, *, symbol: str = "") -> dict[str, Any]:
         return self.backtester.latest(symbol=symbol)
 
