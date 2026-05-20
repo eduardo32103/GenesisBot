@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import os
 from threading import Lock
 from typing import Any
 
@@ -30,6 +31,7 @@ _DEFAULT_PROFILE = {
         "min_forward_profit_factor": 1.1,
         "min_forward_expectancy": 0.0,
         "min_new_trades_before_degrade": 50,
+        "max_forward_drawdown": 5000.0,
         "degrade_to": "observation_only",
     },
     "created_at": "",
@@ -55,7 +57,8 @@ def get_promoted_profile(
     if not state:
         return {
             "ok": True,
-            "status": "mt5_promoted_profile_empty",
+            "status": "observation_only",
+            "api_status": "mt5_promoted_profile_empty",
             "symbol": clean_symbol,
             "normalized_symbol": normalized,
             "timeframe": clean_timeframe,
@@ -74,9 +77,11 @@ def get_promoted_profile(
         if memory is not None:
             _save_profile_event(memory, state, event_type="mt5_promoted_profile_degraded")
     active = state.get("mode") == "paper_forward_candidate"
+    status = str(state.get("mode") or "observation_only")
     payload = {
         "ok": True,
-        "status": "mt5_promoted_profile_ready",
+        "status": status,
+        "api_status": "mt5_promoted_profile_ready",
         "symbol": clean_symbol,
         "normalized_symbol": normalized,
         "timeframe": clean_timeframe,
@@ -97,6 +102,41 @@ def get_promoted_profile(
     }
     update_snapshot(normalized, {"promoted_profile": payload})
     return payload
+
+
+def forward_profile_state(
+    *,
+    symbol: str = "BTCUSD",
+    timeframe: str = "M30",
+    memory: MemoryStore | None = None,
+) -> dict[str, Any]:
+    clean_symbol = _symbol(symbol or "BTCUSD")
+    clean_timeframe = _timeframe(timeframe or "M30")
+    normalized = normalize_mt5_symbol(clean_symbol) or clean_symbol
+    stats = _snapshot_forward_stats(normalized)
+    profile = get_promoted_profile(symbol=normalized, timeframe=clean_timeframe, memory=memory, forward_stats=stats)
+    return {
+        "ok": True,
+        "api_status": "mt5_forward_profile_state_ready",
+        "symbol": clean_symbol,
+        "normalized_symbol": normalized,
+        "timeframe": clean_timeframe,
+        "profile": profile.get("profile") or "",
+        "status": profile.get("status") or "observation_only",
+        "trades_forward": int(_number(stats.get("closed") or stats.get("closed_trades")) or 0),
+        "wins": int(_number(stats.get("wins")) or 0),
+        "losses": int(_number(stats.get("losses")) or 0),
+        "win_rate": float(_number(stats.get("win_rate")) or 0.0),
+        "profit_factor": float(_number(stats.get("profit_factor")) or 0.0),
+        "expectancy": float(_number(stats.get("expectancy")) or 0.0),
+        "max_drawdown": float(_number(stats.get("max_drawdown") or stats.get("drawdown")) or 0.0),
+        "guardrails": profile.get("guardrails") or {},
+        "degradation_reason": profile.get("degrade_reason") or "",
+        "degraded": bool(profile.get("degraded")),
+        "promoted_by": profile.get("promoted_by") or "",
+        **_safety(),
+        "updated_at": _now(),
+    }
 
 
 def active_promoted_profile(symbol: str, timeframe: str, *, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -152,8 +192,10 @@ def _ensure_defaults() -> None:
     with _LOCK:
         if ("BTCUSD", "M30") not in _PROMOTED_PROFILES:
             now = _now()
+            profile = deepcopy(_DEFAULT_PROFILE)
+            profile["guardrails"] = {**profile["guardrails"], "max_forward_drawdown": _max_drawdown_limit()}
             _PROMOTED_PROFILES[("BTCUSD", "M30")] = {
-                **deepcopy(_DEFAULT_PROFILE),
+                **profile,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -173,11 +215,15 @@ def _degrade_if_needed(key: tuple[str, str], state: dict[str, Any], stats: dict[
     expectancy = float(_number(stats.get("expectancy")) or 0.0)
     min_pf = float(_number(guardrails.get("min_forward_profit_factor")) or 1.1)
     min_exp = float(_number(guardrails.get("min_forward_expectancy")) or 0.0)
+    max_drawdown = float(_number(guardrails.get("max_forward_drawdown")) or _max_drawdown_limit())
+    drawdown = float(_number(stats.get("max_drawdown") or stats.get("drawdown")) or 0.0)
     reason = ""
     if pf < min_pf:
         reason = "forward_pf_below_1_1"
     elif expectancy <= min_exp:
         reason = "forward_expectancy_not_positive"
+    elif max_drawdown > 0 and drawdown > max_drawdown:
+        reason = "forward_drawdown_limit_exceeded"
     if not reason:
         return False, ""
     updated = {
@@ -215,6 +261,10 @@ def _save_profile_event(memory: MemoryStore, state: dict[str, Any], *, event_typ
         memory.save_mt5_event(event_type, str(state.get("symbol") or "BTCUSD"), {**state, **_safety()}, event_type, "low")
     except Exception:
         return
+
+
+def _max_drawdown_limit() -> float:
+    return float(_number(os.getenv("MT5_PROMOTED_PROFILE_MAX_DRAWDOWN")) or 5000.0)
 
 
 def _symbol(value: object) -> str:

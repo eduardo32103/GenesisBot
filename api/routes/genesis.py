@@ -16,6 +16,7 @@ from services.mt5.mt5_bridge import (
     mt5_debug_storage,
     mt5_decision,
     mt5_forward_test,
+    mt5_forward_profile_state,
     mt5_health,
     mt5_instrument,
     mt5_journal_recent,
@@ -227,3 +228,7 @@ def get_genesis_mt5_paper_defense(symbol: str = "") -> dict[str, Any]:
 
 def get_genesis_mt5_promoted_profile(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return mt5_promoted_profile(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_forward_profile_state(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_forward_profile_state(symbol=symbol, timeframe=timeframe)

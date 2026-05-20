@@ -21,7 +21,7 @@ from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_paper_exploration import evaluate_paper_exploration, update_runtime_performance
 from services.mt5.mt5_performance import MT5Performance
-from services.mt5.mt5_promoted_profile import get_promoted_profile
+from services.mt5.mt5_promoted_profile import forward_profile_state, get_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_runtime_snapshot import (
     get_snapshot,
@@ -917,6 +917,9 @@ class MT5SignalRouter:
 
     def promoted_profile(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         return get_promoted_profile(symbol=symbol or "BTCUSD", timeframe=timeframe or "M30", memory=self.memory)
+
+    def forward_profile_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return forward_profile_state(symbol=symbol or "BTCUSD", timeframe=timeframe or "M30", memory=self.memory)
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         account_payload = payload.get("account") if isinstance(payload.get("account"), dict) else {}
