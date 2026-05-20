@@ -67,6 +67,9 @@ class MT5AdaptiveStateEngine:
         rolling_expectancy = _expectancy(last_20)
         rolling_drawdown = _max_drawdown(last_20)
         regime_health = _regime_health(last_20)
+        time_stop_cluster = _time_stop_cluster(last_10)
+        loss_cluster = _loss_cluster(last_10)
+        negative_edge = closed >= 15 and rolling_profit_factor < 1.0 and rolling_expectancy < 0
         bot_state = _bot_state(
             closed=closed,
             loss_streak=loss_streak,
@@ -74,8 +77,11 @@ class MT5AdaptiveStateEngine:
             rolling_profit_factor=rolling_profit_factor,
             rolling_win_rate=rolling_win_rate,
             rolling_drawdown=rolling_drawdown,
+            negative_edge=negative_edge,
+            time_stop_cluster=time_stop_cluster,
+            loss_cluster=loss_cluster,
         )
-        recommendation_summary = _recommendation_summary(bot_state, closed, rolling_profit_factor, rolling_expectancy)
+        recommendation_summary = _recommendation_summary(bot_state, closed, rolling_profit_factor, rolling_expectancy, time_stop_cluster, loss_cluster)
         payload = {
             "ok": True,
             "status": "mt5_adaptive_state_ready",
@@ -91,7 +97,17 @@ class MT5AdaptiveStateEngine:
             "rolling_profit_factor": rolling_profit_factor,
             "rolling_expectancy": rolling_expectancy,
             "rolling_drawdown": rolling_drawdown,
-            "regime_health": regime_health,
+            "regime_health": {
+                **regime_health,
+                "negative_edge": negative_edge,
+                "caution": bot_state == "caution",
+                "pause_new_entries": bot_state == "pause_new_entries",
+                "time_stop_cluster": time_stop_cluster,
+                "loss_cluster": loss_cluster,
+            },
+            "negative_edge": negative_edge,
+            "time_stop_cluster": time_stop_cluster,
+            "loss_cluster": loss_cluster,
             "recommendation_summary": recommendation_summary,
             "data_source_used": data_source_used,
             "updated_at": _now(),
@@ -191,11 +207,18 @@ def _bot_state(
     rolling_profit_factor: float,
     rolling_win_rate: float,
     rolling_drawdown: float,
+    negative_edge: bool = False,
+    time_stop_cluster: bool = False,
+    loss_cluster: bool = False,
 ) -> str:
+    if loss_cluster:
+        return "pause_new_entries"
     if rolling_drawdown >= 3.0 and closed >= 5:
         return "pause_new_entries"
     if loss_streak >= 3:
         return "drawdown_defense"
+    if negative_edge or time_stop_cluster:
+        return "caution"
     if closed >= 20 and rolling_profit_factor < 1.0:
         return "caution"
     if closed >= 30 and rolling_profit_factor > 1.5 and rolling_win_rate > 60:
@@ -205,7 +228,11 @@ def _bot_state(
     return "normal"
 
 
-def _recommendation_summary(bot_state: str, closed: int, profit_factor: float, expectancy: float) -> str:
+def _recommendation_summary(bot_state: str, closed: int, profit_factor: float, expectancy: float, time_stop_cluster: bool = False, loss_cluster: bool = False) -> str:
+    if loss_cluster:
+        return "Loss cluster detectado: pausar nuevas entradas paper temporalmente."
+    if time_stop_cluster:
+        return "Time stop cluster detectado: evitar rango/chop y exigir momentum claro."
     if closed < 30:
         return "Muestra insuficiente: seguir en paper hasta al menos 30 trades cerrados."
     if bot_state in {"drawdown_defense", "pause_new_entries"}:
@@ -223,6 +250,21 @@ def _pnl_value(trade: dict[str, Any]) -> float:
     if value is not None:
         return value
     return _number(trade.get("pnl_pct")) or 0.0
+
+
+def _time_stop_cluster(trades: list[dict[str, Any]]) -> bool:
+    closed = [trade for trade in trades if trade.get("status") in CLOSED_STATUSES]
+    if len(closed) < 10:
+        return False
+    time_stops = sum(1 for trade in closed if str(trade.get("exit_reason") or "") == "time_stop")
+    return time_stops > len(closed) / 2
+
+
+def _loss_cluster(trades: list[dict[str, Any]]) -> bool:
+    closed = [trade for trade in trades if trade.get("status") in CLOSED_STATUSES][-5:]
+    if len(closed) < 5:
+        return False
+    return sum(1 for trade in closed if trade.get("status") == "loss") >= 3
 
 
 def _number(value: object) -> float | None:

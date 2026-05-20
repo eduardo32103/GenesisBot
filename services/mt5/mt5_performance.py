@@ -311,6 +311,8 @@ def _summary_for_trades(trades: list[dict[str, Any]]) -> dict[str, Any]:
     loss_values = [value for value in pnls if value < 0]
     gross_win = sum(win_values)
     gross_loss = abs(sum(loss_values))
+    buy_stats = _side_stats(closed, "buy")
+    sell_stats = _side_stats(closed, "sell")
     return {
         "shadow_trades": len(trades),
         "closed": len(closed),
@@ -326,6 +328,14 @@ def _summary_for_trades(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_win": round(sum(win_values) / len(win_values), 4) if win_values else 0.0,
         "avg_loss": round(sum(loss_values) / len(loss_values), 4) if loss_values else 0.0,
         "rr_avg": round(sum(abs(_number(trade.get("r_multiple")) or 0.0) for trade in closed) / len(closed), 4) if closed else 0.0,
+        "time_stop_count": _exit_count(closed, "time_stop"),
+        "stop_loss_count": _exit_count(closed, "stop_loss"),
+        "take_profit_count": _exit_count(closed, "take_profit"),
+        "signal_flip_count": _exit_count(closed, "signal_flip"),
+        "buy_win_rate": buy_stats["win_rate"],
+        "sell_win_rate": sell_stats["win_rate"],
+        "buy_pf": buy_stats["profit_factor"],
+        "sell_pf": sell_stats["profit_factor"],
     }
 
 
@@ -387,6 +397,28 @@ def _pnl_value(trade: dict[str, Any]) -> float:
     if r_multiple is not None:
         return r_multiple
     return _number(trade.get("pnl_pct")) or _number(trade.get("pnl")) or 0.0
+
+
+def _exit_count(closed: list[dict[str, Any]], reason: str) -> int:
+    return sum(1 for trade in closed if str(trade.get("exit_reason") or "") == reason)
+
+
+def _side_stats(closed: list[dict[str, Any]], side: str) -> dict[str, float]:
+    items = [trade for trade in closed if str(trade.get("side") or "").casefold() == side]
+    wins = [trade for trade in items if trade.get("status") == "win"]
+    pnls = [_pnl_value(trade) for trade in items]
+    gross_win = sum(value for value in pnls if value > 0)
+    gross_loss = abs(sum(value for value in pnls if value < 0))
+    if gross_win <= 0 and gross_loss <= 0:
+        pf = 0.0
+    elif gross_loss <= 0:
+        pf = round(gross_win, 4)
+    else:
+        pf = round(gross_win / gross_loss, 4)
+    return {
+        "win_rate": round((len(wins) / len(items)) * 100, 2) if items else 0.0,
+        "profit_factor": pf,
+    }
 
 
 def _is_auto_forward_trade(trade: dict[str, Any]) -> bool:

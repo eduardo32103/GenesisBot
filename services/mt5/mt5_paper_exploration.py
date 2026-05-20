@@ -143,6 +143,10 @@ def _can_open(
     state: dict[str, Any],
     has_open_trade: bool,
 ) -> tuple[bool, str]:
+    snapshot = get_snapshot(symbol) or {}
+    closed_trades = snapshot.get("recent_closed_shadow_trades") if isinstance(snapshot.get("recent_closed_shadow_trades"), list) else []
+    closed_trades = [trade for trade in closed_trades if isinstance(trade, dict)]
+    defense = _defense_state(closed_trades)
     if not cfg.paper_exploration_enabled:
         return False, "paper_exploration_disabled"
     if normalized != "BTCUSD":
@@ -156,11 +160,39 @@ def _can_open(
     if spread is not None and spread > cfg.paper_exploration_max_spread_points:
         return False, "spread_too_high"
     last_opened = _parse_time(state.get("last_opened_at"))
-    if last_opened and (_now_dt() - last_opened).total_seconds() < cfg.paper_exploration_cooldown_sec:
+    cooldown = cfg.paper_exploration_cooldown_sec * (2 if defense["caution_mode"] else 1)
+    if last_opened and (_now_dt() - last_opened).total_seconds() < cooldown:
         return False, "cooldown_active"
+    if defense["loss_cluster"]:
+        last_closed = _parse_time(str((closed_trades[0] if closed_trades else {}).get("closed_at") or ""))
+        if last_closed and (_now_dt() - last_closed) < timedelta(minutes=20):
+            return False, "loss_cluster_cooldown"
+    if defense["negative_recent_edge"]:
+        return False, "negative_recent_edge"
     score = _score(tick)
-    if score is not None and score < cfg.paper_exploration_min_score:
+    min_score = cfg.paper_exploration_min_score + (10 if defense["caution_mode"] else 0)
+    if score is not None and score < min_score:
         return False, "score_too_low"
+    momentum = _number(tick.get("momentum_score"))
+    if momentum is not None and momentum < 55:
+        return False, "momentum_score_low"
+    trend = _number(tick.get("trend_score"))
+    if trend is not None and trend < 55:
+        return False, "trend_score_low"
+    volatility = _number(tick.get("volatility_score"))
+    if volatility is not None and volatility < 35:
+        return False, "volatility_too_low"
+    regime = str(tick.get("regime") or tick.get("market_regime") or "").casefold().strip()
+    if regime in {"chop", "range", "sideways"}:
+        return False, "regime_chop"
+    if defense["time_stop_cluster"] and (
+        regime in {"chop", "range", "sideways", "not_confirmed"}
+        or (momentum is not None and momentum < 65)
+        or momentum is None
+        or (trend is not None and trend < 60)
+        or trend is None
+    ):
+        return False, "time_stop_cluster"
     return True, "paper_exploration_probe"
 
 
@@ -215,6 +247,10 @@ def _open_trade(symbol: str, normalized: str, tick: dict[str, Any], cfg: MT5Brid
             "features_snapshot": {
                 "spread": _spread(tick),
                 "score": _score(tick),
+                "momentum_score": _number(tick.get("momentum_score")),
+                "trend_score": _number(tick.get("trend_score")),
+                "volatility_score": _number(tick.get("volatility_score")),
+                "regime": str(tick.get("regime") or tick.get("market_regime") or ""),
                 "previous_price": previous_price,
                 "trigger": "fast_path_snapshot",
             },
@@ -294,6 +330,9 @@ def _summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
     pnls = [_number(trade.get("r_multiple")) or _number(trade.get("pnl")) or 0.0 for trade in closed]
     gross_win = sum(value for value in pnls if value > 0)
     gross_loss = abs(sum(value for value in pnls if value < 0))
+    recent_defense = _defense_state(closed)
+    buy_stats = _side_stat(closed, "buy")
+    sell_stats = _side_stat(closed, "sell")
     return {
         "shadow_trades": len(trades),
         "open": sum(1 for trade in trades if trade.get("lifecycle_status") == "open" or trade.get("status") == "open"),
@@ -309,29 +348,63 @@ def _summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_win": round(gross_win / len(wins), 4) if wins else 0.0,
         "avg_loss": round(-gross_loss / len(losses), 4) if losses else 0.0,
         "rr_avg": round(sum(abs(value) for value in pnls) / len(closed), 4) if closed else 0.0,
+        "time_stop_count": _exit_count(closed, "time_stop"),
+        "stop_loss_count": _exit_count(closed, "stop_loss"),
+        "take_profit_count": _exit_count(closed, "take_profit"),
+        "signal_flip_count": _exit_count(closed, "signal_flip"),
+        "buy_win_rate": buy_stats["win_rate"],
+        "sell_win_rate": sell_stats["win_rate"],
+        "buy_pf": buy_stats["profit_factor"],
+        "sell_pf": sell_stats["profit_factor"],
+        "negative_recent_edge": recent_defense["negative_recent_edge"],
+        "caution_mode": recent_defense["caution_mode"],
+        "loss_cluster": recent_defense["loss_cluster"],
+        "time_stop_cluster": recent_defense["time_stop_cluster"],
     }
 
 
 def _adaptive_from_summary(symbol: str, summary: dict[str, Any]) -> dict[str, Any]:
     closed = int(summary.get("closed") or 0)
     pf = _number(summary.get("profit_factor")) or 0.0
+    win_rate = _number(summary.get("win_rate")) or 0.0
+    expectancy = _number(summary.get("expectancy")) or 0.0
+    time_stop_count = int(summary.get("time_stop_count") or 0)
+    losses = int(summary.get("losses") or 0)
+    time_stop_cluster = bool(summary.get("time_stop_cluster")) or (closed >= 10 and time_stop_count > (closed / 2))
+    loss_cluster = bool(summary.get("loss_cluster")) or (closed >= 5 and losses >= 3 and win_rate <= 45)
+    negative_edge = closed >= 15 and pf < 1.0 and expectancy <= 0
+    if loss_cluster:
+        bot_state = "pause_new_entries"
+    elif negative_edge or time_stop_cluster:
+        bot_state = "caution"
+    else:
+        bot_state = "normal" if closed < 20 or pf >= 1.0 else "caution"
     return {
         "ok": True,
         "status": "mt5_adaptive_state_ready",
         "symbol": symbol,
         "timeframe": "",
-        "bot_state": "normal" if closed < 20 or pf >= 1.0 else "caution",
+        "bot_state": bot_state,
         "closed_trades": closed,
         "current_win_streak": 0,
-        "current_loss_streak": 0,
-        "last_10_win_rate": _number(summary.get("win_rate")) or 0.0,
-        "last_20_win_rate": _number(summary.get("win_rate")) or 0.0,
-        "rolling_win_rate": _number(summary.get("win_rate")) or 0.0,
+        "current_loss_streak": 3 if loss_cluster else 0,
+        "last_10_win_rate": win_rate,
+        "last_20_win_rate": win_rate,
+        "rolling_win_rate": win_rate,
         "rolling_profit_factor": pf,
-        "rolling_expectancy": _number(summary.get("expectancy")) or 0.0,
+        "rolling_expectancy": expectancy,
         "rolling_drawdown": _number(summary.get("max_drawdown")) or 0.0,
-        "regime_health": {},
-        "recommendation_summary": "Paper exploration runtime snapshot; learning pesado aislado.",
+        "regime_health": {
+            "negative_edge": negative_edge,
+            "caution": bot_state == "caution",
+            "pause_new_entries": bot_state == "pause_new_entries",
+            "time_stop_cluster": time_stop_cluster,
+            "loss_cluster": loss_cluster,
+        },
+        "negative_edge": negative_edge,
+        "time_stop_cluster": time_stop_cluster,
+        "loss_cluster": loss_cluster,
+        "recommendation_summary": _adaptive_message(bot_state, negative_edge, time_stop_cluster, loss_cluster),
         "data_source_used": "runtime_snapshot",
         "updated_at": _now(),
         "broker_touched": False,
@@ -343,9 +416,67 @@ def _adaptive_from_summary(symbol: str, summary: dict[str, Any]) -> dict[str, An
 def _reading(symbol: str, summary: dict[str, Any]) -> str:
     if summary["open"]:
         return f"{symbol}: paper exploration mantiene una operacion sombra abierta; sin broker real."
+    if int(summary.get("time_stop_count") or 0) > max(0, int(summary.get("closed") or 0) // 2) and int(summary.get("closed") or 0) >= 10:
+        return f"{symbol}: time_stop_cluster detectado; Genesis exige mas momentum antes de nuevas entradas paper."
     if summary["closed"]:
         return f"{symbol}: paper exploration cerro {summary['closed']} trade(s), win rate {summary['win_rate']}%, PF {summary['profit_factor']}."
     return f"{symbol}: paper exploration listo; aun sin cierres suficientes."
+
+
+def _defense_state(closed_trades: list[dict[str, Any]]) -> dict[str, Any]:
+    recent_5 = closed_trades[:5]
+    recent_10 = closed_trades[:10]
+    pf5 = _profit_factor_for(recent_5)
+    wr5 = _win_rate_for(recent_5)
+    pf_all = _profit_factor_for(closed_trades)
+    losses5 = sum(1 for trade in recent_5 if trade.get("status") == "loss")
+    time_stops10 = sum(1 for trade in recent_10 if str(trade.get("exit_reason") or "") == "time_stop")
+    return {
+        "negative_recent_edge": len(recent_5) >= 5 and pf5 < 1.0 and wr5 < 45,
+        "caution_mode": len(closed_trades) >= 15 and pf_all < 1.0,
+        "loss_cluster": len(recent_5) >= 5 and losses5 >= 3,
+        "time_stop_cluster": len(recent_10) >= 10 and time_stops10 > len(recent_10) / 2,
+    }
+
+
+def _exit_count(closed: list[dict[str, Any]], reason: str) -> int:
+    return sum(1 for trade in closed if str(trade.get("exit_reason") or "") == reason)
+
+
+def _side_stat(closed: list[dict[str, Any]], side: str) -> dict[str, float]:
+    items = [trade for trade in closed if str(trade.get("side") or "").casefold() == side]
+    return {"win_rate": _win_rate_for(items), "profit_factor": _profit_factor_for(items)}
+
+
+def _profit_factor_for(trades: list[dict[str, Any]]) -> float:
+    pnls = [_number(trade.get("r_multiple")) or _number(trade.get("pnl")) or 0.0 for trade in trades if trade.get("status") in {"win", "loss", "breakeven"}]
+    gross_win = sum(value for value in pnls if value > 0)
+    gross_loss = abs(sum(value for value in pnls if value < 0))
+    if gross_win <= 0 and gross_loss <= 0:
+        return 0.0
+    if gross_loss <= 0:
+        return round(gross_win, 4)
+    return round(gross_win / gross_loss, 4)
+
+
+def _win_rate_for(trades: list[dict[str, Any]]) -> float:
+    closed = [trade for trade in trades if trade.get("status") in {"win", "loss", "breakeven"}]
+    if not closed:
+        return 0.0
+    wins = sum(1 for trade in closed if trade.get("status") == "win")
+    return round((wins / len(closed)) * 100, 2)
+
+
+def _adaptive_message(bot_state: str, negative_edge: bool, time_stop_cluster: bool, loss_cluster: bool) -> str:
+    if loss_cluster:
+        return "Loss cluster detectado: pausar nuevas entradas paper temporalmente."
+    if time_stop_cluster:
+        return "Time stop cluster detectado: evitar rango/chop y exigir momentum claro."
+    if negative_edge:
+        return "Negative edge paper detectado: activar caution y reducir entradas exploratorias."
+    if bot_state == "caution":
+        return "Estado caution: subir score minimo y duplicar cooldown paper."
+    return "Paper exploration runtime snapshot; learning pesado aislado."
 
 
 def _price(tick: dict[str, Any]) -> float | None:

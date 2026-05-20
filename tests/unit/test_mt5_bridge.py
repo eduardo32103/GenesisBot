@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2009,6 +2010,100 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertFalse(tick["broker_touched"])
         self.assertFalse(tick["order_executed"])
 
+    def test_paper_exploration_blocks_low_momentum_trend_volatility_and_chop(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        cases = (
+            ({"momentum_score": 54, "trend_score": 70, "volatility_score": 60}, "momentum_score_low"),
+            ({"momentum_score": 70, "trend_score": 54, "volatility_score": 60}, "trend_score_low"),
+            ({"momentum_score": 70, "trend_score": 70, "volatility_score": 30}, "volatility_too_low"),
+            ({"momentum_score": 70, "trend_score": 70, "volatility_score": 60, "regime": "chop"}, "regime_chop"),
+        )
+        for extra, reason in cases:
+            reset_runtime_snapshots_for_tests()
+            router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+            with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+                tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, **extra})
+            self.assertFalse(tick["paper_exploration_created"])
+            self.assertEqual(tick["paper_exploration_reason"], reason)
+
+    def test_paper_exploration_caution_blocks_negative_recent_edge(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        for index in range(5):
+            append_closed_shadow_trade("BTCUSD", _paper_closed_trade(f"neg-{index}", status="loss", r_multiple=-0.5))
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, "score": 80, "momentum_score": 80, "trend_score": 80, "volatility_score": 80})
+
+        self.assertFalse(tick["paper_exploration_created"])
+        self.assertEqual(tick["paper_exploration_reason"], "loss_cluster_cooldown")
+
+    def test_paper_exploration_caution_raises_min_score(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        for index in range(10):
+            append_closed_shadow_trade("BTCUSD", _paper_closed_trade(f"caution-old-{index}", status="loss", r_multiple=-1.0))
+        for index, status in enumerate(("loss", "win", "win", "loss", "win")):
+            append_closed_shadow_trade(
+                "BTCUSD",
+                _paper_closed_trade(f"caution-recent-{index}", status=status, r_multiple=0.1 if status == "win" else -0.2),
+            )
+        router = MT5SignalRouter(
+            config=MT5BridgeConfig(
+                fast_path_only=True,
+                paper_exploration_enabled=True,
+                paper_exploration_min_score=45,
+            )
+        )
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, "score": 50, "momentum_score": 80, "trend_score": 80, "volatility_score": 80})
+
+        self.assertFalse(tick["paper_exploration_created"])
+        self.assertEqual(tick["paper_exploration_reason"], "score_too_low")
+
+    def test_paper_exploration_detects_time_stop_cluster_and_requires_momentum(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        for index in range(10):
+            append_closed_shadow_trade("BTCUSD", _paper_closed_trade(f"time-{index}", status="win", r_multiple=0.1, exit_reason="time_stop"))
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            blocked = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, "momentum_score": 60, "trend_score": 70, "volatility_score": 70})
+        reset_runtime_snapshots_for_tests()
+        for index in range(10):
+            append_closed_shadow_trade("BTCUSD", _paper_closed_trade(f"time-ok-{index}", status="win", r_multiple=0.1, exit_reason="time_stop"))
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            allowed = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, "momentum_score": 70, "trend_score": 70, "volatility_score": 70, "regime": "breakout"})
+
+        self.assertFalse(blocked["paper_exploration_created"])
+        self.assertEqual(blocked["paper_exploration_reason"], "time_stop_cluster")
+        self.assertTrue(allowed["paper_exploration_created"])
+
+    def test_paper_performance_exit_reason_and_side_metrics(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        append_closed_shadow_trade("BTCUSD", _paper_closed_trade("buy-win", status="win", r_multiple=1.2, side="buy", exit_reason="take_profit"))
+        append_closed_shadow_trade("BTCUSD", _paper_closed_trade("buy-loss", status="loss", r_multiple=-1.0, side="buy", exit_reason="stop_loss"))
+        append_closed_shadow_trade("BTCUSD", _paper_closed_trade("sell-win", status="win", r_multiple=0.4, side="sell", exit_reason="time_stop"))
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        performance = router.performance(symbol="BTCUSD")
+        state = router.adaptive_state(symbol="BTCUSD")
+
+        self.assertEqual(performance["summary"]["take_profit_count"], 1)
+        self.assertEqual(performance["summary"]["stop_loss_count"], 1)
+        self.assertEqual(performance["summary"]["time_stop_count"], 1)
+        self.assertEqual(performance["summary"]["buy_win_rate"], 50.0)
+        self.assertEqual(performance["summary"]["sell_win_rate"], 100.0)
+        self.assertGreater(performance["summary"]["buy_pf"], 0)
+        self.assertFalse(state["broker_touched"])
+        self.assertFalse(state["order_executed"])
+
     def test_debug_storage_fast_path_is_limited_and_does_not_call_performance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(database_url="", sqlite_path=Path(tmp) / "memory.sqlite3")
@@ -2717,6 +2812,48 @@ def _no_trade_context() -> dict[str, object]:
         "technical_context": {"price": 100, "atr": 2.5},
         "recommended_strategy_profile": "No Trade Test",
         "recommended_timeframe": "H1",
+    }
+
+
+def _paper_closed_trade(
+    trade_id: str,
+    *,
+    status: str = "win",
+    r_multiple: float = 1.0,
+    side: str = "buy",
+    exit_reason: str = "take_profit",
+) -> dict[str, object]:
+    pnl = r_multiple
+    closed_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "shadow_trade_id": trade_id,
+        "symbol": "BTCUSD",
+        "normalized_symbol": "BTCUSD",
+        "instrument_type": "crypto_spot",
+        "side": side,
+        "action": side.upper(),
+        "entry_price": 100.0,
+        "stop_loss": 98.5 if side == "buy" else 101.5,
+        "take_profit": 101.8 if side == "buy" else 98.2,
+        "risk_reward": 1.2,
+        "risk_pct": 0.1,
+        "opened_at": "2026-05-19T00:00:00+00:00",
+        "closed_at": closed_at,
+        "status": status,
+        "lifecycle_status": "closed",
+        "exit_price": 101.0 if pnl >= 0 else 99.0,
+        "exit_reason": exit_reason,
+        "pnl": pnl,
+        "pnl_pct": pnl,
+        "r_multiple": r_multiple,
+        "source": "mt5_paper_exploration",
+        "auto_forward": True,
+        "paper_exploration": True,
+        "included_in_exploration_metrics": True,
+        "manual_test": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
     }
 
 

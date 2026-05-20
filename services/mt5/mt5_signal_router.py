@@ -18,7 +18,7 @@ from services.mt5.mt5_ingest_queue import enqueue_mt5_event, ingest_status
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
-from services.mt5.mt5_paper_exploration import evaluate_paper_exploration
+from services.mt5.mt5_paper_exploration import evaluate_paper_exploration, update_runtime_performance
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_runtime_snapshot import (
@@ -505,6 +505,8 @@ class MT5SignalRouter:
             cached = snapshot.get("latest_performance_payload") if isinstance(snapshot.get("latest_performance_payload"), dict) else {}
             if cached:
                 return {**cached, "data_source_used": "runtime_snapshot", "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+            if snapshot.get("open_shadow_trade") or snapshot.get("recent_closed_shadow_trades"):
+                return update_runtime_performance(symbol)
             return _empty_performance_from_snapshot(symbol, timeframe, reason="snapshot_missing")
         return self.performance_engine.report(symbol=symbol, timeframe=timeframe)
 
@@ -1133,22 +1135,37 @@ def _empty_performance_from_snapshot(symbol: str, timeframe: str, *, reason: str
 def _fast_state_from_summary(*, symbol: str, timeframe: str, summary: dict[str, Any], reason: str) -> dict[str, Any]:
     closed = int(summary.get("closed") or 0)
     pf = _maybe_float(summary.get("profit_factor")) or 0.0
+    expectancy = _maybe_float(summary.get("expectancy")) or 0.0
+    win_rate = _maybe_float(summary.get("win_rate")) or 0.0
+    time_stop_cluster = bool(summary.get("time_stop_cluster")) or (closed >= 10 and int(summary.get("time_stop_count") or 0) > closed / 2)
+    loss_cluster = bool(summary.get("loss_cluster"))
+    negative_edge = closed >= 15 and pf < 1.0 and expectancy < 0
+    bot_state = "pause_new_entries" if loss_cluster else "caution" if negative_edge or time_stop_cluster or (closed >= 20 and pf < 1.0) else "normal"
     return {
         "ok": True,
         "status": "mt5_adaptive_state_ready" if summary else "no_snapshot_yet",
         "symbol": str(symbol or "").upper().strip(),
         "timeframe": str(timeframe or "").upper().strip(),
-        "bot_state": "normal" if closed < 20 or pf >= 1.0 else "caution",
+        "bot_state": bot_state,
         "closed_trades": closed,
         "current_win_streak": 0,
-        "current_loss_streak": 0,
-        "last_10_win_rate": _maybe_float(summary.get("win_rate")) or 0.0,
-        "last_20_win_rate": _maybe_float(summary.get("win_rate")) or 0.0,
-        "rolling_win_rate": _maybe_float(summary.get("win_rate")) or 0.0,
+        "current_loss_streak": 3 if loss_cluster else 0,
+        "last_10_win_rate": win_rate,
+        "last_20_win_rate": win_rate,
+        "rolling_win_rate": win_rate,
         "rolling_profit_factor": pf,
-        "rolling_expectancy": _maybe_float(summary.get("expectancy")) or 0.0,
+        "rolling_expectancy": expectancy,
         "rolling_drawdown": _maybe_float(summary.get("max_drawdown") or summary.get("drawdown")) or 0.0,
-        "regime_health": {},
+        "regime_health": {
+            "negative_edge": negative_edge,
+            "caution": bot_state == "caution",
+            "pause_new_entries": bot_state == "pause_new_entries",
+            "time_stop_cluster": time_stop_cluster,
+            "loss_cluster": loss_cluster,
+        },
+        "negative_edge": negative_edge,
+        "time_stop_cluster": time_stop_cluster,
+        "loss_cluster": loss_cluster,
         "recommendation_summary": "Fast path usa snapshot; learning pesado aislado.",
         "data_source_used": reason,
         "updated_at": _now(),
