@@ -4,3 +4,7 @@ __pycache__/
 .genesis_memory.sqlite3
 .genesis_memory.sqlite3-*
 .genesis_uploads/
+
+# Backtest data local
+data/backtests/*.csv
+data/backtests/*.json
