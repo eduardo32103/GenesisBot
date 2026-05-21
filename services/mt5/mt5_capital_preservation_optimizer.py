@@ -28,9 +28,11 @@ CAPITAL_PRESERVATION_PROFILES = [
     "breakout_pullback_v1",
     "breakout_pullback_v2_safe",
     "breakout_pullback_v3_balanced",
+    "breakout_pullback_v4_expanded",
     "trend_continuation_v1",
     "trend_continuation_v2_low_drawdown",
     "trend_continuation_v3_balanced",
+    "trend_continuation_v4_expanded",
     "mean_reversion_v1_safe",
     "volatility_squeeze_v1",
     "session_filtered_v1",
@@ -54,6 +56,7 @@ CAPITAL_PRESERVATION_PROFILES = [
     "low_drawdown_v1",
     "low_drawdown_v2",
     "low_drawdown_v3_more_trades",
+    "low_drawdown_v4_expanded",
 ]
 
 CAPITAL_PRESERVATION_TIMEFRAMES = ["M15", "M30", "H1"]
@@ -107,6 +110,28 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "extended_candle_atr": 2.1,
         "atr_stop_multiplier": 1.15,
     },
+    "breakout_pullback_v4_expanded": {
+        "strategy_family": "breakout_pullback",
+        "experimental_timeframes": ["M30", "H1"],
+        "min_trend_score": 48.0,
+        "min_momentum_score": 46.0,
+        "max_rsi_for_buy": 78.0,
+        "min_rsi_for_sell": 22.0,
+        "score_cap_when_weak": 61.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 58.0,
+        "min_score_floor": 52.0,
+        "adaptive_score_by_timeframe": {"M30": -3.0, "H1": -4.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 20.0,
+        "min_volatility_floor": 12.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -5.0, "H1": -7.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 3.1,
+        "extended_candle_atr": 2.25,
+        "atr_stop_multiplier": 1.15,
+    },
     "trend_continuation_v1": {
         "strategy_family": "trend_continuation",
         "min_trend_score": 58.0,
@@ -153,6 +178,28 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "min_volatility_score": 24.0,
         "ema_distance_max_atr": 3.0,
         "extended_candle_atr": 2.2,
+        "atr_stop_multiplier": 1.05,
+    },
+    "trend_continuation_v4_expanded": {
+        "strategy_family": "trend_continuation",
+        "experimental_timeframes": ["M30", "H1"],
+        "min_trend_score": 51.0,
+        "min_momentum_score": 46.0,
+        "max_rsi_for_buy": 79.0,
+        "min_rsi_for_sell": 21.0,
+        "score_cap_when_weak": 60.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 58.0,
+        "min_score_floor": 52.0,
+        "adaptive_score_by_timeframe": {"M30": -4.0, "H1": -5.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 20.0,
+        "min_volatility_floor": 12.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -7.0, "H1": -8.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 3.2,
+        "extended_candle_atr": 2.25,
         "atr_stop_multiplier": 1.05,
     },
     "mean_reversion_v1_safe": {
@@ -474,6 +521,28 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "min_volatility_score": 26.0,
         "ema_distance_max_atr": 2.4,
         "extended_candle_atr": 1.9,
+        "atr_stop_multiplier": 0.95,
+    },
+    "low_drawdown_v4_expanded": {
+        "strategy_family": "ema_rsi_confirmed",
+        "experimental_timeframes": ["M30", "H1"],
+        "min_trend_score": 52.0,
+        "min_momentum_score": 49.0,
+        "max_rsi_for_buy": 75.0,
+        "min_rsi_for_sell": 25.0,
+        "score_cap_when_weak": 58.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 59.0,
+        "min_score_floor": 53.0,
+        "adaptive_score_by_timeframe": {"M30": -3.0, "H1": -4.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 22.0,
+        "min_volatility_floor": 13.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -6.0, "H1": -8.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 2.8,
+        "extended_candle_atr": 2.1,
         "atr_stop_multiplier": 0.95,
     },
 }
@@ -966,7 +1035,7 @@ def _common_entry_block(features: dict[str, Any], settings: BacktestSettings, co
         allowed = params.get("session_hours") if isinstance(params.get("session_hours"), list) else [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
         if features.get("hour") is not None and int(features["hour"]) not in {int(item) for item in allowed}:
             return "session_filter"
-    min_vol = float(_number(params.get("min_volatility_score")) or 0.0)
+    min_vol = _effective_min_volatility(features, settings, params)
     if config.volatility_filter and features["volatility_score"] < min_vol:
         return "volatility_too_low"
     allowed_regime = str(params.get("allowed_regime") or "").casefold()
@@ -982,7 +1051,7 @@ def _common_entry_block(features: dict[str, Any], settings: BacktestSettings, co
 
 
 def _breakout_pullback_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     score = _score(features, trend_weight=0.42, momentum_weight=0.34, volatility_weight=0.24)
     broke_up = features["recent_high"] > features["prior_high"]
     broke_down = features["recent_low"] < features["prior_low"]
@@ -996,7 +1065,7 @@ def _breakout_pullback_decision(features: dict[str, Any], settings: BacktestSett
 
 
 def _trend_continuation_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     score = _score(features, trend_weight=0.48, momentum_weight=0.34, volatility_weight=0.18)
     buy = features["close"] > features["ema20"] > features["ema50"] and features["momentum_score"] >= params.get("min_momentum_score", 52) and features["rsi"] < params.get("max_rsi_for_buy", 76)
     sell = features["close"] < features["ema20"] < features["ema50"] and features["momentum_score"] <= 45 and features["rsi"] > params.get("min_rsi_for_sell", 24)
@@ -1008,7 +1077,7 @@ def _trend_continuation_decision(features: dict[str, Any], settings: BacktestSet
 
 
 def _mean_reversion_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     reversion_score = min(90.0, max(10.0, 45.0 + features["distance20_atr"] * 12.0 + (50.0 - abs(features["rsi"] - 50.0)) * 0.25))
     buy = features["regime"] == "chop" and features["rsi"] <= params.get("max_rsi_for_buy", 42) and features["close"] > features["prev_close"] and features["low"] < features["ema20"] - features["atr"] * 0.45
     sell = features["regime"] == "chop" and features["rsi"] >= params.get("min_rsi_for_sell", 58) and features["close"] < features["prev_close"] and features["high"] > features["ema20"] + features["atr"] * 0.45
@@ -1020,7 +1089,7 @@ def _mean_reversion_decision(features: dict[str, Any], settings: BacktestSetting
 
 
 def _volatility_squeeze_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     compressed = features["previous_range"] > 0 and features["recent_range"] <= features["previous_range"] * 0.75
     score = _score(features, trend_weight=0.25, momentum_weight=0.48, volatility_weight=0.27)
     if compressed and features["close"] > features["recent_high"] and features["momentum_score"] >= 56 and score >= min_score and features["rsi"] < params.get("max_rsi_for_buy", 75):
@@ -1031,7 +1100,7 @@ def _volatility_squeeze_decision(features: dict[str, Any], settings: BacktestSet
 
 
 def _liquidity_sweep_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     score = min(90.0, max(10.0, 55.0 + features["body_ratio"] * 20.0 + features["volatility_score"] * 0.15))
     swept_low = features["low"] < features["recent_low"] and features["close"] > features["recent_low"] and features["close"] > features["open"]
     swept_high = features["high"] > features["recent_high"] and features["close"] < features["recent_high"] and features["close"] < features["open"]
@@ -1043,7 +1112,7 @@ def _liquidity_sweep_decision(features: dict[str, Any], settings: BacktestSettin
 
 
 def _ema_rsi_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     score = _score(features, trend_weight=0.40, momentum_weight=0.35, volatility_weight=0.25)
     buy = features["close"] > features["ema20"] > features["ema50"] and 45 <= features["rsi"] <= params.get("max_rsi_for_buy", 68) and features["momentum_score"] >= params.get("min_momentum_score", 50)
     sell = features["close"] < features["ema20"] < features["ema50"] and params.get("min_rsi_for_sell", 32) <= features["rsi"] <= 55 and features["momentum_score"] <= 48
@@ -1052,6 +1121,31 @@ def _ema_rsi_decision(features: dict[str, Any], settings: BacktestSettings, para
     if sell and score >= min_score:
         return _action("sell", score, "ema_rsi_confirmed", features)
     return _blocked_decision("ema_rsi_not_confirmed", features, score)
+
+
+def _effective_min_score(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> float:
+    base = float(_number(params.get("min_score")) or settings.min_score)
+    adjustment = _timeframe_adjustment(params.get("adaptive_score_by_timeframe"), settings.timeframe)
+    if str(features.get("regime") or "").casefold() == "trend":
+        adjustment += float(_number(params.get("trend_regime_score_relief")) or 0.0)
+    floor = float(_number(params.get("min_score_floor")) or max(45.0, base - 6.0))
+    return max(floor, base + adjustment)
+
+
+def _effective_min_volatility(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> float:
+    base = float(_number(params.get("min_volatility_score")) or 0.0)
+    adjustment = _timeframe_adjustment(params.get("adaptive_min_volatility_by_timeframe"), settings.timeframe)
+    if str(features.get("regime") or "").casefold() == "trend":
+        adjustment -= float(_number(params.get("trend_regime_volatility_relief")) or 0.0)
+    floor = float(_number(params.get("min_volatility_floor")) or max(0.0, base - 8.0))
+    return max(floor, base + adjustment)
+
+
+def _timeframe_adjustment(value: Any, timeframe: str) -> float:
+    if not isinstance(value, dict):
+        return 0.0
+    direct = _number(value.get(str(timeframe or "").upper()))
+    return float(direct or 0.0)
 
 
 def _score(features: dict[str, Any], *, trend_weight: float, momentum_weight: float, volatility_weight: float) -> float:

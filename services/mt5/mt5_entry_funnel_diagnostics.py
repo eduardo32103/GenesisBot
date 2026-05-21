@@ -15,6 +15,8 @@ from services.mt5.mt5_capital_preservation_optimizer import (
     _capital_decision_from_history,
     _common_entry_block,
     _config,
+    _effective_min_score,
+    _effective_min_volatility,
     _fast_risk_block,
     _market_features,
     _settings_for_capital_config,
@@ -339,13 +341,13 @@ def _filter_state(features: dict[str, Any], settings: Any, config: Any, params: 
     min_momentum = float(_number(params.get("min_momentum_score")) or 0.0)
     max_rsi_buy = float(_number(params.get("max_rsi_for_buy")) or 100.0)
     min_rsi_sell = float(_number(params.get("min_rsi_for_sell")) or 0.0)
-    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    min_score = _effective_min_score(features, settings, params)
     score = _diagnostic_score(features, str(params.get("strategy_family") or "legacy"))
     trend_pass = features["trend_score"] >= min_trend or (100.0 - features["trend_score"]) >= max(30.0, min_trend * 0.65)
     momentum_pass = features["momentum_score"] >= min_momentum or features["momentum_score"] <= (100.0 - min_momentum)
     state = {
         "spread_filter": settings.spread_points <= config.spread_max,
-        "volatility_filter": (not config.volatility_filter) or features["volatility_score"] >= float(_number(params.get("min_volatility_score")) or 0.0),
+        "volatility_filter": (not config.volatility_filter) or features["volatility_score"] >= _effective_min_volatility(features, settings, params),
         "regime_filter": _regime_pass(features, config, params),
         "trend_filter": trend_pass and momentum_pass,
         "pullback_filter": _setup_pass(features, params),
