@@ -28,6 +28,7 @@ from services.mt5.mt5_bridge import (
     mt5_health,
     mt5_memory_summary,
     mt5_performance,
+    mt5_ui_summary,
 )
 from services.genesis.whale_agent import get_whale_agent
 from services.trading_intelligence.strategy_research_lab import StrategyResearchLab
@@ -202,6 +203,26 @@ def route_message(
                 answer,
                 [mt5_symbol] if mt5_symbol else [],
                 extra={"mt5": performance, "performance": performance, "kind": "mt5_forward_test"},
+                memory=store,
+                prompt=clean,
+                conversation_id=clean_conversation_id,
+            )
+        if _mentions_mt5_risk_or_profile(clean) or not explicit_ticker:
+            mt5_symbol = _mt5_metrics_symbol(clean, explicit_ticker) or "BTCUSD"
+            timeframe = _mt5_timeframe(clean) or "M30"
+            summary = mt5_ui_summary(symbol=mt5_symbol, timeframe=timeframe)
+            answer = summary.get("genesis_reading") or _mt5_health_answer(mt5_health(memory=store))
+            store.save_event(
+                "mt5_chat_query",
+                {"message": clean, "symbol": mt5_symbol, "timeframe": timeframe, "broker_touched": False, "order_executed": False},
+                "mt5_bridge",
+                "media",
+            )
+            return _payload(
+                "mt5_bridge",
+                answer,
+                [mt5_symbol],
+                extra={"mt5": summary, "structured": summary.get("structured") or {}, "kind": "mt5_dashboard"},
                 memory=store,
                 prompt=clean,
                 conversation_id=clean_conversation_id,
@@ -641,6 +662,41 @@ def _should_route_mt5_learning(message: str) -> bool:
             "que aprendiste",
         )
     )
+
+
+def _mentions_mt5_risk_or_profile(message: str) -> bool:
+    text = _fold_prompt(message)
+    return "mt5" in text and any(
+        token in text
+        for token in (
+            "riesgo",
+            "risk",
+            "risk governor",
+            "gobernador",
+            "perfil",
+            "profile",
+            "forward profile",
+            "promoted",
+            "promovido",
+            "robust",
+            "optimizer",
+            "optimizador",
+            "por que opera",
+            "por que no opera",
+            "por que no opero",
+            "que bloqueo",
+            "bloqueo",
+            "lockdown",
+        )
+    )
+
+
+def _mt5_timeframe(message: str) -> str:
+    text = _fold_prompt(message).upper()
+    for timeframe in ("M15", "M30", "H1", "H4", "D1"):
+        if timeframe in text:
+            return timeframe
+    return ""
 
 
 def _mt5_metrics_symbol(message: str, explicit_ticker: str) -> str:

@@ -79,6 +79,11 @@ const appState = {
   chatMessages: [initialChatMessage()],
   chatConversations: [],
   currentConversationId: `chat-${Date.now()}`,
+  mt5UiSummary: null,
+  mt5UiLoading: false,
+  mt5UiError: "",
+  mt5UiSymbol: "BTCUSD",
+  mt5UiTimeframe: "M30",
   voiceMode: false,
   voiceListening: false,
   voiceSpeaking: false,
@@ -2200,6 +2205,7 @@ function renderGenesisScreen() {
             ${refreshButtonMarkup("genesis", "Actualizar Genesis")}
           </div>
         </div>
+        ${mt5DashboardPanelMarkup()}
         <div class="chat-toolbar" aria-label="Controles de conversacion">
           <button type="button" data-chat-new aria-label="Nuevo chat" title="Nuevo chat">${iconSvg("new")}</button>
           <button type="button" data-chat-history aria-label="Historial" title="Historial">${iconSvg("history")}</button>
@@ -2266,6 +2272,136 @@ function chatHistoryPanelMarkup() {
   `;
 }
 
+function mt5HumanReason(value) {
+  const key = String(value || "").trim();
+  const translations = {
+    no_runtime_snapshot_for_requested_timeframe: "No hay lectura reciente del timeframe solicitado.",
+    risk_governor_pass: "Riesgo dentro de limites.",
+    early_forward_underperformance: "Perfil degradado por bajo rendimiento temprano.",
+    observation_only: "Solo observacion.",
+    paper_forward_candidate: "Candidato en prueba paper.",
+    lockdown: "Bloqueo total por proteccion de cuenta.",
+    risk_governor_block: "Risk Governor bloqueo la senal.",
+    daily_loss_limit_reached: "Limite diario de perdida alcanzado.",
+    weekly_loss_limit_reached: "Limite semanal de perdida alcanzado.",
+    drawdown_limit_reached: "Drawdown maximo alcanzado.",
+    spread_too_high: "Spread demasiado alto.",
+    snapshot_missing: "Aun no hay snapshot operativo suficiente.",
+    fast_path_snapshot_only: "Lectura rapida desde snapshot; sin orden real.",
+  };
+  if (!key) return "Sin razon tecnica registrada.";
+  if (key.includes(":")) {
+    const [prefix, ...rest] = key.split(":");
+    return `${mt5HumanReason(prefix)} ${mt5HumanReason(rest.join(":"))}`.trim();
+  }
+  return translations[key] || cleanCopy(key.replace(/_/g, " "));
+}
+
+function mt5DashboardPanelMarkup() {
+  const payload = appState.mt5UiSummary || {};
+  const cards = Array.isArray(payload.cards) ? payload.cards : [];
+  const title = `${appState.mt5UiSymbol || "BTCUSD"} ${appState.mt5UiTimeframe || "M30"}`;
+  if (appState.mt5UiLoading && !cards.length) {
+    return `
+      <section class="mt5-command-deck is-loading">
+        <div class="mt5-deck-head">
+          <span>MT5</span>
+          <strong>${escapeHtml(title)}</strong>
+        </div>
+        <p>Sincronizando lectura de riesgo, decision y perfil forward...</p>
+      </section>
+    `;
+  }
+  if (appState.mt5UiError && !cards.length) {
+    return `
+      <section class="mt5-command-deck">
+        <div class="mt5-deck-head">
+          <span>MT5</span>
+          <strong>${escapeHtml(title)}</strong>
+        </div>
+        <p>${escapeHtml(appState.mt5UiError)}</p>
+        <small class="mt5-protected-line">Broker protegido: broker_touched=false, order_executed=false.</small>
+      </section>
+    `;
+  }
+  const safeCards = cards.length ? cards : mt5FallbackCards();
+  return `
+    <section class="mt5-command-deck">
+      <div class="mt5-deck-head">
+        <span>MT5</span>
+        <strong>${escapeHtml(title)}</strong>
+        <em>Broker protegido</em>
+      </div>
+      <p>${escapeHtml(payload.genesis_reading || "Genesis vigila MT5 en modo paper/journal-only.")}</p>
+      <div class="mt5-card-grid">
+        ${safeCards.map(mt5UiCardMarkup).join("")}
+      </div>
+      <small class="mt5-protected-line">Sin boton de real trading. broker_touched=false, order_executed=false, order_policy=journal_only_no_broker.</small>
+    </section>
+  `;
+}
+
+function mt5FallbackCards() {
+  return [
+    {
+      title: "Estado de Riesgo",
+      tone: "safe",
+      headline: "Esperando snapshot",
+      human_reason: "Genesis aun no tiene lectura MT5 suficiente.",
+      rows: [
+        { label: "Estado", value: "Sin dato" },
+        { label: "Broker", value: "Broker protegido" },
+      ],
+    },
+  ];
+}
+
+function mt5UiCardMarkup(card = {}) {
+  const tone = ["safe", "warning", "danger"].includes(card.tone) ? card.tone : "safe";
+  const rows = Array.isArray(card.rows) ? card.rows.slice(0, 12) : [];
+  return `
+    <article class="mt5-ui-card ${tone}">
+      <div class="mt5-card-title">
+        <span>${escapeHtml(card.title || "MT5")}</span>
+        <strong>${escapeHtml(card.headline || "Paper-only")}</strong>
+      </div>
+      <p>${escapeHtml(card.human_reason || mt5HumanReason(card.reason))}</p>
+      <div class="mt5-card-rows">
+        ${rows.map((row) => `
+          <span>
+            <small>${escapeHtml(row.label || "")}</small>
+            <b>${escapeHtml(cleanCopy(row.value ?? ""))}</b>
+          </span>
+        `).join("")}
+      </div>
+      <i>Broker protegido</i>
+    </article>
+  `;
+}
+
+function mt5DashboardVisual(payload = {}, answer = "") {
+  const structured = payload?.structured || payload || {};
+  let cards = Array.isArray(structured.cards) ? structured.cards : [];
+  if (!cards.length && structured.kind === "mt5_decision_card") {
+    cards = [{
+      title: "Decision MT5",
+      tone: "safe",
+      headline: structured.decision || "MT5",
+      human_reason: structured.summary || answer || "Lectura MT5 paper-only.",
+      rows: (Array.isArray(structured.sections) ? structured.sections : []).flatMap((section) => (
+        Array.isArray(section?.bullets) ? section.bullets.slice(0, 2).map((bullet) => ({ label: section.title || "MT5", value: bullet })) : []
+      )).slice(0, 8),
+    }];
+  }
+  return {
+    kind: "mt5_dashboard",
+    title: structured.title || "MT5",
+    thesis: structured.summary || answer || "Genesis muestra MT5 en lenguaje humano.",
+    warning: structured.warning || "No real trading todavia.",
+    cards,
+  };
+}
+
 function genesisAssistantMessageFromPayload(payload, fallbackText = "") {
   const answer = stripMarkdownCopy(payload?.assistant_narrative || payload?.answer || fallbackText || "No tengo lectura suficiente.");
   seedChartCacheFromGenesisPayload(payload);
@@ -2313,6 +2449,7 @@ function genesisVisualFromPayload(payload, answer = "") {
   if (responseType === "performance_review" || intent === "performance_review" || payload?.structured?.kind === "performance_review") {
     return performanceReviewVisual(payload, answer);
   }
+  if (payload?.structured?.kind === "mt5_dashboard" || payload?.structured?.kind === "mt5_decision_card") return mt5DashboardVisual(payload, answer);
   if (intent === "memory_query" || payload?.structured?.kind === "memory_digest") return memoryDigestVisual(payload, answer);
   if (responseType === "general_assistant" && payload?.structured?.kind === "general_assistant") return generalAssistantVisual(payload, answer);
   if (intent === "portfolio_summary") return summaryVisual("Cartera", answer);
@@ -3000,6 +3137,7 @@ function visualResponseMarkup(visual) {
   if (visual.kind === "memory_digest") return memoryDigestVisualMarkup(visual);
   if (visual.kind === "general_assistant") return generalAssistantVisualMarkup(visual);
   if (visual.kind === "chart_image_analysis") return imageChartVisualMarkup(visual);
+  if (visual.kind === "mt5_dashboard") return mt5DashboardVisualMarkup(visual);
   if (visual.kind === "feed") return feedVisualMarkup(visual);
   return summaryVisualMarkup(visual);
 }
@@ -3643,6 +3781,26 @@ function generalAssistantVisualMarkup(visual) {
           </article>
         `).join("")}
       </div>
+    </section>
+  `;
+}
+
+function mt5DashboardVisualMarkup(visual) {
+  const cards = Array.isArray(visual.cards) ? visual.cards : [];
+  return `
+    <section class="visual-response mt5-chat-visual">
+      <div class="visual-hero">
+        <div>
+          <span class="visual-kicker">MT5 paper</span>
+          <strong>${escapeHtml(visual.title || "MT5")}</strong>
+        </div>
+        <span class="conviction-pill neutral">Broker protegido</span>
+      </div>
+      <p class="visual-thesis">${escapeHtml(visual.thesis || "Genesis traduce el estado MT5 sin tocar broker real.")}</p>
+      <div class="mt5-card-grid">
+        ${(cards.length ? cards : mt5FallbackCards()).map(mt5UiCardMarkup).join("")}
+      </div>
+      <small class="visual-footnote">${escapeHtml(visual.warning || "No real trading todavia. broker_touched=false, order_executed=false.")}</small>
     </section>
   `;
 }
@@ -4339,6 +4497,28 @@ function newsPayloadHasRows(payload) {
   return newsFeedItems({ news: payload }).length > 0;
 }
 
+async function loadMt5UiSummary(options = {}) {
+  const symbol = appState.mt5UiSymbol || "BTCUSD";
+  const timeframe = appState.mt5UiTimeframe || "M30";
+  appState.mt5UiLoading = true;
+  if (options.render !== false && appState.activeScreen === "genesis") renderGenesisScreen();
+  try {
+    const payload = await getJson(
+      `/api/genesis/mt5/ui-summary?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`,
+      { timeoutMs: 5000, attempts: 1 }
+    );
+    appState.mt5UiSummary = payload;
+    appState.mt5UiError = "";
+    return payload;
+  } catch (error) {
+    appState.mt5UiError = networkErrorMessage(error);
+    return null;
+  } finally {
+    appState.mt5UiLoading = false;
+    if (options.render !== false && appState.activeScreen === "genesis") renderGenesisScreen();
+  }
+}
+
 async function refreshScreenData(screen = appState.activeScreen) {
   const normalized = normalizeScreen(screen);
   if (appState.screenRefreshLoading) return;
@@ -4373,6 +4553,14 @@ async function refreshScreenData(screen = appState.activeScreen) {
         ticker ? loadChartSeries(ticker, appState.assetChartRanges[ticker] || "1Y") : Promise.resolve(),
         loadAlerts(),
         loadWhalesData(),
+        loadNews({ silent: true }),
+      ]);
+      return;
+    }
+    if (normalized === "genesis") {
+      await Promise.allSettled([
+        loadMt5UiSummary({ render: false }),
+        refreshPortfolio({ render: false, force: true }),
         loadNews({ silent: true }),
       ]);
       return;
@@ -7549,6 +7737,7 @@ function initGenesisAppV3() {
   bindGlobalEvents();
   render();
   loadGenesisMemoryHistory();
+  loadMt5UiSummary().catch(() => {});
   refreshPortfolio({ render: false }).then(() => renderActiveScreen()).catch((error) => toast(error.message, "error"));
   loadWhales().catch(() => {});
   document.addEventListener("visibilitychange", () => {

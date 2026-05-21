@@ -37,6 +37,7 @@ from services.mt5.mt5_runtime_snapshot import (
 )
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading, get_recent_mt5_shadow_trades_fast, is_main_metric_trade
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
+from services.mt5.mt5_ui_summary import build_mt5_ui_summary, load_robust_optimizer_payload
 from services.mt5.mt5_adaptive_recommendations import MT5AdaptiveRecommendationEngine
 from services.mt5.mt5_adaptive_state import MT5AdaptiveStateEngine
 from services.mt5.mt5_trade_memory import MT5TradeMemoryEngine
@@ -193,6 +194,44 @@ class MT5SignalRouter:
 
     def risk_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         return risk_state_payload(symbol or "BTCUSD", timeframe=timeframe)
+
+    def ui_summary(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        clean_symbol = str(symbol or "BTCUSD").upper().strip()
+        clean_timeframe = str(timeframe or "M30").upper().strip()
+        risk = self.risk_state(symbol=clean_symbol, timeframe=clean_timeframe)
+        snapshot = get_snapshot(clean_symbol, clean_timeframe) or {}
+        generic_snapshot = get_snapshot(clean_symbol) or {}
+        decision = snapshot.get("last_decision") if isinstance(snapshot.get("last_decision"), dict) else {}
+        if not decision:
+            decision = generic_snapshot.get("last_decision") if isinstance(generic_snapshot.get("last_decision"), dict) else {}
+        if not decision:
+            available_tick = generic_snapshot.get("last_tick") if isinstance(generic_snapshot.get("last_tick"), dict) else {}
+            available_timeframe = str(available_tick.get("timeframe") or generic_snapshot.get("timeframe") or "").upper().strip()
+            reason = "no_runtime_snapshot_for_requested_timeframe" if clean_timeframe and available_timeframe and available_timeframe != clean_timeframe else "snapshot_missing"
+            decision = {
+                "ok": True,
+                "symbol": clean_symbol,
+                "timeframe": clean_timeframe,
+                "requested_timeframe": clean_timeframe,
+                "available_timeframe": available_timeframe,
+                "decision": "NO_TRADE",
+                "reason": reason,
+                "strategy_profile": "",
+                "paper_forward_candidate_profile": "",
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        forward = self.forward_profile_state(symbol=clean_symbol, timeframe=clean_timeframe)
+        robust = load_robust_optimizer_payload()
+        return build_mt5_ui_summary(
+            symbol=clean_symbol,
+            timeframe=clean_timeframe,
+            risk_state=risk,
+            decision=decision,
+            forward_profile=forward,
+            robust_optimizer=robust,
+        )
 
     def instrument(self, *, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
         info = resolve_instrument({**(payload or {}), "symbol": symbol or (payload or {}).get("symbol")})

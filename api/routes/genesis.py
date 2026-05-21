@@ -45,6 +45,7 @@ from services.mt5.mt5_bridge import (
     mt5_status,
     mt5_strategy_profiles,
     mt5_tick,
+    mt5_ui_summary,
 )
 
 
@@ -82,6 +83,10 @@ def get_genesis_mt5_ops_status(symbol: str = "") -> dict[str, Any]:
 
 def get_genesis_mt5_risk_state(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return mt5_risk_state(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_ui_summary(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_ui_summary(symbol=symbol, timeframe=timeframe)
 
 
 def get_genesis_mt5_journal_recent(limit: int = 25, symbol: str = "") -> dict[str, Any]:

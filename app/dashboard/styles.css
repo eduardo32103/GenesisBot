@@ -4757,6 +4757,130 @@ input:focus-visible {
   line-height: 1.25;
 }
 
+.mt5-command-deck {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.mt5-command-deck > p,
+.mt5-ui-card > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.38;
+}
+
+.mt5-deck-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.mt5-deck-head span,
+.mt5-deck-head em {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.mt5-deck-head strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.94rem;
+  line-height: 1.1;
+}
+
+.mt5-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mt5-ui-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(8, 10, 13, 0.72);
+}
+
+.mt5-ui-card.safe {
+  border-color: rgba(123, 224, 173, 0.24);
+}
+
+.mt5-ui-card.warning {
+  border-color: rgba(239, 189, 111, 0.32);
+}
+
+.mt5-ui-card.danger {
+  border-color: rgba(236, 127, 119, 0.36);
+}
+
+.mt5-card-title {
+  display: grid;
+  gap: 2px;
+}
+
+.mt5-card-title span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.mt5-card-title strong {
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.16;
+}
+
+.mt5-card-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mt5-card-rows span {
+  min-width: 0;
+}
+
+.mt5-card-rows small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1.2;
+}
+
+.mt5-card-rows b {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.mt5-ui-card > i,
+.mt5-protected-line {
+  color: #7be0ad;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.mt5-chat-visual .mt5-card-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .sheet-card,
 .event-detail-sheet,
 .news-detail-sheet {
@@ -4858,6 +4982,12 @@ input:focus-visible {
 }
 
 @media (max-width: 520px) {
+  .mt5-card-grid,
+  .mt5-card-rows,
+  .mt5-deck-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   body {
     padding: 0;
     place-items: stretch;
