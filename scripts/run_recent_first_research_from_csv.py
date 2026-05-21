@@ -11,14 +11,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.mt5.mt5_strategy_research_v3 import (  # noqa: E402
-    run_strategy_research_v3,
-    write_strategy_research_v3_outputs,
+from services.mt5.mt5_recent_first_research import (  # noqa: E402
+    run_recent_first_research,
+    write_recent_first_research_outputs,
 )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run MT5 Strategy Research V3 recent-robust walk-forward discovery from local CSV files.")
+    parser = argparse.ArgumentParser(description="Run MT5 Recent-First Strategy Research from local CSV files.")
     parser.add_argument("--symbol", default="BTCUSD")
     parser.add_argument("--csv-dir", default=str(REPO_ROOT / "data" / "backtests"))
     parser.add_argument("--csv-path-m15", default="")
@@ -32,7 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-evaluations", type=int, default=180)
     parser.add_argument("--spread-points", type=float, default=25.0)
     parser.add_argument("--per-evaluation-timeout-seconds", type=float, default=5.0)
-    parser.add_argument("--smoke", action="store_true", help="Run a small bounded research pass.")
+    parser.add_argument("--smoke", action="store_true", help="Run a small bounded recent-first pass.")
     return parser.parse_args(argv)
 
 
@@ -40,12 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.smoke:
         args.timeframes = args.timeframes or "M15,M30"
-        args.families = args.families or "range_breakout_anti_chop,ema_reclaim_pullback"
+        args.families = args.families or "recent_momentum_pullback,recent_ema_reclaim"
         args.max_bars = min(args.max_bars, 1200)
         args.max_evaluations = min(args.max_evaluations, 12)
         args.per_evaluation_timeout_seconds = min(args.per_evaluation_timeout_seconds, 1.0)
     started = time.monotonic()
-    result = run_strategy_research_v3(
+    result = run_recent_first_research(
         {
             "symbol": args.symbol,
             "csv_dir": args.csv_dir,
@@ -61,15 +61,13 @@ def main(argv: list[str] | None = None) -> int:
             "per_evaluation_timeout_seconds": args.per_evaluation_timeout_seconds,
         }
     )
-    csv_path, json_path, summary_path = write_strategy_research_v3_outputs(result, args.output_dir)
+    csv_path, json_path, summary_path = write_recent_first_research_outputs(result, args.output_dir)
     print_table(result.get("results") or [])
     print()
     print(f"Saved CSV:     {csv_path}")
     print(f"Saved JSON:    {json_path}")
     print(f"Saved summary: {summary_path}")
-    print(f"Unique variants: {result.get('unique_variant_count')} / requested {result.get('variant_budget_requested')}")
-    print(f"Dataset count: {result.get('dataset_count')}")
-    print(f"Evaluation note: {result.get('evaluation_count_note')}")
+    print(f"Evaluations: {result.get('evaluations')}")
     print(f"Candidates: {len(result.get('candidates') or [])}")
     print(f"Recommendation: {(result.get('summary') or {}).get('recommendation')}")
     print(f"Duration seconds: {round(time.monotonic() - started, 2)}")
@@ -86,12 +84,12 @@ def print_table(rows: list[dict[str, Any]], limit: int = 20) -> None:
         "family",
         "side",
         "session",
-        "closed_total",
-        "closed_recent_holdout",
-        "profit_factor_total",
-        "pf_recent_holdout",
-        "expectancy_total",
-        "expectancy_recent_holdout",
+        "recent_closed",
+        "recent_pf",
+        "recent_expectancy",
+        "total_closed",
+        "total_pf",
+        "total_expectancy",
         "monte_carlo_stressed_pf",
         "candidate",
         "recommendation",

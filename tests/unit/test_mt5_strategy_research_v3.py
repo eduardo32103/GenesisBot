@@ -63,6 +63,9 @@ class MT5StrategyResearchV3Tests(unittest.TestCase):
             self.assertFalse(result["averaging_down_enabled"])
             self.assertFalse(result["increase_size_after_loss_enabled"])
             self.assertEqual(result["max_open_trades"], 1)
+            self.assertIn("variant_budget_requested", result)
+            self.assertIn("unique_variant_count", result)
+            self.assertIn("evaluation_count_note", result)
             self.assertGreater(len(result["results"]), 0)
             row = result["results"][0]
             for key in [
