@@ -8,3 +8,5 @@ __pycache__/
 # Backtest data local
 data/backtests/*.csv
 data/backtests/*.json
+!data/backtests/robust_optimizer_results.csv
+!data/backtests/robust_optimizer_results.json

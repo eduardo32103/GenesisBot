@@ -1,0 +1,5621 @@
+{
+  "best_profile": {
+    "applies_to_paper_shadow": false,
+    "applies_to_real_trading": false,
+    "blocked_reason_counts": {
+      "insufficient_history": 2,
+      "late_entry_risk": 2,
+      "rsi_extreme_block": 44,
+      "score_too_low": 474,
+      "timeout_guard": 1,
+      "waiting_confirmation": 22,
+      "weak_internal_scores": 482
+    },
+    "broker_touched": false,
+    "buy_pf": 3.872,
+    "buy_win_rate": 50.0,
+    "candidate": false,
+    "closed": 4,
+    "exit_reason_counts": {
+      "time_stop": 4
+    },
+    "expectancy": 0.274,
+    "guardrails": {
+      "degrade_to": "observation_only",
+      "early_expectancy_min": 0.0,
+      "early_guardrail_min_trades": 10,
+      "early_pf_min": 0.9,
+      "early_win_rate_min": 40.0,
+      "main_expectancy_min": 0.0,
+      "main_guardrail_min_trades": 50,
+      "main_pf_min": 1.15,
+      "max_forward_drawdown": 3000.0
+    },
+    "hour_stats": {
+      "19": {
+        "expectancy": 1.1828,
+        "losses": 0,
+        "profit_factor": 1546.15,
+        "trades": 1,
+        "win_rate": 100.0,
+        "wins": 1
+      },
+      "20": {
+        "expectancy": -0.029,
+        "losses": 1,
+        "profit_factor": 0.0,
+        "trades": 1,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "21": {
+        "expectancy": 0.286,
+        "losses": 0,
+        "profit_factor": 380.46,
+        "trades": 1,
+        "win_rate": 100.0,
+        "wins": 1
+      },
+      "23": {
+        "expectancy": -0.3436,
+        "losses": 1,
+        "profit_factor": 0.0,
+        "trades": 1,
+        "win_rate": 0.0,
+        "wins": 0
+      }
+    },
+    "institutional_score": 110.3312,
+    "live_runtime_mutated": false,
+    "losses": 2,
+    "max_drawdown": 459.1,
+    "monte_carlo": {
+      "expectancy_stressed": 296.65275,
+      "fail_reasons": [],
+      "max_drawdown_p95": 995.16,
+      "passed": true,
+      "profit_factor_stressed": 3.168,
+      "removed_best_5": false,
+      "risk_of_ruin": 0.0,
+      "simulations": 1000
+    },
+    "net_pnl": 1429.03,
+    "no_trade_count": 1026,
+    "order_executed": false,
+    "order_policy": "journal_only_no_broker",
+    "pass_fail_reasons": [
+      "sample_too_small"
+    ],
+    "profile": "quality_v3_conservative",
+    "profit_factor": 3.872,
+    "promoted_profile_mutated": false,
+    "recommendation": "reject",
+    "regime_stats": {
+      "trend": {
+        "expectancy": 0.274,
+        "losses": 2,
+        "profit_factor": 3.872,
+        "trades": 4,
+        "win_rate": 50.0,
+        "wins": 2
+      }
+    },
+    "risk_pct": 0.1,
+    "rr": 1.2,
+    "sell_pf": 0.0,
+    "sell_win_rate": 0.0,
+    "shadow_trades_mutated": false,
+    "side_stats": {
+      "buy": {
+        "expectancy": 0.274,
+        "losses": 2,
+        "profit_factor": 3.872,
+        "trades": 4,
+        "win_rate": 50.0,
+        "wins": 2
+      },
+      "sell": {
+        "expectancy": 0.0,
+        "losses": 0,
+        "profit_factor": 0.0,
+        "trades": 0,
+        "win_rate": 0.0,
+        "wins": 0
+      }
+    },
+    "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+    "test_drawdown": 1940.92,
+    "test_expectancy": 0.0785,
+    "test_pf": 1.4334,
+    "time_stop_min": 15.0,
+    "timeframe": "H1",
+    "train_drawdown": 459.1,
+    "train_expectancy": 0.274,
+    "train_pf": 3.872,
+    "win_rate": 50.0,
+    "windows": {
+      "first_half": {
+        "blocked_reason_counts": {},
+        "closed": 4,
+        "expectancy": 0.274,
+        "max_drawdown": 459.1,
+        "no_trade_count": 0,
+        "profit_factor": 3.872,
+        "win_rate": 50.0
+      },
+      "last_1000": {
+        "closed": 0,
+        "expectancy": 0.0,
+        "max_drawdown": 0.0,
+        "profit_factor": 0.0
+      },
+      "last_2000": {
+        "closed": 0,
+        "expectancy": 0.0,
+        "max_drawdown": 0.0,
+        "profit_factor": 0.0
+      },
+      "second_half": {
+        "closed": 0,
+        "expectancy": 0.0,
+        "max_drawdown": 0.0,
+        "profit_factor": 0.0
+      }
+    },
+    "wins": 2
+  },
+  "broker_touched": false,
+  "candidates": [],
+  "duration_ms": 82318,
+  "errors": [],
+  "genesis_reading": "Ningun perfil paso robustez institucional. Recomendacion: reject/observation_only, nunca real trading.",
+  "live_runtime_mutated": false,
+  "ok": true,
+  "order_executed": false,
+  "order_policy": "journal_only_no_broker",
+  "profiles": [
+    "anti_chop_v2_safe",
+    "quality_v3_conservative",
+    "trend_v2_drawdown_guard",
+    "momentum_v2_filtered",
+    "rsi_reversal_v2_confirmed",
+    "low_drawdown_v1",
+    "capital_preservation_v1",
+    "anti_chop_v1",
+    "quality_strict"
+  ],
+  "promoted_profile_mutated": false,
+  "recommendation": "reject",
+  "results": [
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 2,
+        "rsi_extreme_block": 44,
+        "score_too_low": 474,
+        "timeout_guard": 1,
+        "waiting_confirmation": 22,
+        "weak_internal_scores": 482
+      },
+      "broker_touched": false,
+      "buy_pf": 3.872,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 4,
+      "exit_reason_counts": {
+        "time_stop": 4
+      },
+      "expectancy": 0.274,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": 110.3312,
+      "live_runtime_mutated": false,
+      "losses": 2,
+      "max_drawdown": 459.1,
+      "monte_carlo": {
+        "expectancy_stressed": 296.65275,
+        "fail_reasons": [],
+        "max_drawdown_p95": 995.16,
+        "passed": true,
+        "profit_factor_stressed": 3.168,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 1429.03,
+      "no_trade_count": 1026,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small"
+      ],
+      "profile": "quality_v3_conservative",
+      "profit_factor": 3.872,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.274,
+          "losses": 2,
+          "profit_factor": 3.872,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.274,
+          "losses": 2,
+          "profit_factor": 3.872,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 1940.92,
+      "test_expectancy": 0.0785,
+      "test_pf": 1.4334,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 459.1,
+      "train_expectancy": 0.274,
+      "train_pf": 3.872,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 4,
+          "expectancy": 0.274,
+          "max_drawdown": 459.1,
+          "no_trade_count": 0,
+          "profit_factor": 3.872,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 2
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 47,
+        "score_too_low": 525,
+        "timeout_guard": 1,
+        "waiting_confirmation": 3,
+        "weak_internal_scores": 504
+      },
+      "broker_touched": false,
+      "buy_pf": 9.8872,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 2,
+      "exit_reason_counts": {
+        "time_stop": 2
+      },
+      "expectancy": 0.1285,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        }
+      },
+      "institutional_score": 104.31,
+      "live_runtime_mutated": false,
+      "losses": 1,
+      "max_drawdown": 0.0,
+      "monte_carlo": {
+        "expectancy_stressed": 150.043,
+        "fail_reasons": [],
+        "max_drawdown_p95": 76.96,
+        "passed": true,
+        "profit_factor_stressed": 8.0895,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 341.98,
+      "no_trade_count": 1081,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small"
+      ],
+      "profile": "capital_preservation_v1",
+      "profit_factor": 9.8872,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.1285,
+          "losses": 1,
+          "profit_factor": 9.8872,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.1285,
+          "losses": 1,
+          "profit_factor": 9.8872,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 698.93,
+      "test_expectancy": 0.2005,
+      "test_pf": 2.8272,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 0.0,
+      "train_expectancy": 0.1285,
+      "train_pf": 9.8872,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 2,
+          "expectancy": 0.1285,
+          "max_drawdown": 0.0,
+          "no_trade_count": 0,
+          "profit_factor": 9.8872,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 1
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 4,
+        "rsi_extreme_block": 45,
+        "score_too_low": 462,
+        "timeout_guard": 1,
+        "waiting_confirmation": 30,
+        "weak_internal_scores": 472
+      },
+      "broker_touched": false,
+      "buy_pf": 3.872,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 4,
+      "exit_reason_counts": {
+        "time_stop": 4
+      },
+      "expectancy": 0.274,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": 93.5962,
+      "live_runtime_mutated": false,
+      "losses": 2,
+      "max_drawdown": 459.1,
+      "monte_carlo": {
+        "expectancy_stressed": 296.65275,
+        "fail_reasons": [],
+        "max_drawdown_p95": 995.16,
+        "passed": true,
+        "profit_factor_stressed": 3.168,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 1429.03,
+      "no_trade_count": 1015,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small"
+      ],
+      "profile": "momentum_v2_filtered",
+      "profit_factor": 3.872,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.274,
+          "losses": 2,
+          "profit_factor": 3.872,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.274,
+          "losses": 2,
+          "profit_factor": 3.872,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 3175.57,
+      "test_expectancy": 0.0203,
+      "test_pf": 1.0987,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 459.1,
+      "train_expectancy": 0.274,
+      "train_pf": 3.872,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 4,
+          "expectancy": 0.274,
+          "max_drawdown": 459.1,
+          "no_trade_count": 0,
+          "profit_factor": 3.872,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 2
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 6,
+        "rsi_extreme_block": 40,
+        "score_too_low": 462,
+        "timeout_guard": 1,
+        "waiting_confirmation": 30,
+        "weak_internal_scores": 480
+      },
+      "broker_touched": false,
+      "buy_pf": 3.872,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 4,
+      "exit_reason_counts": {
+        "time_stop": 4
+      },
+      "expectancy": 0.274,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": 88.6612,
+      "live_runtime_mutated": false,
+      "losses": 2,
+      "max_drawdown": 459.1,
+      "monte_carlo": {
+        "expectancy_stressed": 296.65275,
+        "fail_reasons": [],
+        "max_drawdown_p95": 995.16,
+        "passed": true,
+        "profit_factor_stressed": 3.168,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 1429.03,
+      "no_trade_count": 1020,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "test_pf_below_1"
+      ],
+      "profile": "trend_v2_drawdown_guard",
+      "profit_factor": 3.872,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.274,
+          "losses": 2,
+          "profit_factor": 3.872,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.274,
+          "losses": 2,
+          "profit_factor": 3.872,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 3175.57,
+      "test_expectancy": -0.0038,
+      "test_pf": 0.9527,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 459.1,
+      "train_expectancy": 0.274,
+      "train_pf": 3.872,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 4,
+          "expectancy": 0.274,
+          "max_drawdown": 459.1,
+          "no_trade_count": 0,
+          "profit_factor": 3.872,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 2
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 4,
+        "rsi_extreme_block": 45,
+        "score_too_low": 469,
+        "timeout_guard": 1,
+        "waiting_confirmation": 35,
+        "weak_internal_scores": 504
+      },
+      "broker_touched": false,
+      "buy_pf": 3.6535,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 6,
+      "exit_reason_counts": {
+        "time_stop": 6
+      },
+      "expectancy": 0.1932,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "04": {
+          "expectancy": 0.1163,
+          "losses": 0,
+          "profit_factor": 158.59,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "05": {
+          "expectancy": -0.0534,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": 62.7063,
+      "live_runtime_mutated": false,
+      "losses": 3,
+      "max_drawdown": 459.1,
+      "monte_carlo": {
+        "expectancy_stressed": 208.144333,
+        "fail_reasons": [],
+        "max_drawdown_p95": 1073.8,
+        "passed": true,
+        "profit_factor_stressed": 2.9892,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 1514.46,
+      "no_trade_count": 1059,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small"
+      ],
+      "profile": "anti_chop_v2_safe",
+      "profit_factor": 3.6535,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.1932,
+          "losses": 3,
+          "profit_factor": 3.6535,
+          "trades": 6,
+          "win_rate": 50.0,
+          "wins": 3
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.1932,
+          "losses": 3,
+          "profit_factor": 3.6535,
+          "trades": 6,
+          "win_rate": 50.0,
+          "wins": 3
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 3175.57,
+      "test_expectancy": 0.0237,
+      "test_pf": 1.1149,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 459.1,
+      "train_expectancy": 0.274,
+      "train_pf": 3.872,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 6,
+          "expectancy": 0.1932,
+          "max_drawdown": 459.1,
+          "no_trade_count": 0,
+          "profit_factor": 3.6535,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 3
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 74,
+        "score_too_low": 469,
+        "timeout_guard": 1,
+        "waiting_confirmation": 41,
+        "weak_internal_scores": 481
+      },
+      "broker_touched": false,
+      "buy_pf": 3.6535,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 6,
+      "exit_reason_counts": {
+        "time_stop": 6
+      },
+      "expectancy": 0.1932,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "04": {
+          "expectancy": 0.1163,
+          "losses": 0,
+          "profit_factor": 158.59,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "05": {
+          "expectancy": -0.0534,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": 59.4813,
+      "live_runtime_mutated": false,
+      "losses": 3,
+      "max_drawdown": 459.1,
+      "monte_carlo": {
+        "expectancy_stressed": 208.144333,
+        "fail_reasons": [],
+        "max_drawdown_p95": 1073.8,
+        "passed": true,
+        "profit_factor_stressed": 2.9892,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 1514.46,
+      "no_trade_count": 1067,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small"
+      ],
+      "profile": "quality_strict",
+      "profit_factor": 3.6535,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.1932,
+          "losses": 3,
+          "profit_factor": 3.6535,
+          "trades": 6,
+          "win_rate": 50.0,
+          "wins": 3
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.1932,
+          "losses": 3,
+          "profit_factor": 3.6535,
+          "trades": 6,
+          "win_rate": 50.0,
+          "wins": 3
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 3474.53,
+      "test_expectancy": 0.0138,
+      "test_pf": 1.0504,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 459.1,
+      "train_expectancy": 0.274,
+      "train_pf": 3.872,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 6,
+          "expectancy": 0.1932,
+          "max_drawdown": 459.1,
+          "no_trade_count": 0,
+          "profit_factor": 3.6535,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 3
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 2,
+        "score_too_low": 769,
+        "timeout_guard": 1,
+        "waiting_confirmation": 4,
+        "weak_internal_scores": 339
+      },
+      "broker_touched": false,
+      "buy_pf": 1.3053,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 6,
+      "exit_reason_counts": {
+        "time_stop": 6
+      },
+      "expectancy": 0.0844,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "01": {
+          "expectancy": 0.5636,
+          "losses": 0,
+          "profit_factor": 1192.98,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "02": {
+          "expectancy": 0.1988,
+          "losses": 1,
+          "profit_factor": 1.4995,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "03": {
+          "expectancy": -0.2963,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -205.3838,
+      "live_runtime_mutated": false,
+      "losses": 3,
+      "max_drawdown": 825.58,
+      "monte_carlo": {
+        "expectancy_stressed": 23.198,
+        "fail_reasons": [],
+        "max_drawdown_p95": 3048.7,
+        "passed": true,
+        "profit_factor_stressed": 1.0679,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 568.52,
+      "no_trade_count": 1116,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small"
+      ],
+      "profile": "rsi_reversal_v2_confirmed",
+      "profit_factor": 1.3053,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.0844,
+          "losses": 3,
+          "profit_factor": 1.3053,
+          "trades": 6,
+          "win_rate": 50.0,
+          "wins": 3
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.0844,
+          "losses": 3,
+          "profit_factor": 1.3053,
+          "trades": 6,
+          "win_rate": 50.0,
+          "wins": 3
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 825.58,
+      "train_expectancy": 0.0844,
+      "train_pf": 1.3053,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 6,
+          "expectancy": 0.0844,
+          "max_drawdown": 825.58,
+          "no_trade_count": 0,
+          "profit_factor": 1.3053,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 3
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 2,
+        "rsi_extreme_block": 28,
+        "score_too_low": 476,
+        "timeout_guard": 1,
+        "waiting_confirmation": 47,
+        "weak_internal_scores": 463
+      },
+      "broker_touched": false,
+      "buy_pf": 1.4289,
+      "buy_win_rate": 56.52,
+      "candidate": false,
+      "closed": 46,
+      "exit_reason_counts": {
+        "stop_loss": 4,
+        "take_profit": 5,
+        "time_stop": 37
+      },
+      "expectancy": 0.0946,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 5000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 0.3094,
+          "losses": 1,
+          "profit_factor": 2.9149,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "04": {
+          "expectancy": -0.5526,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.1075,
+          "losses": 1,
+          "profit_factor": 0.7386,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "06": {
+          "expectancy": -0.4157,
+          "losses": 3,
+          "profit_factor": 0.0,
+          "trades": 3,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 2346.2986,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "10": {
+          "expectancy": 0.2297,
+          "losses": 0,
+          "profit_factor": 241.86,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "11": {
+          "expectancy": -0.0654,
+          "losses": 1,
+          "profit_factor": 0.6986,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.182,
+          "losses": 3,
+          "profit_factor": 0.2491,
+          "trades": 4,
+          "win_rate": 25.0,
+          "wins": 1
+        },
+        "15": {
+          "expectancy": 0.2255,
+          "losses": 1,
+          "profit_factor": 4.1513,
+          "trades": 4,
+          "win_rate": 75.0,
+          "wins": 3
+        },
+        "17": {
+          "expectancy": 0.2907,
+          "losses": 1,
+          "profit_factor": 13.9086,
+          "trades": 6,
+          "win_rate": 83.33,
+          "wins": 5
+        },
+        "18": {
+          "expectancy": 0.5478,
+          "losses": 1,
+          "profit_factor": 13.2823,
+          "trades": 5,
+          "win_rate": 80.0,
+          "wins": 4
+        },
+        "19": {
+          "expectancy": 0.3286,
+          "losses": 1,
+          "profit_factor": 2.26,
+          "trades": 4,
+          "win_rate": 75.0,
+          "wins": 3
+        },
+        "20": {
+          "expectancy": -0.3538,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": -0.273,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -229.2181,
+      "live_runtime_mutated": false,
+      "losses": 20,
+      "max_drawdown": 4038.88535,
+      "monte_carlo": {
+        "expectancy_stressed": -60.611007,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 6452.87122,
+        "passed": false,
+        "profit_factor_stressed": 0.7642,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.138,
+        "simulations": 1000
+      },
+      "net_pnl": 4208.84773,
+      "no_trade_count": 1018,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "test_pf_below_1",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "anti_chop_v1",
+      "profit_factor": 1.4289,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.0946,
+          "losses": 20,
+          "profit_factor": 1.4289,
+          "trades": 46,
+          "win_rate": 56.52,
+          "wins": 26
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.0946,
+          "losses": 20,
+          "profit_factor": 1.4289,
+          "trades": 46,
+          "win_rate": 56.52,
+          "wins": 26
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 2692.03995,
+      "test_expectancy": -0.0654,
+      "test_pf": 0.6524,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 4038.88535,
+      "train_expectancy": 0.0946,
+      "train_pf": 1.4289,
+      "win_rate": 56.52,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 46,
+          "expectancy": 0.0946,
+          "max_drawdown": 4038.88535,
+          "no_trade_count": 0,
+          "profit_factor": 1.4289,
+          "win_rate": 56.52
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 26
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 32,
+        "score_too_low": 517,
+        "timeout_guard": 1,
+        "waiting_confirmation": 19,
+        "weak_internal_scores": 456
+      },
+      "broker_touched": false,
+      "buy_pf": 1.5627,
+      "buy_win_rate": 58.82,
+      "candidate": false,
+      "closed": 34,
+      "exit_reason_counts": {
+        "stop_loss": 4,
+        "take_profit": 5,
+        "time_stop": 25
+      },
+      "expectancy": 0.1368,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 5000.0
+      },
+      "hour_stats": {
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 0.3094,
+          "losses": 1,
+          "profit_factor": 2.9149,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "06": {
+          "expectancy": -0.5537,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 2346.2986,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": -0.0654,
+          "losses": 1,
+          "profit_factor": 0.6986,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": 0.0302,
+          "losses": 2,
+          "profit_factor": 1.6887,
+          "trades": 3,
+          "win_rate": 33.33,
+          "wins": 1
+        },
+        "15": {
+          "expectancy": 0.219,
+          "losses": 1,
+          "profit_factor": 3.2422,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "17": {
+          "expectancy": 0.4582,
+          "losses": 0,
+          "profit_factor": 1854.88,
+          "trades": 4,
+          "win_rate": 100.0,
+          "wins": 4
+        },
+        "18": {
+          "expectancy": 0.6324,
+          "losses": 1,
+          "profit_factor": 12.3532,
+          "trades": 4,
+          "win_rate": 75.0,
+          "wins": 3
+        },
+        "19": {
+          "expectancy": 0.3286,
+          "losses": 1,
+          "profit_factor": 2.26,
+          "trades": 4,
+          "win_rate": 75.0,
+          "wins": 3
+        },
+        "20": {
+          "expectancy": -0.3538,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -231.7233,
+      "live_runtime_mutated": false,
+      "losses": 14,
+      "max_drawdown": 3915.78535,
+      "monte_carlo": {
+        "expectancy_stressed": -27.761836,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 5674.68595,
+        "passed": false,
+        "profit_factor_stressed": 0.9025,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.083,
+        "simulations": 1000
+      },
+      "net_pnl": 4515.12773,
+      "no_trade_count": 1026,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "rsi_reversal_v2_confirmed",
+      "profit_factor": 1.5627,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.1368,
+          "losses": 14,
+          "profit_factor": 1.5627,
+          "trades": 34,
+          "win_rate": 58.82,
+          "wins": 20
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.1368,
+          "losses": 14,
+          "profit_factor": 1.5627,
+          "trades": 34,
+          "win_rate": 58.82,
+          "wins": 20
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 1391.02,
+      "test_expectancy": -0.0152,
+      "test_pf": 0.8925,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 3915.78535,
+      "train_expectancy": 0.0596,
+      "train_pf": 1.1917,
+      "win_rate": 58.82,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 34,
+          "expectancy": 0.1368,
+          "max_drawdown": 3915.78535,
+          "no_trade_count": 0,
+          "profit_factor": 1.5627,
+          "win_rate": 58.82
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 20
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 2,
+        "rsi_extreme_block": 6,
+        "score_too_low": 716,
+        "timeout_guard": 1,
+        "waiting_confirmation": 11,
+        "weak_internal_scores": 326
+      },
+      "broker_touched": false,
+      "buy_pf": 1.3037,
+      "buy_win_rate": 57.14,
+      "candidate": false,
+      "closed": 14,
+      "exit_reason_counts": {
+        "time_stop": 14
+      },
+      "expectancy": 0.0634,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.0656,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": 0.5636,
+          "losses": 0,
+          "profit_factor": 1192.98,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "02": {
+          "expectancy": 0.2388,
+          "losses": 1,
+          "profit_factor": 2.195,
+          "trades": 4,
+          "win_rate": 75.0,
+          "wins": 3
+        },
+        "03": {
+          "expectancy": -0.1106,
+          "losses": 1,
+          "profit_factor": 0.2632,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "16": {
+          "expectancy": -0.8746,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "18": {
+          "expectancy": 0.095,
+          "losses": 0,
+          "profit_factor": 102.67,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "19": {
+          "expectancy": 0.2967,
+          "losses": 1,
+          "profit_factor": 8.5641,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -244.9847,
+      "live_runtime_mutated": false,
+      "losses": 6,
+      "max_drawdown": 1778.3,
+      "monte_carlo": {
+        "expectancy_stressed": -68.985615,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 3943.17,
+        "passed": false,
+        "profit_factor_stressed": 0.7249,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.009,
+        "simulations": 1000
+      },
+      "net_pnl": 899.95,
+      "no_trade_count": 1063,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "anti_chop_v1",
+      "profit_factor": 1.3037,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.0634,
+          "losses": 6,
+          "profit_factor": 1.3037,
+          "trades": 14,
+          "win_rate": 57.14,
+          "wins": 8
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.0634,
+          "losses": 6,
+          "profit_factor": 1.3037,
+          "trades": 14,
+          "win_rate": 57.14,
+          "wins": 8
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0696,
+      "test_pf": 3.6265,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 1778.3,
+      "train_expectancy": 0.0634,
+      "train_pf": 1.3037,
+      "win_rate": 57.14,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 14,
+          "expectancy": 0.0634,
+          "max_drawdown": 1778.3,
+          "no_trade_count": 0,
+          "profit_factor": 1.3037,
+          "win_rate": 57.14
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 8
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 55,
+        "score_too_low": 412,
+        "timeout_guard": 1,
+        "waiting_confirmation": 21,
+        "weak_internal_scores": 399
+      },
+      "broker_touched": false,
+      "buy_pf": 1.3505,
+      "buy_win_rate": 30.0,
+      "candidate": false,
+      "closed": 10,
+      "exit_reason_counts": {
+        "time_stop": 10
+      },
+      "expectancy": 0.0499,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "03": {
+          "expectancy": -0.1927,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "04": {
+          "expectancy": -0.0429,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.0826,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": 0.0328,
+          "losses": 1,
+          "profit_factor": 3.3144,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "21": {
+          "expectancy": 0.044,
+          "losses": 1,
+          "profit_factor": 1.4211,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "22": {
+          "expectancy": -0.176,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -349.1281,
+      "live_runtime_mutated": false,
+      "losses": 7,
+      "max_drawdown": 771.05,
+      "monte_carlo": {
+        "expectancy_stressed": -135.106111,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 2139.92,
+        "passed": false,
+        "profit_factor_stressed": 0.2733,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": 533.1,
+      "no_trade_count": 889,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "win_rate_below_45",
+        "test_pf_below_1",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "rsi_reversal_v2_confirmed",
+      "profit_factor": 1.3505,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": 0.0499,
+          "losses": 7,
+          "profit_factor": 1.3505,
+          "trades": 10,
+          "win_rate": 30.0,
+          "wins": 3
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.0499,
+          "losses": 7,
+          "profit_factor": 1.3505,
+          "trades": 10,
+          "win_rate": 30.0,
+          "wins": 3
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 4346.59835,
+      "test_expectancy": -0.0168,
+      "test_pf": 0.8911,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 898.93,
+      "train_expectancy": 0.0319,
+      "train_pf": 1.2194,
+      "win_rate": 30.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 10,
+          "expectancy": 0.0499,
+          "max_drawdown": 771.05,
+          "no_trade_count": 0,
+          "profit_factor": 1.3505,
+          "win_rate": 30.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 3
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 1,
+        "rsi_extreme_block": 42,
+        "score_too_low": 496,
+        "timeout_guard": 1,
+        "waiting_confirmation": 20,
+        "weak_internal_scores": 417
+      },
+      "broker_touched": false,
+      "buy_pf": 0.8514,
+      "buy_win_rate": 40.91,
+      "candidate": false,
+      "closed": 22,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 3,
+        "time_stop": 16
+      },
+      "expectancy": -0.0336,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 0.3787,
+          "losses": 1,
+          "profit_factor": 2.5426,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.2978,
+          "losses": 1,
+          "profit_factor": 0.4407,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "06": {
+          "expectancy": -0.5537,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 2346.2986,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.0735,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": 0.219,
+          "losses": 1,
+          "profit_factor": 3.2422,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "17": {
+          "expectancy": -0.1353,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "18": {
+          "expectancy": -0.2198,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -396.4423,
+      "live_runtime_mutated": false,
+      "losses": 13,
+      "max_drawdown": 2957.22,
+      "monte_carlo": {
+        "expectancy_stressed": -212.717171,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 6717.93595,
+        "passed": false,
+        "profit_factor_stressed": 0.3976,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.189,
+        "simulations": 1000
+      },
+      "net_pnl": -954.13156,
+      "no_trade_count": 978,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "anti_chop_v2_safe",
+      "profit_factor": 0.8514,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0336,
+          "losses": 13,
+          "profit_factor": 0.8514,
+          "trades": 22,
+          "win_rate": 40.91,
+          "wins": 9
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0336,
+          "losses": 13,
+          "profit_factor": 0.8514,
+          "trades": 22,
+          "win_rate": 40.91,
+          "wins": 9
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.1463,
+      "test_pf": 9.1782,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 2957.22,
+      "train_expectancy": -0.0336,
+      "train_pf": 0.8514,
+      "win_rate": 40.91,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 22,
+          "expectancy": -0.0336,
+          "max_drawdown": 2957.22,
+          "no_trade_count": 0,
+          "profit_factor": 0.8514,
+          "win_rate": 40.91
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 9
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 2,
+        "rsi_extreme_block": 37,
+        "score_too_low": 494,
+        "timeout_guard": 1,
+        "waiting_confirmation": 20,
+        "weak_internal_scores": 416
+      },
+      "broker_touched": false,
+      "buy_pf": 0.8514,
+      "buy_win_rate": 40.91,
+      "candidate": false,
+      "closed": 22,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 3,
+        "time_stop": 16
+      },
+      "expectancy": -0.0336,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 0.3787,
+          "losses": 1,
+          "profit_factor": 2.5426,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.2978,
+          "losses": 1,
+          "profit_factor": 0.4407,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "06": {
+          "expectancy": -0.5537,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 2346.2986,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.0735,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": 0.219,
+          "losses": 1,
+          "profit_factor": 3.2422,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "17": {
+          "expectancy": -0.1353,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "18": {
+          "expectancy": -0.2198,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -396.4423,
+      "live_runtime_mutated": false,
+      "losses": 13,
+      "max_drawdown": 2957.22,
+      "monte_carlo": {
+        "expectancy_stressed": -212.717171,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 6717.93595,
+        "passed": false,
+        "profit_factor_stressed": 0.3976,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.189,
+        "simulations": 1000
+      },
+      "net_pnl": -954.13156,
+      "no_trade_count": 971,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "trend_v2_drawdown_guard",
+      "profit_factor": 0.8514,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0336,
+          "losses": 13,
+          "profit_factor": 0.8514,
+          "trades": 22,
+          "win_rate": 40.91,
+          "wins": 9
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0336,
+          "losses": 13,
+          "profit_factor": 0.8514,
+          "trades": 22,
+          "win_rate": 40.91,
+          "wins": 9
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.1463,
+      "test_pf": 9.1782,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 2503.34,
+      "train_expectancy": -0.0141,
+      "train_pf": 0.9161,
+      "win_rate": 40.91,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 22,
+          "expectancy": -0.0336,
+          "max_drawdown": 2957.22,
+          "no_trade_count": 0,
+          "profit_factor": 0.8514,
+          "win_rate": 40.91
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 9
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 52,
+        "score_too_low": 504,
+        "timeout_guard": 1,
+        "waiting_confirmation": 26,
+        "weak_internal_scores": 432
+      },
+      "broker_touched": false,
+      "buy_pf": 0.816,
+      "buy_win_rate": 39.13,
+      "candidate": false,
+      "closed": 23,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 3,
+        "time_stop": 17
+      },
+      "expectancy": -0.044,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 5000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 0.3787,
+          "losses": 1,
+          "profit_factor": 2.5426,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.2978,
+          "losses": 1,
+          "profit_factor": 0.4407,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "06": {
+          "expectancy": -0.5537,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 2346.2986,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.0735,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": 0.219,
+          "losses": 1,
+          "profit_factor": 3.2422,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "17": {
+          "expectancy": -0.1353,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "18": {
+          "expectancy": -0.2198,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": -0.273,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -411.2715,
+      "live_runtime_mutated": false,
+      "losses": 14,
+      "max_drawdown": 3235.32,
+      "monte_carlo": {
+        "expectancy_stressed": -217.154925,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 7036.42455,
+        "passed": false,
+        "profit_factor_stressed": 0.381,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.22,
+        "simulations": 1000
+      },
+      "net_pnl": -1232.23156,
+      "no_trade_count": 1016,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "quality_strict",
+      "profit_factor": 0.816,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.044,
+          "losses": 14,
+          "profit_factor": 0.816,
+          "trades": 23,
+          "win_rate": 39.13,
+          "wins": 9
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.044,
+          "losses": 14,
+          "profit_factor": 0.816,
+          "trades": 23,
+          "win_rate": 39.13,
+          "wins": 9
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.1463,
+      "test_pf": 9.1782,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 3235.32,
+      "train_expectancy": -0.044,
+      "train_pf": 0.816,
+      "win_rate": 39.13,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 23,
+          "expectancy": -0.044,
+          "max_drawdown": 3235.32,
+          "no_trade_count": 0,
+          "profit_factor": 0.816,
+          "win_rate": 39.13
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 9
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 11,
+        "score_too_low": 727,
+        "timeout_guard": 1,
+        "waiting_confirmation": 6,
+        "weak_internal_scores": 326
+      },
+      "broker_touched": false,
+      "buy_pf": 0.6991,
+      "buy_win_rate": 40.0,
+      "candidate": false,
+      "closed": 5,
+      "exit_reason_counts": {
+        "time_stop": 5
+      },
+      "expectancy": -0.066,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "03": {
+          "expectancy": -0.2963,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "18": {
+          "expectancy": 0.095,
+          "losses": 0,
+          "profit_factor": 102.67,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "19": {
+          "expectancy": 0.2967,
+          "losses": 1,
+          "profit_factor": 8.5641,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -412.648,
+      "live_runtime_mutated": false,
+      "losses": 3,
+      "max_drawdown": 741.04,
+      "monte_carlo": {
+        "expectancy_stressed": -105.0862,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 2199.55,
+        "passed": false,
+        "profit_factor_stressed": 0.572,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -335.83,
+      "no_trade_count": 1072,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "buy_side_destructive",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "quality_strict",
+      "profit_factor": 0.6991,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.066,
+          "losses": 3,
+          "profit_factor": 0.6991,
+          "trades": 5,
+          "win_rate": 40.0,
+          "wins": 2
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.066,
+          "losses": 3,
+          "profit_factor": 0.6991,
+          "trades": 5,
+          "win_rate": 40.0,
+          "wins": 2
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 12.74,
+      "test_expectancy": 0.0911,
+      "test_pf": 18.1068,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 741.04,
+      "train_expectancy": -0.066,
+      "train_pf": 0.6991,
+      "win_rate": 40.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 5,
+          "expectancy": -0.066,
+          "max_drawdown": 741.04,
+          "no_trade_count": 0,
+          "profit_factor": 0.6991,
+          "win_rate": 40.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 2
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 1,
+        "rsi_extreme_block": 45,
+        "score_too_low": 519,
+        "timeout_guard": 1,
+        "waiting_confirmation": 20,
+        "weak_internal_scores": 467
+      },
+      "broker_touched": false,
+      "buy_pf": 0.6912,
+      "buy_win_rate": 36.84,
+      "candidate": false,
+      "closed": 19,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 2,
+        "time_stop": 14
+      },
+      "expectancy": -0.0879,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 1154.0315,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.2978,
+          "losses": 1,
+          "profit_factor": 0.4407,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "06": {
+          "expectancy": -0.5537,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 1178.1392,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.0735,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": 0.2419,
+          "losses": 1,
+          "profit_factor": 2.6381,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "17": {
+          "expectancy": -0.1353,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "18": {
+          "expectancy": -0.2198,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -462.1957,
+      "live_runtime_mutated": false,
+      "losses": 12,
+      "max_drawdown": 2996.37236,
+      "monte_carlo": {
+        "expectancy_stressed": -217.311802,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 7069.786,
+        "passed": false,
+        "profit_factor_stressed": 0.4039,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.226,
+        "simulations": 1000
+      },
+      "net_pnl": -1842.34088,
+      "no_trade_count": 1054,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "first_half_expectancy_strong_negative",
+        "buy_side_destructive",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "momentum_v2_filtered",
+      "profit_factor": 0.6912,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0879,
+          "losses": 12,
+          "profit_factor": 0.6912,
+          "trades": 19,
+          "win_rate": 36.84,
+          "wins": 7
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0879,
+          "losses": 12,
+          "profit_factor": 0.6912,
+          "trades": 19,
+          "win_rate": 36.84,
+          "wins": 7
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.1463,
+      "test_pf": 9.1782,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 2996.37236,
+      "train_expectancy": -0.0879,
+      "train_pf": 0.6912,
+      "win_rate": 36.84,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 19,
+          "expectancy": -0.0879,
+          "max_drawdown": 2996.37236,
+          "no_trade_count": 0,
+          "profit_factor": 0.6912,
+          "win_rate": 36.84
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 7
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 39,
+        "score_too_low": 531,
+        "timeout_guard": 1,
+        "waiting_confirmation": 14,
+        "weak_internal_scores": 484
+      },
+      "broker_touched": false,
+      "buy_pf": 0.932,
+      "buy_win_rate": 42.11,
+      "candidate": false,
+      "closed": 19,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 3,
+        "time_stop": 13
+      },
+      "expectancy": -0.0097,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 0.3787,
+          "losses": 1,
+          "profit_factor": 2.5426,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "06": {
+          "expectancy": -0.2833,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 2346.2986,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.0735,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": 0.219,
+          "losses": 1,
+          "profit_factor": 3.2422,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "18": {
+          "expectancy": -0.2198,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -464.8665,
+      "live_runtime_mutated": false,
+      "losses": 11,
+      "max_drawdown": 2370.52,
+      "monte_carlo": {
+        "expectancy_stressed": -137.317891,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 6083.2202,
+        "passed": false,
+        "profit_factor_stressed": 0.5842,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.111,
+        "simulations": 1000
+      },
+      "net_pnl": -367.43156,
+      "no_trade_count": 1070,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "quality_v3_conservative",
+      "profit_factor": 0.932,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0097,
+          "losses": 11,
+          "profit_factor": 0.932,
+          "trades": 19,
+          "win_rate": 42.11,
+          "wins": 8
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0097,
+          "losses": 11,
+          "profit_factor": 0.932,
+          "trades": 19,
+          "win_rate": 42.11,
+          "wins": 8
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 2370.52,
+      "train_expectancy": -0.0097,
+      "train_pf": 0.932,
+      "win_rate": 42.11,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 19,
+          "expectancy": -0.0097,
+          "max_drawdown": 2370.52,
+          "no_trade_count": 0,
+          "profit_factor": 0.932,
+          "win_rate": 42.11
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 8
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 53,
+        "score_too_low": 496,
+        "timeout_guard": 1,
+        "waiting_confirmation": 13,
+        "weak_internal_scores": 493
+      },
+      "broker_touched": false,
+      "buy_pf": 0.7646,
+      "buy_win_rate": 33.33,
+      "candidate": false,
+      "closed": 3,
+      "exit_reason_counts": {
+        "time_stop": 3
+      },
+      "expectancy": -0.0289,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "20": {
+          "expectancy": -0.029,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "21": {
+          "expectancy": 0.286,
+          "losses": 0,
+          "profit_factor": 380.46,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -467.3338,
+      "live_runtime_mutated": false,
+      "losses": 2,
+      "max_drawdown": 459.1,
+      "monte_carlo": {
+        "expectancy_stressed": -68.308,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 956.68,
+        "passed": false,
+        "profit_factor_stressed": 0.6256,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -117.12,
+      "no_trade_count": 1057,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "low_drawdown_v1",
+      "profit_factor": 0.7646,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0289,
+          "losses": 2,
+          "profit_factor": 0.7646,
+          "trades": 3,
+          "win_rate": 33.33,
+          "wins": 1
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0289,
+          "losses": 2,
+          "profit_factor": 0.7646,
+          "trades": 3,
+          "win_rate": 33.33,
+          "wins": 1
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 1368.42,
+      "test_expectancy": 0.1151,
+      "test_pf": 1.8133,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 459.1,
+      "train_expectancy": -0.0289,
+      "train_pf": 0.7646,
+      "win_rate": 33.33,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 3,
+          "expectancy": -0.0289,
+          "max_drawdown": 459.1,
+          "no_trade_count": 0,
+          "profit_factor": 0.7646,
+          "win_rate": 33.33
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 1
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 27,
+        "score_too_low": 542,
+        "timeout_guard": 1,
+        "waiting_confirmation": 9,
+        "weak_internal_scores": 461
+      },
+      "broker_touched": false,
+      "buy_pf": 0.8847,
+      "buy_win_rate": 50.0,
+      "candidate": false,
+      "closed": 10,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 2,
+        "time_stop": 5
+      },
+      "expectancy": -0.0336,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "03": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 1154.0315,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 1178.1392,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.07,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": -0.2772,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -502.6855,
+      "live_runtime_mutated": false,
+      "losses": 5,
+      "max_drawdown": 1960.15725,
+      "monte_carlo": {
+        "expectancy_stressed": -229.75227,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 5109.33755,
+        "passed": false,
+        "profit_factor_stressed": 0.4332,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.054,
+        "simulations": 1000
+      },
+      "net_pnl": -382.32088,
+      "no_trade_count": 1041,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "first_half_pf_below_1",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "capital_preservation_v1",
+      "profit_factor": 0.8847,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0336,
+          "losses": 5,
+          "profit_factor": 0.8847,
+          "trades": 10,
+          "win_rate": 50.0,
+          "wins": 5
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0336,
+          "losses": 5,
+          "profit_factor": 0.8847,
+          "trades": 10,
+          "win_rate": 50.0,
+          "wins": 5
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 1960.15725,
+      "train_expectancy": -0.0336,
+      "train_pf": 0.8847,
+      "win_rate": 50.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 10,
+          "expectancy": -0.0336,
+          "max_drawdown": 1960.15725,
+          "no_trade_count": 0,
+          "profit_factor": 0.8847,
+          "win_rate": 50.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 5
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 2,
+        "rsi_extreme_block": 38,
+        "score_too_low": 415,
+        "timeout_guard": 1,
+        "waiting_confirmation": 50,
+        "weak_internal_scores": 449
+      },
+      "broker_touched": false,
+      "buy_pf": 0.6861,
+      "buy_win_rate": 39.29,
+      "candidate": false,
+      "closed": 28,
+      "exit_reason_counts": {
+        "stop_loss": 2,
+        "take_profit": 1,
+        "time_stop": 25
+      },
+      "expectancy": -0.0687,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 5000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.5366,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.2812,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "02": {
+          "expectancy": 0.0508,
+          "losses": 0,
+          "profit_factor": 87.42,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "03": {
+          "expectancy": -0.1927,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "04": {
+          "expectancy": -0.0429,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -0.0949,
+          "losses": 2,
+          "profit_factor": 0.6116,
+          "trades": 3,
+          "win_rate": 33.33,
+          "wins": 1
+        },
+        "07": {
+          "expectancy": 0.0509,
+          "losses": 0,
+          "profit_factor": 71.31,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "08": {
+          "expectancy": -0.4572,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "10": {
+          "expectancy": -0.593,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": 0.2498,
+          "losses": 0,
+          "profit_factor": 424.55,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "16": {
+          "expectancy": -0.0081,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "17": {
+          "expectancy": 0.5215,
+          "losses": 0,
+          "profit_factor": 805.88,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "18": {
+          "expectancy": 0.1,
+          "losses": 1,
+          "profit_factor": 1.1251,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "19": {
+          "expectancy": 1.1828,
+          "losses": 0,
+          "profit_factor": 1546.15,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "20": {
+          "expectancy": -0.1529,
+          "losses": 2,
+          "profit_factor": 0.4218,
+          "trades": 4,
+          "win_rate": 50.0,
+          "wins": 2
+        },
+        "21": {
+          "expectancy": 0.0549,
+          "losses": 1,
+          "profit_factor": 1.8711,
+          "trades": 3,
+          "win_rate": 66.67,
+          "wins": 2
+        },
+        "22": {
+          "expectancy": -0.176,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "23": {
+          "expectancy": -0.3436,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -572.7007,
+      "live_runtime_mutated": false,
+      "losses": 17,
+      "max_drawdown": 4108.81655,
+      "monte_carlo": {
+        "expectancy_stressed": -272.803662,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 9657.91987,
+        "passed": false,
+        "profit_factor_stressed": 0.2762,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.47,
+        "simulations": 1000
+      },
+      "net_pnl": -2796.59087,
+      "no_trade_count": 956,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "first_half_expectancy_strong_negative",
+        "buy_side_destructive",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "anti_chop_v1",
+      "profit_factor": 0.6861,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.0687,
+          "losses": 17,
+          "profit_factor": 0.6861,
+          "trades": 28,
+          "win_rate": 39.29,
+          "wins": 11
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.0687,
+          "losses": 17,
+          "profit_factor": 0.6861,
+          "trades": 28,
+          "win_rate": 39.29,
+          "wins": 11
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_H1_5000.csv",
+      "test_drawdown": 5543.83835,
+      "test_expectancy": 0.0362,
+      "test_pf": 1.1849,
+      "time_stop_min": 15.0,
+      "timeframe": "H1",
+      "train_drawdown": 4108.81655,
+      "train_expectancy": -0.0687,
+      "train_pf": 0.6861,
+      "win_rate": 39.29,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 28,
+          "expectancy": -0.0687,
+          "max_drawdown": 4108.81655,
+          "no_trade_count": 0,
+          "profit_factor": 0.6861,
+          "win_rate": 39.29
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 11
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 37,
+        "score_too_low": 539,
+        "timeout_guard": 1,
+        "waiting_confirmation": 11,
+        "weak_internal_scores": 475
+      },
+      "broker_touched": false,
+      "buy_pf": 0.628,
+      "buy_win_rate": 37.5,
+      "candidate": false,
+      "closed": 16,
+      "exit_reason_counts": {
+        "stop_loss": 3,
+        "take_profit": 2,
+        "time_stop": 11
+      },
+      "expectancy": -0.1064,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "00": {
+          "expectancy": -0.2359,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "01": {
+          "expectancy": -0.7232,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "03": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 1154.0315,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "04": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "05": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "06": {
+          "expectancy": -0.2833,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "07": {
+          "expectancy": 1.2,
+          "losses": 0,
+          "profit_factor": 1178.1392,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "08": {
+          "expectancy": -1.0,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "11": {
+          "expectancy": 0.3972,
+          "losses": 0,
+          "profit_factor": 390.93,
+          "trades": 1,
+          "win_rate": 100.0,
+          "wins": 1
+        },
+        "12": {
+          "expectancy": 0.107,
+          "losses": 0,
+          "profit_factor": 211.36,
+          "trades": 2,
+          "win_rate": 100.0,
+          "wins": 2
+        },
+        "14": {
+          "expectancy": -0.0735,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "15": {
+          "expectancy": -0.052,
+          "losses": 1,
+          "profit_factor": 0.6041,
+          "trades": 2,
+          "win_rate": 50.0,
+          "wins": 1
+        },
+        "18": {
+          "expectancy": -0.2198,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -579.3813,
+      "live_runtime_mutated": false,
+      "losses": 10,
+      "max_drawdown": 2995.30236,
+      "monte_carlo": {
+        "expectancy_stressed": -247.160095,
+        "fail_reasons": [
+          "risk_of_ruin_high",
+          "drawdown_p95_above_limit",
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 6430.0746,
+        "passed": false,
+        "profit_factor_stressed": 0.3191,
+        "removed_best_5": true,
+        "risk_of_ruin": 0.162,
+        "simulations": 1000
+      },
+      "net_pnl": -1841.27088,
+      "no_trade_count": 1064,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "first_half_pf_below_1",
+        "first_half_expectancy_strong_negative",
+        "buy_side_destructive",
+        "monte_carlo_risk_of_ruin_high",
+        "monte_carlo_drawdown_p95_above_limit",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "low_drawdown_v1",
+      "profit_factor": 0.628,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.1064,
+          "losses": 10,
+          "profit_factor": 0.628,
+          "trades": 16,
+          "win_rate": 37.5,
+          "wins": 6
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.1064,
+          "losses": 10,
+          "profit_factor": 0.628,
+          "trades": 16,
+          "win_rate": 37.5,
+          "wins": 6
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M30_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M30",
+      "train_drawdown": 2995.30236,
+      "train_expectancy": -0.1064,
+      "train_pf": 0.628,
+      "win_rate": 37.5,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 16,
+          "expectancy": -0.1064,
+          "max_drawdown": 2995.30236,
+          "no_trade_count": 0,
+          "profit_factor": 0.628,
+          "win_rate": 37.5
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 6
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 5,
+        "score_too_low": 670,
+        "timeout_guard": 1,
+        "waiting_confirmation": 3,
+        "weak_internal_scores": 313
+      },
+      "broker_touched": false,
+      "buy_pf": 0.0,
+      "buy_win_rate": 0.0,
+      "candidate": false,
+      "closed": 1,
+      "exit_reason_counts": {
+        "time_stop": 1
+      },
+      "expectancy": -0.7218,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -625.65,
+      "live_runtime_mutated": false,
+      "losses": 1,
+      "max_drawdown": 0.0,
+      "monte_carlo": {
+        "expectancy_stressed": -815.144,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 741.04,
+        "passed": false,
+        "profit_factor_stressed": 0.0,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -741.04,
+      "no_trade_count": 993,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "quality_v3_conservative",
+      "profit_factor": 0.0,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 0.0,
+      "train_expectancy": -0.7218,
+      "train_pf": 0.0,
+      "win_rate": 0.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 1,
+          "expectancy": -0.7218,
+          "max_drawdown": 0.0,
+          "no_trade_count": 0,
+          "profit_factor": 0.0,
+          "win_rate": 0.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 0
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 2,
+        "score_too_low": 749,
+        "timeout_guard": 1,
+        "waiting_confirmation": 3,
+        "weak_internal_scores": 329
+      },
+      "broker_touched": false,
+      "buy_pf": 0.0,
+      "buy_win_rate": 0.0,
+      "candidate": false,
+      "closed": 1,
+      "exit_reason_counts": {
+        "time_stop": 1
+      },
+      "expectancy": -0.7218,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -625.65,
+      "live_runtime_mutated": false,
+      "losses": 1,
+      "max_drawdown": 0.0,
+      "monte_carlo": {
+        "expectancy_stressed": -815.144,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 741.04,
+        "passed": false,
+        "profit_factor_stressed": 0.0,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -741.04,
+      "no_trade_count": 1085,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "low_drawdown_v1",
+      "profit_factor": 0.0,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 0.0,
+      "train_expectancy": -0.7218,
+      "train_pf": 0.0,
+      "win_rate": 0.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 1,
+          "expectancy": -0.7218,
+          "max_drawdown": 0.0,
+          "no_trade_count": 0,
+          "profit_factor": 0.0,
+          "win_rate": 0.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 0
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "late_entry_risk": 1,
+        "rsi_extreme_block": 6,
+        "score_too_low": 745,
+        "timeout_guard": 1,
+        "waiting_confirmation": 5,
+        "weak_internal_scores": 329
+      },
+      "broker_touched": false,
+      "buy_pf": 0.0,
+      "buy_win_rate": 0.0,
+      "candidate": false,
+      "closed": 3,
+      "exit_reason_counts": {
+        "time_stop": 3
+      },
+      "expectancy": -0.3637,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "03": {
+          "expectancy": -0.2963,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "19": {
+          "expectancy": -0.0731,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -627.2017,
+      "live_runtime_mutated": false,
+      "losses": 3,
+      "max_drawdown": 820.14,
+      "monte_carlo": {
+        "expectancy_stressed": -409.170667,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 1777.86,
+        "passed": false,
+        "profit_factor_stressed": 0.0,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -1115.92,
+      "no_trade_count": 1088,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "momentum_v2_filtered",
+      "profit_factor": 0.0,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.3637,
+          "losses": 3,
+          "profit_factor": 0.0,
+          "trades": 3,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.3637,
+          "losses": 3,
+          "profit_factor": 0.0,
+          "trades": 3,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": -0.0103,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 820.14,
+      "train_expectancy": -0.3637,
+      "train_pf": 0.0,
+      "win_rate": 0.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 3,
+          "expectancy": -0.3637,
+          "max_drawdown": 820.14,
+          "no_trade_count": 0,
+          "profit_factor": 0.0,
+          "win_rate": 0.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 0
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 6,
+        "score_too_low": 691,
+        "timeout_guard": 1,
+        "waiting_confirmation": 5,
+        "weak_internal_scores": 319
+      },
+      "broker_touched": false,
+      "buy_pf": 0.0,
+      "buy_win_rate": 0.0,
+      "candidate": false,
+      "closed": 2,
+      "exit_reason_counts": {
+        "time_stop": 2
+      },
+      "expectancy": -0.509,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "03": {
+          "expectancy": -0.2963,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -630.563,
+      "live_runtime_mutated": false,
+      "losses": 2,
+      "max_drawdown": 741.04,
+      "monte_carlo": {
+        "expectancy_stressed": -570.251,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 1482.08,
+        "passed": false,
+        "profit_factor_stressed": 0.0,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -1036.82,
+      "no_trade_count": 1023,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "anti_chop_v2_safe",
+      "profit_factor": 0.0,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.509,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.509,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": -0.0103,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 820.14,
+      "train_expectancy": -0.3637,
+      "train_pf": 0.0,
+      "win_rate": 0.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 2,
+          "expectancy": -0.509,
+          "max_drawdown": 741.04,
+          "no_trade_count": 0,
+          "profit_factor": 0.0,
+          "win_rate": 0.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 0
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 5,
+        "score_too_low": 670,
+        "timeout_guard": 1,
+        "waiting_confirmation": 5,
+        "weak_internal_scores": 314
+      },
+      "broker_touched": false,
+      "buy_pf": 0.0,
+      "buy_win_rate": 0.0,
+      "candidate": false,
+      "closed": 2,
+      "exit_reason_counts": {
+        "time_stop": 2
+      },
+      "expectancy": -0.509,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {
+        "03": {
+          "expectancy": -0.2963,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "20": {
+          "expectancy": -0.7218,
+          "losses": 1,
+          "profit_factor": 0.0,
+          "trades": 1,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "institutional_score": -630.563,
+      "live_runtime_mutated": false,
+      "losses": 2,
+      "max_drawdown": 741.04,
+      "monte_carlo": {
+        "expectancy_stressed": -570.251,
+        "fail_reasons": [
+          "stressed_pf_below_1_05",
+          "stressed_expectancy_negative"
+        ],
+        "max_drawdown_p95": 1482.08,
+        "passed": false,
+        "profit_factor_stressed": 0.0,
+        "removed_best_5": false,
+        "risk_of_ruin": 0.0,
+        "simulations": 1000
+      },
+      "net_pnl": -1036.82,
+      "no_trade_count": 996,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_stressed_pf_below_1_05",
+        "monte_carlo_stressed_expectancy_negative"
+      ],
+      "profile": "trend_v2_drawdown_guard",
+      "profit_factor": 0.0,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {
+        "trend": {
+          "expectancy": -0.509,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": -0.509,
+          "losses": 2,
+          "profit_factor": 0.0,
+          "trades": 2,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": -0.0103,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 820.14,
+      "train_expectancy": -0.3637,
+      "train_pf": 0.0,
+      "win_rate": 0.0,
+      "windows": {
+        "first_half": {
+          "blocked_reason_counts": {},
+          "closed": 2,
+          "expectancy": -0.509,
+          "max_drawdown": 741.04,
+          "no_trade_count": 0,
+          "profit_factor": 0.0,
+          "win_rate": 0.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 0
+    },
+    {
+      "applies_to_paper_shadow": false,
+      "applies_to_real_trading": false,
+      "blocked_reason_counts": {
+        "insufficient_history": 2,
+        "rsi_extreme_block": 1,
+        "score_too_low": 763,
+        "timeout_guard": 1,
+        "waiting_confirmation": 2,
+        "weak_internal_scores": 340
+      },
+      "broker_touched": false,
+      "buy_pf": 0.0,
+      "buy_win_rate": 0.0,
+      "candidate": false,
+      "closed": 0,
+      "exit_reason_counts": {},
+      "expectancy": 0.0,
+      "guardrails": {
+        "degrade_to": "observation_only",
+        "early_expectancy_min": 0.0,
+        "early_guardrail_min_trades": 10,
+        "early_pf_min": 0.9,
+        "early_win_rate_min": 40.0,
+        "main_expectancy_min": 0.0,
+        "main_guardrail_min_trades": 50,
+        "main_pf_min": 1.15,
+        "max_forward_drawdown": 3000.0
+      },
+      "hour_stats": {},
+      "institutional_score": -830.0,
+      "live_runtime_mutated": false,
+      "losses": 0,
+      "max_drawdown": 0.0,
+      "monte_carlo": {
+        "expectancy_stressed": 0.0,
+        "fail_reasons": [
+          "no_closed_trades"
+        ],
+        "max_drawdown_p95": 0.0,
+        "passed": false,
+        "profit_factor_stressed": 0.0,
+        "risk_of_ruin": 1.0
+      },
+      "net_pnl": 0,
+      "no_trade_count": 1108,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker",
+      "pass_fail_reasons": [
+        "sample_too_small",
+        "pf_below_1_20",
+        "expectancy_not_positive",
+        "win_rate_below_45",
+        "monte_carlo_no_closed_trades"
+      ],
+      "profile": "capital_preservation_v1",
+      "profit_factor": 0.0,
+      "promoted_profile_mutated": false,
+      "recommendation": "reject",
+      "regime_stats": {},
+      "risk_pct": 0.1,
+      "rr": 1.2,
+      "sell_pf": 0.0,
+      "sell_win_rate": 0.0,
+      "shadow_trades_mutated": false,
+      "side_stats": {
+        "buy": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        "sell": {
+          "expectancy": 0.0,
+          "losses": 0,
+          "profit_factor": 0.0,
+          "trades": 0,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      },
+      "source_csv": "C:\\Users\\Eduardo\\Desktop\\GenesisBot_repo_git\\data\\backtests\\BTCUSD_M15_5000.csv",
+      "test_drawdown": 0.0,
+      "test_expectancy": 0.0,
+      "test_pf": 0.0,
+      "time_stop_min": 15.0,
+      "timeframe": "M15",
+      "train_drawdown": 0.0,
+      "train_expectancy": 0.0,
+      "train_pf": 0.0,
+      "win_rate": 0.0,
+      "windows": {
+        "first_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_1000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "last_2000": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        },
+        "second_half": {
+          "closed": 0,
+          "expectancy": 0.0,
+          "max_drawdown": 0.0,
+          "profit_factor": 0.0
+        }
+      },
+      "wins": 0
+    }
+  ],
+  "shadow_trades_mutated": false,
+  "status": "mt5_robust_optimizer_completed",
+  "symbol": "BTCUSD",
+  "timeframes": [
+    "M15",
+    "M30",
+    "H1"
+  ]
+}
