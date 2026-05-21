@@ -10,3 +10,5 @@ data/backtests/*.csv
 data/backtests/*.json
 !data/backtests/robust_optimizer_results.csv
 !data/backtests/robust_optimizer_results.json
+!data/backtests/capital_preservation_optimizer_results.csv
+!data/backtests/capital_preservation_optimizer_results.json
