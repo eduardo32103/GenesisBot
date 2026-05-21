@@ -22,6 +22,10 @@ def mt5_ops_status(*, memory: MemoryStore | None = None, symbol: str = "") -> di
     return build_router(memory).ops_status(symbol=symbol)
 
 
+def mt5_risk_state(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return build_router(memory).risk_state(symbol=symbol, timeframe=timeframe)
+
+
 def mt5_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).status()
 

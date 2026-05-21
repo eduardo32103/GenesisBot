@@ -8,6 +8,7 @@ from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbo
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
 from services.mt5.mt5_promoted_profile import active_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
+from services.mt5.mt5_risk_governor import assess_runtime_risk
 from services.mt5.mt5_runtime_snapshot import (
     append_closed_shadow_trade,
     get_snapshot,
@@ -39,6 +40,7 @@ def evaluate_paper_exploration(
     promoted_profile = active_promoted_profile(clean_symbol, active_timeframe, snapshot=snapshot) if active_timeframe else {}
     closed_event: dict[str, Any] | None = None
     opened_event: dict[str, Any] | None = None
+    risk_governor = assess_runtime_risk(clean_symbol, timeframe=active_timeframe, tick=active_tick, open_trade=open_trade)
 
     if open_trade:
         open_trade, closed_event = _update_open_trade(open_trade, active_tick, cfg)
@@ -56,7 +58,32 @@ def evaluate_paper_exploration(
 
     can_open, block_reason = _can_open(clean_symbol, normalized, active_tick, cfg, state, bool(open_trade and not closed_event), promoted_profile)
     if can_open:
+        side = _candidate_side(active_tick, snapshot)
+        risk_governor = assess_runtime_risk(
+            clean_symbol,
+            timeframe=active_timeframe,
+            tick=active_tick,
+            signal={
+                "action": side.upper(),
+                "side": side,
+                "lot_multiplier": active_tick.get("lot_multiplier") or active_tick.get("risk_multiplier") or 1.0,
+            },
+            open_trade=None,
+        )
+        if not risk_governor.get("allowed"):
+            can_open = False
+            block_reason = f"risk_governor_block:{risk_governor.get('reason') or 'blocked'}"
+
+    if can_open:
         opened_event = _open_trade(clean_symbol, normalized, active_tick, cfg, snapshot, promoted_profile)
+        opened_event.update(
+            {
+                "risk_governor_allowed": True,
+                "risk_governor_reason": risk_governor.get("reason") or "risk_governor_pass",
+                "risk_state": risk_governor.get("risk_state") or "normal",
+                "suggested_lot_multiplier": risk_governor.get("suggested_lot_multiplier", 1.0),
+            }
+        )
         update_open_shadow_trade(clean_symbol, opened_event, timeframe=active_timeframe)
         enqueue_mt5_event("mt5_shadow_trades", clean_symbol, opened_event)
         state = {
@@ -77,6 +104,11 @@ def evaluate_paper_exploration(
         "paper_exploration_reason": (opened_event or closed_event or {}).get("reason")
         or (closed_event or {}).get("exit_reason")
         or block_reason,
+        "risk_governor_allowed": bool(risk_governor.get("allowed")),
+        "risk_governor_reason": risk_governor.get("reason") or "",
+        "risk_state": risk_governor.get("risk_state") or "normal",
+        "suggested_lot_multiplier": risk_governor.get("suggested_lot_multiplier", 0.0),
+        "risk_governor": risk_governor,
         "promoted_profile": promoted_profile or None,
         "paper_forward_candidate_profile": promoted_profile.get("profile") if promoted_profile else "",
         "shadow_trade_id": (opened_event or open_trade or {}).get("shadow_trade_id") or "",

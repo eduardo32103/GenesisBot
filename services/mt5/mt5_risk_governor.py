@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from services.mt5.instrument_resolver import normalize_mt5_symbol
+
 
 @dataclass(frozen=True)
 class RiskGovernorLimits:
@@ -187,6 +189,132 @@ class MT5RiskGovernor:
             if parsed is not None:
                 return float(parsed)
         return default
+
+
+def assess_runtime_risk(
+    symbol: str,
+    *,
+    timeframe: str = "",
+    tick: dict[str, Any] | None = None,
+    signal: dict[str, Any] | None = None,
+    open_trade: dict[str, Any] | None = None,
+    limits: RiskGovernorLimits | None = None,
+) -> dict[str, Any]:
+    from services.mt5.mt5_runtime_snapshot import get_snapshot
+
+    clean_symbol = str(symbol or "BTCUSD").upper().strip()
+    normalized = normalize_mt5_symbol(clean_symbol) or clean_symbol
+    clean_timeframe = str(timeframe or (tick or {}).get("timeframe") or "").upper().strip()
+    snapshot = get_snapshot(normalized, clean_timeframe) if clean_timeframe else get_snapshot(normalized)
+    snapshot = snapshot or {}
+    generic = get_snapshot(normalized) or {}
+    account_snapshot = get_snapshot("MT5") or {}
+    active_tick = tick if isinstance(tick, dict) and tick else snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+    active_open = open_trade if isinstance(open_trade, dict) and open_trade else snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    account_state = _merge_dicts(
+        account_snapshot.get("last_account_sync") if isinstance(account_snapshot.get("last_account_sync"), dict) else {},
+        generic.get("last_account_sync") if isinstance(generic.get("last_account_sync"), dict) else {},
+        snapshot.get("last_account_sync") if isinstance(snapshot.get("last_account_sync"), dict) else {},
+    )
+    performance = _performance_context(snapshot, generic)
+    market = {
+        "spread_points": _spread(active_tick),
+        "slippage_points": active_tick.get("slippage_points") or active_tick.get("slippage"),
+        "regime": active_tick.get("regime") or active_tick.get("market_regime") or "trend",
+        "high_volatility_event": bool(active_tick.get("high_volatility_event") or active_tick.get("news_spike")),
+    }
+    result = MT5RiskGovernor(limits=limits).assess(
+        signal=signal or {},
+        account_state=account_state,
+        performance=performance,
+        market=market,
+        open_trades=[active_open] if active_open else [],
+    )
+    return {
+        **result,
+        "symbol": clean_symbol,
+        "normalized_symbol": normalized,
+        "timeframe": clean_timeframe,
+        "daily_loss_pct": _float_value(account_state, "daily_loss_pct"),
+        "weekly_loss_pct": _float_value(account_state, "weekly_loss_pct"),
+        "current_drawdown_pct": _float_value(account_state, "total_drawdown_pct", "drawdown_pct"),
+        "consecutive_losses": int(_float_value(performance, "consecutive_losses", "current_loss_streak")),
+        "spread_ok": not (_spread(active_tick) is not None and float(_spread(active_tick) or 0.0) > (limits or RiskGovernorLimits()).max_spread_points),
+        "edge_ok": not MT5RiskGovernor(limits=limits)._recent_edge_negative(performance),
+        "risk_governor_allowed": bool(result.get("allowed")),
+        "risk_governor_reason": str(result.get("reason") or ""),
+    }
+
+
+def risk_state_payload(symbol: str = "BTCUSD", *, timeframe: str = "") -> dict[str, Any]:
+    risk = assess_runtime_risk(symbol, timeframe=timeframe)
+    return {
+        "ok": True,
+        "status": "mt5_risk_state_ready",
+        "symbol": risk.get("symbol"),
+        "normalized_symbol": risk.get("normalized_symbol"),
+        "timeframe": risk.get("timeframe") or str(timeframe or "").upper().strip(),
+        "risk_state": risk.get("risk_state") or "normal",
+        "allowed": bool(risk.get("allowed")),
+        "reason": risk.get("reason") or "",
+        "daily_loss_pct": risk.get("daily_loss_pct", 0.0),
+        "weekly_loss_pct": risk.get("weekly_loss_pct", 0.0),
+        "current_drawdown_pct": risk.get("current_drawdown_pct", 0.0),
+        "consecutive_losses": risk.get("consecutive_losses", 0),
+        "spread_ok": bool(risk.get("spread_ok")),
+        "edge_ok": bool(risk.get("edge_ok")),
+        "suggested_lot_multiplier": risk.get("suggested_lot_multiplier", 0.0),
+        **_safety(),
+    }
+
+
+def _performance_context(snapshot: dict[str, Any], generic: dict[str, Any]) -> dict[str, Any]:
+    summary = snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {}
+    if not summary:
+        summary = generic.get("latest_performance_summary") if isinstance(generic.get("latest_performance_summary"), dict) else {}
+    adaptive = snapshot.get("latest_adaptive_state") if isinstance(snapshot.get("latest_adaptive_state"), dict) else {}
+    if not adaptive:
+        adaptive = generic.get("latest_adaptive_state") if isinstance(generic.get("latest_adaptive_state"), dict) else {}
+    return {
+        **summary,
+        "consecutive_losses": adaptive.get("current_loss_streak") or summary.get("current_loss_streak") or summary.get("consecutive_losses") or 0,
+        "current_loss_streak": adaptive.get("current_loss_streak") or summary.get("current_loss_streak") or 0,
+        "recent_closed": summary.get("closed") or summary.get("closed_trades") or 0,
+        "recent_profit_factor": summary.get("profit_factor") or 0.0,
+        "recent_expectancy": summary.get("expectancy") or 0.0,
+        "forward_closed": summary.get("closed") or summary.get("closed_trades") or 0,
+        "forward_profit_factor": summary.get("profit_factor") or 0.0,
+        "forward_expectancy": summary.get("expectancy") or 0.0,
+        "drawdown_acceleration_pct": summary.get("drawdown_acceleration_pct") or adaptive.get("drawdown_acceleration_pct") or 0.0,
+        "recent_edge_negative": summary.get("negative_recent_edge") or adaptive.get("negative_edge") or False,
+    }
+
+
+def _merge_dicts(*items: Any) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for item in items:
+        if isinstance(item, dict):
+            merged.update(item)
+    return merged
+
+
+def _spread(tick: dict[str, Any]) -> float | None:
+    spread = _number((tick or {}).get("spread"))
+    if spread is not None:
+        return spread
+    bid = _number((tick or {}).get("bid"))
+    ask = _number((tick or {}).get("ask"))
+    if bid is not None and ask is not None:
+        return abs(ask - bid)
+    return None
+
+
+def _float_value(data: dict[str, Any], *keys: str) -> float:
+    for key in keys:
+        parsed = _number(data.get(key))
+        if parsed is not None:
+            return float(parsed)
+    return 0.0
 
 
 def _number(value: object) -> float | None:

@@ -24,6 +24,7 @@ from services.mt5.mt5_paper_exploration import evaluate_paper_exploration, updat
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_promoted_profile import forward_profile_state, get_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
+from services.mt5.mt5_risk_governor import assess_runtime_risk, risk_state_payload
 from services.mt5.mt5_runtime_snapshot import (
     get_snapshot,
     snapshot_status,
@@ -190,6 +191,9 @@ class MT5SignalRouter:
             "updated_at": _now(),
         }
 
+    def risk_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        return risk_state_payload(symbol or "BTCUSD", timeframe=timeframe)
+
     def instrument(self, *, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
         info = resolve_instrument({**(payload or {}), "symbol": symbol or (payload or {}).get("symbol")})
         return {
@@ -338,6 +342,7 @@ class MT5SignalRouter:
             available_timeframe = str(available_tick.get("timeframe") or generic_snapshot.get("timeframe") or "").upper().strip()
             promoted_status = self.promoted_profile(symbol=symbol_info["mt5_symbol"], timeframe=requested_timeframe) if requested_timeframe else {}
             if requested_timeframe and not last_tick:
+                risk_governor = assess_runtime_risk(symbol_info["mt5_symbol"], timeframe=requested_timeframe)
                 reason = "no_runtime_snapshot_for_requested_timeframe"
                 payload = {
                     "ok": True,
@@ -371,6 +376,11 @@ class MT5SignalRouter:
                     "paper_exploration_enabled": self.config.paper_exploration_enabled,
                     "paper_exploration_created": False,
                     "paper_exploration_reason": reason,
+                    "risk_governor_allowed": bool(risk_governor.get("allowed")),
+                    "risk_governor_reason": risk_governor.get("reason") or "",
+                    "risk_state": risk_governor.get("risk_state") or "normal",
+                    "suggested_lot_multiplier": risk_governor.get("suggested_lot_multiplier", 0.0),
+                    "risk_governor": risk_governor,
                     "order_policy": "journal_only_no_broker",
                     "broker_touched": False,
                     "order_executed": False,
@@ -392,6 +402,8 @@ class MT5SignalRouter:
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
             if exploration.get("paper_exploration_created"):
                 reason = "real_trade_disabled_paper_probe_created"
+            if not exploration.get("risk_governor_allowed", True):
+                reason = f"risk_governor_block:{exploration.get('risk_governor_reason') or 'blocked'}"
             payload = {
                 "ok": True,
                 "symbol": symbol_info["mt5_symbol"],
@@ -428,6 +440,11 @@ class MT5SignalRouter:
                 "paper_exploration_enabled": self.config.paper_exploration_enabled,
                 "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
                 "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+                "risk_governor_allowed": bool(exploration.get("risk_governor_allowed", True)),
+                "risk_governor_reason": exploration.get("risk_governor_reason") or "",
+                "risk_state": exploration.get("risk_state") or "normal",
+                "suggested_lot_multiplier": exploration.get("suggested_lot_multiplier", 0.0),
+                "risk_governor": exploration.get("risk_governor") if isinstance(exploration.get("risk_governor"), dict) else {},
                 "promoted_profile": promoted_profile,
                 "paper_forward_candidate_profile": exploration.get("paper_forward_candidate_profile") or "",
                 "applies_to_real_trading": False,
@@ -480,6 +497,15 @@ class MT5SignalRouter:
         if decision in {"BUY", "SELL"} and guard["blocked"]:
             decision = "NO_TRADE"
             reason = guard["primary_reason"]
+        risk_governor = assess_runtime_risk(
+            symbol_info["mt5_symbol"],
+            timeframe=str(context.get("recommended_timeframe") or ""),
+            tick={"symbol": symbol_info["mt5_symbol"], "last": entry, "spread": context.get("spread_points"), "regime": context.get("market_regime") or "trend"},
+            signal={"action": decision, "lot_multiplier": 1.0},
+        )
+        if built.get("decision") in {"BUY", "SELL"} and not risk_governor.get("allowed"):
+            decision = "NO_TRADE"
+            reason = f"risk_governor_block:{risk_governor.get('reason') or 'blocked'}"
         payload = {
             "ok": True,
             "symbol": symbol_info["mt5_symbol"],
@@ -509,6 +535,11 @@ class MT5SignalRouter:
             "warnings": list(symbol_info.get("warnings") or []),
             "instrument_warning": symbol_info.get("instrument_warning") or "",
             "risk_flags": list(symbol_info.get("warnings") or []) + list(context.get("risk_flags") or []) + (guard["reasons"] if guard["blocked"] else []),
+            "risk_governor_allowed": bool(risk_governor.get("allowed")),
+            "risk_governor_reason": risk_governor.get("reason") or "",
+            "risk_state": risk_governor.get("risk_state") or "normal",
+            "suggested_lot_multiplier": risk_governor.get("suggested_lot_multiplier", 0.0),
+            "risk_governor": risk_governor,
             "what_to_watch": context.get("what_to_watch") or [],
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
@@ -1161,6 +1192,10 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
         "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
         "paper_exploration_closed": bool(exploration.get("paper_exploration_closed")),
         "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+        "risk_governor_allowed": bool(exploration.get("risk_governor_allowed", True)),
+        "risk_governor_reason": exploration.get("risk_governor_reason") or "",
+        "risk_state": exploration.get("risk_state") or "normal",
+        "suggested_lot_multiplier": exploration.get("suggested_lot_multiplier", 0.0),
         "promoted_profile": exploration.get("promoted_profile") if isinstance(exploration.get("promoted_profile"), dict) else None,
         "paper_forward_candidate_profile": exploration.get("paper_forward_candidate_profile") or "",
         "shadow_trade_id": exploration.get("shadow_trade_id") or "",
