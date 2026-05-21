@@ -51,10 +51,16 @@ def run_h1_candidate_maturation(body: dict[str, Any] | None = None) -> dict[str,
         "source": "mt5_csv",
         "timeout_seconds": max(1.0, min(timeout_seconds, 30.0)),
     }
-    base_settings = _settings(base_body, get_mt5_config())
+    # The generic backtester caps max_bars at 10k for API safety. H1 maturation is
+    # an offline cold-path diagnostic, so it must honor its own explicit cap.
+    base_settings = replace(_settings(base_body, get_mt5_config()), max_bars=max_bars)
     bars, load_warnings = _load_bars(base_body, base_settings)
     warnings.extend(load_warnings)
     bars = bars[-base_settings.max_bars :]
+    bars_loaded = len(bars)
+    bars_evaluated = max(0, bars_loaded - 1)
+    first_bar_time = str(bars[0].get("time") or "") if bars else ""
+    last_bar_time = str(bars[-1].get("time") or "") if bars else ""
     if not bars:
         errors.append({"timeframe": "H1", "path": str(csv_path), "error": "csv_bars_not_loaded"})
     else:
@@ -68,6 +74,7 @@ def run_h1_candidate_maturation(body: dict[str, Any] | None = None) -> dict[str,
                     base_settings,
                     profile,
                     source_csv=str(csv_path),
+                    max_bars_requested=max_bars,
                     timeout_seconds=max(1.0, min(timeout_seconds, 30.0)),
                 )
             )
@@ -80,6 +87,12 @@ def run_h1_candidate_maturation(body: dict[str, Any] | None = None) -> dict[str,
         "timeframe": "H1",
         "profiles": profiles,
         "source_csv": str(csv_path),
+        "csv_path_used": str(csv_path),
+        "bars_loaded": bars_loaded,
+        "bars_evaluated": bars_evaluated,
+        "max_bars_requested": max_bars,
+        "first_bar_time": first_bar_time,
+        "last_bar_time": last_bar_time,
         "results": rows,
         "summary": _summary(rows, csv_path),
         "errors": errors,
@@ -104,6 +117,7 @@ def evaluate_h1_profile_maturation(
     profile: str,
     *,
     source_csv: str = "",
+    max_bars_requested: int | None = None,
     timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
     config = _default_config(profile)
@@ -116,12 +130,19 @@ def evaluate_h1_profile_maturation(
     terciles = _tercile_stats(settings, bars, closed)
     sample_required = 50
     sample_required_strict = 75
-    trade_frequency = round((metrics["closed"] / max(1, len(bars))) * 1000.0, 4)
+    bars_loaded = len(bars)
+    bars_evaluated = max(0, bars_loaded - 1)
+    trade_frequency = round((metrics["closed"] / max(1, bars_evaluated)) * 1000.0, 4)
     row = {
         "timeframe": "H1",
         "profile": profile,
         "source_csv": source_csv,
-        "bars_loaded": len(bars),
+        "csv_path_used": source_csv,
+        "bars_loaded": bars_loaded,
+        "bars_evaluated": bars_evaluated,
+        "max_bars_requested": int(max_bars_requested or getattr(base_settings, "max_bars", 0) or bars_loaded),
+        "first_bar_time": str(bars[0].get("time") or "") if bars else "",
+        "last_bar_time": str(bars[-1].get("time") or "") if bars else "",
         "closed_actual": metrics["closed"],
         "sample_gate_required": sample_required,
         "sample_gate_required_strict": sample_required_strict,
@@ -175,7 +196,12 @@ def write_h1_candidate_maturation_outputs(result: dict[str, Any], output_dir: Pa
     headers = [
         "timeframe",
         "profile",
+        "csv_path_used",
         "bars_loaded",
+        "bars_evaluated",
+        "max_bars_requested",
+        "first_bar_time",
+        "last_bar_time",
         "closed_actual",
         "sample_gate_required",
         "sample_gate_required_strict",
@@ -231,6 +257,7 @@ def h1_candidate_maturation_summary_markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"- `{row.get('profile')}` closed `{row.get('closed_actual')}`, PF `{row.get('profit_factor')}`, "
             f"expectancy `{row.get('expectancy')}`, DD `{row.get('max_drawdown')}`, "
+            f"bars `{row.get('bars_evaluated')}` from `{row.get('csv_path_used')}`, "
             f"freq/1000 `{row.get('trade_frequency_per_1000_bars')}`, "
             f"bars for 50/75 `{row.get('estimated_bars_for_50_trades')}`/`{row.get('estimated_bars_for_75_trades')}`, "
             f"MC stressed PF `{row.get('monte_carlo_stressed_pf')}`, p95 DD `{row.get('monte_carlo_p95_drawdown')}`, "
@@ -377,6 +404,7 @@ def _summary(rows: list[dict[str, Any]], csv_path: Path) -> dict[str, Any]:
             **_safety(),
         }
     best = max(rows, key=_maturation_rank)
+    max_bars_loaded = max(int(row.get("bars_loaded") or 0) for row in rows)
     mc_failures = [
         f"{row.get('profile')}: {','.join(row.get('monte_carlo_fail_reasons') or [])}"
         for row in rows
@@ -397,9 +425,9 @@ def _summary(rows: list[dict[str, Any]], csv_path: Path) -> dict[str, Any]:
         "stable_profile_answer": f"{best.get('profile')} has the best combined PF/expectancy/drawdown score, but remains {best.get('sample_maturation_status')}",
         "monte_carlo_answer": "; ".join(mc_failures) if mc_failures else "no Monte Carlo failure in this H1 run",
         "next_action_answer": (
-            "keep H1 observation_only; export 25k/30k H1 bars and diagnose regime dependency before any paper-forward promotion"
-            if best_is_fragile
-            else "keep H1 observation_only; export 25k/30k H1 bars and rerun before any paper-forward promotion"
+            _extended_history_next_action(best_is_fragile)
+            if max_bars_loaded >= 25000
+            else _short_history_next_action(best_is_fragile)
         ),
         "automatic_promotion": False,
         **_safety(),
@@ -410,6 +438,8 @@ def _edge_answer(rows: list[dict[str, Any]]) -> str:
     strong = [row for row in rows if float(row.get("profit_factor") or 0.0) >= 1.2 and float(row.get("expectancy") or 0.0) > 0]
     if not strong:
         return "no robust H1 edge yet; metrics fail PF/expectancy gates"
+    if max(int(row.get("closed_actual") or 0) for row in strong) < 10:
+        return "too few H1 trades to call real edge; PF/expectancy are not meaningful yet"
     fragile = [row for row in strong if row.get("fragile_regime_dependency")]
     if fragile:
         return "edge is promising but concentrated in one tercile/regime; keep observation_only and require deeper H1 history"
@@ -417,6 +447,18 @@ def _edge_answer(rows: list[dict[str, Any]]) -> str:
     if sample_small:
         return "edge is promising but still sample-small; do not promote"
     return "edge may be real enough for further paper-forward review, not real trading"
+
+
+def _extended_history_next_action(best_is_fragile: bool) -> str:
+    if best_is_fragile:
+        return "keep H1 observation_only; extended H1 already shows severe trade scarcity, so redesign/session diagnostics should come before any promotion"
+    return "keep H1 observation_only; extended H1 still needs more validation before any paper-forward promotion"
+
+
+def _short_history_next_action(best_is_fragile: bool) -> str:
+    if best_is_fragile:
+        return "keep H1 observation_only; export 25k/30k H1 bars and diagnose regime dependency before any paper-forward promotion"
+    return "keep H1 observation_only; export 25k/30k H1 bars and rerun before any paper-forward promotion"
 
 
 def _maturation_rank(row: dict[str, Any]) -> float:

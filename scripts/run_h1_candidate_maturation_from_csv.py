@@ -22,7 +22,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run MT5 H1 candidate maturation diagnostics from BTCUSD CSV files.")
     parser.add_argument("--symbol", default="BTCUSD")
     parser.add_argument("--csv-dir", default=str(REPO_ROOT / "data" / "backtests"))
-    parser.add_argument("--csv-path-h1", default="")
+    parser.add_argument("--csv-path", default="", help="Explicit H1 CSV path. Alias for --csv-path-h1.")
+    parser.add_argument("--csv-path-h1", default="", help="Explicit H1 CSV path.")
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "data" / "backtests"))
     parser.add_argument("--profiles", default=",".join(H1_MATURATION_PROFILES))
     parser.add_argument("--max-bars", type=int, default=30000)
@@ -43,7 +44,8 @@ def main(argv: list[str] | None = None) -> int:
         {
             "symbol": args.symbol,
             "csv_dir": args.csv_dir,
-            "csv_path_h1": args.csv_path_h1,
+            "csv_path_h1": args.csv_path_h1 or args.csv_path,
+            "csv_path": args.csv_path or args.csv_path_h1,
             "profiles": args.profiles,
             "max_bars": args.max_bars,
             "spread_points": args.spread_points,
