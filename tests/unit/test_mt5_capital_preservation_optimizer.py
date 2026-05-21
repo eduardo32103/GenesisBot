@@ -14,6 +14,8 @@ from services.mt5.mt5_capital_preservation_optimizer import (
     _capital_decision_from_history,
     _capital_candidate_gate,
     _config,
+    _dedupe_results,
+    _planned_config_id,
     _simulate_capital_preservation,
     _settings_for_capital_config,
     write_capital_preservation_outputs,
@@ -195,6 +197,64 @@ class MT5CapitalPreservationOptimizerTests(unittest.TestCase):
             self.assertTrue((root / "capital_preservation_optimizer_results.csv").exists())
             self.assertTrue((root / "capital_preservation_optimizer_results.json").exists())
 
+    def test_config_id_is_stable_and_changes_when_parameters_change(self) -> None:
+        base = _config("capital_preservation_v4_side_filtered", 1.2, 3, 60, 25, True, True, 2, 2, True, True, True, True, True, False, False, True, 0.1)
+        same = _config("capital_preservation_v4_side_filtered", 1.2, 3, 60, 25, True, True, 2, 2, True, True, True, True, True, False, False, True, 0.1)
+        changed = _config("capital_preservation_v4_side_filtered", 1.5, 3, 60, 25, True, True, 2, 2, True, True, True, True, True, False, False, True, 0.1)
+
+        first = _planned_config_id("M30", "capital_preservation_v4_side_filtered", base)
+        second = _planned_config_id("M30", "capital_preservation_v4_side_filtered", same)
+        third = _planned_config_id("M30", "capital_preservation_v4_side_filtered", changed)
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, third)
+        self.assertEqual(len(first), 16)
+
+    def test_dedupe_results_keeps_one_unique_config_and_counts_duplicates(self) -> None:
+        config = _config("low_drawdown_v5_session_filtered", 1.2, 2, 59, 25, True, True, 2, 2, True, True, True, True, True, False, False, True, 0.1)
+        config_id = _planned_config_id("M30", "low_drawdown_v5_session_filtered", config)
+        row = {
+            "timeframe": "M30",
+            "profile": "low_drawdown_v5_session_filtered",
+            "parameters": {
+                "risk_reward": 1.2,
+                "time_stop_bars": 2,
+                "score_min": 59,
+                "spread_max": 25,
+                "volatility_filter": True,
+                "anti_chop_filter": True,
+                "cooldown_after_loss_bars": 2,
+                "block_after_consecutive_losses": 2,
+                "trailing_stop": True,
+                "max_adverse_excursion_filter": True,
+                "no_trade_if_recent_edge_negative": True,
+                "no_trade_if_drawdown_accelerating": True,
+                "session_filter": True,
+                "partial_exit": False,
+                "atr_trailing": False,
+                "adaptive_time_stop": True,
+                "risk_pct": 0.1,
+            },
+            "config_id": config_id,
+            "closed": 12,
+            "profit_factor": 3.0,
+            "expectancy": 0.2,
+            "max_drawdown": 600,
+            "capital_preservation_score": 1.0,
+            "recommendation": "observation_only",
+            "candidate": False,
+            "pass_fail_reasons": ["sample_too_small"],
+        }
+
+        unique, meta = _dedupe_results([row, {**row, "capital_preservation_score": 2.0, "closed": 14}])
+
+        self.assertEqual(meta["raw_result_count"], 2)
+        self.assertEqual(meta["unique_result_count"], 1)
+        self.assertEqual(meta["duplicate_count"], 1)
+        self.assertEqual(unique[0]["config_id"], config_id)
+        self.assertEqual(unique[0]["duplicate_count"], 2)
+        self.assertEqual(unique[0]["closed"], 14)
+
     def test_new_edge_profiles_are_available_and_paper_only(self) -> None:
         for profile in [
             "breakout_pullback_v1",
@@ -286,6 +346,8 @@ class MT5CapitalPreservationOptimizerTests(unittest.TestCase):
             self.assertTrue(json_path.exists())
             self.assertTrue(summary_path.exists())
             self.assertIn("No martingale", summary_path.read_text(encoding="utf-8"))
+            self.assertIn("config_id", csv_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertIn("Top 20 Unique Configs", summary_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

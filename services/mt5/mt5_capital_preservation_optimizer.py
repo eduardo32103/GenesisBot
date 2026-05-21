@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import time
 from dataclasses import dataclass, replace
@@ -756,7 +757,11 @@ class MT5CapitalPreservationOptimizer:
         progress_every = max(1, int(_number(body.get("progress_every")) or 0) or 25)
         progress_callback = body.get("progress_callback") if callable(body.get("progress_callback")) else None
         incremental_callback = body.get("incremental_callback") if callable(body.get("incremental_callback")) else None
-        existing_results = [row for row in body.get("existing_results", []) if isinstance(row, dict)] if isinstance(body.get("existing_results"), list) else []
+        existing_results = (
+            [_ensure_result_identity(row) for row in body.get("existing_results", []) if isinstance(row, dict)]
+            if isinstance(body.get("existing_results"), list)
+            else []
+        )
         existing_keys = {_result_key(row) for row in existing_results}
         max_evaluations = max(1, int(_number(body.get("max_evaluations")) or 180))
         grid_budget = max(1, (max_evaluations + max(1, len(timeframes)) - 1) // max(1, len(timeframes)))
@@ -805,7 +810,7 @@ class MT5CapitalPreservationOptimizer:
                     stop_requested = True
                     break
                 settings = _settings_for_capital_config(base_settings, config)
-                key = _result_key({"timeframe": settings.timeframe, "profile": settings.filter_profile, "parameters": _config_payload(config)})
+                key = _planned_config_id(settings.timeframe, settings.filter_profile, config)
                 if key in existing_keys:
                     skipped += 1
                     continue
@@ -838,9 +843,10 @@ class MT5CapitalPreservationOptimizer:
                         },
                     )
 
-        rows.sort(key=lambda item: (item["recommendation"] != "paper_forward_candidate", -float(item["capital_preservation_score"])))
-        candidates = [item for item in rows if item["recommendation"] == "paper_forward_candidate"]
-        recommendation = "paper_forward_candidate" if candidates else ("observation_only" if rows else "reject")
+        unique_rows, dedupe_meta = _dedupe_results(rows)
+        unique_rows.sort(key=_sort_key_result)
+        candidates = [item for item in unique_rows if item["recommendation"] == "paper_forward_candidate"]
+        recommendation = "paper_forward_candidate" if candidates else ("observation_only" if unique_rows else "reject")
         return {
             "ok": True,
             "status": "mt5_capital_preservation_optimizer_completed",
@@ -852,11 +858,20 @@ class MT5CapitalPreservationOptimizer:
             "evaluations_skipped": skipped,
             "max_runtime_reached": stop_requested,
             "interrupted": False,
-            "results": rows,
+            "results": unique_rows,
+            "raw_result_count": dedupe_meta["raw_result_count"],
+            "unique_result_count": dedupe_meta["unique_result_count"],
+            "duplicate_count": dedupe_meta["duplicate_count"],
+            "duplicate_config_count": dedupe_meta["duplicate_config_count"],
+            "sample_too_small_only_count": _sample_too_small_only_count(unique_rows),
+            "top_unique_by_timeframe": _top_unique_by(unique_rows, "timeframe"),
+            "top_unique_by_profile": _top_unique_by(unique_rows, "profile"),
+            "best_m30": _best_for_timeframe(unique_rows, "M30"),
+            "best_h1": _best_for_timeframe(unique_rows, "H1"),
             "candidates": candidates,
-            "best_profile": candidates[0] if candidates else (rows[0] if rows else None),
+            "best_profile": candidates[0] if candidates else (unique_rows[0] if unique_rows else None),
             "recommendation": recommendation if candidates else "reject",
-            "genesis_reading": _summary_reading(candidates, rows),
+            "genesis_reading": _summary_reading(candidates, unique_rows),
             "errors": errors,
             "live_runtime_mutated": False,
             "promoted_profile_mutated": False,
@@ -894,11 +909,24 @@ class MT5CapitalPreservationOptimizer:
             gate = {"passed": False, "reasons": ["timeout", *gate["reasons"]]}
         score = _capital_preservation_score(full, windows, split, monte_carlo, gate)
         recommendation = "paper_forward_candidate" if gate["passed"] else ("reject" if timed_out else "observation_only" if int(full.get("closed") or 0) else "reject")
+        params = settings.filter_params if isinstance(settings.filter_params, dict) else {}
+        sample_gate_required = _sample_gate_required(settings.timeframe)
+        identity = _config_identity_payload(settings.timeframe, settings.filter_profile, config, params)
+        config_id = _stable_config_id(identity)
         return {
             "timeframe": settings.timeframe,
             "profile": settings.filter_profile,
             "source_csv": source_csv,
             "parameters": _config_payload(config),
+            "config_id": config_id,
+            "param_hash": config_id,
+            "duplicate_count": 1,
+            "side_mode": identity["side_mode"],
+            "session_filter": identity["session_filter"],
+            "exit_mode": identity["exit_mode"],
+            "reject_reasons": list(gate["reasons"]),
+            "sample_gate_required": sample_gate_required,
+            "sample_gate_actual": full["closed"],
             "risk_reward": config.risk_reward,
             "time_stop_bars": config.time_stop_bars,
             "score_min": config.score_min,
@@ -2105,7 +2133,225 @@ def _config_payload(config: CapitalSearchConfig) -> dict[str, Any]:
         "atr_trailing": config.atr_trailing,
         "adaptive_time_stop": config.adaptive_time_stop,
         "risk_pct": config.risk_pct,
+        "trailing_start_r": config.trailing_start_r,
+        "trailing_distance_r": config.trailing_distance_r,
     }
+
+
+def _sample_gate_required(timeframe: str) -> int:
+    return 50 if str(timeframe or "").upper() == "H1" else 75
+
+
+def _planned_config_id(timeframe: str, profile: str, config: CapitalSearchConfig) -> str:
+    params = dict(_PROFILE_PARAMS.get(profile, {}))
+    params["min_score"] = config.score_min
+    params["max_spread_points"] = config.spread_max
+    params["avoid_chop"] = bool(config.anti_chop_filter)
+    params["session_filter"] = bool(config.session_filter or params.get("session_filter"))
+    params["partial_exit"] = bool(config.partial_exit or params.get("partial_exit"))
+    params["atr_trailing"] = bool(config.atr_trailing or params.get("atr_trailing"))
+    params["adaptive_time_stop"] = bool(config.adaptive_time_stop or params.get("adaptive_time_stop"))
+    return _stable_config_id(_config_identity_payload(timeframe, profile, config, params))
+
+
+def _config_identity_payload(
+    timeframe: str,
+    profile: str,
+    config: CapitalSearchConfig,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile_params = params if isinstance(params, dict) else dict(_PROFILE_PARAMS.get(profile, {}))
+    session_enabled = bool(config.session_filter or profile_params.get("session_filter"))
+    session_hours = profile_params.get("session_hours")
+    if isinstance(session_hours, list) and session_hours:
+        hours = ",".join(str(int(_number(hour) or 0)) for hour in session_hours)
+        session_label = f"utc_hours:{hours}" if session_enabled else "off"
+    else:
+        session_label = "on" if session_enabled else "off"
+    return {
+        "timeframe": str(timeframe or "").upper(),
+        "profile": profile,
+        "risk_reward": round(float(config.risk_reward), 4),
+        "time_stop": int(config.time_stop_bars),
+        "score_min": round(float(config.score_min), 4),
+        "spread_max": round(float(config.spread_max), 4),
+        "volatility_filter": bool(config.volatility_filter),
+        "anti_chop_filter": bool(config.anti_chop_filter),
+        "cooldown_after_loss": int(config.cooldown_after_loss_bars),
+        "block_after_consecutive_losses": int(config.block_after_consecutive_losses),
+        "trailing": bool(config.trailing_stop),
+        "mae_filter": bool(config.max_adverse_excursion_filter),
+        "recent_edge_filter": bool(config.no_trade_if_recent_edge_negative),
+        "drawdown_acceleration_filter": bool(config.no_trade_if_drawdown_accelerating),
+        "side_mode": _side_mode(profile_params),
+        "session_filter": session_label,
+        "exit_mode": _exit_mode(config, profile_params),
+        "risk_pct": round(float(config.risk_pct), 6),
+    }
+
+
+def _stable_config_id(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _side_mode(params: dict[str, Any]) -> str:
+    allowed = params.get("allowed_sides")
+    if not isinstance(allowed, list) or not allowed:
+        return "both"
+    sides = {str(item or "").strip().casefold() for item in allowed if str(item or "").strip()}
+    if sides == {"buy"}:
+        return "buy_only"
+    if sides == {"sell"}:
+        return "sell_only"
+    if sides == {"buy", "sell"}:
+        return "both"
+    return ",".join(sorted(sides)) or "both"
+
+
+def _exit_mode(config: CapitalSearchConfig, params: dict[str, Any]) -> str:
+    mae = params.get("mae_exit_r")
+    mae_label = f"mae_exit_r={mae}" if _number(mae) is not None else "mae_exit=off"
+    parts = [
+        f"time_stop={int(config.time_stop_bars)}",
+        f"trailing={'on' if config.trailing_stop else 'off'}",
+        f"atr_trailing={'on' if bool(config.atr_trailing or params.get('atr_trailing')) else 'off'}",
+        f"adaptive_time_stop={'on' if bool(config.adaptive_time_stop or params.get('adaptive_time_stop')) else 'off'}",
+        f"momentum_loss_exit={'on' if bool(params.get('momentum_loss_exit')) else 'off'}",
+        mae_label,
+        f"partial_exit={'on' if bool(config.partial_exit or params.get('partial_exit')) else 'off'}",
+    ]
+    return "|".join(parts)
+
+
+def _config_from_row(row: dict[str, Any]) -> CapitalSearchConfig:
+    params = row.get("parameters") if isinstance(row.get("parameters"), dict) else {}
+    profile = str(row.get("profile") or params.get("profile") or "capital_preservation_v1")
+    return _config(
+        profile,
+        float(_number(params.get("risk_reward") if "risk_reward" in params else row.get("risk_reward")) or 1.2),
+        int(_number(params.get("time_stop_bars") if "time_stop_bars" in params else row.get("time_stop_bars")) or 3),
+        float(_number(params.get("score_min") if "score_min" in params else row.get("score_min")) or 65.0),
+        float(_number(params.get("spread_max") if "spread_max" in params else row.get("spread_max")) or 25.0),
+        bool(params.get("volatility_filter", True)),
+        bool(params.get("anti_chop_filter", True)),
+        int(_number(params.get("cooldown_after_loss_bars")) or 2),
+        int(_number(params.get("block_after_consecutive_losses")) or 2),
+        bool(params.get("trailing_stop", True)),
+        bool(params.get("max_adverse_excursion_filter", True)),
+        bool(params.get("no_trade_if_recent_edge_negative", True)),
+        bool(params.get("no_trade_if_drawdown_accelerating", True)),
+        bool(params.get("session_filter", False)),
+        bool(params.get("partial_exit", False)),
+        bool(params.get("atr_trailing", False)),
+        bool(params.get("adaptive_time_stop", True)),
+        float(_number(params.get("risk_pct")) or 0.1),
+    )
+
+
+def _ensure_result_identity(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    profile = str(payload.get("profile") or "capital_preservation_v1")
+    config = _config_from_row(payload)
+    params = dict(_PROFILE_PARAMS.get(profile, {}))
+    params["min_score"] = config.score_min
+    params["max_spread_points"] = config.spread_max
+    params["avoid_chop"] = bool(config.anti_chop_filter)
+    params["session_filter"] = bool(config.session_filter or params.get("session_filter"))
+    params["partial_exit"] = bool(config.partial_exit or params.get("partial_exit"))
+    params["atr_trailing"] = bool(config.atr_trailing or params.get("atr_trailing"))
+    params["adaptive_time_stop"] = bool(config.adaptive_time_stop or params.get("adaptive_time_stop"))
+    identity = _config_identity_payload(str(payload.get("timeframe") or ""), profile, config, params)
+    config_id = str(payload.get("config_id") or payload.get("param_hash") or _stable_config_id(identity))
+    reasons = payload.get("reject_reasons")
+    if not isinstance(reasons, list):
+        reasons = payload.get("pass_fail_reasons") if isinstance(payload.get("pass_fail_reasons"), list) else []
+    sample_required = int(_number(payload.get("sample_gate_required")) or _sample_gate_required(str(payload.get("timeframe") or "")))
+    sample_actual = int(_number(payload.get("sample_gate_actual")) or _number(payload.get("closed")) or 0)
+    payload.update(
+        {
+            "config_id": config_id,
+            "param_hash": str(payload.get("param_hash") or config_id),
+            "duplicate_count": int(_number(payload.get("duplicate_count")) or 1),
+            "side_mode": payload.get("side_mode") or identity["side_mode"],
+            "session_filter": payload.get("session_filter") or identity["session_filter"],
+            "exit_mode": payload.get("exit_mode") or identity["exit_mode"],
+            "reject_reasons": list(reasons),
+            "sample_gate_required": sample_required,
+            "sample_gate_actual": sample_actual,
+        }
+    )
+    return payload
+
+
+def _row_rank(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        bool(row.get("candidate")),
+        row.get("recommendation") == "paper_forward_candidate",
+        float(_number(row.get("capital_preservation_score")) or 0.0),
+        int(_number(row.get("closed")) or 0),
+        float(_number(row.get("profit_factor")) or 0.0),
+        float(_number(row.get("expectancy")) or 0.0),
+        -float(_number(row.get("max_drawdown")) or 0.0),
+    )
+
+
+def _sort_key_result(row: dict[str, Any]) -> tuple[Any, ...]:
+    rank = _row_rank(row)
+    return (not rank[0], not rank[1], -rank[2], -rank[3], -rank[4], -rank[5], -rank[6])
+
+
+def _dedupe_results(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = _ensure_result_identity(row)
+        groups.setdefault(str(item["config_id"]), []).append(item)
+    unique: list[dict[str, Any]] = []
+    duplicate_count = 0
+    duplicate_config_count = 0
+    for config_id, group in groups.items():
+        if len(group) > 1:
+            duplicate_config_count += 1
+            duplicate_count += len(group) - 1
+        best = max(group, key=_row_rank)
+        best = dict(best)
+        best["config_id"] = config_id
+        best["param_hash"] = config_id
+        best["duplicate_count"] = len(group)
+        best["duplicate_result_count"] = max(0, len(group) - 1)
+        unique.append(best)
+    return unique, {
+        "raw_result_count": len(rows),
+        "unique_result_count": len(unique),
+        "duplicate_count": duplicate_count,
+        "duplicate_config_count": duplicate_config_count,
+    }
+
+
+def _top_unique_by(rows: list[dict[str, Any]], field: str) -> dict[str, dict[str, Any]]:
+    winners: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = str(row.get(field) or "")
+        if not key:
+            continue
+        if key not in winners or _row_rank(row) > _row_rank(winners[key]):
+            winners[key] = row
+    return dict(sorted(winners.items()))
+
+
+def _best_for_timeframe(rows: list[dict[str, Any]], timeframe: str) -> dict[str, Any] | None:
+    scoped = [row for row in rows if str(row.get("timeframe") or "").upper() == timeframe.upper()]
+    return max(scoped, key=_row_rank) if scoped else None
+
+
+def _sample_too_small_only_count(rows: list[dict[str, Any]]) -> int:
+    count = 0
+    for row in rows:
+        reasons = row.get("reject_reasons") if isinstance(row.get("reject_reasons"), list) else row.get("pass_fail_reasons")
+        reason_set = {str(reason) for reason in reasons} if isinstance(reasons, list) else set()
+        if reason_set == {"sample_too_small"}:
+            count += 1
+    return count
 
 
 def _requested_list(raw: Any, default: list[str]) -> list[str]:
@@ -2125,6 +2371,8 @@ def _requested_numbers(raw: Any, default: list[float]) -> list[float]:
 
 
 def _result_key(row: dict[str, Any]) -> str:
+    if row.get("config_id"):
+        return str(row.get("config_id"))
     params = row.get("parameters") if isinstance(row.get("parameters"), dict) else {}
     try:
         encoded = json.dumps(params, sort_keys=True, separators=(",", ":"))
@@ -2161,13 +2409,36 @@ def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path 
     csv_path = root / "capital_preservation_optimizer_results.csv"
     json_path = root / "capital_preservation_optimizer_results.json"
     summary_path = root / "capital_preservation_optimizer_summary.md"
+    rows, dedupe_meta = _dedupe_results([row for row in result.get("results") or [] if isinstance(row, dict)])
+    rows.sort(key=_sort_key_result)
+    output_result = {
+        **result,
+        "results": rows,
+        "raw_result_count": result.get("raw_result_count", dedupe_meta["raw_result_count"]),
+        "unique_result_count": dedupe_meta["unique_result_count"],
+        "duplicate_count": result.get("duplicate_count", dedupe_meta["duplicate_count"]),
+        "duplicate_config_count": result.get("duplicate_config_count", dedupe_meta["duplicate_config_count"]),
+        "sample_too_small_only_count": result.get("sample_too_small_only_count", _sample_too_small_only_count(rows)),
+        "top_unique_by_timeframe": result.get("top_unique_by_timeframe") or _top_unique_by(rows, "timeframe"),
+        "top_unique_by_profile": result.get("top_unique_by_profile") or _top_unique_by(rows, "profile"),
+        "best_m30": result.get("best_m30") or _best_for_timeframe(rows, "M30"),
+        "best_h1": result.get("best_h1") or _best_for_timeframe(rows, "H1"),
+    }
     columns = [
+        "config_id",
+        "param_hash",
+        "duplicate_count",
         "timeframe",
         "profile",
+        "side_mode",
+        "session_filter",
+        "exit_mode",
         "risk_reward",
         "time_stop_bars",
         "score_min",
         "spread_max",
+        "sample_gate_required",
+        "sample_gate_actual",
         "closed",
         "wins",
         "losses",
@@ -2191,6 +2462,7 @@ def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path 
         "capital_preservation_score",
         "recommendation",
         "candidate",
+        "reject_reasons",
         "pass_fail_reasons",
         "broker_touched",
         "order_executed",
@@ -2198,16 +2470,24 @@ def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path 
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
-        for row in result.get("results") or []:
+        for row in output_result.get("results") or []:
             mc = row.get("monte_carlo") if isinstance(row.get("monte_carlo"), dict) else {}
             writer.writerow(
                 {
+                    "config_id": row.get("config_id", ""),
+                    "param_hash": row.get("param_hash", ""),
+                    "duplicate_count": row.get("duplicate_count", 1),
                     "timeframe": row.get("timeframe", ""),
                     "profile": row.get("profile", ""),
+                    "side_mode": row.get("side_mode", ""),
+                    "session_filter": row.get("session_filter", ""),
+                    "exit_mode": row.get("exit_mode", ""),
                     "risk_reward": row.get("risk_reward", ""),
                     "time_stop_bars": row.get("time_stop_bars", ""),
                     "score_min": row.get("score_min", ""),
                     "spread_max": row.get("spread_max", ""),
+                    "sample_gate_required": row.get("sample_gate_required", ""),
+                    "sample_gate_actual": row.get("sample_gate_actual", ""),
                     "closed": row.get("closed", 0),
                     "wins": row.get("wins", 0),
                     "losses": row.get("losses", 0),
@@ -2231,25 +2511,33 @@ def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path 
                     "capital_preservation_score": row.get("capital_preservation_score", 0),
                     "recommendation": row.get("recommendation", ""),
                     "candidate": row.get("candidate", False),
+                    "reject_reasons": ";".join(str(reason) for reason in row.get("reject_reasons", [])),
                     "pass_fail_reasons": ";".join(str(reason) for reason in row.get("pass_fail_reasons", [])),
                     "broker_touched": row.get("broker_touched", False),
                     "order_executed": row.get("order_executed", False),
                 }
             )
-    json_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
-    summary_path.write_text(capital_preservation_summary_markdown(result), encoding="utf-8")
+    json_path.write_text(json.dumps(output_result, indent=2, sort_keys=True), encoding="utf-8")
+    summary_path.write_text(capital_preservation_summary_markdown(output_result), encoding="utf-8")
     return csv_path, json_path, summary_path
 
 
 def capital_preservation_summary_markdown(result: dict[str, Any]) -> str:
-    rows = list(result.get("results") or [])
+    rows = [_ensure_result_identity(row) for row in result.get("results") or [] if isinstance(row, dict)]
+    rows.sort(key=_sort_key_result)
     candidates = list(result.get("candidates") or [])
+    by_timeframe = result.get("top_unique_by_timeframe") if isinstance(result.get("top_unique_by_timeframe"), dict) else _top_unique_by(rows, "timeframe")
+    by_profile = result.get("top_unique_by_profile") if isinstance(result.get("top_unique_by_profile"), dict) else _top_unique_by(rows, "profile")
+    best_m30 = result.get("best_m30") or _best_for_timeframe(rows, "M30")
+    best_h1 = result.get("best_h1") or _best_for_timeframe(rows, "H1")
     lines = [
         "# MT5 Capital Preservation Optimizer Summary",
         "",
         "Safety: `broker_touched=false`, `order_executed=false`, `order_policy=journal_only_no_broker`.",
         "",
         f"Recommendation: **{result.get('recommendation', 'reject')}**",
+        f"Raw results: `{result.get('raw_result_count', len(rows))}` | Unique configs: `{result.get('unique_result_count', len(rows))}` | Duplicate rows removed: `{result.get('duplicate_count', 0)}`.",
+        f"Rejected only by sample size: `{result.get('sample_too_small_only_count', _sample_too_small_only_count(rows))}`.",
         "",
         "This report is paper-only. It never recommends real trading.",
         "",
@@ -2264,14 +2552,39 @@ def capital_preservation_summary_markdown(result: dict[str, Any]) -> str:
             )
     else:
         lines.extend(["## Candidates", "No profile passed capital-preservation gates. Recommendation: reject/observation_only."])
-    lines.extend(["", "## Top Results"])
+    lines.extend(["", "## Top 20 Unique Configs"])
     for row in rows[:20]:
-        reasons = ", ".join(str(reason) for reason in row.get("pass_fail_reasons", [])[:5])
+        reasons = ", ".join(str(reason) for reason in (row.get("reject_reasons") or row.get("pass_fail_reasons") or [])[:5])
         lines.append(
-            f"- `{row.get('timeframe')} {row.get('profile')}` PF `{row.get('profit_factor')}`, "
+            f"- `{row.get('timeframe')} {row.get('profile')}` config `{row.get('config_id')}` "
+            f"dupes `{row.get('duplicate_count', 1)}` PF `{row.get('profit_factor')}`, "
             f"WR `{row.get('win_rate')}`, DD `{row.get('max_drawdown')}`, "
+            f"closed `{row.get('closed')}/{row.get('sample_gate_required')}`, "
             f"score `{row.get('capital_preservation_score')}`, recommendation `{row.get('recommendation')}`. "
             f"Reasons: {reasons}."
+        )
+    lines.extend(["", "## Top Unique By Timeframe"])
+    for timeframe, row in sorted(by_timeframe.items()):
+        lines.append(
+            f"- `{timeframe}`: `{row.get('profile')}` config `{row.get('config_id')}` PF `{row.get('profit_factor')}`, "
+            f"closed `{row.get('closed')}`, DD `{row.get('max_drawdown')}`, recommendation `{row.get('recommendation')}`."
+        )
+    lines.extend(["", "## Top Unique By Profile"])
+    for profile, row in sorted(by_profile.items()):
+        lines.append(
+            f"- `{profile}`: `{row.get('timeframe')}` config `{row.get('config_id')}` PF `{row.get('profit_factor')}`, "
+            f"closed `{row.get('closed')}`, DD `{row.get('max_drawdown')}`, recommendation `{row.get('recommendation')}`."
+        )
+    lines.extend(["", "## Best M30 / H1"])
+    if best_m30:
+        lines.append(
+            f"- M30 best unique: `{best_m30.get('profile')}` config `{best_m30.get('config_id')}` PF `{best_m30.get('profit_factor')}`, "
+            f"closed `{best_m30.get('closed')}`, DD `{best_m30.get('max_drawdown')}`."
+        )
+    if best_h1:
+        lines.append(
+            f"- H1 best unique: `{best_h1.get('profile')}` config `{best_h1.get('config_id')}` PF `{best_h1.get('profit_factor')}`, "
+            f"closed `{best_h1.get('closed')}`, DD `{best_h1.get('max_drawdown')}`."
         )
     lines.extend(
         [

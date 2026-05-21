@@ -22,8 +22,10 @@ from services.mt5.mt5_capital_preservation_optimizer import (
 
 def print_table(rows: list[dict[str, Any]], limit: int = 25) -> None:
     headers = [
+        "config_id",
         "timeframe",
         "profile",
+        "duplicate_count",
         "closed",
         "win_rate",
         "profit_factor",
@@ -47,6 +49,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run MT5 capital-preservation strategy search from local BTCUSD CSV files.")
     parser.add_argument("--symbol", default="BTCUSD")
     parser.add_argument("--csv-dir", default=str(REPO_ROOT / "data" / "backtests"))
+    parser.add_argument("--csv-path-m15", default="")
+    parser.add_argument("--csv-path-m30", default="")
+    parser.add_argument("--csv-path-h1", default="")
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "data" / "backtests"))
     parser.add_argument("--timeframes", default=",".join(CAPITAL_PRESERVATION_TIMEFRAMES))
     parser.add_argument("--profiles", default=",".join(CAPITAL_PRESERVATION_PROFILES))
@@ -109,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "symbol": args.symbol,
         "csv_dir": args.csv_dir,
+        "csv_path_m15": args.csv_path_m15,
+        "csv_path_m30": args.csv_path_m30,
+        "csv_path_h1": args.csv_path_h1,
         "timeframes": args.timeframes,
         "profiles": profiles,
         "max_bars": args.max_bars,
