@@ -2013,22 +2013,34 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertFalse(decision["broker_touched"])
         self.assertFalse(decision["order_executed"])
 
-    def test_promoted_profile_endpoint_returns_quality_loose_candidate(self) -> None:
+    def test_promoted_profile_endpoint_returns_degraded_observation_only(self) -> None:
         from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
 
         reset_runtime_snapshots_for_tests()
         reset_promoted_profiles_for_tests()
         profile = get_genesis_mt5_promoted_profile(symbol="BTCUSD", timeframe="M30")
+        state = get_genesis_mt5_forward_profile_state(symbol="BTCUSD", timeframe="M30")
         repeated = mt5_promoted_profile(symbol="BTCUSD", timeframe="M30")
 
         self.assertTrue(profile["ok"])
         self.assertEqual(profile["profile"], "quality_loose")
-        self.assertEqual(profile["status"], "paper_forward_candidate")
-        self.assertEqual(profile["mode"], "paper_forward_candidate")
+        self.assertEqual(profile["status"], "observation_only")
+        self.assertEqual(profile["mode"], "observation_only")
+        self.assertFalse(profile["active"])
+        self.assertTrue(profile["degraded"])
+        self.assertEqual(profile["degradation_reason"], "early_forward_underperformance")
         self.assertEqual(profile["promoted_by"], "walk_forward_optimizer")
-        self.assertTrue(profile["applies_to_paper_shadow"])
+        self.assertFalse(profile["applies_to_paper_shadow"])
         self.assertFalse(profile["applies_to_real_trading"])
+        self.assertEqual(state["status"], "observation_only")
+        self.assertFalse(state["active"])
+        self.assertTrue(state["degraded"])
+        self.assertEqual(state["degradation_reason"], "early_forward_underperformance")
+        self.assertFalse(state["applies_to_paper_shadow"])
+        self.assertFalse(state["applies_to_real_trading"])
         self.assertEqual(repeated["profile"], "quality_loose")
+        self.assertEqual(repeated["status"], "observation_only")
+        self.assertTrue(repeated["degraded"])
         self.assertFalse(profile["broker_touched"])
         self.assertFalse(profile["order_executed"])
 
@@ -2037,6 +2049,7 @@ class MT5BridgeTests(unittest.TestCase):
 
         reset_runtime_snapshots_for_tests()
         reset_promoted_profiles_for_tests()
+        record_promoted_profile(symbol="BTCUSD", timeframe="M30", profile="quality_loose", mode="paper_forward_candidate")
         router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
         weak_but_quality_loose_ok = {
             "symbol": "BTCUSD",
@@ -2265,12 +2278,13 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "no_runtime_snapshot_for_requested_timeframe")
         self.assertEqual(decision["requested_timeframe"], "M30")
         self.assertEqual(decision["available_timeframe"], "H1")
-        self.assertEqual(decision["strategy_profile"], "quality_loose")
-        self.assertEqual(decision["paper_forward_candidate_profile"], "quality_loose")
+        self.assertEqual(decision["strategy_profile"], "")
+        self.assertEqual(decision["paper_forward_candidate_profile"], "")
+        self.assertIsNone(decision["promoted_profile"])
         self.assertFalse(decision["broker_touched"])
         self.assertFalse(decision["order_executed"])
 
-    def test_decision_m30_applies_quality_loose_when_m30_snapshot_exists(self) -> None:
+    def test_decision_m30_does_not_apply_degraded_quality_loose_when_snapshot_exists(self) -> None:
         from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_tick
 
         reset_runtime_snapshots_for_tests()
@@ -2296,9 +2310,9 @@ class MT5BridgeTests(unittest.TestCase):
 
         self.assertEqual(decision["timeframe"], "M30")
         self.assertEqual(decision["requested_timeframe"], "M30")
-        self.assertEqual(decision["strategy_profile"], "quality_loose")
-        self.assertEqual(decision["paper_forward_candidate_profile"], "quality_loose")
-        self.assertEqual(decision["promoted_profile"]["profile"], "quality_loose")
+        self.assertEqual(decision["strategy_profile"], "")
+        self.assertEqual(decision["paper_forward_candidate_profile"], "")
+        self.assertIsNone(decision["promoted_profile"])
         self.assertFalse(decision["applies_to_real_trading"])
         self.assertFalse(decision["broker_touched"])
         self.assertFalse(decision["order_executed"])

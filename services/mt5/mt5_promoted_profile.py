@@ -17,9 +17,12 @@ _DEFAULT_PROFILE = {
     "normalized_symbol": "BTCUSD",
     "timeframe": "M30",
     "profile": "quality_loose",
-    "mode": "paper_forward_candidate",
+    "mode": "observation_only",
     "promoted_by": "walk_forward_optimizer",
-    "applies_to": "paper_shadow_only",
+    "applies_to": "observation_only",
+    "degraded": True,
+    "degrade_reason": "early_forward_underperformance",
+    "degraded_at": "",
     "forward_baseline_closed": 0,
     "promotion_metrics": {
         "trades": 190,
@@ -81,7 +84,7 @@ def get_promoted_profile(
             state = deepcopy(_PROMOTED_PROFILES.get(key) or state)
         if memory is not None:
             _save_profile_event(memory, state, event_type="mt5_promoted_profile_degraded")
-    active = state.get("mode") == "paper_forward_candidate"
+    active = state.get("mode") == "paper_forward_candidate" and not bool(state.get("degraded"))
     status = str(state.get("mode") or "observation_only")
     payload = {
         "ok": True,
@@ -99,8 +102,10 @@ def get_promoted_profile(
         "promotion_metrics": deepcopy(state.get("promotion_metrics") or {}),
         "guardrails": deepcopy(state.get("guardrails") or {}),
         "forward_stats": stats,
-        "degraded": degraded or state.get("mode") == "observation_only",
+        "degraded": bool(state.get("degraded")) or degraded,
         "degrade_reason": reason or state.get("degrade_reason") or "",
+        "degradation_reason": reason or state.get("degrade_reason") or "",
+        "degraded_at": state.get("degraded_at") or "",
         "created_at": state.get("created_at") or "",
         "updated_at": state.get("updated_at") or "",
         **_safety(),
@@ -142,6 +147,9 @@ def forward_profile_state(
         "early_guardrail_win_rate_min": float(_number((profile.get("guardrails") or {}).get("early_guardrail_win_rate_min")) or 35.0),
         "degradation_reason": profile.get("degrade_reason") or "",
         "degraded": bool(profile.get("degraded")),
+        "active": bool(profile.get("active")),
+        "applies_to_paper_shadow": bool(profile.get("applies_to_paper_shadow")),
+        "applies_to_real_trading": False,
         "promoted_by": profile.get("promoted_by") or "",
         **_safety(),
         "updated_at": _now(),
@@ -178,6 +186,10 @@ def record_promoted_profile(
         "timeframe": clean_timeframe,
         "profile": str(profile or "quality_loose").strip(),
         "mode": str(mode or "paper_forward_candidate").strip(),
+        "degraded": False,
+        "degrade_reason": "",
+        "degraded_at": "",
+        "applies_to": "paper_shadow_only" if str(mode or "paper_forward_candidate").strip() == "paper_forward_candidate" else "observation_only",
         "promoted_by": str(promoted_by or "walk_forward_optimizer").strip(),
         "promotion_metrics": dict(promotion_metrics or _DEFAULT_PROFILE["promotion_metrics"]),
         "created_at": now,
@@ -256,6 +268,8 @@ def _apply_degradation(key: tuple[str, str], state: dict[str, Any], reason: str,
     updated = {
         **state,
         "mode": str(guardrails.get("degrade_to") or "observation_only"),
+        "degraded": True,
+        "applies_to": "observation_only",
         "degraded_at": _now(),
         "degrade_reason": reason,
         "updated_at": _now(),
