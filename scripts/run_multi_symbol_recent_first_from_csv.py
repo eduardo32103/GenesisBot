@@ -31,6 +31,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--spread-points", type=float, default=None)
     parser.add_argument("--max-evaluations-per-symbol-timeframe", type=int, default=40)
     parser.add_argument("--per-evaluation-timeout-seconds", type=float, default=1.5)
+    parser.add_argument("--monte-carlo-simulations", type=int, default=300)
     parser.add_argument("--smoke", action="store_true", help="Run a small bounded multi-symbol pass.")
     return parser.parse_args(argv)
 
@@ -54,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         "bars": args.bars,
         "max_evaluations_per_symbol_timeframe": args.max_evaluations_per_symbol_timeframe,
         "per_evaluation_timeout_seconds": args.per_evaluation_timeout_seconds,
+        "monte_carlo_simulations": args.monte_carlo_simulations,
     }
     if args.spread_points is not None:
         payload["spread_points"] = args.spread_points

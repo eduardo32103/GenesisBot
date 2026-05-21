@@ -29,7 +29,9 @@ def main() -> int:
     parser.add_argument("--output", default="data/backtests/BTCUSD_H1.csv", help="Output CSV path.")
     args = parser.parse_args()
 
-    symbol = str(args.symbol or "BTCUSD").upper().strip()
+    symbol = str(args.symbol or "BTCUSD").strip()
+    if not symbol:
+        symbol = "BTCUSD"
     timeframe_name = str(args.timeframe or "H1").upper().strip()
     bars = max(1, int(args.bars or 3000))
     output = Path(args.output)

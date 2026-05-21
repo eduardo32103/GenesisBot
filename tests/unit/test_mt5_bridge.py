@@ -2923,6 +2923,8 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("copy_rates_from_pos", exporter_content)
         self.assertIn('"time", "open", "high", "low", "close", "volume"', exporter_content)
         self.assertIn("data/backtests/BTCUSD_H1.csv", exporter_content)
+        self.assertNotIn('str(args.symbol or "BTCUSD").upper().strip()', exporter_content)
+        self.assertIn('symbol = str(args.symbol or "BTCUSD").strip()', exporter_content)
         self.assertIn("/api/genesis/mt5/backtest/run", runner_content)
         self.assertIn("/api/genesis/mt5/forward-replay/run", forward_replay_content)
         self.assertIn("data/backtests/BTCUSD_M30_5000.csv", forward_replay_content)

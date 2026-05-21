@@ -1,0 +1,38 @@
+{
+  "ok": true,
+  "rows": [
+    {
+      "requested_symbol": "XAUUSD",
+      "resolved_symbol": "XAUUSD.b",
+      "matched_alias": "XAUUSD.b",
+      "status": "resolved_exact",
+      "patterns_checked": "XAUUSD,XAUUSDm,XAUUSD.r,XAUUSD.b,GOLD,GOLDm,GOLD.r,GOLD.b,XAUUSD#",
+      "available_count": 279,
+      "broker_touched": false,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker"
+    },
+    {
+      "requested_symbol": "NAS100",
+      "resolved_symbol": "USTEC.b",
+      "matched_alias": "USTEC.b",
+      "status": "resolved_exact",
+      "patterns_checked": "NAS100,NAS100m,NAS100.r,NAS100.b,US100,US100m,US100.b,USTEC,USTECm,USTEC.b,NASDAQ,NASDAQm",
+      "available_count": 279,
+      "broker_touched": false,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker"
+    },
+    {
+      "requested_symbol": "US500",
+      "resolved_symbol": "US500.b",
+      "matched_alias": "US500.b",
+      "status": "resolved_exact",
+      "patterns_checked": "US500,US500m,US500.r,US500.b,SPX500,SPX500m,SPX500.b,SP500,SP500m,USSPX500",
+      "available_count": 279,
+      "broker_touched": false,
+      "order_executed": false,
+      "order_policy": "journal_only_no_broker"
+    }
+  ]
+}

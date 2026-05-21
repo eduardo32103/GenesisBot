@@ -1,0 +1,4 @@
+requested_symbol,resolved_symbol,status,matched_alias,patterns_checked,available_count,broker_touched,order_executed,order_policy
+XAUUSD,XAUUSD.b,resolved_exact,XAUUSD.b,"XAUUSD,XAUUSDm,XAUUSD.r,XAUUSD.b,GOLD,GOLDm,GOLD.r,GOLD.b,XAUUSD#",279,False,False,journal_only_no_broker
+NAS100,USTEC.b,resolved_exact,USTEC.b,"NAS100,NAS100m,NAS100.r,NAS100.b,US100,US100m,US100.b,USTEC,USTECm,USTEC.b,NASDAQ,NASDAQm",279,False,False,journal_only_no_broker
+US500,US500.b,resolved_exact,US500.b,"US500,US500m,US500.r,US500.b,SPX500,SPX500m,SPX500.b,SP500,SP500m,USSPX500",279,False,False,journal_only_no_broker

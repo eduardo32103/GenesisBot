@@ -36,12 +36,13 @@ class MT5MultiSymbolRecentFirstTests(unittest.TestCase):
             root = Path(tmp)
             (root / "BTCUSD_M15_20000.csv").write_text(_bars_csv(), encoding="utf-8")
             (root / "ETHUSD_M15_20000.csv").write_text(_bars_csv(bias=30.0), encoding="utf-8")
+            (root / "XAUUSD.b_M15_20000.csv").write_text(_bars_csv(bias=1900.0), encoding="utf-8")
 
             result = run_multi_symbol_recent_first(
                 {
                     "csv_dir": str(root),
                     "fallback_csv_dir": str(root),
-                    "symbols": "BTCUSD,ETHUSD,MISSING",
+                    "symbols": "BTCUSD,ETHUSD,XAUUSD,MISSING",
                     "timeframes": "M15",
                     "families": "recent_momentum_pullback,recent_ema_reclaim",
                     "bars": 1000,
@@ -66,9 +67,12 @@ class MT5MultiSymbolRecentFirstTests(unittest.TestCase):
             self.assertEqual(result["max_open_trades"], 1)
             self.assertGreater(len(result["results"]), 0)
             self.assertEqual([item["symbol"] for item in result["skipped_symbols"]], ["MISSING"])
+            self.assertTrue(any(row.get("symbol") == "XAUUSD" and row.get("resolved_symbol") == "XAUUSD.B" for row in result["results"]))
             row = result["results"][0]
             for key in [
                 "symbol",
+                "requested_symbol",
+                "resolved_symbol",
                 "recent_closed",
                 "recent_pf",
                 "total_closed",
@@ -76,10 +80,16 @@ class MT5MultiSymbolRecentFirstTests(unittest.TestCase):
                 "monte_carlo_stressed_pf",
                 "spread_x1_5_pf",
                 "spread_x2_pf",
+                "instrument_type",
+                "point",
+                "estimated_spread_price",
+                "cost_model_confidence",
                 "remove_best_5_pf",
                 "rejection_reasons",
             ]:
                 self.assertIn(key, row)
+            self.assertIn("cost_model_report", result)
+            self.assertGreater(len(result["cost_model_report"]["rows"]), 0)
 
     def test_gate_rejects_spread_and_remove_best_stress(self) -> None:
         total = {"closed": 80, "profit_factor": 1.6, "expectancy": 0.2, "max_drawdown": 1200}
@@ -89,7 +99,17 @@ class MT5MultiSymbolRecentFirstTests(unittest.TestCase):
         spread_x1_5 = {"profit_factor": 0.94}
         spread_x2 = {"profit_factor": 0.90}
 
-        gate = _gate(total, recent, monte_carlo, remove_best_5, spread_x1_5, spread_x2, fragile=False, single_trade=False)
+        gate = _gate(
+            total,
+            recent,
+            monte_carlo,
+            remove_best_5,
+            spread_x1_5,
+            spread_x2,
+            fragile=False,
+            single_trade=False,
+            cost_model={"cost_model_confidence": "medium"},
+        )
 
         self.assertFalse(gate["passed"])
         self.assertIn("spread_x1_5_pf_below_1", gate["reasons"])
@@ -124,7 +144,8 @@ class MT5MultiSymbolRecentFirstTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertLess(time.monotonic() - started, 30)
-            self.assertTrue((root / "multi_symbol_recent_first_results.csv").exists())
+            self.assertTrue((root / "multi_symbol_recent_first_cost_calibrated_results.csv").exists())
+            self.assertTrue((root / "multi_symbol_cost_model_report.csv").exists())
 
 
 if __name__ == "__main__":

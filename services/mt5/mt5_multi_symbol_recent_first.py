@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from services.mt5.mt5_backtester import BacktestSettings, _close, _load_bars, _metrics, _number, _reason_counts, _safety, _settings
-from services.mt5.mt5_capital_preservation_optimizer import _depends_on_single_trade, _monte_carlo_stress
+from services.mt5.mt5_capital_preservation_optimizer import (
+    _depends_on_single_trade,
+    _drawdown_accelerating,
+    _loss_streak,
+    _monte_carlo_stress,
+    _recent_edge_negative,
+)
 from services.mt5.mt5_config import get_mt5_config
 from services.mt5.mt5_recent_first_research import (
     RECENT_FIRST_FAMILIES,
@@ -20,9 +26,9 @@ from services.mt5.mt5_recent_first_research import (
     _decision_for_recent,
     _fragile_dependency,
     _quarter_ranges,
-    _recent_research_risk_block,
 )
 from services.mt5.mt5_strategy_research_v2 import _features_by_index, _open_research_trade
+from services.mt5.mt5_symbol_cost_model import ALIAS_PATTERNS, build_symbol_cost_model, infer_instrument_type, write_cost_model_report
 
 
 DEFAULT_MULTI_SYMBOLS = ["BTCUSD", "ETHUSD", "XAUUSD", "NAS100", "US500", "EURUSD", "GBPUSD"]
@@ -85,9 +91,11 @@ def run_multi_symbol_recent_first(body: dict[str, Any] | None = None) -> dict[st
     bars_requested = max(200, min(int(_number(body.get("bars") or body.get("max_bars")) or 20000), 65000))
     per_eval_timeout = max(0.25, float(_number(body.get("per_evaluation_timeout_seconds")) or 1.5))
     max_per_symbol_timeframe = max(1, int(_number(body.get("max_evaluations_per_symbol_timeframe")) or 40))
+    monte_carlo_simulations = max(100, min(int(_number(body.get("monte_carlo_simulations")) or 300), 1000))
     fixed_spread = _number(body.get("spread_points"))
 
     rows: list[dict[str, Any]] = []
+    cost_rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     warnings: list[str] = []
     skipped_symbols: list[dict[str, Any]] = []
@@ -101,15 +109,26 @@ def run_multi_symbol_recent_first(body: dict[str, Any] | None = None) -> dict[st
                 errors.append({"symbol": symbol, "timeframe": timeframe, "error": "csv_not_found"})
                 continue
             symbol_loaded = True
+            resolved_symbol = _symbol_from_csv_path(csv_path, symbol)
             label = f"{symbol}_{timeframe}_{_csv_size_label(csv_path)}"
             csv_paths[f"{symbol}:{timeframe}"] = str(csv_path)
-            spread_points = float(fixed_spread if fixed_spread is not None else DEFAULT_SYMBOL_SPREAD_POINTS.get(symbol, 10.0))
+            cost_model = build_symbol_cost_model(
+                symbol,
+                resolved_symbol=resolved_symbol,
+                first_price=_first_csv_price(csv_path),
+                broker_spread_points=float(fixed_spread) if fixed_spread is not None else None,
+            )
+            cost_rows.append({**cost_model.as_dict(), "timeframe": timeframe, "csv_path": str(csv_path), "csv_found": True, **_safety()})
+            spread_points = float(cost_model.spread_points if fixed_spread is None else fixed_spread)
             settings_body = {
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "csv_path": str(csv_path),
                 "max_bars": bars_requested,
                 "spread_points": spread_points,
+                "point": cost_model.point,
+                "commission": cost_model.commission_assumption,
+                "slippage_points": cost_model.slippage_assumption,
                 "save_results": False,
                 "source": "mt5_csv",
                 "timeout_seconds": per_eval_timeout,
@@ -118,6 +137,10 @@ def run_multi_symbol_recent_first(body: dict[str, Any] | None = None) -> dict[st
                 _settings(settings_body, get_mt5_config()),
                 max_bars=bars_requested,
                 timeout_seconds=max(1.0, min(per_eval_timeout, 20.0)),
+                point=cost_model.point,
+                spread_points=spread_points,
+                commission=cost_model.commission_assumption,
+                slippage_points=cost_model.slippage_assumption,
             )
             bars, load_warnings = _load_bars(settings_body, settings)
             warnings.extend([f"{label}:{warning}" for warning in load_warnings])
@@ -137,10 +160,24 @@ def run_multi_symbol_recent_first(body: dict[str, Any] | None = None) -> dict[st
                         source_csv=str(csv_path),
                         features_by_index=features_by_index,
                         timeout_seconds=per_eval_timeout,
+                        cost_model=cost_model.as_dict(),
+                        monte_carlo_simulations=monte_carlo_simulations,
                     )
                 )
         if not symbol_loaded:
             skipped_symbols.append({"symbol": symbol, "reason": "no_csv_history_available"})
+            cost_model = build_symbol_cost_model(symbol)
+            cost_rows.append(
+                {
+                    **cost_model.as_dict(),
+                    "timeframe": "",
+                    "csv_path": "",
+                    "csv_found": False,
+                    "cost_model_confidence": "low",
+                    "cost_model_reason": "no_local_csv_or_alias_unresolved",
+                    **_safety(),
+                }
+            )
 
     rows.sort(key=lambda row: float(row.get("multi_symbol_score") or 0.0), reverse=True)
     candidates = [row for row in rows if row.get("candidate")]
@@ -154,6 +191,7 @@ def run_multi_symbol_recent_first(body: dict[str, Any] | None = None) -> dict[st
         "bars_requested": bars_requested,
         "csv_dir": str(csv_dir),
         "csv_paths": csv_paths,
+        "cost_model_report": {"ok": True, "status": "mt5_symbol_cost_model_report_ready", "rows": cost_rows, **_safety()},
         "skipped_symbols": skipped_symbols,
         "evaluations": len(rows),
         "results": rows,
@@ -189,6 +227,8 @@ def evaluate_multi_symbol_config(
     source_csv: str,
     features_by_index: dict[int, dict[str, Any]],
     timeout_seconds: float,
+    cost_model: dict[str, Any] | None = None,
+    monte_carlo_simulations: int = 300,
 ) -> dict[str, Any]:
     started = time.monotonic()
     trades, blocked, signals, state = _simulate_multi_symbol(settings, bars, config, started, timeout_seconds=timeout_seconds, features_by_index=features_by_index)
@@ -196,13 +236,13 @@ def evaluate_multi_symbol_config(
     total = _metrics(closed, initial_balance=settings.initial_balance)
     split = _split_metrics(settings, bars, closed)
     recent = split["recent"]
-    monte_carlo = _monte_carlo_stress(closed, initial_balance=settings.initial_balance, max_drawdown_limit=5000.0, simulations=500)
+    monte_carlo = _monte_carlo_stress(closed, initial_balance=settings.initial_balance, max_drawdown_limit=5000.0, simulations=monte_carlo_simulations)
     remove_best_5 = _remove_best_metrics(settings, closed, 5)
     spread_x1_5 = _spread_stress_metrics(settings, bars, config, features_by_index, timeout_seconds, 1.5)
     spread_x2 = _spread_stress_metrics(settings, bars, config, features_by_index, timeout_seconds, 2.0)
     fragile = _fragile_dependency(total, split)
     single_trade = _depends_on_single_trade(total)
-    gate = _gate(total, recent, monte_carlo, remove_best_5, spread_x1_5, spread_x2, fragile, single_trade)
+    gate = _gate(total, recent, monte_carlo, remove_best_5, spread_x1_5, spread_x2, fragile, single_trade, cost_model or {})
     score = _score(total, recent, monte_carlo, remove_best_5, spread_x1_5, spread_x2, gate, fragile, single_trade)
     row = {
         "symbol": symbol,
@@ -230,6 +270,19 @@ def evaluate_multi_symbol_config(
         "first_bar_time": str(bars[0].get("time") or "") if bars else "",
         "last_bar_time": str(bars[-1].get("time") or "") if bars else "",
         "spread_points": settings.spread_points,
+        "requested_symbol": (cost_model or {}).get("requested_symbol", symbol),
+        "resolved_symbol": (cost_model or {}).get("resolved_symbol", symbol),
+        "instrument_type": (cost_model or {}).get("instrument_type", "unknown"),
+        "digits": (cost_model or {}).get("digits", 0),
+        "point": (cost_model or {}).get("point", settings.point),
+        "tick_size": (cost_model or {}).get("tick_size", settings.point),
+        "estimated_spread_price": (cost_model or {}).get("estimated_spread_price", 0.0),
+        "commission_assumption": (cost_model or {}).get("commission_assumption", 0.0),
+        "slippage_assumption": (cost_model or {}).get("slippage_assumption", 0.0),
+        "spread_x1_5_cost": (cost_model or {}).get("spread_x1_5_cost", 0.0),
+        "spread_x2_cost": (cost_model or {}).get("spread_x2_cost", 0.0),
+        "cost_model_confidence": (cost_model or {}).get("cost_model_confidence", "low"),
+        "cost_model_reason": (cost_model or {}).get("cost_model_reason", "missing_cost_model"),
         "generated_signal_count": signals["generated"],
         "actionable_signal_count": signals["actionable"],
         "opened_trade_count": len(closed),
@@ -290,12 +343,14 @@ def evaluate_multi_symbol_config(
 def write_multi_symbol_recent_first_outputs(result: dict[str, Any], output_dir: Path | str) -> tuple[Path, Path, Path]:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    csv_path = root / "multi_symbol_recent_first_results.csv"
-    json_path = root / "multi_symbol_recent_first_results.json"
-    summary_path = root / "multi_symbol_recent_first_summary.md"
+    csv_path = root / "multi_symbol_recent_first_cost_calibrated_results.csv"
+    json_path = root / "multi_symbol_recent_first_cost_calibrated_results.json"
+    summary_path = root / "multi_symbol_recent_first_cost_calibrated_summary.md"
     rows = result.get("results") if isinstance(result.get("results"), list) else []
     headers = [
         "symbol",
+        "requested_symbol",
+        "resolved_symbol",
         "sample_label",
         "timeframe",
         "family",
@@ -317,6 +372,18 @@ def write_multi_symbol_recent_first_outputs(result: dict[str, Any], output_dir: 
         "monte_carlo_p95_drawdown",
         "spread_x1_5_pf",
         "spread_x2_pf",
+        "instrument_type",
+        "digits",
+        "point",
+        "tick_size",
+        "spread_points",
+        "estimated_spread_price",
+        "commission_assumption",
+        "slippage_assumption",
+        "spread_x1_5_cost",
+        "spread_x2_cost",
+        "cost_model_confidence",
+        "cost_model_reason",
         "remove_best_5_pf",
         "fragile_regime_dependency",
         "single_trade_dependency",
@@ -333,6 +400,8 @@ def write_multi_symbol_recent_first_outputs(result: dict[str, Any], output_dir: 
             writer.writerow({**row, "rejection_reasons": ";".join(str(item) for item in row.get("rejection_reasons") or [])})
     json_path.write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True), encoding="utf-8")
     summary_path.write_text(multi_symbol_recent_first_summary_markdown(result), encoding="utf-8")
+    if isinstance(result.get("cost_model_report"), dict):
+        write_cost_model_report(result["cost_model_report"], root)
     return csv_path, json_path, summary_path
 
 
@@ -361,17 +430,20 @@ def multi_symbol_recent_first_summary_markdown(result: dict[str, Any]) -> str:
         [
             "",
             "## Answers",
-            f"1. Symbols with recent edge: {summary.get('symbols_with_edge_answer')}",
-            f"2. Evaluated symbols without edge / NO_TRADE: {summary.get('symbols_without_edge_answer')}",
-            f"3. Best timeframe by symbol: {summary.get('timeframe_by_symbol_answer')}",
-            f"4. Best family by symbol: {summary.get('family_by_symbol_answer')}",
-            f"5. Best side by symbol: {summary.get('side_by_symbol_answer')}",
-            f"6. Best session by symbol: {summary.get('session_by_symbol_answer')}",
-            f"7. Profiles passing Monte Carlo: {summary.get('monte_carlo_pass_answer')}",
-            f"8. Profiles failing spread/slippage stress: {summary.get('spread_fail_answer')}",
-            f"9. Top 3 for capital preservation optimizer: {summary.get('top_3_answer')}",
-            f"10. Final recommendation: {summary.get('recommendation')}",
-            "11. No automatic promotion.",
+            f"1. Spread x2 zero verdict: {summary.get('spread_x2_verdict')}",
+            f"2. Symbols with reliable costs: {summary.get('reliable_costs_answer')}",
+            f"3. Alias/export status: {summary.get('alias_export_answer')}",
+            f"4. Symbols with recent edge: {summary.get('symbols_with_edge_answer')}",
+            f"5. Evaluated symbols without edge / NO_TRADE: {summary.get('symbols_without_edge_answer')}",
+            f"6. Best timeframe by symbol: {summary.get('timeframe_by_symbol_answer')}",
+            f"7. Best family by symbol: {summary.get('family_by_symbol_answer')}",
+            f"8. Best side by symbol: {summary.get('side_by_symbol_answer')}",
+            f"9. Best session by symbol: {summary.get('session_by_symbol_answer')}",
+            f"10. Profiles passing Monte Carlo: {summary.get('monte_carlo_pass_answer')}",
+            f"11. Profiles failing spread/slippage stress: {summary.get('spread_fail_answer')}",
+            f"12. Top 3 for capital preservation optimizer: {summary.get('top_3_answer')}",
+            f"13. Final recommendation: {summary.get('recommendation')}",
+            "14. No automatic promotion.",
             "",
             "## Safety",
             "- No real trading.",
@@ -469,7 +541,7 @@ def _simulate_multi_symbol_segment(
         if index < cooldown_until:
             blocked.append("cooldown_after_loss")
             continue
-        risk_reason = _recent_research_risk_block(settings, trades)
+        risk_reason = _multi_symbol_risk_block(settings, trades)
         if risk_reason:
             state["risk_governor_blocks"] += 1
             blocked.append(f"risk_governor_{risk_reason}")
@@ -595,6 +667,32 @@ def _remove_best_metrics(settings: BacktestSettings, trades: list[dict[str, Any]
     return _metrics(ordered[count:], initial_balance=settings.initial_balance)
 
 
+def _multi_symbol_risk_block(settings: BacktestSettings, trades: list[dict[str, Any]]) -> str:
+    spread_price = float(settings.spread_points or 0.0) * float(settings.point or 0.0)
+    instrument_type = infer_instrument_type(settings.normalized_symbol or settings.symbol)
+    if spread_price > _max_spread_price_for_instrument(instrument_type, settings.symbol):
+        return "spread_too_high_calibrated"
+    if _loss_streak(trades) >= 4:
+        return "consecutive_loss_lockdown"
+    if len([trade for trade in trades if trade.get("lifecycle_status") == "closed"]) >= 20 and _recent_edge_negative(trades):
+        return "recent_edge_negative"
+    if _drawdown_accelerating(trades, settings.initial_balance):
+        return "drawdown_accelerating"
+    return ""
+
+
+def _max_spread_price_for_instrument(instrument_type: str, symbol: str) -> float:
+    if instrument_type == "forex":
+        return 0.06 if "JPY" in symbol.upper() else 0.0006
+    if instrument_type == "crypto":
+        return 100.0
+    if instrument_type == "metal":
+        return 2.0
+    if instrument_type == "index":
+        return 20.0
+    return 1.0
+
+
 def _gate(
     total: dict[str, Any],
     recent: dict[str, Any],
@@ -604,6 +702,7 @@ def _gate(
     spread_x2: dict[str, Any],
     fragile: bool,
     single_trade: bool,
+    cost_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     if int(recent.get("closed") or 0) < 20:
@@ -636,6 +735,8 @@ def _gate(
         reasons.append("fragile_regime_dependency")
     if single_trade:
         reasons.append("single_trade_dependency")
+    if str((cost_model or {}).get("cost_model_confidence") or "").casefold() == "low":
+        reasons.append("cost_model_confidence_low")
     return {"passed": not reasons, "reasons": reasons or ["passes_multi_symbol_recent_first_gates"]}
 
 
@@ -717,14 +818,33 @@ def _find_csv_path(csv_dir: Path, fallback_csv_dir: Path, symbol: str, timeframe
         suffixes.extend(["30000", "25000", "10000", "5000"])
     elif timeframe == "M15":
         suffixes.extend(["20000", "5000"])
+    search_symbols = _csv_search_symbols(symbol)
     for root in [csv_dir, fallback_csv_dir]:
-        for suffix in dict.fromkeys(suffixes):
-            candidates.append(root / f"{symbol}_{timeframe}_{suffix}.csv")
-        candidates.append(root / f"{symbol}_{timeframe}.csv")
+        for search_symbol in search_symbols:
+            for suffix in dict.fromkeys(suffixes):
+                candidates.append(root / f"{search_symbol}_{timeframe}_{suffix}.csv")
+            candidates.append(root / f"{search_symbol}_{timeframe}.csv")
     for path in candidates:
         if path.exists() and path.is_file():
             return path
     return None
+
+
+def _csv_search_symbols(symbol: str) -> list[str]:
+    requested = str(symbol or "").upper().strip()
+    values = [symbol, requested, *ALIAS_PATTERNS.get(requested, [])]
+    unique: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in unique:
+            unique.append(text)
+    return unique
+
+
+def _symbol_from_csv_path(path: Path, fallback: str) -> str:
+    stem = path.stem
+    parts = stem.split("_")
+    return parts[0] if parts and parts[0] else fallback
 
 
 def _csv_size_label(path: Path) -> str:
@@ -733,6 +853,17 @@ def _csv_size_label(path: Path) -> str:
     if parts and parts[-1].isdigit():
         return parts[-1]
     return "csv"
+
+
+def _first_csv_price(path: Path) -> float:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                return float(_number(row.get("close")) or _number(row.get("open")) or 0.0)
+    except Exception:
+        return 0.0
+    return 0.0
 
 
 def _summary(rows: list[dict[str, Any]], candidates: list[dict[str, Any]], symbols: list[str], skipped_symbols: list[dict[str, Any]]) -> dict[str, Any]:
@@ -762,8 +893,18 @@ def _summary(rows: list[dict[str, Any]], candidates: list[dict[str, Any]], symbo
         for row in rows
         if float(row.get("spread_x1_5_pf") or 0.0) < 1.0 or float(row.get("spread_x2_pf") or 0.0) < 0.95
     ]
+    reliable_symbols = sorted(
+        {
+            str(row.get("symbol") or "")
+            for row in rows
+            if str(row.get("cost_model_confidence") or "").casefold() in {"high", "medium"}
+        }
+    )
     return {
         "recommendation": "research_candidate" if candidates else "observation_only" if symbols_with_edge else "reject",
+        "spread_x2_verdict": _spread_x2_verdict(rows),
+        "reliable_costs_answer": ", ".join(symbol for symbol in reliable_symbols if symbol) if reliable_symbols else "none",
+        "alias_export_answer": _alias_export_answer(rows_by_symbol, skipped_symbols),
         "symbols_with_edge_answer": _symbol_list(symbols_with_edge, rows_by_symbol),
         "symbols_without_edge_answer": (
             (", ".join(no_edge_symbols) if no_edge_symbols else "none")
@@ -779,7 +920,27 @@ def _summary(rows: list[dict[str, Any]], candidates: list[dict[str, Any]], symbo
         "skipped_symbols": skipped_symbols,
         "automatic_promotion": False,
         **_safety(),
-    }
+}
+
+
+def _spread_x2_verdict(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "no rows evaluated"
+    zero_rows = [row for row in rows if float(row.get("spread_x2_pf") or 0.0) <= 0.0]
+    low_conf = [row for row in zero_rows if str(row.get("cost_model_confidence") or "").casefold() == "low"]
+    if zero_rows and len(zero_rows) == len(rows):
+        if low_conf:
+            return "inconclusive; spread x2 is zero and at least one cost model has low confidence"
+        return "likely real cost sensitivity under the calibrated model, not just fixed-points artifact; verify with live broker spread snapshots before any promotion"
+    if zero_rows:
+        return "mixed; some profiles collapse under spread x2 while others survive"
+    return "spread x2 did not collapse evaluated profiles"
+
+
+def _alias_export_answer(rows_by_symbol: dict[str, list[dict[str, Any]]], skipped_symbols: list[dict[str, Any]]) -> str:
+    exported = ", ".join(sorted(rows_by_symbol)) if rows_by_symbol else "none"
+    skipped = ", ".join(str(item.get("symbol") or "") for item in skipped_symbols if item.get("symbol")) or "none"
+    return f"exported/evaluated: {exported}; skipped/no local CSV: {skipped}"
 
 
 def _symbol_list(symbols: list[str], rows_by_symbol: dict[str, list[dict[str, Any]]]) -> str:
