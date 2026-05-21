@@ -9,6 +9,7 @@ param(
     [double]$SlippagePoints = 5,
     [double]$Commission = 0,
     [int]$MaxBars = 5000,
+    [int]$TimeoutSec = 60,
     [int[]]$Checkpoints = @(10, 25, 50, 100),
     [switch]$Persist
 )
@@ -23,6 +24,8 @@ $csvText = Get-Content -LiteralPath $CsvPath -Raw
 if ([string]::IsNullOrWhiteSpace($csvText)) {
     throw "CSV is empty: $CsvPath"
 }
+$csvInfo = Get-Item -LiteralPath $CsvPath
+$csvLines = (Get-Content -LiteralPath $CsvPath | Measure-Object -Line).Lines
 
 $body = [ordered]@{
     symbol          = $Symbol
@@ -41,8 +44,22 @@ $body = [ordered]@{
 $url = $BaseUrl.TrimEnd("/") + "/api/genesis/mt5/forward-replay/run"
 $json = $body | ConvertTo-Json -Depth 12
 
-Write-Host "Posting isolated paper-forward replay to $url"
-$response = Invoke-RestMethod -Method Post -Uri $url -ContentType "application/json" -Body $json -TimeoutSec 180
+Write-Host "Posting isolated paper-forward replay"
+Write-Host "Endpoint      : $url"
+Write-Host "CSV path      : $($csvInfo.FullName)"
+Write-Host "CSV size bytes: $($csvInfo.Length)"
+Write-Host "CSV lines     : $csvLines"
+Write-Host "Max bars      : $MaxBars"
+Write-Host "Timeout sec   : $TimeoutSec"
+
+try {
+    $response = Invoke-RestMethod -Method Post -Uri $url -ContentType "application/json" -Body $json -TimeoutSec $TimeoutSec -ErrorAction Stop
+}
+catch {
+    $message = $_.Exception.Message
+    Write-Error "Forward replay request failed or timed out after $TimeoutSec seconds. Endpoint=$url CSV=$($csvInfo.FullName). Error=$message"
+    exit 1
+}
 
 [pscustomobject]@{
     profile            = $response.profile

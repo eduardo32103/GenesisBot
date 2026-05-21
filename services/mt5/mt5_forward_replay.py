@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 from uuid import uuid4
@@ -26,6 +27,9 @@ from services.mt5.mt5_backtester import (
 from services.mt5.mt5_config import MT5RuntimeConfig, get_mt5_config
 
 
+_LOG = logging.getLogger("genesis.mt5.forward_replay")
+
+
 class MT5ForwardReplay:
     """Accelerated paper-forward replay. It never mutates live MT5 runtime state."""
 
@@ -36,6 +40,7 @@ class MT5ForwardReplay:
     def run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         started = time.monotonic()
         body = dict(payload or {})
+        _LOG.info("forward_replay_parse_start symbol=%s timeframe=%s", body.get("symbol") or "BTCUSD", body.get("timeframe") or "M30")
         profile = str(body.get("profile") or "quality_loose").strip().casefold() or "quality_loose"
         settings_body = {
             **body,
@@ -51,10 +56,28 @@ class MT5ForwardReplay:
             bars, load_warnings = _load_bars(body, settings)
             warnings.extend(load_warnings)
             bars = bars[: settings.max_bars]
+            _LOG.info(
+                "forward_replay_parse_done symbol=%s timeframe=%s bars_loaded=%s max_bars=%s",
+                settings.symbol,
+                settings.timeframe,
+                len(bars),
+                settings.max_bars,
+            )
             if not bars:
                 return _empty_forward_replay(settings, checkpoints, started, warnings + ["historical_data_not_available"])
 
+            _LOG.info("forward_replay_run_start symbol=%s timeframe=%s bars_loaded=%s profile=%s", settings.symbol, settings.timeframe, len(bars), profile)
             trades, no_trade_count, blocked, replay_state = _simulate_forward_replay(settings, bars, started)
+            _LOG.info(
+                "forward_replay_run_done symbol=%s timeframe=%s trades=%s no_trade_count=%s state=%s",
+                settings.symbol,
+                settings.timeframe,
+                len(trades),
+                no_trade_count,
+                replay_state.get("status") or "",
+            )
+            if replay_state.get("status") == "forward_replay_timeout_or_loop_guard":
+                return _guard_result(settings, checkpoints, trades, no_trade_count, blocked, started, warnings, replay_state)
             summary = _metrics(trades, initial_balance=settings.initial_balance)
             degraded, degradation_reason = _early_guardrail(summary)
             if replay_state.get("degraded"):
@@ -118,6 +141,7 @@ class MT5ForwardReplay:
             return result
         except Exception as exc:
             errors.append(str(exc)[:500])
+            _LOG.warning("forward_replay_error symbol=%s timeframe=%s error=%s", settings.symbol, settings.timeframe, str(exc)[:240])
             return {
                 "ok": False,
                 "api_status": "mt5_forward_replay_error",
@@ -154,10 +178,32 @@ def _simulate_forward_replay(
     cooldown_until = -1
     replay_id = f"forward-replay-{settings.symbol}-{uuid4().hex[:8]}"
     state: dict[str, Any] = {"degraded": False, "degradation_reason": "", "stopped_at_closed_trades": 0}
+    iterations = 0
+    max_iterations = len(bars) + 5
 
     for index in range(1, len(bars)):
+        iterations += 1
+        if iterations > max_iterations:
+            state = {
+                "status": "forward_replay_timeout_or_loop_guard",
+                "reason": "iteration_limit_exceeded",
+                "iterations": iterations,
+                "max_iterations": max_iterations,
+                "degraded": False,
+                "degradation_reason": "",
+            }
+            blocked.append("iteration_limit_exceeded")
+            break
         if _timed_out(started, settings.timeout_seconds):
             blocked.append("timeout_guard")
+            state = {
+                "status": "forward_replay_timeout_or_loop_guard",
+                "reason": "timeout_guard",
+                "iterations": iterations,
+                "max_iterations": max_iterations,
+                "degraded": False,
+                "degradation_reason": "",
+            }
             break
 
         bar = bars[index]
@@ -215,6 +261,43 @@ def _simulate_forward_replay(
             state = {"degraded": True, "degradation_reason": reason, "stopped_at_closed_trades": len(trades)}
 
     return trades, no_trade_count, blocked, state
+
+
+def _guard_result(
+    settings: BacktestSettings,
+    checkpoints: list[int],
+    trades: list[dict[str, Any]],
+    no_trade_count: int,
+    blocked: list[str],
+    started: float,
+    warnings: list[str],
+    replay_state: dict[str, Any],
+) -> dict[str, Any]:
+    summary = _metrics(trades, initial_balance=settings.initial_balance)
+    return {
+        "ok": False,
+        "api_status": "mt5_forward_replay_loop_guard",
+        "status": "forward_replay_timeout_or_loop_guard",
+        "symbol": settings.symbol,
+        "normalized_symbol": settings.normalized_symbol,
+        "timeframe": settings.timeframe,
+        "profile": settings.filter_profile,
+        "bars_loaded": int(replay_state.get("max_iterations") or 0) - 5 if replay_state.get("max_iterations") else 0,
+        "iterations": int(replay_state.get("iterations") or 0),
+        "max_iterations": int(replay_state.get("max_iterations") or 0),
+        "guard_reason": replay_state.get("reason") or "timeout_or_loop_guard",
+        "degraded": False,
+        "degradation_reason": "",
+        "checkpoints": _checkpoint_payloads(checkpoints, trades, settings.initial_balance),
+        "no_trade_count": no_trade_count,
+        "blocked_reasons": _top_reasons(blocked),
+        "blocked_reason_counts": _reason_counts(blocked),
+        "warnings": [*warnings, "forward replay stopped by timeout/loop guard"],
+        **summary,
+        **_safety(),
+        "duration_ms": _elapsed_ms(started),
+        "created_at": _now(),
+    }
 
 
 def _early_guardrail(summary: dict[str, Any]) -> tuple[bool, str]:

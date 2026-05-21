@@ -4019,6 +4019,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/genesis/mt5/forward-replay/run":
+            logging.getLogger("genesis.mt5.forward_replay").info("forward_replay_request_received path=%s", parsed.path)
         body = self._read_json_body()
         if parsed.path == "/api/genesis/analyze-image":
             body = _normalize_analyze_image_body(body)
@@ -4144,7 +4146,14 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/genesis/mt5/forward-replay/run":
+            logging.getLogger("genesis.mt5.forward_replay").info("forward_replay_run_start path=%s", parsed.path)
             result = post_genesis_mt5_forward_replay_run(body)
+            logging.getLogger("genesis.mt5.forward_replay").info(
+                "forward_replay_response_ready status=%s ok=%s duration_ms=%s",
+                result.get("status"),
+                result.get("ok"),
+                result.get("duration_ms"),
+            )
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

@@ -2797,6 +2797,12 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("/api/genesis/mt5/forward-replay/run", forward_replay_content)
         self.assertIn("data/backtests/BTCUSD_M30_5000.csv", forward_replay_content)
         self.assertIn("checkpoints", forward_replay_content)
+        self.assertIn("[int]$TimeoutSec = 60", forward_replay_content)
+        self.assertIn("-TimeoutSec $TimeoutSec -ErrorAction Stop", forward_replay_content)
+        self.assertIn("CSV size bytes", forward_replay_content)
+        self.assertIn("CSV lines", forward_replay_content)
+        self.assertIn("Max bars", forward_replay_content)
+        self.assertIn("Timeout sec", forward_replay_content)
         self.assertIn("save_results    = $true", runner_content)
         self.assertIn("broker_touched", runner_content)
         self.assertIn("order_executed", runner_content)
@@ -2895,6 +2901,28 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertIn("sell_pf", result)
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
+
+    def test_mt5_forward_replay_timeout_guard_returns_json(self) -> None:
+        with patch("services.mt5.mt5_forward_replay._timed_out", return_value=True):
+            result = mt5_forward_replay_run(
+                {
+                    "symbol": "BTCUSD",
+                    "timeframe": "M30",
+                    "profile": "quality_loose",
+                    "bars_data": _forward_replay_loss_bars(80),
+                    "spread_points": 0,
+                    "slippage_points": 0,
+                    "checkpoints": [10],
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "forward_replay_timeout_or_loop_guard")
+        self.assertEqual(result["guard_reason"], "timeout_guard")
+        self.assertGreaterEqual(result["max_iterations"], result["bars_loaded"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_mt5_backtest_buy_take_profit_calculates_pnl(self) -> None:
         result = mt5_backtest_run(
