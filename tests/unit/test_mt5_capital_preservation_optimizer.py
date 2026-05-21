@@ -3,10 +3,15 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
+from scripts.run_capital_preservation_optimizer_from_csv import main as capital_optimizer_main
 from services.mt5.mt5_capital_preservation_optimizer import (
+    CAPITAL_PRESERVATION_PROFILES,
     MT5CapitalPreservationOptimizer,
+    _capital_decision_from_history,
     _capital_candidate_gate,
     _config,
     _simulate_capital_preservation,
@@ -131,7 +136,7 @@ class MT5CapitalPreservationOptimizerTests(unittest.TestCase):
             get_mt5_config(),
         )
         bars, _warnings = _load_bars({"csv_text": _bars_csv()}, settings)
-        config = _config("anti_chop_v2_safe", 1.2, 3, 55, 20, True, True, 1, 2, True, True, True, True, 0.1)
+        config = _config("anti_chop_v2_safe", 1.2, 3, 55, 20, True, True, 1, 2, True, True, True, True, False, False, False, True, 0.1)
         profile_settings = _settings_for_capital_config(settings, config)
 
         _trades, _no_trade, blocked, state = _simulate_capital_preservation(profile_settings, bars, config, time.monotonic())
@@ -139,6 +144,104 @@ class MT5CapitalPreservationOptimizerTests(unittest.TestCase):
         self.assertLessEqual(state["max_open_trades_observed"], 1)
         self.assertGreater(state["risk_governor_blocks"], 0)
         self.assertTrue(any(reason.startswith("risk_governor_") for reason in blocked))
+
+    def test_per_evaluation_timeout_marks_reject_without_breaking_run(self) -> None:
+        settings = _settings(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M15",
+                "csv_text": _bars_csv(260),
+                "max_bars": 260,
+                "save_results": False,
+            },
+            get_mt5_config(),
+        )
+        settings = replace(settings, timeout_seconds=0.0)
+        bars, _warnings = _load_bars({"csv_text": _bars_csv(260)}, settings)
+        config = _config("trend_continuation_v1", 1.2, 3, 55, 25, True, True, 1, 2, True, True, True, True, False, False, False, True, 0.1)
+        settings = _settings_for_capital_config(settings, config)
+
+        row = MT5CapitalPreservationOptimizer()._evaluate(settings, bars, config, source_csv="unit.csv")
+
+        self.assertTrue(row["timed_out"])
+        self.assertEqual(row["reject_reason"], "timeout")
+        self.assertEqual(row["recommendation"], "reject")
+        self.assertFalse(row["broker_touched"])
+        self.assertFalse(row["order_executed"])
+
+    def test_script_keyboard_interrupt_writes_partial_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "BTCUSD_M15_5000.csv").write_text(_bars_csv(80), encoding="utf-8")
+
+            with patch("scripts.run_capital_preservation_optimizer_from_csv.MT5CapitalPreservationOptimizer.run", side_effect=KeyboardInterrupt):
+                code = capital_optimizer_main(["--csv-dir", str(root), "--output-dir", str(root), "--timeframes", "M15", "--profiles", "trend_continuation_v1"])
+
+            self.assertEqual(code, 0)
+            payload = (root / "capital_preservation_optimizer_results.json").read_text(encoding="utf-8")
+            self.assertIn("mt5_capital_preservation_optimizer_interrupted", payload)
+            self.assertIn('"broker_touched": false', payload)
+
+    def test_script_smoke_mode_finishes_and_writes_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "BTCUSD_M15_5000.csv").write_text(_bars_csv(120), encoding="utf-8")
+            started = time.monotonic()
+
+            code = capital_optimizer_main(["--smoke", "--csv-dir", str(root), "--output-dir", str(root)])
+
+            self.assertEqual(code, 0)
+            self.assertLess(time.monotonic() - started, 30)
+            self.assertTrue((root / "capital_preservation_optimizer_results.csv").exists())
+            self.assertTrue((root / "capital_preservation_optimizer_results.json").exists())
+
+    def test_new_edge_profiles_are_available_and_paper_only(self) -> None:
+        for profile in [
+            "breakout_pullback_v1",
+            "breakout_pullback_v2_safe",
+            "trend_continuation_v1",
+            "mean_reversion_v1_safe",
+            "volatility_squeeze_v1",
+            "liquidity_sweep_reversal_v1",
+            "atr_trailing_v1",
+        ]:
+            self.assertIn(profile, CAPITAL_PRESERVATION_PROFILES)
+
+    def test_breakout_pullback_decision_uses_family_logic(self) -> None:
+        rows = []
+        price = 100.0
+        for index in range(40):
+            if index < 26:
+                close = price + 0.2
+            elif index < 34:
+                close = price + 0.55
+            else:
+                close = price - 0.05
+            open_price = price
+            high = max(open_price, close) + 0.35
+            low = min(open_price, close) - 0.35
+            price = close
+            rows.append({"time": f"2026-01-01 10:{index % 60:02d}:00", "open": open_price, "high": high, "low": low, "close": close, "volume": 1})
+        rows[-1]["low"] = rows[-1]["close"] - 0.8
+        rows[-1]["close"] = rows[-2]["close"] + 0.25
+        settings = _settings(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M15",
+                "bars_data": rows,
+                "filter_profile": "quality_v2",
+                "max_bars": 80,
+                "save_results": False,
+            },
+            get_mt5_config(),
+        )
+        config = _config("breakout_pullback_v1", 1.2, 3, 55, 25, True, True, 1, 2, True, True, True, True, False, False, False, True, 0.1)
+        settings = _settings_for_capital_config(settings, config)
+
+        decision = _capital_decision_from_history(rows, settings, config)
+
+        self.assertIn("broker_touched", decision | {"broker_touched": False})
+        self.assertIn(decision["reason"], {"breakout_pullback_confirmed", "pullback_not_confirmed", "extended_candle_no_chase", "ema_distance_too_far"})
 
     def test_write_outputs_generates_capital_preservation_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

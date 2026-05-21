@@ -4,6 +4,7 @@ import json
 import random
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,17 @@ from services.mt5.mt5_backtester import (
     _timed_out,
 )
 from services.mt5.mt5_config import MT5RuntimeConfig, get_mt5_config
-from services.mt5.mt5_risk_governor import MT5RiskGovernor, RiskGovernorLimits
-
-
 CAPITAL_PRESERVATION_PROFILES = [
+    "breakout_pullback_v1",
+    "breakout_pullback_v2_safe",
+    "trend_continuation_v1",
+    "trend_continuation_v2_low_drawdown",
+    "mean_reversion_v1_safe",
+    "volatility_squeeze_v1",
+    "session_filtered_v1",
+    "liquidity_sweep_reversal_v1",
+    "ema_rsi_confirmed_v1",
+    "atr_trailing_v1",
     "anti_chop_v2_safe",
     "anti_chop_v3_low_drawdown",
     "quality_v3_conservative",
@@ -45,6 +53,171 @@ CAPITAL_PRESERVATION_PROFILES = [
 CAPITAL_PRESERVATION_TIMEFRAMES = ["M15", "M30", "H1"]
 
 _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
+    "breakout_pullback_v1": {
+        "strategy_family": "breakout_pullback",
+        "min_trend_score": 52.0,
+        "min_momentum_score": 50.0,
+        "max_rsi_for_buy": 74.0,
+        "min_rsi_for_sell": 26.0,
+        "score_cap_when_weak": 58.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 62.0,
+        "max_spread_points": 25.0,
+        "min_volatility_score": 30.0,
+        "ema_distance_max_atr": 2.2,
+        "extended_candle_atr": 1.8,
+        "atr_stop_multiplier": 1.2,
+    },
+    "breakout_pullback_v2_safe": {
+        "strategy_family": "breakout_pullback",
+        "min_trend_score": 58.0,
+        "min_momentum_score": 55.0,
+        "max_rsi_for_buy": 70.0,
+        "min_rsi_for_sell": 30.0,
+        "score_cap_when_weak": 54.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 68.0,
+        "max_spread_points": 20.0,
+        "min_volatility_score": 34.0,
+        "ema_distance_max_atr": 1.8,
+        "extended_candle_atr": 1.5,
+        "atr_stop_multiplier": 1.0,
+    },
+    "trend_continuation_v1": {
+        "strategy_family": "trend_continuation",
+        "min_trend_score": 58.0,
+        "min_momentum_score": 52.0,
+        "max_rsi_for_buy": 76.0,
+        "min_rsi_for_sell": 24.0,
+        "score_cap_when_weak": 56.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 64.0,
+        "max_spread_points": 25.0,
+        "min_volatility_score": 28.0,
+        "ema_distance_max_atr": 2.4,
+        "extended_candle_atr": 1.9,
+        "atr_stop_multiplier": 1.1,
+    },
+    "trend_continuation_v2_low_drawdown": {
+        "strategy_family": "trend_continuation",
+        "min_trend_score": 64.0,
+        "min_momentum_score": 56.0,
+        "max_rsi_for_buy": 72.0,
+        "min_rsi_for_sell": 28.0,
+        "score_cap_when_weak": 52.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 70.0,
+        "max_spread_points": 20.0,
+        "min_volatility_score": 32.0,
+        "ema_distance_max_atr": 1.8,
+        "extended_candle_atr": 1.5,
+        "atr_stop_multiplier": 0.95,
+    },
+    "mean_reversion_v1_safe": {
+        "strategy_family": "mean_reversion",
+        "min_trend_score": 35.0,
+        "min_momentum_score": 35.0,
+        "max_rsi_for_buy": 42.0,
+        "min_rsi_for_sell": 58.0,
+        "score_cap_when_weak": 62.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 58.0,
+        "max_spread_points": 20.0,
+        "min_volatility_score": 24.0,
+        "allowed_regime": "chop",
+        "ema_distance_max_atr": 2.8,
+        "extended_candle_atr": 2.0,
+        "atr_stop_multiplier": 0.9,
+    },
+    "volatility_squeeze_v1": {
+        "strategy_family": "volatility_squeeze",
+        "min_trend_score": 45.0,
+        "min_momentum_score": 55.0,
+        "max_rsi_for_buy": 75.0,
+        "min_rsi_for_sell": 25.0,
+        "score_cap_when_weak": 58.0,
+        "allow_reversal": False,
+        "avoid_chop": False,
+        "min_score": 62.0,
+        "max_spread_points": 25.0,
+        "min_volatility_score": 18.0,
+        "ema_distance_max_atr": 2.5,
+        "extended_candle_atr": 1.7,
+        "atr_stop_multiplier": 1.1,
+    },
+    "session_filtered_v1": {
+        "strategy_family": "trend_continuation",
+        "session_filter": True,
+        "session_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        "min_trend_score": 56.0,
+        "min_momentum_score": 54.0,
+        "max_rsi_for_buy": 74.0,
+        "min_rsi_for_sell": 26.0,
+        "score_cap_when_weak": 55.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 65.0,
+        "max_spread_points": 25.0,
+        "min_volatility_score": 30.0,
+        "ema_distance_max_atr": 2.0,
+        "extended_candle_atr": 1.7,
+        "atr_stop_multiplier": 1.0,
+    },
+    "liquidity_sweep_reversal_v1": {
+        "strategy_family": "liquidity_sweep_reversal",
+        "min_trend_score": 35.0,
+        "min_momentum_score": 35.0,
+        "max_rsi_for_buy": 46.0,
+        "min_rsi_for_sell": 54.0,
+        "score_cap_when_weak": 62.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 60.0,
+        "max_spread_points": 20.0,
+        "min_volatility_score": 26.0,
+        "ema_distance_max_atr": 3.0,
+        "extended_candle_atr": 2.2,
+        "atr_stop_multiplier": 0.9,
+    },
+    "ema_rsi_confirmed_v1": {
+        "strategy_family": "ema_rsi_confirmed",
+        "min_trend_score": 55.0,
+        "min_momentum_score": 50.0,
+        "max_rsi_for_buy": 68.0,
+        "min_rsi_for_sell": 32.0,
+        "score_cap_when_weak": 54.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 64.0,
+        "max_spread_points": 25.0,
+        "min_volatility_score": 28.0,
+        "ema_distance_max_atr": 1.6,
+        "extended_candle_atr": 1.5,
+        "atr_stop_multiplier": 1.0,
+    },
+    "atr_trailing_v1": {
+        "strategy_family": "trend_continuation",
+        "atr_trailing": True,
+        "partial_exit": True,
+        "min_trend_score": 58.0,
+        "min_momentum_score": 55.0,
+        "max_rsi_for_buy": 74.0,
+        "min_rsi_for_sell": 26.0,
+        "score_cap_when_weak": 54.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 66.0,
+        "max_spread_points": 25.0,
+        "min_volatility_score": 30.0,
+        "ema_distance_max_atr": 2.0,
+        "extended_candle_atr": 1.7,
+        "atr_stop_multiplier": 1.1,
+    },
     "anti_chop_v2_safe": {
         "min_trend_score": 55.0,
         "min_momentum_score": 55.0,
@@ -224,6 +397,10 @@ class CapitalSearchConfig:
     max_adverse_excursion_filter: bool
     no_trade_if_recent_edge_negative: bool
     no_trade_if_drawdown_accelerating: bool
+    session_filter: bool = False
+    partial_exit: bool = False
+    atr_trailing: bool = False
+    adaptive_time_stop: bool = False
     risk_pct: float = 0.1
     trailing_start_r: float = 0.6
     trailing_distance_r: float = 0.35
@@ -234,7 +411,8 @@ class CapitalSearchConfig:
             f"spread={self.spread_max}|vol={int(self.volatility_filter)}|chop={int(self.anti_chop_filter)}|"
             f"cd={self.cooldown_after_loss_bars}|loss={self.block_after_consecutive_losses}|trail={int(self.trailing_stop)}|"
             f"mae={int(self.max_adverse_excursion_filter)}|edge={int(self.no_trade_if_recent_edge_negative)}|"
-            f"dd={int(self.no_trade_if_drawdown_accelerating)}"
+            f"dd={int(self.no_trade_if_drawdown_accelerating)}|session={int(self.session_filter)}|"
+            f"partial={int(self.partial_exit)}|atrtrail={int(self.atr_trailing)}|adaptive={int(self.adaptive_time_stop)}"
         )
 
 
@@ -258,12 +436,26 @@ class MT5CapitalPreservationOptimizer:
         profiles = [profile for profile in _requested_list(body.get("profiles"), CAPITAL_PRESERVATION_PROFILES) if profile in _PROFILE_PARAMS]
         max_bars = int(_number(body.get("max_bars")) or 5000)
         timeout_seconds = float(_number(body.get("timeout_seconds")) or 4.0)
-        max_evaluations = int(_number(body.get("max_evaluations")) or 180)
-        grid = _build_search_grid(body, profiles, max_evaluations=max_evaluations)
-        rows: list[dict[str, Any]] = []
+        per_evaluation_timeout = float(_number(body.get("per_evaluation_timeout_seconds")) or timeout_seconds or 2.0)
+        max_runtime_seconds = float(_number(body.get("max_runtime_seconds")) or 0.0)
+        progress_every = max(1, int(_number(body.get("progress_every")) or 0) or 25)
+        progress_callback = body.get("progress_callback") if callable(body.get("progress_callback")) else None
+        incremental_callback = body.get("incremental_callback") if callable(body.get("incremental_callback")) else None
+        existing_results = [row for row in body.get("existing_results", []) if isinstance(row, dict)] if isinstance(body.get("existing_results"), list) else []
+        existing_keys = {_result_key(row) for row in existing_results}
+        max_evaluations = max(1, int(_number(body.get("max_evaluations")) or 180))
+        grid_budget = max(1, (max_evaluations + max(1, len(timeframes)) - 1) // max(1, len(timeframes)))
+        grid = _build_search_grid(body, profiles, max_evaluations=grid_budget)
+        rows: list[dict[str, Any]] = list(existing_results)
         errors: list[dict[str, Any]] = []
+        total_evaluations = min(max_evaluations, len(grid) * max(1, len(timeframes)))
+        completed = len(rows)
+        skipped = 0
+        stop_requested = False
 
         for timeframe in timeframes:
+            if stop_requested:
+                break
             csv_path = Path(str(body.get(f"csv_path_{timeframe.lower()}") or csv_dir / f"{symbol}_{timeframe}_5000.csv"))
             if not csv_path.exists():
                 errors.append({"timeframe": timeframe, "path": str(csv_path), "error": "csv_not_found"})
@@ -277,19 +469,59 @@ class MT5CapitalPreservationOptimizer:
                     "csv_text": csv_text,
                     "max_bars": max_bars,
                     "save_results": False,
-                    "timeout_seconds": timeout_seconds,
+                    "timeout_seconds": per_evaluation_timeout,
                     "compare_filters": False,
                 },
                 self.config,
             )
+            base_settings = replace(base_settings, timeout_seconds=max(0.01, min(per_evaluation_timeout, 20.0)))
             bars, warnings = _load_bars({"csv_text": csv_text}, base_settings)
             bars = bars[: base_settings.max_bars]
             if not bars:
                 errors.append({"timeframe": timeframe, "path": str(csv_path), "error": "no_bars_loaded", "warnings": warnings})
                 continue
             for config in grid:
+                if completed + skipped >= max_evaluations:
+                    stop_requested = True
+                    break
+                current = completed + skipped + 1
+                if max_runtime_seconds > 0 and (time.monotonic() - started) >= max_runtime_seconds:
+                    errors.append({"timeframe": timeframe, "profile": config.profile, "error": "max_runtime_seconds_reached"})
+                    stop_requested = True
+                    break
                 settings = _settings_for_capital_config(base_settings, config)
-                rows.append(self._evaluate(settings, bars, config, source_csv=str(csv_path)))
+                key = _result_key({"timeframe": settings.timeframe, "profile": settings.filter_profile, "parameters": _config_payload(config)})
+                if key in existing_keys:
+                    skipped += 1
+                    continue
+                if progress_callback and (current == 1 or current % progress_every == 0):
+                    _safe_progress(
+                        progress_callback,
+                        {
+                            "current": current,
+                            "total": total_evaluations,
+                            "timeframe": settings.timeframe,
+                            "profile": settings.filter_profile,
+                            "parameters": _config_payload(config),
+                            "elapsed_seconds": round(time.monotonic() - started, 2),
+                            "best_score": _best_score(rows),
+                        },
+                    )
+                row = self._evaluate(settings, bars, config, source_csv=str(csv_path))
+                rows.append(row)
+                existing_keys.add(_result_key(row))
+                completed += 1
+                if incremental_callback and (completed == 1 or completed % progress_every == 0):
+                    _safe_incremental(
+                        incremental_callback,
+                        {
+                            "rows": rows,
+                            "current": current,
+                            "total": total_evaluations,
+                            "interrupted": False,
+                            "errors": errors,
+                        },
+                    )
 
         rows.sort(key=lambda item: (item["recommendation"] != "paper_forward_candidate", -float(item["capital_preservation_score"])))
         candidates = [item for item in rows if item["recommendation"] == "paper_forward_candidate"]
@@ -300,7 +532,11 @@ class MT5CapitalPreservationOptimizer:
             "symbol": symbol,
             "timeframes": timeframes,
             "profiles": profiles,
-            "evaluations_requested": len(grid) * max(1, len(timeframes)),
+            "evaluations_requested": total_evaluations,
+            "evaluations_completed": completed,
+            "evaluations_skipped": skipped,
+            "max_runtime_reached": stop_requested,
+            "interrupted": False,
             "results": rows,
             "candidates": candidates,
             "best_profile": candidates[0] if candidates else (rows[0] if rows else None),
@@ -329,13 +565,20 @@ class MT5CapitalPreservationOptimizer:
     ) -> dict[str, Any]:
         started = time.monotonic()
         trades, no_trade_count, blocked, sim_state = _simulate_capital_preservation(settings, bars, config, started)
+        timed_out = "timeout_guard" in blocked or (time.monotonic() - started) >= settings.timeout_seconds
         full = _metrics(trades, initial_balance=settings.initial_balance)
         windows = _critical_windows(settings, bars, trades)
         split = _split_metrics_from_trades(settings, bars, trades)
-        monte_carlo = _monte_carlo_stress(trades, initial_balance=settings.initial_balance, max_drawdown_limit=5000.0)
+        monte_carlo = (
+            _timeout_monte_carlo()
+            if timed_out
+            else _monte_carlo_stress(trades, initial_balance=settings.initial_balance, max_drawdown_limit=5000.0)
+        )
         gate = _capital_candidate_gate(full, windows, split, monte_carlo, settings, sim_state)
+        if timed_out and "timeout" not in gate["reasons"]:
+            gate = {"passed": False, "reasons": ["timeout", *gate["reasons"]]}
         score = _capital_preservation_score(full, windows, split, monte_carlo, gate)
-        recommendation = "paper_forward_candidate" if gate["passed"] else ("observation_only" if int(full.get("closed") or 0) else "reject")
+        recommendation = "paper_forward_candidate" if gate["passed"] else ("reject" if timed_out else "observation_only" if int(full.get("closed") or 0) else "reject")
         return {
             "timeframe": settings.timeframe,
             "profile": settings.filter_profile,
@@ -365,6 +608,8 @@ class MT5CapitalPreservationOptimizer:
             "hour_stats": full["hour_stats"],
             "no_trade_count": no_trade_count,
             "blocked_reason_counts": _reason_counts(blocked),
+            "timed_out": timed_out,
+            "reject_reason": "timeout" if timed_out else "",
             "windows": windows,
             "train_pf": split["train_summary"].get("profit_factor", 0.0),
             "test_pf": split["test_summary"].get("profit_factor", 0.0),
@@ -413,19 +658,14 @@ def _simulate_capital_preservation(
     cooldown_until = -1
     max_open = 0
     risk_blocks = 0
-    risk_governor = MT5RiskGovernor(
-        RiskGovernorLimits(
-            max_open_trades=1,
-            max_spread_points=config.spread_max,
-            max_total_drawdown_pct=5.0,
-            max_consecutive_losses=max(4, config.block_after_consecutive_losses + 1),
-            defensive_consecutive_losses=max(3, config.block_after_consecutive_losses),
-            caution_consecutive_losses=2,
-            min_forward_trades=20,
-        )
-    )
+    iterations = 0
+    max_iterations = len(bars) + 5
 
     for index in range(1, len(bars)):
+        iterations += 1
+        if iterations > max_iterations:
+            blocked.append("loop_guard")
+            break
         if _timed_out(started, settings.timeout_seconds):
             blocked.append("timeout_guard")
             break
@@ -463,27 +703,14 @@ def _simulate_capital_preservation(
             no_trade_count += 1
             blocked.append("max_adverse_excursion_filter")
             continue
-        pre_risk = risk_governor.assess(
-            signal={"risk_multiplier": 1.0, "lot_multiplier": 1.0},
-            account_state={"total_drawdown_pct": _current_drawdown_pct(trades, settings.initial_balance)},
-            performance={
-                "consecutive_losses": _loss_streak(trades),
-                "closed": len([trade for trade in trades if trade.get("lifecycle_status") == "closed"]),
-                "profit_factor": _quick_profit_factor(trades),
-                "expectancy": _quick_expectancy(trades),
-                "recent_edge_negative": _recent_edge_negative(trades),
-                "drawdown_accelerating": _drawdown_accelerating(trades, settings.initial_balance),
-            },
-            market={"spread_points": settings.spread_points, "regime": "trend"},
-            open_trades=[],
-        )
-        if not pre_risk.get("allowed"):
+        pre_risk_reason = _fast_risk_block(settings, trades, config, "trend")
+        if pre_risk_reason:
             risk_blocks += 1
             no_trade_count += 1
-            blocked.append(f"risk_governor_{pre_risk.get('reason') or 'blocked'}")
+            blocked.append(f"risk_governor_{pre_risk_reason}")
             continue
         history = bars[max(0, index - 80) : index]
-        decision = _decision_from_history(history, settings)
+        decision = _capital_decision_from_history(history, settings, config)
         if config.volatility_filter and float(_number(decision.get("volatility_score")) or 0.0) < float(settings.filter_params.get("min_volatility_score") or 35.0):
             no_trade_count += 1
             blocked.append("volatility_too_low")
@@ -492,30 +719,18 @@ def _simulate_capital_preservation(
             no_trade_count += 1
             blocked.append(str(decision.get("reason") or "no_edge"))
             continue
-        risk = risk_governor.assess(
-            signal={"risk_multiplier": 1.0, "lot_multiplier": 1.0, "decision": decision.get("side")},
-            account_state={"total_drawdown_pct": _current_drawdown_pct(trades, settings.initial_balance)},
-            performance={
-                "consecutive_losses": _loss_streak(trades),
-                "closed": len([trade for trade in trades if trade.get("lifecycle_status") == "closed"]),
-                "profit_factor": _quick_profit_factor(trades),
-                "expectancy": _quick_expectancy(trades),
-                "recent_edge_negative": _recent_edge_negative(trades),
-                "drawdown_accelerating": _drawdown_accelerating(trades, settings.initial_balance),
-            },
-            market={"spread_points": settings.spread_points, "regime": decision.get("regime") or "trend"},
-            open_trades=[open_trade] if open_trade else [],
-        )
-        if not risk.get("allowed"):
+        risk_reason = _fast_risk_block(settings, trades, config, str(decision.get("regime") or "trend"), has_open_trade=bool(open_trade))
+        if risk_reason:
             risk_blocks += 1
             no_trade_count += 1
-            blocked.append(f"risk_governor_{risk.get('reason') or 'blocked'}")
+            blocked.append(f"risk_governor_{risk_reason}")
             continue
         open_trade = _open_trade(settings, decision, bar, index, f"capital-{config.profile}-{index}")
         if open_trade is None:
             no_trade_count += 1
             blocked.append("missing_risk_parameters")
             continue
+        open_trade = _apply_capital_trade_risk(open_trade, decision, settings, config)
         open_trade = {
             **open_trade,
             "source": "mt5_capital_preservation_optimizer",
@@ -524,8 +739,8 @@ def _simulate_capital_preservation(
             "strategy_profile": config.profile,
             "risk_governor_allowed": True,
             "risk_governor_reason": "risk_governor_pass",
-            "risk_state": risk.get("risk_state") or "normal",
-            "suggested_lot_multiplier": min(1.0, float(_number(risk.get("suggested_lot_multiplier")) or 1.0)),
+            "risk_state": "normal",
+            "suggested_lot_multiplier": 1.0,
             "trailing_stop_active": False,
             "virtual_stop_loss": open_trade.get("stop_loss"),
             "martingale_enabled": False,
@@ -539,8 +754,244 @@ def _simulate_capital_preservation(
     return trades, no_trade_count, blocked, {
         "risk_governor_blocks": risk_blocks,
         "max_open_trades_observed": max_open,
+        "iterations": iterations,
+        "max_iterations": max_iterations,
         "risk_lockdown": False,
         "degradation_reason": "",
+    }
+
+
+def _capital_decision_from_history(history: list[dict[str, Any]], settings: BacktestSettings, config: CapitalSearchConfig) -> dict[str, Any]:
+    params = settings.filter_params or {}
+    family = str(params.get("strategy_family") or "legacy").strip().casefold()
+    if family == "legacy":
+        return _decision_from_history(history, settings)
+    features = _market_features(history)
+    if not features:
+        return {"actionable": False, "reason": "insufficient_history"}
+    common_block = _common_entry_block(features, settings, config, params)
+    if common_block:
+        return _blocked_decision(common_block, features)
+    if family == "breakout_pullback":
+        return _breakout_pullback_decision(features, settings, params)
+    if family == "trend_continuation":
+        return _trend_continuation_decision(features, settings, params)
+    if family == "mean_reversion":
+        return _mean_reversion_decision(features, settings, params)
+    if family == "volatility_squeeze":
+        return _volatility_squeeze_decision(features, settings, params)
+    if family == "liquidity_sweep_reversal":
+        return _liquidity_sweep_decision(features, settings, params)
+    if family == "ema_rsi_confirmed":
+        return _ema_rsi_decision(features, settings, params)
+    return _decision_from_history(history, settings)
+
+
+def _market_features(history: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(history) < 20:
+        return {}
+    closes = [float(row["close"]) for row in history if _number(row.get("close")) is not None]
+    highs = [float(row["high"]) for row in history if _number(row.get("high")) is not None]
+    lows = [float(row["low"]) for row in history if _number(row.get("low")) is not None]
+    opens = [float(row["open"]) for row in history if _number(row.get("open")) is not None]
+    if len(closes) < 20 or len(highs) < 20 or len(lows) < 20 or len(opens) < 20:
+        return {}
+    close = closes[-1]
+    open_price = opens[-1]
+    prev_close = closes[-2]
+    ema20 = _ema(closes, min(20, len(closes)))
+    ema50 = _ema(closes, min(50, len(closes)))
+    rsi = _rsi(closes, min(14, max(2, len(closes) - 1)))
+    atr = _atr(highs, lows, closes, min(14, len(closes) - 1))
+    atr_pct = (atr / close) * 100 if close else 0.0
+    momentum = close - closes[max(0, len(closes) - 4)]
+    momentum_pct = (momentum / closes[max(0, len(closes) - 4)]) * 100 if closes[max(0, len(closes) - 4)] else 0.0
+    trend_score = 50.0
+    trend_score += 15.0 if close > ema20 else -15.0
+    trend_score += 12.0 if ema20 > ema50 else -12.0
+    trend_score += min(12.0, abs(ema20 - ema50) / close * 2200.0) * (1 if ema20 > ema50 else -1)
+    trend_score = min(90.0, max(10.0, trend_score))
+    momentum_score = min(90.0, max(10.0, 50.0 + momentum_pct * 35.0))
+    recent_range = max(highs[-12:]) - min(lows[-12:])
+    previous_range = max(highs[-28:-12] or highs[-12:]) - min(lows[-28:-12] or lows[-12:])
+    volatility_score = min(90.0, max(10.0, atr_pct * 45.0))
+    regime = "trend" if abs(ema20 - ema50) / close * 100 >= 0.15 and atr_pct >= 0.20 else "chop"
+    recent_high = max(highs[-13:-1])
+    recent_low = min(lows[-13:-1])
+    prior_high = max(highs[-24:-8] or highs[-13:-1])
+    prior_low = min(lows[-24:-8] or lows[-13:-1])
+    high = highs[-1]
+    low = lows[-1]
+    body = abs(close - open_price)
+    candle_range = max(high - low, 0.000001)
+    distance20_atr = abs(close - ema20) / atr if atr else 0.0
+    distance50_atr = abs(close - ema50) / atr if atr else 0.0
+    hour = _hour_from_bar(history[-1])
+    return {
+        "close": close,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "prev_close": prev_close,
+        "ema20": ema20,
+        "ema50": ema50,
+        "rsi": rsi,
+        "atr": atr,
+        "atr_pct": atr_pct,
+        "momentum_pct": momentum_pct,
+        "trend_score": trend_score,
+        "momentum_score": momentum_score,
+        "volatility_score": volatility_score,
+        "regime": regime,
+        "recent_high": recent_high,
+        "recent_low": recent_low,
+        "prior_high": prior_high,
+        "prior_low": prior_low,
+        "recent_range": recent_range,
+        "previous_range": previous_range,
+        "body_atr": body / atr if atr else 0.0,
+        "body_ratio": body / candle_range if candle_range else 0.0,
+        "distance20_atr": distance20_atr,
+        "distance50_atr": distance50_atr,
+        "hour": hour,
+    }
+
+
+def _common_entry_block(features: dict[str, Any], settings: BacktestSettings, config: CapitalSearchConfig, params: dict[str, Any]) -> str:
+    if settings.spread_points > config.spread_max:
+        return "spread_too_high"
+    if config.session_filter or bool(params.get("session_filter")):
+        allowed = params.get("session_hours") if isinstance(params.get("session_hours"), list) else [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        if features.get("hour") is not None and int(features["hour"]) not in {int(item) for item in allowed}:
+            return "session_filter"
+    min_vol = float(_number(params.get("min_volatility_score")) or 0.0)
+    if config.volatility_filter and features["volatility_score"] < min_vol:
+        return "volatility_too_low"
+    allowed_regime = str(params.get("allowed_regime") or "").casefold()
+    if allowed_regime and features["regime"] != allowed_regime:
+        return "market_regime_filter"
+    if config.anti_chop_filter and bool(params.get("avoid_chop")) and features["regime"] == "chop" and str(params.get("strategy_family")) not in {"mean_reversion", "liquidity_sweep_reversal", "volatility_squeeze"}:
+        return "regime_chop"
+    if features["body_atr"] > float(_number(params.get("extended_candle_atr")) or 1.8):
+        return "extended_candle_no_chase"
+    if features["distance20_atr"] > float(_number(params.get("ema_distance_max_atr")) or 2.4):
+        return "ema_distance_too_far"
+    return ""
+
+
+def _breakout_pullback_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
+    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    score = _score(features, trend_weight=0.42, momentum_weight=0.34, volatility_weight=0.24)
+    broke_up = features["recent_high"] > features["prior_high"]
+    broke_down = features["recent_low"] < features["prior_low"]
+    pullback_buy = features["low"] <= features["ema20"] + features["atr"] * 0.45 and features["close"] > features["ema20"] and features["close"] > features["prev_close"]
+    pullback_sell = features["high"] >= features["ema20"] - features["atr"] * 0.45 and features["close"] < features["ema20"] and features["close"] < features["prev_close"]
+    if broke_up and pullback_buy and features["trend_score"] >= params.get("min_trend_score", 55) and features["rsi"] <= params.get("max_rsi_for_buy", 74) and score >= min_score:
+        return _action("buy", score, "breakout_pullback_confirmed", features)
+    if broke_down and pullback_sell and (100 - features["trend_score"]) >= 35 and features["rsi"] >= params.get("min_rsi_for_sell", 26) and score >= min_score:
+        return _action("sell", score, "breakout_pullback_confirmed", features)
+    return _blocked_decision("pullback_not_confirmed", features, score)
+
+
+def _trend_continuation_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
+    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    score = _score(features, trend_weight=0.48, momentum_weight=0.34, volatility_weight=0.18)
+    buy = features["close"] > features["ema20"] > features["ema50"] and features["momentum_score"] >= params.get("min_momentum_score", 52) and features["rsi"] < params.get("max_rsi_for_buy", 76)
+    sell = features["close"] < features["ema20"] < features["ema50"] and features["momentum_score"] <= 45 and features["rsi"] > params.get("min_rsi_for_sell", 24)
+    if buy and features["trend_score"] >= params.get("min_trend_score", 58) and score >= min_score:
+        return _action("buy", score, "trend_continuation_confirmed", features)
+    if sell and (100 - features["trend_score"]) >= 38 and score >= min_score:
+        return _action("sell", score, "trend_continuation_confirmed", features)
+    return _blocked_decision("trend_continuation_not_confirmed", features, score)
+
+
+def _mean_reversion_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
+    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    reversion_score = min(90.0, max(10.0, 45.0 + features["distance20_atr"] * 12.0 + (50.0 - abs(features["rsi"] - 50.0)) * 0.25))
+    buy = features["regime"] == "chop" and features["rsi"] <= params.get("max_rsi_for_buy", 42) and features["close"] > features["prev_close"] and features["low"] < features["ema20"] - features["atr"] * 0.45
+    sell = features["regime"] == "chop" and features["rsi"] >= params.get("min_rsi_for_sell", 58) and features["close"] < features["prev_close"] and features["high"] > features["ema20"] + features["atr"] * 0.45
+    if buy and reversion_score >= min_score:
+        return _action("buy", reversion_score, "mean_reversion_confirmed", features)
+    if sell and reversion_score >= min_score:
+        return _action("sell", reversion_score, "mean_reversion_confirmed", features)
+    return _blocked_decision("mean_reversion_not_confirmed", features, reversion_score)
+
+
+def _volatility_squeeze_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
+    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    compressed = features["previous_range"] > 0 and features["recent_range"] <= features["previous_range"] * 0.75
+    score = _score(features, trend_weight=0.25, momentum_weight=0.48, volatility_weight=0.27)
+    if compressed and features["close"] > features["recent_high"] and features["momentum_score"] >= 56 and score >= min_score and features["rsi"] < params.get("max_rsi_for_buy", 75):
+        return _action("buy", score, "volatility_squeeze_breakout", features)
+    if compressed and features["close"] < features["recent_low"] and features["momentum_score"] <= 44 and score >= min_score and features["rsi"] > params.get("min_rsi_for_sell", 25):
+        return _action("sell", score, "volatility_squeeze_breakdown", features)
+    return _blocked_decision("squeeze_breakout_not_confirmed", features, score)
+
+
+def _liquidity_sweep_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
+    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    score = min(90.0, max(10.0, 55.0 + features["body_ratio"] * 20.0 + features["volatility_score"] * 0.15))
+    swept_low = features["low"] < features["recent_low"] and features["close"] > features["recent_low"] and features["close"] > features["open"]
+    swept_high = features["high"] > features["recent_high"] and features["close"] < features["recent_high"] and features["close"] < features["open"]
+    if swept_low and features["rsi"] <= params.get("max_rsi_for_buy", 46) and score >= min_score:
+        return _action("buy", score, "liquidity_sweep_reversal", features)
+    if swept_high and features["rsi"] >= params.get("min_rsi_for_sell", 54) and score >= min_score:
+        return _action("sell", score, "liquidity_sweep_reversal", features)
+    return _blocked_decision("liquidity_sweep_not_confirmed", features, score)
+
+
+def _ema_rsi_decision(features: dict[str, Any], settings: BacktestSettings, params: dict[str, Any]) -> dict[str, Any]:
+    min_score = float(_number(params.get("min_score")) or settings.min_score)
+    score = _score(features, trend_weight=0.40, momentum_weight=0.35, volatility_weight=0.25)
+    buy = features["close"] > features["ema20"] > features["ema50"] and 45 <= features["rsi"] <= params.get("max_rsi_for_buy", 68) and features["momentum_score"] >= params.get("min_momentum_score", 50)
+    sell = features["close"] < features["ema20"] < features["ema50"] and params.get("min_rsi_for_sell", 32) <= features["rsi"] <= 55 and features["momentum_score"] <= 48
+    if buy and score >= min_score:
+        return _action("buy", score, "ema_rsi_confirmed", features)
+    if sell and score >= min_score:
+        return _action("sell", score, "ema_rsi_confirmed", features)
+    return _blocked_decision("ema_rsi_not_confirmed", features, score)
+
+
+def _score(features: dict[str, Any], *, trend_weight: float, momentum_weight: float, volatility_weight: float) -> float:
+    return round(
+        features["trend_score"] * trend_weight
+        + features["momentum_score"] * momentum_weight
+        + features["volatility_score"] * volatility_weight,
+        2,
+    )
+
+
+def _action(side: str, score: float, reason: str, features: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "actionable": True,
+        "side": side,
+        "score": round(score, 2),
+        "raw_score": round(score, 2),
+        "trend_score": round(features["trend_score"], 2),
+        "momentum_score": round(features["momentum_score"], 2),
+        "volatility_score": round(features["volatility_score"], 2),
+        "regime": features["regime"],
+        "confidence": "medium" if score >= 65 else "low",
+        "reason": reason,
+        "rsi": round(features["rsi"], 2),
+        "ema20": round(features["ema20"], 6),
+        "ema50": round(features["ema50"], 6),
+        "atr": round(features["atr"], 6),
+        "atr_pct": round(features["atr_pct"], 6),
+    }
+
+
+def _blocked_decision(reason: str, features: dict[str, Any] | None = None, score: float | None = None) -> dict[str, Any]:
+    features = features or {}
+    return {
+        "actionable": False,
+        "reason": reason,
+        "score": round(float(score if score is not None else features.get("trend_score") or 0.0), 2),
+        "trend_score": round(float(features.get("trend_score") or 0.0), 2),
+        "momentum_score": round(float(features.get("momentum_score") or 0.0), 2),
+        "volatility_score": round(float(features.get("volatility_score") or 0.0), 2),
+        "regime": features.get("regime") or "",
+        "rsi": round(float(features.get("rsi") or 0.0), 2),
     }
 
 
@@ -579,29 +1030,98 @@ def _update_trade_capital(
         **_safety(),
     }
     if stop_hit and target_hit:
-        return {}, _close(settings, updated, stop_loss, "stop_loss", bar)
+        return {}, _close_capital(settings, updated, stop_loss, "stop_loss", bar)
     if stop_hit:
-        return {}, _close(settings, updated, stop_loss, "stop_loss", bar)
+        return {}, _close_capital(settings, updated, stop_loss, "stop_loss", bar)
     if target_hit:
-        return {}, _close(settings, updated, take_profit, "take_profit", bar)
-    if config.trailing_stop:
+        return {}, _close_capital(settings, updated, take_profit, "take_profit", bar)
+    if config.partial_exit and not bool(updated.get("partial_exit_taken")):
+        best = float(_number(updated.get("max_favorable_excursion")) or 0.0)
+        if best >= risk * 0.85:
+            updated["partial_exit_taken"] = True
+            updated["partial_pnl"] = round(risk * 0.35, 6)
+            updated["virtual_stop_loss"] = entry
+    if config.trailing_stop or config.atr_trailing:
         best = float(_number(updated.get("max_favorable_excursion")) or 0.0)
         if best >= risk * config.trailing_start_r:
+            atr = float(_number(updated.get("atr_at_entry")) or risk)
+            trail_distance = atr * 1.15 if config.atr_trailing else risk * config.trailing_distance_r
             if side == "buy":
-                virtual_stop = max(float(_number(updated.get("virtual_stop_loss")) or stop_loss), close - risk * config.trailing_distance_r, entry)
+                virtual_stop = max(float(_number(updated.get("virtual_stop_loss")) or stop_loss), close - trail_distance, entry)
                 updated["virtual_stop_loss"] = round(virtual_stop, 6)
                 updated["trailing_stop_active"] = True
                 if low <= virtual_stop:
-                    return {}, _close(settings, updated, virtual_stop, "trailing_stop", bar)
+                    return {}, _close_capital(settings, updated, virtual_stop, "trailing_stop", bar)
             else:
-                virtual_stop = min(float(_number(updated.get("virtual_stop_loss")) or stop_loss), close + risk * config.trailing_distance_r, entry)
+                virtual_stop = min(float(_number(updated.get("virtual_stop_loss")) or stop_loss), close + trail_distance, entry)
                 updated["virtual_stop_loss"] = round(virtual_stop, 6)
                 updated["trailing_stop_active"] = True
                 if high >= virtual_stop:
-                    return {}, _close(settings, updated, virtual_stop, "trailing_stop", bar)
-    if int(updated.get("bars_open") or 0) >= settings.time_stop_bars:
-        return {}, _close(settings, updated, close, "time_stop", bar)
+                    return {}, _close_capital(settings, updated, virtual_stop, "trailing_stop", bar)
+    time_stop_limit = settings.time_stop_bars
+    if config.adaptive_time_stop and float(_number(updated.get("max_favorable_excursion")) or 0.0) >= risk * 0.35:
+        time_stop_limit += 1
+    if int(updated.get("bars_open") or 0) >= time_stop_limit:
+        return {}, _close_capital(settings, updated, close, "time_stop", bar)
     return updated, None
+
+
+def _close_capital(settings: BacktestSettings, trade: dict[str, Any], exit_price: float, reason: str, bar: dict[str, Any]) -> dict[str, Any]:
+    closed = _close(settings, trade, exit_price, reason, bar)
+    partial_pnl = float(_number(trade.get("partial_pnl")) or 0.0)
+    if partial_pnl:
+        pnl = float(_number(closed.get("pnl")) or 0.0) + partial_pnl
+        entry = float(_number(closed.get("entry_price")) or _number(closed.get("entry")) or 0.0)
+        risk = abs(float(_number(closed.get("initial_risk")) or 0.0)) or max(entry * 0.015, 0.000001)
+        closed = {
+            **closed,
+            "pnl": round(pnl, 6),
+            "pnl_pct": round((pnl / entry) * 100, 6) if entry else 0.0,
+            "r_multiple": round(pnl / risk, 6) if risk else 0.0,
+            "status": "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven",
+            "partial_exit_taken": True,
+            "partial_pnl": round(partial_pnl, 6),
+        }
+    return closed
+
+
+def _apply_capital_trade_risk(
+    trade: dict[str, Any],
+    decision: dict[str, Any],
+    settings: BacktestSettings,
+    config: CapitalSearchConfig,
+) -> dict[str, Any]:
+    atr = float(_number(decision.get("atr")) or 0.0)
+    params = settings.filter_params or {}
+    multiplier = float(_number(params.get("atr_stop_multiplier")) or 0.0)
+    if atr <= 0 or multiplier <= 0:
+        return trade
+    side = str(trade.get("side") or "").lower()
+    entry = float(_number(trade.get("entry_price")) or _number(trade.get("entry")) or 0.0)
+    if entry <= 0:
+        return trade
+    stop_distance = atr * multiplier
+    stop_distance = max(entry * 0.0035, min(stop_distance, entry * 0.018))
+    stop = entry - stop_distance if side == "buy" else entry + stop_distance
+    target = entry + stop_distance * settings.min_rr if side == "buy" else entry - stop_distance * settings.min_rr
+    return {
+        **trade,
+        "stop_loss": round(stop, 6),
+        "take_profit": round(target, 6),
+        "initial_risk": round(stop_distance, 6),
+        "risk_reward": settings.min_rr,
+        "atr_at_entry": round(atr, 6),
+        "virtual_stop_loss": round(stop, 6),
+        "features_snapshot": {
+            **(trade.get("features_snapshot") if isinstance(trade.get("features_snapshot"), dict) else {}),
+            "atr": round(atr, 6),
+            "atr_pct": decision.get("atr_pct"),
+            "strategy_family": (settings.filter_params or {}).get("strategy_family") or "legacy",
+        },
+        "partial_exit_enabled": bool(config.partial_exit),
+        "atr_trailing_enabled": bool(config.atr_trailing),
+        "adaptive_time_stop": bool(config.adaptive_time_stop),
+    }
 
 
 def _settings_for_capital_config(settings: BacktestSettings, config: CapitalSearchConfig) -> BacktestSettings:
@@ -609,6 +1129,10 @@ def _settings_for_capital_config(settings: BacktestSettings, config: CapitalSear
     params["min_score"] = config.score_min
     params["max_spread_points"] = config.spread_max
     params["avoid_chop"] = bool(config.anti_chop_filter)
+    params["session_filter"] = bool(config.session_filter or params.get("session_filter"))
+    params["partial_exit"] = bool(config.partial_exit or params.get("partial_exit"))
+    params["atr_trailing"] = bool(config.atr_trailing or params.get("atr_trailing"))
+    params["adaptive_time_stop"] = bool(config.adaptive_time_stop)
     if not config.volatility_filter:
         params["min_volatility_score"] = 0.0
     return replace(
@@ -639,19 +1163,22 @@ def _build_search_grid(body: dict[str, Any], profiles: list[str], *, max_evaluat
         default_spread = float(base.get("max_spread_points") or 25.0)
         for rr in rr_values:
             for bars in time_stop_values:
-                configs.append(_config(profile, rr, bars, default_score, default_spread, True, True, 2, 2, True, True, True, True, risk_values[0]))
+                configs.append(_config(profile, rr, bars, default_score, default_spread, True, True, 2, 2, True, True, True, True, False, False, bool(base.get("atr_trailing")), True, risk_values[0]))
         for score in score_values:
             for spread in spread_values:
-                configs.append(_config(profile, 1.2, 3, score, spread, True, True, 2, 2, True, True, True, True, risk_values[0]))
+                configs.append(_config(profile, 1.2, 3, score, spread, True, True, 2, 2, True, True, True, True, False, False, bool(base.get("atr_trailing")), True, risk_values[0]))
         for cooldown in cooldown_values:
             for block in block_values:
-                configs.append(_config(profile, 1.0, 2, default_score, default_spread, True, True, cooldown, block, True, True, True, True, risk_values[0]))
+                configs.append(_config(profile, 1.0, 2, default_score, default_spread, True, True, cooldown, block, True, True, True, True, False, False, bool(base.get("atr_trailing")), True, risk_values[0]))
         for trailing in [False, True]:
             for vol_filter in [False, True]:
                 for anti_chop in [False, True]:
-                    configs.append(_config(profile, 1.2, 3, default_score, default_spread, vol_filter, anti_chop, 2, 2, trailing, True, True, True, risk_values[0]))
+                    configs.append(_config(profile, 1.2, 3, default_score, default_spread, vol_filter, anti_chop, 2, 2, trailing, True, True, True, False, bool(base.get("partial_exit")), bool(base.get("atr_trailing")), True, risk_values[0]))
+        for session in [False, True]:
+            for partial in [False, True]:
+                configs.append(_config(profile, 1.2, 3, default_score, default_spread, True, True, 2, 2, True, True, True, True, session or bool(base.get("session_filter")), partial or bool(base.get("partial_exit")), bool(base.get("atr_trailing")), True, risk_values[0]))
         for risk_pct in risk_values:
-            configs.append(_config(profile, 1.2, 3, default_score, default_spread, True, True, 2, 2, True, True, True, True, risk_pct))
+            configs.append(_config(profile, 1.2, 3, default_score, default_spread, True, True, 2, 2, True, True, True, True, False, bool(base.get("partial_exit")), bool(base.get("atr_trailing")), True, risk_pct))
 
     unique: dict[str, CapitalSearchConfig] = {}
     for item in configs:
@@ -675,6 +1202,10 @@ def _config(
     mae_filter: bool,
     edge_filter: bool,
     dd_filter: bool,
+    session_filter: bool,
+    partial_exit: bool,
+    atr_trailing: bool,
+    adaptive_time_stop: bool,
     risk_pct: float,
 ) -> CapitalSearchConfig:
     return CapitalSearchConfig(
@@ -691,6 +1222,10 @@ def _config(
         max_adverse_excursion_filter=bool(mae_filter),
         no_trade_if_recent_edge_negative=bool(edge_filter),
         no_trade_if_drawdown_accelerating=bool(dd_filter),
+        session_filter=bool(session_filter),
+        partial_exit=bool(partial_exit),
+        atr_trailing=bool(atr_trailing),
+        adaptive_time_stop=bool(adaptive_time_stop),
         risk_pct=float(risk_pct),
     )
 
@@ -901,6 +1436,21 @@ def _monte_carlo_stress(
     }
 
 
+def _timeout_monte_carlo() -> dict[str, Any]:
+    return {
+        "passed": False,
+        "fail_reasons": ["timeout"],
+        "simulations": 0,
+        "risk_of_ruin": 1.0,
+        "max_drawdown_p95": 0.0,
+        "profit_factor_stressed": 0.0,
+        "expectancy_stressed": 0.0,
+        "worst_loss_streak": 0,
+        "removed_best_5": False,
+        "stress_rules": [],
+    }
+
+
 def _capital_preservation_score(
     full: dict[str, Any],
     windows: dict[str, dict[str, Any]],
@@ -944,6 +1494,87 @@ def _depends_on_single_trade(full: dict[str, Any]) -> bool:
     if net <= 0 or best_pnl <= 0:
         return False
     return best_pnl > max(net * 0.5, 1.0)
+
+
+def _fast_risk_block(
+    settings: BacktestSettings,
+    trades: list[dict[str, Any]],
+    config: CapitalSearchConfig,
+    regime: str,
+    *,
+    has_open_trade: bool = False,
+) -> str:
+    if has_open_trade:
+        return "max_open_trades_reached"
+    if settings.spread_points > config.spread_max:
+        return "spread_too_high"
+    if _loss_streak(trades) >= max(4, config.block_after_consecutive_losses + 1):
+        return "consecutive_loss_lockdown"
+    if _current_drawdown_pct(trades, settings.initial_balance) >= 5.0:
+        return "drawdown_limit_reached"
+    closed = len([trade for trade in trades if trade.get("lifecycle_status") == "closed"])
+    if closed >= 20 and _quick_profit_factor(trades) < 1.0:
+        return "forward_pf_below_threshold"
+    if closed >= 20 and _quick_expectancy(trades) <= 0:
+        return "expectancy_negative"
+    if config.no_trade_if_recent_edge_negative and _recent_edge_negative(trades):
+        return "recent_edge_negative"
+    if config.no_trade_if_drawdown_accelerating and _drawdown_accelerating(trades, settings.initial_balance):
+        return "drawdown_accelerating"
+    if str(regime or "").casefold() in {"", "unclear", "not_confirmed", "unknown"}:
+        return "market_regime_unclear"
+    return ""
+
+
+def _ema(values: list[float], length: int) -> float:
+    if not values:
+        return 0.0
+    length = max(1, length)
+    alpha = 2 / (length + 1)
+    ema = values[0]
+    for value in values[1:]:
+        ema = value * alpha + ema * (1 - alpha)
+    return ema
+
+
+def _rsi(values: list[float], length: int) -> float:
+    if len(values) < 2:
+        return 50.0
+    changes = [values[index] - values[index - 1] for index in range(1, len(values))]
+    window = changes[-max(1, length) :]
+    gains = [change for change in window if change > 0]
+    losses = [-change for change in window if change < 0]
+    avg_gain = sum(gains) / max(len(window), 1)
+    avg_loss = sum(losses) / max(len(window), 1)
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    return 100 - (100 / (1 + (avg_gain / avg_loss)))
+
+
+def _atr(highs: list[float], lows: list[float], closes: list[float], length: int) -> float:
+    if len(closes) < 2:
+        return 0.0
+    true_ranges: list[float] = []
+    start = max(1, len(closes) - max(1, length))
+    for index in range(start, len(closes)):
+        high = highs[index]
+        low = lows[index]
+        prev_close = closes[index - 1]
+        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
+
+
+def _hour_from_bar(bar: dict[str, Any]) -> int | None:
+    value = str(bar.get("time") or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).hour
+    except Exception:
+        try:
+            return int(value.split()[1].split(":")[0])
+        except Exception:
+            return None
 
 
 def _recent_edge_negative(trades: list[dict[str, Any]]) -> bool:
@@ -1090,6 +1721,10 @@ def _config_payload(config: CapitalSearchConfig) -> dict[str, Any]:
         "max_adverse_excursion_filter": config.max_adverse_excursion_filter,
         "no_trade_if_recent_edge_negative": config.no_trade_if_recent_edge_negative,
         "no_trade_if_drawdown_accelerating": config.no_trade_if_drawdown_accelerating,
+        "session_filter": config.session_filter,
+        "partial_exit": config.partial_exit,
+        "atr_trailing": config.atr_trailing,
+        "adaptive_time_stop": config.adaptive_time_stop,
         "risk_pct": config.risk_pct,
     }
 
@@ -1108,6 +1743,35 @@ def _requested_numbers(raw: Any, default: list[float]) -> list[float]:
     values = _requested_list(raw, [str(value) for value in default])
     parsed = [float(_number(value) or 0.0) for value in values]
     return [value for value in parsed if value > 0] or default
+
+
+def _result_key(row: dict[str, Any]) -> str:
+    params = row.get("parameters") if isinstance(row.get("parameters"), dict) else {}
+    try:
+        encoded = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        encoded = str(params)
+    return f"{row.get('timeframe','')}|{row.get('profile','')}|{encoded}"
+
+
+def _best_score(rows: list[dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+    return max(float(_number(row.get("capital_preservation_score")) or 0.0) for row in rows)
+
+
+def _safe_progress(callback: Any, payload: dict[str, Any]) -> None:
+    try:
+        callback(payload)
+    except Exception:
+        return
+
+
+def _safe_incremental(callback: Any, payload: dict[str, Any]) -> None:
+    try:
+        callback(payload)
+    except Exception:
+        return
 
 
 def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path | str) -> tuple[Path, Path, Path]:
@@ -1206,7 +1870,7 @@ def capital_preservation_summary_markdown(result: dict[str, Any]) -> str:
     else:
         lines.extend(["## Candidates", "No profile passed capital-preservation gates. Recommendation: reject/observation_only."])
     lines.extend(["", "## Top Results"])
-    for row in rows[:12]:
+    for row in rows[:20]:
         reasons = ", ".join(str(reason) for reason in row.get("pass_fail_reasons", [])[:5])
         lines.append(
             f"- `{row.get('timeframe')} {row.get('profile')}` PF `{row.get('profit_factor')}`, "
