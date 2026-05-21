@@ -111,6 +111,21 @@ _LEARNING_ENABLED_ENV = {
 }
 
 
+def _paper_edge_tick(price: float = 100.0, **overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "symbol": "BTCUSD",
+        "last": price,
+        "spread": 10,
+        "score": 80,
+        "momentum_score": 80,
+        "trend_score": 80,
+        "volatility_score": 80,
+        "regime": "breakout",
+    }
+    payload.update(overrides)
+    return payload
+
+
 class MT5BridgeTests(unittest.TestCase):
     def test_create_app_exposes_mt5_endpoints(self) -> None:
         app = create_app()
@@ -1886,8 +1901,8 @@ class MT5BridgeTests(unittest.TestCase):
         router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
-                tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10, "timeframe": "H1"})
-                second = router.tick({"symbol": "BTCUSD", "last": 100.2, "spread": 10, "timeframe": "H1"})
+                tick = router.tick(_paper_edge_tick(100.0, timeframe="H1"))
+                second = router.tick(_paper_edge_tick(100.2, timeframe="H1"))
                 performance = router.performance(symbol="BTCUSD")
 
         self.assertTrue(tick["paper_exploration_created"])
@@ -1910,9 +1925,9 @@ class MT5BridgeTests(unittest.TestCase):
         )
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
-                first = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                first = router.tick(_paper_edge_tick(100.0))
                 update_open_shadow_trade("BTCUSD", None)
-                second = router.tick({"symbol": "BTCUSD", "last": 100.1, "spread": 10})
+                second = router.tick(_paper_edge_tick(100.1))
 
         self.assertTrue(first["paper_exploration_created"])
         self.assertFalse(second["paper_exploration_created"])
@@ -1943,7 +1958,7 @@ class MT5BridgeTests(unittest.TestCase):
         router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
-                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick(_paper_edge_tick(100.0))
                 router.tick({"symbol": "BTCUSD", "last": 100.6, "spread": 10})
         trade = (get_snapshot("BTCUSD") or {}).get("open_shadow_trade") or {}
 
@@ -1966,7 +1981,7 @@ class MT5BridgeTests(unittest.TestCase):
         )
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
-                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick(_paper_edge_tick(100.0))
                 router.tick({"symbol": "BTCUSD", "last": 100.1, "spread": 10})
                 performance = router.performance(symbol="BTCUSD")
 
@@ -1981,7 +1996,7 @@ class MT5BridgeTests(unittest.TestCase):
         router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True, paper_exploration_cooldown_sec=300))
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
-                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick(_paper_edge_tick(100.0))
                 router.tick({"symbol": "BTCUSD", "last": 98.0, "spread": 10})
                 stop_performance = router.performance(symbol="BTCUSD")
 
@@ -1989,7 +2004,7 @@ class MT5BridgeTests(unittest.TestCase):
         router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True, paper_exploration_cooldown_sec=300))
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
-                router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                router.tick(_paper_edge_tick(100.0))
                 router.tick({"symbol": "BTCUSD", "last": 102.0, "spread": 10})
                 target_performance = router.performance(symbol="BTCUSD")
 
@@ -2002,7 +2017,7 @@ class MT5BridgeTests(unittest.TestCase):
         from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_tick
 
         reset_runtime_snapshots_for_tests()
-        update_tick("BTCUSD", {"symbol": "BTCUSD", "last": 100.0, "spread": 10, "timeframe": "H1"})
+        update_tick("BTCUSD", _paper_edge_tick(100.0, timeframe="H1"))
         router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
         with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}):
             decision = router.decision("BTCUSD")
@@ -2350,13 +2365,30 @@ class MT5BridgeTests(unittest.TestCase):
         started = time.monotonic()
         with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
             with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}) as shadow_enqueue:
-                tick = router.tick({"symbol": "BTCUSD", "last": 100.0, "spread": 10})
+                tick = router.tick(_paper_edge_tick(100.0))
         elapsed = time.monotonic() - started
 
         self.assertLess(elapsed, 1.0)
         self.assertTrue(tick["paper_exploration_created"])
         shadow_enqueue.assert_called()
         self.assertEqual(shadow_enqueue.call_args.args[0], "mt5_shadow_trades")
+        self.assertFalse(tick["broker_touched"])
+        self.assertFalse(tick["order_executed"])
+
+    def test_paper_exploration_blocks_blind_snapshot_probe(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        router = MT5SignalRouter(config=MT5BridgeConfig(fast_path_only=True, paper_exploration_enabled=True))
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            with patch("services.mt5.mt5_paper_exploration.enqueue_mt5_event", return_value={"queued": True}) as shadow_enqueue:
+                tick = router.tick({"symbol": "BTCUSD", "last": 78007.82, "spread": 27.1, "timeframe": "M30"})
+                performance = router.performance(symbol="BTCUSD", timeframe="M30")
+
+        self.assertFalse(tick["paper_exploration_created"])
+        self.assertEqual(tick["paper_exploration_reason"], "insufficient_entry_evidence")
+        shadow_enqueue.assert_not_called()
+        self.assertEqual(performance["summary"]["open"], 0)
         self.assertFalse(tick["broker_touched"])
         self.assertFalse(tick["order_executed"])
 

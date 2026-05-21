@@ -56,7 +56,16 @@ def evaluate_paper_exploration(
         else:
             update_open_shadow_trade(clean_symbol, open_trade, timeframe=active_timeframe)
 
-    can_open, block_reason = _can_open(clean_symbol, normalized, active_tick, cfg, state, bool(open_trade and not closed_event), promoted_profile)
+    can_open, block_reason = _can_open(
+        clean_symbol,
+        normalized,
+        active_tick,
+        cfg,
+        state,
+        bool(open_trade and not closed_event),
+        promoted_profile,
+        snapshot=snapshot,
+    )
     if can_open:
         side = _candidate_side(active_tick, snapshot)
         risk_governor = assess_runtime_risk(
@@ -183,8 +192,9 @@ def _can_open(
     state: dict[str, Any],
     has_open_trade: bool,
     promoted_profile: dict[str, Any] | None = None,
+    snapshot: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
-    snapshot = get_snapshot(symbol) or {}
+    snapshot = snapshot if isinstance(snapshot, dict) else get_snapshot(symbol) or {}
     closed_trades = snapshot.get("recent_closed_shadow_trades") if isinstance(snapshot.get("recent_closed_shadow_trades"), list) else []
     closed_trades = [trade for trade in closed_trades if isinstance(trade, dict)]
     defense = _defense_state(closed_trades)
@@ -212,6 +222,9 @@ def _can_open(
         return False, "negative_recent_edge"
     score = _score(tick)
     rules = _profile_rules(promoted_profile or {}, cfg)
+    has_evidence, evidence_reason = _has_entry_evidence(tick, snapshot)
+    if not has_evidence:
+        return False, evidence_reason
     min_score = rules["min_score"] + (10 if defense["caution_mode"] else 0)
     if score is not None and score < min_score:
         return False, "score_too_low"
@@ -244,6 +257,40 @@ def _can_open(
     ):
         return False, "time_stop_cluster"
     return True, "paper_forward_candidate_probe" if promoted_profile else "paper_exploration_probe"
+
+
+def _has_entry_evidence(tick: dict[str, Any], snapshot: dict[str, Any]) -> tuple[bool, str]:
+    side = _candidate_side(tick, snapshot)
+    if _explicit_confirmation(tick, side):
+        return True, ""
+    if _primary_entry_score(tick) is not None:
+        return True, ""
+    trend = _number(tick.get("trend_score"))
+    momentum = _number(tick.get("momentum_score"))
+    if trend is not None and momentum is not None:
+        return True, ""
+    regime = str(tick.get("regime") or tick.get("market_regime") or "").casefold().strip()
+    if regime in {"breakout", "breakdown", "trend", "bullish_exploration", "bearish_exploration"} and (trend is not None or momentum is not None):
+        return True, ""
+    previous_tick = snapshot.get("previous_tick") if isinstance(snapshot.get("previous_tick"), dict) else {}
+    previous_price = _price(previous_tick)
+    current_price = _price(tick)
+    if previous_price is None or current_price is None:
+        return False, "insufficient_entry_evidence"
+    move = abs(current_price - previous_price)
+    spread = _spread(tick) or 0.0
+    min_move = max(spread, abs(current_price) * 0.0002)
+    if move < min_move:
+        return False, "tick_momentum_too_weak"
+    return True, ""
+
+
+def _primary_entry_score(tick: dict[str, Any]) -> float | None:
+    for key in ("score", "final_score", "entry_quality_score"):
+        value = _number(tick.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _open_trade(

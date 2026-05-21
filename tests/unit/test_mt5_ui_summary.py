@@ -26,6 +26,7 @@ class MT5UiSummaryTests(unittest.TestCase):
         self.assertEqual(humanize_mt5_reason("risk_governor_pass"), "Riesgo dentro de limites.")
         self.assertIn("Perfil degradado", humanize_mt5_reason("early_forward_underperformance"))
         self.assertIn("Bloqueo total", humanize_mt5_reason("lockdown"))
+        self.assertIn("operacion ciega", humanize_mt5_reason("insufficient_entry_evidence"))
 
     def test_ui_summary_builds_four_cards_and_safety_fields(self) -> None:
         update_decision(

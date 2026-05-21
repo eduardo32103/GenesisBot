@@ -22,6 +22,8 @@ HUMAN_REASON_TRANSLATIONS = {
     "forward_pf_below_threshold": "Profit factor forward por debajo del umbral.",
     "expectancy_negative": "Expectancy negativa.",
     "market_regime_unclear": "Regimen de mercado poco claro.",
+    "insufficient_entry_evidence": "Faltan datos de ventaja; Genesis no abre una operacion ciega.",
+    "tick_momentum_too_weak": "El movimiento reciente no alcanza para justificar una entrada.",
     "snapshot_missing": "Aun no hay snapshot operativo suficiente.",
     "fast_path_snapshot_only": "Lectura rapida desde snapshot; sin orden real.",
 }
