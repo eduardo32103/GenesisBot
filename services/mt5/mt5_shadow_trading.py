@@ -265,6 +265,46 @@ class MT5ShadowTrading:
     def open_trades(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return [trade for trade in self.trades(symbol) if trade.get("status") == "open" and _is_main_for_query(trade, symbol or "")]
 
+    def close_shadow_trade(self, *, shadow_trade_id: str, reason: str = "manual_paper_close", symbol: str = "") -> dict[str, Any]:
+        clean_id = str(shadow_trade_id or "").strip()
+        clean_symbol = _symbol(symbol or "BTCUSD")
+        if not clean_id:
+            return {
+                "ok": False,
+                "status": "missing_shadow_trade_id",
+                "symbol": clean_symbol,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        for trade in self.open_trades(clean_symbol):
+            if str(trade.get("shadow_trade_id") or "") != clean_id:
+                continue
+            last = _number(trade.get("last_price") or trade.get("entry_price") or trade.get("entry")) or 0.0
+            tick = {"symbol": clean_symbol, "last": last, "timestamp": _now()}
+            update = self._close_trade(trade, tick, last, reason or "manual_paper_close")
+            event = self.journal.save("mt5_shadow_trades", clean_symbol, update, confidence=update.get("confidence") or "media")
+            return {
+                "ok": True,
+                "status": "mt5_shadow_trade_closed",
+                "symbol": clean_symbol,
+                "shadow_trade_id": clean_id,
+                "closed_trade": update,
+                "event": event,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        return {
+            "ok": False,
+            "status": "shadow_trade_not_found",
+            "symbol": clean_symbol,
+            "shadow_trade_id": clean_id,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
     def exclude_manual_tests(self, *, symbol: str = "") -> dict[str, Any]:
         clean_symbol = _symbol(symbol)
         updates = []

@@ -41,7 +41,10 @@ from services.mt5.mt5_bridge import (
     mt5_replay_run,
     mt5_replay_status,
     mt5_signal,
+    mt5_shadow_trade_close,
     mt5_shadow_trades,
+    mt5_shadow_trades_close_expired,
+    mt5_shadow_trades_open,
     mt5_status,
     mt5_strategy_profiles,
     mt5_tick,
@@ -115,6 +118,18 @@ def get_genesis_mt5_no_trade_report(limit: int = 50, symbol: str = "") -> dict[s
 
 def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[str, Any]:
     return mt5_shadow_trades(limit=limit, symbol=symbol)
+
+
+def get_genesis_mt5_shadow_trades_open(limit: int = 100, symbol: str = "") -> dict[str, Any]:
+    return mt5_shadow_trades_open(limit=limit, symbol=symbol)
+
+
+def post_genesis_mt5_shadow_trades_close_expired(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_shadow_trades_close_expired(payload)
+
+
+def post_genesis_mt5_shadow_trade_close(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_shadow_trade_close(payload)
 
 
 def get_genesis_mt5_debug_storage(symbol: str = "", limit: int = 20) -> dict[str, Any]:

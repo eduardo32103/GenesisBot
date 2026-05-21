@@ -26,11 +26,13 @@ from services.mt5.mt5_promoted_profile import forward_profile_state, get_promote
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_risk_governor import assess_runtime_risk, risk_state_payload
 from services.mt5.mt5_runtime_snapshot import (
+    append_closed_shadow_trade,
     get_snapshot,
     snapshot_status,
     update_account_sync,
     update_adaptive_state,
     update_decision,
+    update_open_shadow_trade,
     update_performance,
     update_recommendations,
     update_tick,
@@ -723,6 +725,81 @@ class MT5SignalRouter:
             }
         return self.shadow.snapshot(symbol=symbol, limit=limit)
 
+    def shadow_trades_open(self, *, symbol: str = "", limit: int = 100) -> dict[str, Any]:
+        clean_symbol = str(symbol or "BTCUSD").upper().strip()
+        safe_limit = max(1, min(int(limit or 100), 100))
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(clean_symbol) or {}
+            open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+            trades = [_format_open_shadow_trade(open_trade)] if _is_open_shadow_trade(open_trade) else []
+        else:
+            trades = [_format_open_shadow_trade(trade) for trade in self.shadow.open_trades(clean_symbol)[:safe_limit]]
+        return {
+            "ok": True,
+            "status": "mt5_shadow_trades_open_ready",
+            "symbol": clean_symbol,
+            "open_count": len(trades),
+            "trades": trades[:safe_limit],
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
+    def shadow_trades_close_expired(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = payload if isinstance(payload, dict) else {}
+        clean_symbol = str(body.get("symbol") or body.get("ticker") or "BTCUSD").upper().strip()
+        max_age = _maybe_float(body.get("max_age_minutes"))
+        if max_age is None:
+            max_age = float(self.config.paper_exploration_time_stop_min or self.config.shadow_time_stop_hours * 60 or 15)
+        open_payload = self.shadow_trades_open(symbol=clean_symbol, limit=100)
+        closed: list[dict[str, Any]] = []
+        for trade in open_payload.get("trades") if isinstance(open_payload.get("trades"), list) else []:
+            if not _shadow_trade_expired(trade, max_age):
+                continue
+            result = self.shadow_trade_close(
+                {
+                    "symbol": clean_symbol,
+                    "shadow_trade_id": trade.get("shadow_trade_id"),
+                    "reason": "expired_paper_close",
+                }
+            )
+            if isinstance(result.get("closed_trade"), dict):
+                closed.append(result["closed_trade"])
+        return {
+            "ok": True,
+            "status": "mt5_shadow_trades_close_expired_completed",
+            "symbol": clean_symbol,
+            "closed_count": len(closed),
+            "closed": closed,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
+    def shadow_trade_close(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = payload if isinstance(payload, dict) else {}
+        clean_symbol = str(body.get("symbol") or body.get("ticker") or "BTCUSD").upper().strip()
+        trade_id = str(body.get("shadow_trade_id") or body.get("id") or "").strip()
+        reason = str(body.get("reason") or "manual_paper_close").strip() or "manual_paper_close"
+        if not trade_id:
+            return _shadow_close_response(False, clean_symbol, "missing_shadow_trade_id", reason=reason)
+        if self.config.fast_path_only and self.memory is None:
+            snapshot = get_snapshot(clean_symbol) or {}
+            open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+            if str(open_trade.get("shadow_trade_id") or "") != trade_id:
+                return _shadow_close_response(False, clean_symbol, "shadow_trade_not_found", trade_id=trade_id, reason=reason)
+            closed = _close_runtime_shadow_trade(open_trade, reason)
+            timeframe = str(closed.get("timeframe") or "").upper().strip()
+            update_open_shadow_trade(clean_symbol, None, timeframe=timeframe)
+            append_closed_shadow_trade(clean_symbol, closed, timeframe=timeframe)
+            enqueue_mt5_event("mt5_shadow_trades", clean_symbol, closed)
+            update_runtime_performance(clean_symbol)
+            return _shadow_close_response(True, clean_symbol, "mt5_shadow_trade_closed", trade_id=trade_id, reason=reason, closed_trade=closed)
+        result = self.shadow.close_shadow_trade(shadow_trade_id=trade_id, reason=reason, symbol=clean_symbol)
+        if not result.get("ok"):
+            return _shadow_close_response(False, clean_symbol, str(result.get("status") or "shadow_trade_not_found"), trade_id=trade_id, reason=reason)
+        return _shadow_close_response(True, clean_symbol, "mt5_shadow_trade_closed", trade_id=trade_id, reason=reason, closed_trade=result.get("closed_trade"))
+
     def debug_storage(self, *, symbol: str = "", limit: int = 20) -> dict[str, Any]:
         started = time.monotonic()
         clean_symbol = str(symbol or "").upper().strip()
@@ -1303,6 +1380,129 @@ def _empty_performance_from_snapshot(symbol: str, timeframe: str, *, reason: str
         "order_policy": "journal_only_no_broker",
         "updated_at": _now(),
     }
+
+
+def _is_open_shadow_trade(trade: dict[str, Any]) -> bool:
+    return bool(trade) and isinstance(trade, dict) and str(trade.get("status") or trade.get("lifecycle_status") or "").casefold() in {"open", ""}
+
+
+def _format_open_shadow_trade(trade: dict[str, Any]) -> dict[str, Any]:
+    opened_at = str(trade.get("opened_at") or trade.get("created_at") or "")
+    entry = _maybe_float(trade.get("entry_price") or trade.get("entry")) or 0.0
+    last = _maybe_float(trade.get("last_price") or trade.get("last") or entry) or entry
+    pnl = _maybe_float(trade.get("unrealized_pnl"))
+    if pnl is None:
+        side = str(trade.get("side") or trade.get("action") or "buy").casefold()
+        pnl = entry - last if side == "sell" else last - entry
+    pnl_pct = _maybe_float(trade.get("unrealized_pnl_pct"))
+    if pnl_pct is None:
+        pnl_pct = round((pnl / entry) * 100, 6) if entry else 0.0
+    return {
+        "shadow_trade_id": str(trade.get("shadow_trade_id") or ""),
+        "symbol": str(trade.get("symbol") or "").upper().strip(),
+        "timeframe": str(trade.get("timeframe") or "").upper().strip(),
+        "side": str(trade.get("side") or trade.get("action") or "").casefold(),
+        "entry_price": entry,
+        "last_price": last,
+        "unrealized_pnl": round(pnl, 8),
+        "unrealized_pnl_pct": round(pnl_pct, 6),
+        "r_multiple": _maybe_float(trade.get("r_multiple") or trade.get("current_r_multiple")) or 0.0,
+        "opened_at": opened_at,
+        "age_minutes": _age_minutes(opened_at),
+        "stop_loss": _maybe_float(trade.get("stop_loss")),
+        "take_profit": _maybe_float(trade.get("take_profit")),
+        "source": str(trade.get("source") or ""),
+        "strategy_profile": str(trade.get("strategy_profile") or ""),
+        "paper_forward_candidate": bool(trade.get("paper_forward_candidate")),
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _shadow_trade_expired(trade: dict[str, Any], max_age_minutes: float) -> bool:
+    if bool(trade.get("expired")):
+        return True
+    expires_at = _parse_dt(trade.get("expires_at"))
+    if expires_at and datetime.now(timezone.utc) >= expires_at:
+        return True
+    age = _maybe_float(trade.get("age_minutes")) or 0.0
+    return age >= max(0.0, float(max_age_minutes or 0.0))
+
+
+def _close_runtime_shadow_trade(trade: dict[str, Any], reason: str) -> dict[str, Any]:
+    entry = _maybe_float(trade.get("entry_price") or trade.get("entry")) or 0.0
+    last = _maybe_float(trade.get("last_price") or trade.get("last") or entry) or entry
+    side = str(trade.get("side") or trade.get("action") or "buy").casefold()
+    pnl = entry - last if side == "sell" else last - entry
+    risk = _maybe_float(trade.get("initial_risk"))
+    if risk is None:
+        stop = _maybe_float(trade.get("stop_loss"))
+        risk = abs(entry - stop) if stop is not None else 0.0
+    now = _now()
+    status = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
+    return {
+        **trade,
+        "status": status,
+        "lifecycle_status": "closed",
+        "last_price": last,
+        "exit_price": last,
+        "exit_reason": reason,
+        "last_exit_reason": reason,
+        "closed_at": now,
+        "updated_at": now,
+        "pnl": round(pnl, 8),
+        "pnl_pct": round((pnl / entry) * 100, 6) if entry else 0.0,
+        "unrealized_pnl": round(pnl, 8),
+        "r_multiple": round(pnl / risk, 6) if risk and risk > 0 else 0.0,
+        "current_r_multiple": round(pnl / risk, 6) if risk and risk > 0 else 0.0,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _shadow_close_response(
+    ok: bool,
+    symbol: str,
+    status: str,
+    *,
+    trade_id: str = "",
+    reason: str = "",
+    closed_trade: Any = None,
+) -> dict[str, Any]:
+    payload = {
+        "ok": ok,
+        "status": status,
+        "symbol": str(symbol or "").upper().strip(),
+        "shadow_trade_id": trade_id,
+        "reason": reason,
+        "closed_trade": closed_trade if isinstance(closed_trade, dict) else None,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+    return payload
+
+
+def _age_minutes(value: object) -> float:
+    opened = _parse_dt(value)
+    if not opened:
+        return 0.0
+    return round(max(0.0, (datetime.now(timezone.utc) - opened).total_seconds() / 60.0), 4)
+
+
+def _parse_dt(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _fast_state_from_summary(*, symbol: str, timeframe: str, summary: dict[str, Any], reason: str) -> dict[str, Any]:

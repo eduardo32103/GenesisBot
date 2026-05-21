@@ -73,6 +73,7 @@ from api.routes.genesis import (
     get_genesis_mt5_replay_status,
     get_genesis_mt5_risk_state,
     get_genesis_mt5_shadow_trades,
+    get_genesis_mt5_shadow_trades_open,
     get_genesis_mt5_status,
     get_genesis_mt5_strategy_profiles,
     get_genesis_mt5_ui_summary,
@@ -89,6 +90,8 @@ from api.routes.genesis import (
     post_genesis_mt5_forward_replay_run,
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_signal,
+    post_genesis_mt5_shadow_trade_close,
+    post_genesis_mt5_shadow_trades_close_expired,
     post_genesis_mt5_tick,
     post_genesis_mt5_replay_run,
     post_genesis_tradingview_webhook,
@@ -232,6 +235,9 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_outcomes_recent_endpoint": "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25",
         "genesis_mt5_no_trade_report_endpoint": "/api/genesis/mt5/no-trade-report?symbol={symbol}&limit=50",
         "genesis_mt5_shadow_trades_endpoint": "/api/genesis/mt5/shadow-trades?symbol={symbol}",
+        "genesis_mt5_shadow_trades_open_endpoint": "/api/genesis/mt5/shadow-trades/open?symbol={symbol}",
+        "genesis_mt5_shadow_trades_close_expired_endpoint": "/api/genesis/mt5/shadow-trades/close-expired",
+        "genesis_mt5_shadow_trade_close_endpoint": "/api/genesis/mt5/shadow-trades/close",
         "genesis_mt5_debug_storage_endpoint": "/api/genesis/mt5/debug/storage?symbol={symbol}",
         "genesis_mt5_auto_forward_status_endpoint": "/api/genesis/mt5/auto-forward-status?symbol={symbol}",
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
@@ -4114,6 +4120,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
+        if parsed.path == "/api/genesis/mt5/shadow-trades/close-expired":
+            result = post_genesis_mt5_shadow_trades_close_expired(body)
+            self._write_json(result, HTTPStatus.OK)
+            return
+
+        if parsed.path == "/api/genesis/mt5/shadow-trades/close":
+            result = post_genesis_mt5_shadow_trade_close(body)
+            self._write_json(result, HTTPStatus.OK)
+            return
+
         if parsed.path == "/api/genesis/mt5/order-request":
             result = post_genesis_mt5_order_request(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
@@ -4554,6 +4570,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 limit = 50
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_no_trade_report(limit=limit, symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/shadow-trades/open":
+            query = parse_qs(parsed.query)
+            raw_limit = (query.get("limit") or ["100"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 100
+            symbol = (query.get("symbol") or query.get("ticker") or ["BTCUSD"])[0]
+            payload_data = get_genesis_mt5_shadow_trades_open(limit=limit, symbol=symbol)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

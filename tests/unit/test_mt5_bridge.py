@@ -33,6 +33,7 @@ from api.routes.genesis import (
     get_genesis_mt5_replay_results,
     get_genesis_mt5_replay_status,
     get_genesis_mt5_shadow_trades,
+    get_genesis_mt5_shadow_trades_open,
     get_genesis_mt5_status,
     get_genesis_mt5_strategy_profiles,
     post_genesis_mt5_account_sync,
@@ -47,6 +48,8 @@ from api.routes.genesis import (
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_replay_run,
     post_genesis_mt5_signal,
+    post_genesis_mt5_shadow_trade_close,
+    post_genesis_mt5_shadow_trades_close_expired,
     post_genesis_mt5_tick,
 )
 from services.genesis.agent_router import AgentRouter
@@ -86,6 +89,7 @@ from services.mt5.mt5_bridge import (
     mt5_replay_status,
     mt5_signal,
     mt5_shadow_trades,
+    mt5_shadow_trades_open,
     mt5_status,
     mt5_strategy_profiles,
     mt5_tick,
@@ -142,6 +146,9 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_outcomes_recent_endpoint"], "/api/genesis/mt5/outcomes/recent?symbol={symbol}&limit=25")
         self.assertEqual(app["genesis_mt5_no_trade_report_endpoint"], "/api/genesis/mt5/no-trade-report?symbol={symbol}&limit=50")
         self.assertEqual(app["genesis_mt5_shadow_trades_endpoint"], "/api/genesis/mt5/shadow-trades?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_shadow_trades_open_endpoint"], "/api/genesis/mt5/shadow-trades/open?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_shadow_trades_close_expired_endpoint"], "/api/genesis/mt5/shadow-trades/close-expired")
+        self.assertEqual(app["genesis_mt5_shadow_trade_close_endpoint"], "/api/genesis/mt5/shadow-trades/close")
         self.assertEqual(app["genesis_mt5_debug_storage_endpoint"], "/api/genesis/mt5/debug/storage?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_auto_forward_status_endpoint"], "/api/genesis/mt5/auto-forward-status?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_instrument_endpoint"], "/api/genesis/mt5/instrument?symbol={symbol}")
@@ -1513,6 +1520,9 @@ class MT5BridgeTests(unittest.TestCase):
         outcomes = get_genesis_mt5_outcomes_recent(symbol="BTCUSD", limit=5)
         no_trade_report = get_genesis_mt5_no_trade_report(symbol="BTCUSD", limit=5)
         shadow = get_genesis_mt5_shadow_trades(symbol="BTCUSD", limit=5)
+        shadow_open = get_genesis_mt5_shadow_trades_open(symbol="BTCUSD", limit=5)
+        close_expired = post_genesis_mt5_shadow_trades_close_expired({})
+        close_missing = post_genesis_mt5_shadow_trade_close({"shadow_trade_id": "missing-test-id", "reason": "manual_paper_close"})
         debug = get_genesis_mt5_debug_storage(symbol="BTCUSD")
         auto_status = get_genesis_mt5_auto_forward_status(symbol="BTCUSD")
         instrument = get_genesis_mt5_instrument("BTCUSD")
@@ -1553,6 +1563,10 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertTrue(outcomes["ok"])
         self.assertTrue(no_trade_report["ok"])
         self.assertTrue(shadow["ok"])
+        self.assertTrue(shadow_open["ok"])
+        self.assertTrue(close_expired["ok"])
+        self.assertFalse(close_missing["ok"])
+        self.assertEqual(close_missing["status"], "shadow_trade_not_found")
         self.assertTrue(debug["ok"])
         self.assertTrue(auto_status["ok"])
         self.assertTrue(instrument["ok"])
@@ -1575,6 +1589,76 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertFalse(request["order_executed"])
         self.assertFalse(request["broker_touched"])
         self.assertEqual(request["order_policy"], "journal_only_no_broker")
+
+    def test_shadow_trade_management_endpoints_are_json_paper_only_when_empty(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        open_payload = get_genesis_mt5_shadow_trades_open(symbol="BTCUSD")
+        expired = post_genesis_mt5_shadow_trades_close_expired({})
+        missing = post_genesis_mt5_shadow_trade_close({"shadow_trade_id": "does-not-exist", "reason": "manual_paper_close"})
+
+        self.assertTrue(open_payload["ok"])
+        self.assertEqual(open_payload["status"], "mt5_shadow_trades_open_ready")
+        self.assertEqual(open_payload["open_count"], 0)
+        self.assertEqual(open_payload["trades"], [])
+        self.assertTrue(expired["ok"])
+        self.assertEqual(expired["status"], "mt5_shadow_trades_close_expired_completed")
+        self.assertEqual(expired["closed_count"], 0)
+        self.assertEqual(expired["closed"], [])
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["status"], "shadow_trade_not_found")
+        for payload in (open_payload, expired, missing):
+            self.assertFalse(payload["broker_touched"])
+            self.assertFalse(payload["order_executed"])
+            self.assertEqual(payload["order_policy"], "journal_only_no_broker")
+
+    def test_shadow_trade_manual_close_closes_runtime_paper_trade_only(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, update_open_shadow_trade
+
+        reset_runtime_snapshots_for_tests()
+        update_open_shadow_trade(
+            "BTCUSD",
+            {
+                "shadow_trade_id": "paper-close-me",
+                "symbol": "BTCUSD",
+                "normalized_symbol": "BTCUSD",
+                "timeframe": "M30",
+                "side": "buy",
+                "action": "BUY",
+                "entry_price": 100.0,
+                "entry": 100.0,
+                "last_price": 101.0,
+                "stop_loss": 98.0,
+                "take_profit": 103.0,
+                "initial_risk": 2.0,
+                "status": "open",
+                "lifecycle_status": "open",
+                "opened_at": "2026-05-21T00:00:00+00:00",
+                "source": "mt5_paper_exploration",
+                "strategy_profile": "test_profile",
+                "paper_forward_candidate": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            },
+            timeframe="M30",
+        )
+
+        open_payload = get_genesis_mt5_shadow_trades_open(symbol="BTCUSD")
+        close_payload = post_genesis_mt5_shadow_trade_close({"symbol": "BTCUSD", "shadow_trade_id": "paper-close-me", "reason": "manual_paper_close"})
+        snapshot = get_snapshot("BTCUSD") or {}
+
+        self.assertEqual(open_payload["open_count"], 1)
+        self.assertEqual(open_payload["trades"][0]["shadow_trade_id"], "paper-close-me")
+        self.assertTrue(close_payload["ok"])
+        self.assertEqual(close_payload["status"], "mt5_shadow_trade_closed")
+        self.assertEqual(close_payload["closed_trade"]["exit_reason"], "manual_paper_close")
+        self.assertEqual(close_payload["closed_trade"]["lifecycle_status"], "closed")
+        self.assertEqual(snapshot.get("open_shadow_trade"), {})
+        self.assertFalse(close_payload["broker_touched"])
+        self.assertFalse(close_payload["order_executed"])
+        self.assertEqual(close_payload["order_policy"], "journal_only_no_broker")
 
     def test_replay_run_status_results_and_reset_are_journal_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

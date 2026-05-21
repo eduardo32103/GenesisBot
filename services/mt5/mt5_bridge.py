@@ -62,6 +62,18 @@ def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", li
     return build_router(memory).shadow_trades(symbol=symbol, limit=limit)
 
 
+def mt5_shadow_trades_open(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 100) -> dict[str, Any]:
+    return build_router(memory).shadow_trades_open(symbol=symbol, limit=limit)
+
+
+def mt5_shadow_trades_close_expired(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).shadow_trades_close_expired(payload)
+
+
+def mt5_shadow_trade_close(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).shadow_trade_close(payload)
+
+
 def mt5_debug_storage(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 20) -> dict[str, Any]:
     return build_router(memory).debug_storage(symbol=symbol, limit=limit)
 
