@@ -204,6 +204,9 @@ class MT5CapitalPreservationOptimizerTests(unittest.TestCase):
             "volatility_squeeze_v1",
             "liquidity_sweep_reversal_v1",
             "atr_trailing_v1",
+            "trend_continuation_v5_defense_aware",
+            "low_drawdown_v5_session_filtered",
+            "breakout_pullback_v5_fast_exit",
         ]:
             self.assertIn(profile, CAPITAL_PRESERVATION_PROFILES)
 

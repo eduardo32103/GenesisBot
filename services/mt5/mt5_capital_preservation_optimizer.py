@@ -29,15 +29,18 @@ CAPITAL_PRESERVATION_PROFILES = [
     "breakout_pullback_v2_safe",
     "breakout_pullback_v3_balanced",
     "breakout_pullback_v4_expanded",
+    "breakout_pullback_v5_fast_exit",
     "trend_continuation_v1",
     "trend_continuation_v2_low_drawdown",
     "trend_continuation_v3_balanced",
     "trend_continuation_v4_expanded",
+    "trend_continuation_v5_defense_aware",
     "mean_reversion_v1_safe",
     "volatility_squeeze_v1",
     "session_filtered_v1",
     "liquidity_sweep_reversal_v1",
     "liquidity_sweep_v2_confirmed",
+    "liquidity_sweep_v3_session_confirmed",
     "ema_rsi_confirmed_v1",
     "atr_trailing_v1",
     "anti_chop_v2_safe",
@@ -53,10 +56,12 @@ CAPITAL_PRESERVATION_PROFILES = [
     "capital_preservation_v1",
     "capital_preservation_v2",
     "capital_preservation_v3_balanced",
+    "capital_preservation_v4_side_filtered",
     "low_drawdown_v1",
     "low_drawdown_v2",
     "low_drawdown_v3_more_trades",
     "low_drawdown_v4_expanded",
+    "low_drawdown_v5_session_filtered",
 ]
 
 CAPITAL_PRESERVATION_TIMEFRAMES = ["M15", "M30", "H1"]
@@ -132,6 +137,34 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "extended_candle_atr": 2.25,
         "atr_stop_multiplier": 1.15,
     },
+    "breakout_pullback_v5_fast_exit": {
+        "strategy_family": "breakout_pullback",
+        "experimental_timeframes": ["M30", "H1"],
+        "allowed_sides": ["buy"],
+        "session_filter": True,
+        "session_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        "min_trend_score": 48.0,
+        "min_momentum_score": 46.0,
+        "max_rsi_for_buy": 77.0,
+        "min_rsi_for_sell": 23.0,
+        "score_cap_when_weak": 60.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 57.0,
+        "min_score_floor": 52.0,
+        "adaptive_score_by_timeframe": {"M30": -2.0, "H1": -3.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 18.0,
+        "min_volatility_floor": 12.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -4.0, "H1": -6.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 3.0,
+        "extended_candle_atr": 2.1,
+        "atr_stop_multiplier": 1.05,
+        "mae_exit_r": 0.55,
+        "momentum_loss_exit": True,
+        "max_time_stop_bars_by_timeframe": {"M30": 2, "H1": 2},
+    },
     "trend_continuation_v1": {
         "strategy_family": "trend_continuation",
         "min_trend_score": 58.0,
@@ -201,6 +234,34 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "ema_distance_max_atr": 3.2,
         "extended_candle_atr": 2.25,
         "atr_stop_multiplier": 1.05,
+    },
+    "trend_continuation_v5_defense_aware": {
+        "strategy_family": "trend_continuation",
+        "experimental_timeframes": ["M30", "H1"],
+        "allowed_sides": ["buy"],
+        "session_filter": True,
+        "session_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        "min_trend_score": 52.0,
+        "min_momentum_score": 47.0,
+        "max_rsi_for_buy": 78.0,
+        "min_rsi_for_sell": 24.0,
+        "score_cap_when_weak": 59.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 58.0,
+        "min_score_floor": 53.0,
+        "adaptive_score_by_timeframe": {"M30": -3.0, "H1": -4.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 18.0,
+        "min_volatility_floor": 12.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -6.0, "H1": -7.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 2.8,
+        "extended_candle_atr": 2.1,
+        "atr_stop_multiplier": 1.0,
+        "mae_exit_r": 0.60,
+        "momentum_loss_exit": True,
+        "max_time_stop_bars_by_timeframe": {"M30": 2, "H1": 2},
     },
     "mean_reversion_v1_safe": {
         "strategy_family": "mean_reversion",
@@ -284,6 +345,33 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "ema_distance_max_atr": 3.4,
         "extended_candle_atr": 2.4,
         "atr_stop_multiplier": 0.95,
+    },
+    "liquidity_sweep_v3_session_confirmed": {
+        "strategy_family": "liquidity_sweep_reversal",
+        "experimental_timeframes": ["M30", "H1"],
+        "allowed_sides": ["buy"],
+        "session_filter": True,
+        "session_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        "min_trend_score": 30.0,
+        "min_momentum_score": 30.0,
+        "max_rsi_for_buy": 50.0,
+        "min_rsi_for_sell": 55.0,
+        "score_cap_when_weak": 64.0,
+        "allow_reversal": True,
+        "avoid_chop": False,
+        "min_score": 57.0,
+        "min_score_floor": 52.0,
+        "adaptive_score_by_timeframe": {"M30": -2.0, "H1": -3.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 20.0,
+        "min_volatility_floor": 12.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -4.0, "H1": -5.0},
+        "ema_distance_max_atr": 3.5,
+        "extended_candle_atr": 2.4,
+        "atr_stop_multiplier": 0.9,
+        "mae_exit_r": 0.65,
+        "momentum_loss_exit": True,
+        "max_time_stop_bars_by_timeframe": {"M30": 2, "H1": 2},
     },
     "ema_rsi_confirmed_v1": {
         "strategy_family": "ema_rsi_confirmed",
@@ -483,6 +571,34 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "extended_candle_atr": 1.9,
         "atr_stop_multiplier": 1.0,
     },
+    "capital_preservation_v4_side_filtered": {
+        "strategy_family": "ema_rsi_confirmed",
+        "experimental_timeframes": ["M30", "H1"],
+        "allowed_sides": ["buy"],
+        "session_filter": True,
+        "session_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        "min_trend_score": 54.0,
+        "min_momentum_score": 50.0,
+        "max_rsi_for_buy": 73.0,
+        "min_rsi_for_sell": 30.0,
+        "score_cap_when_weak": 56.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 60.0,
+        "min_score_floor": 54.0,
+        "adaptive_score_by_timeframe": {"M30": -2.0, "H1": -3.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 20.0,
+        "min_volatility_floor": 13.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -5.0, "H1": -7.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 2.5,
+        "extended_candle_atr": 2.0,
+        "atr_stop_multiplier": 0.95,
+        "mae_exit_r": 0.60,
+        "momentum_loss_exit": True,
+        "max_time_stop_bars_by_timeframe": {"M30": 2, "H1": 2},
+    },
     "low_drawdown_v1": {
         "min_trend_score": 60.0,
         "min_momentum_score": 60.0,
@@ -544,6 +660,34 @@ _PROFILE_PARAMS: dict[str, dict[str, Any]] = {
         "ema_distance_max_atr": 2.8,
         "extended_candle_atr": 2.1,
         "atr_stop_multiplier": 0.95,
+    },
+    "low_drawdown_v5_session_filtered": {
+        "strategy_family": "ema_rsi_confirmed",
+        "experimental_timeframes": ["M30", "H1"],
+        "allowed_sides": ["buy"],
+        "session_filter": True,
+        "session_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        "min_trend_score": 53.0,
+        "min_momentum_score": 49.0,
+        "max_rsi_for_buy": 74.0,
+        "min_rsi_for_sell": 27.0,
+        "score_cap_when_weak": 57.0,
+        "allow_reversal": False,
+        "avoid_chop": True,
+        "min_score": 59.0,
+        "min_score_floor": 53.0,
+        "adaptive_score_by_timeframe": {"M30": -2.0, "H1": -4.0},
+        "max_spread_points": 25.0,
+        "min_volatility_score": 20.0,
+        "min_volatility_floor": 13.0,
+        "adaptive_min_volatility_by_timeframe": {"M30": -5.0, "H1": -7.0},
+        "trend_regime_volatility_relief": 2.0,
+        "ema_distance_max_atr": 2.6,
+        "extended_candle_atr": 2.0,
+        "atr_stop_multiplier": 0.9,
+        "mae_exit_r": 0.55,
+        "momentum_loss_exit": True,
+        "max_time_stop_bars_by_timeframe": {"M30": 2, "H1": 2},
     },
 }
 
@@ -794,6 +938,10 @@ class MT5CapitalPreservationOptimizer:
             "monte_carlo": monte_carlo,
             "degraded": bool(sim_state.get("risk_lockdown")),
             "degradation_reason": sim_state.get("degradation_reason") or "",
+            "blocked_by_drawdown_accelerating": sim_state.get("blocked_by_drawdown_accelerating", 0),
+            "blocked_by_cooldown_after_loss": sim_state.get("blocked_by_cooldown_after_loss", 0),
+            "blocked_by_consecutive_losses": sim_state.get("blocked_by_consecutive_losses", 0),
+            "blocked_by_mae_filter": sim_state.get("blocked_by_mae_filter", 0),
             "capital_preservation_score": score,
             "recommendation": recommendation,
             "candidate": gate["passed"],
@@ -882,13 +1030,21 @@ def _simulate_capital_preservation(
             continue
         history = bars[max(0, index - 80) : index]
         decision = _capital_decision_from_history(history, settings, config)
-        if config.volatility_filter and float(_number(decision.get("volatility_score")) or 0.0) < float(settings.filter_params.get("min_volatility_score") or 35.0):
+        if config.volatility_filter and float(_number(decision.get("volatility_score")) or 0.0) < _effective_min_volatility(
+            {"regime": decision.get("regime") or ""},
+            settings,
+            settings.filter_params or {},
+        ):
             no_trade_count += 1
             blocked.append("volatility_too_low")
             continue
         if not decision["actionable"]:
             no_trade_count += 1
             blocked.append(str(decision.get("reason") or "no_edge"))
+            continue
+        if not _allowed_side(str(decision.get("side") or ""), settings.filter_params or {}):
+            no_trade_count += 1
+            blocked.append("side_filtered")
             continue
         risk_reason = _fast_risk_block(settings, trades, config, str(decision.get("regime") or "trend"), has_open_trade=bool(open_trade))
         if risk_reason:
@@ -922,6 +1078,7 @@ def _simulate_capital_preservation(
         max_open = max(max_open, 1)
     if open_trade:
         trades.append(_force_close(settings, open_trade, bars[-1], len(bars) - 1, "time_stop"))
+    reason_counts = _reason_counts(blocked)
     return trades, no_trade_count, blocked, {
         "risk_governor_blocks": risk_blocks,
         "max_open_trades_observed": max_open,
@@ -929,6 +1086,10 @@ def _simulate_capital_preservation(
         "max_iterations": max_iterations,
         "risk_lockdown": False,
         "degradation_reason": "",
+        "blocked_by_drawdown_accelerating": reason_counts.get("drawdown_accelerating", 0),
+        "blocked_by_cooldown_after_loss": reason_counts.get("cooldown_after_loss", 0),
+        "blocked_by_consecutive_losses": reason_counts.get("block_after_consecutive_losses", 0),
+        "blocked_by_mae_filter": reason_counts.get("max_adverse_excursion_filter", 0),
     }
 
 
@@ -956,6 +1117,13 @@ def _capital_decision_from_history(history: list[dict[str, Any]], settings: Back
     if family == "ema_rsi_confirmed":
         return _ema_rsi_decision(features, settings, params)
     return _decision_from_history(history, settings)
+
+
+def _allowed_side(side: str, params: dict[str, Any]) -> bool:
+    allowed = params.get("allowed_sides")
+    if not isinstance(allowed, list) or not allowed:
+        return True
+    return str(side or "").casefold() in {str(item).casefold() for item in allowed}
 
 
 def _market_features(history: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1231,6 +1399,15 @@ def _update_trade_capital(
         return {}, _close_capital(settings, updated, stop_loss, "stop_loss", bar)
     if target_hit:
         return {}, _close_capital(settings, updated, take_profit, "take_profit", bar)
+    params = settings.filter_params or {}
+    mae_exit_r = _number(params.get("mae_exit_r"))
+    if mae_exit_r is not None and abs(float(_number(updated.get("max_adverse_excursion")) or 0.0)) >= risk * float(mae_exit_r):
+        return {}, _close_capital(settings, updated, close, "mae_defense_exit", bar)
+    if bool(params.get("momentum_loss_exit")) and int(updated.get("bars_open") or 0) >= 1:
+        if (side == "buy" and close < entry and close < float(_number(bar.get("open")) or close)) or (
+            side == "sell" and close > entry and close > float(_number(bar.get("open")) or close)
+        ):
+            return {}, _close_capital(settings, updated, close, "momentum_loss_exit", bar)
     if config.partial_exit and not bool(updated.get("partial_exit_taken")):
         best = float(_number(updated.get("max_favorable_excursion")) or 0.0)
         if best >= risk * 0.85:
@@ -1331,6 +1508,12 @@ def _settings_for_capital_config(settings: BacktestSettings, config: CapitalSear
     params["adaptive_time_stop"] = bool(config.adaptive_time_stop)
     if not config.volatility_filter:
         params["min_volatility_score"] = 0.0
+    time_stop_bars = max(1, int(config.time_stop_bars))
+    caps = params.get("max_time_stop_bars_by_timeframe")
+    if isinstance(caps, dict):
+        cap = _number(caps.get(str(settings.timeframe or "").upper()))
+        if cap is not None:
+            time_stop_bars = min(time_stop_bars, max(1, int(cap)))
     return replace(
         settings,
         filter_profile=config.profile,
@@ -1338,7 +1521,7 @@ def _settings_for_capital_config(settings: BacktestSettings, config: CapitalSear
         min_score=config.score_min,
         max_spread_points=config.spread_max,
         min_rr=float(config.risk_reward),
-        time_stop_bars=max(1, int(config.time_stop_bars)),
+        time_stop_bars=time_stop_bars,
         risk_pct=float(config.risk_pct),
     )
 
@@ -1992,6 +2175,14 @@ def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path 
         "profit_factor",
         "expectancy",
         "max_drawdown",
+        "buy_win_rate",
+        "sell_win_rate",
+        "buy_pf",
+        "sell_pf",
+        "blocked_by_drawdown_accelerating",
+        "blocked_by_cooldown_after_loss",
+        "blocked_by_consecutive_losses",
+        "blocked_by_mae_filter",
         "test_pf",
         "test_expectancy",
         "monte_carlo_risk_of_ruin",
@@ -2024,6 +2215,14 @@ def write_capital_preservation_outputs(result: dict[str, Any], output_dir: Path 
                     "profit_factor": row.get("profit_factor", 0),
                     "expectancy": row.get("expectancy", 0),
                     "max_drawdown": row.get("max_drawdown", 0),
+                    "buy_win_rate": row.get("buy_win_rate", 0),
+                    "sell_win_rate": row.get("sell_win_rate", 0),
+                    "buy_pf": row.get("buy_pf", 0),
+                    "sell_pf": row.get("sell_pf", 0),
+                    "blocked_by_drawdown_accelerating": row.get("blocked_by_drawdown_accelerating", 0),
+                    "blocked_by_cooldown_after_loss": row.get("blocked_by_cooldown_after_loss", 0),
+                    "blocked_by_consecutive_losses": row.get("blocked_by_consecutive_losses", 0),
+                    "blocked_by_mae_filter": row.get("blocked_by_mae_filter", 0),
                     "test_pf": row.get("test_pf", 0),
                     "test_expectancy": row.get("test_expectancy", 0),
                     "monte_carlo_risk_of_ruin": mc.get("risk_of_ruin", 0),

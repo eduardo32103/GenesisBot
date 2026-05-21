@@ -4,25 +4,25 @@ Paper-only diagnostics. No broker touched, no live orders, no promoted profile m
 
 ## Timeframes With Most Opportunity
 
-- `H1 trend_continuation_v4_expanded` generated `835` signals, actionable `835`, opened `5`.
-- `M30 trend_continuation_v4_expanded` generated `783` signals, actionable `783`, opened `12`.
-- `H1 low_drawdown_v4_expanded` generated `599` signals, actionable `599`, opened `6`.
-- `M30 low_drawdown_v4_expanded` generated `504` signals, actionable `504`, opened `13`.
-- `H1 breakout_pullback_v4_expanded` generated `108` signals, actionable `108`, opened `3`.
+- `H1 trend_continuation_v5_defense_aware` generated `459` signals, actionable `459`, opened `5`.
+- `M30 trend_continuation_v5_defense_aware` generated `391` signals, actionable `391`, opened `12`.
+- `H1 low_drawdown_v5_session_filtered` generated `320` signals, actionable `320`, opened `4`.
+- `H1 capital_preservation_v4_side_filtered` generated `282` signals, actionable `282`, opened `2`.
+- `M30 low_drawdown_v5_session_filtered` generated `258` signals, actionable `258`, opened `12`.
 
 ## Most Restrictive Profiles
 
-- `H1 breakout_pullback_v4_expanded` restrictiveness `25.9618`; pullback_filter=4119, score_threshold=3381, regime_filter=876.
-- `M30 breakout_pullback_v4_expanded` restrictiveness `25.9064`; pullback_filter=4092, score_threshold=3670, regime_filter=1491.
-- `H1 low_drawdown_v4_expanded` restrictiveness `18.963`; score_threshold=3481, pullback_filter=1635, regime_filter=876.
-- `H1 trend_continuation_v4_expanded` restrictiveness `18.2927`; score_threshold=3143, pullback_filter=1635, regime_filter=876.
-- `M30 low_drawdown_v4_expanded` restrictiveness `18.1636`; score_threshold=3798, pullback_filter=1555, regime_filter=1491.
+- `M30 liquidity_sweep_v3_session_confirmed` restrictiveness `36.8344`; rsi_filter=4999, score_threshold=4648, pullback_filter=4378.
+- `H1 liquidity_sweep_v3_session_confirmed` restrictiveness `34.6257`; rsi_filter=4999, pullback_filter=4357, score_threshold=4216.
+- `M30 breakout_pullback_v5_fast_exit` restrictiveness `27.6923`; pullback_filter=4092, score_threshold=3670, regime_filter=1491.
+- `H1 breakout_pullback_v5_fast_exit` restrictiveness `27.1038`; pullback_filter=4119, score_threshold=3381, regime_filter=876.
+- `H1 capital_preservation_v4_side_filtered` restrictiveness `24.3233`; score_threshold=3731, pullback_filter=1635, rsi_filter=1086.
 
 ## Recommendations
 
 - Timeframe with most raw opportunity: `H1`.
-- Most restrictive filter: `score_threshold` with `20578` failures.
-- Most common no-trade reason: `drawdown_accelerating` with `9868` bars.
+- Most restrictive filter: `score_threshold` with `37497` failures.
+- Most common no-trade reason: `session_filter` with `21537` bars.
 - Build balanced variants by easing the dominant blocker one step at a time, then rerun capital preservation gates.
 - Do not promote profiles from funnel counts alone; funnel only explains opportunity loss.
 

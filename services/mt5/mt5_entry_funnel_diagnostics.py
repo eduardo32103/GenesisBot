@@ -17,6 +17,7 @@ from services.mt5.mt5_capital_preservation_optimizer import (
     _config,
     _effective_min_score,
     _effective_min_volatility,
+    _allowed_side,
     _fast_risk_block,
     _market_features,
     _settings_for_capital_config,
@@ -196,6 +197,9 @@ def diagnose_profile_funnel(
         reason = str(common_reason or decision.get("reason") or "no_edge")
         if not decision.get("actionable"):
             no_trade_reasons[reason] += 1
+            continue
+        if not _allowed_side(str(decision.get("side") or ""), settings.filter_params or {}):
+            no_trade_reasons["side_filtered"] += 1
             continue
 
         generated += 1

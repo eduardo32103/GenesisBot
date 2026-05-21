@@ -143,6 +143,11 @@ class MT5EntryFunnelDiagnosticsTests(unittest.TestCase):
             "trend_continuation_v4_expanded",
             "low_drawdown_v4_expanded",
             "breakout_pullback_v4_expanded",
+            "trend_continuation_v5_defense_aware",
+            "low_drawdown_v5_session_filtered",
+            "breakout_pullback_v5_fast_exit",
+            "capital_preservation_v4_side_filtered",
+            "liquidity_sweep_v3_session_confirmed",
         ]:
             self.assertIn(profile, CAPITAL_PRESERVATION_PROFILES)
 
