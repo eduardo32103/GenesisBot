@@ -101,6 +101,13 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
     generic_snapshot = get_snapshot(clean_symbol) or {}
     active_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
     last_tick_at = str(snapshot.get("last_tick_at") or "")
+    if not active_tick:
+        generic_tick = generic_snapshot.get("last_tick") if isinstance(generic_snapshot.get("last_tick"), dict) else {}
+        generic_timeframe = _timeframe(generic_tick.get("timeframe") or generic_snapshot.get("timeframe"))
+        generic_recent = _snapshot_recent(str(generic_snapshot.get("last_tick_at") or ""))
+        if generic_tick and generic_recent and (not generic_timeframe or generic_timeframe == clean_timeframe):
+            active_tick = {**generic_tick, "timeframe": clean_timeframe}
+            last_tick_at = str(generic_snapshot.get("last_tick_at") or "")
     snapshot_recent = _snapshot_recent(last_tick_at)
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
     risk = assess_runtime_risk(clean_symbol, timeframe=clean_timeframe, tick=active_tick, open_trade=open_trade)
@@ -108,7 +115,8 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
     degradation_reason = _degradation_reason(stats)
     degraded = bool(degradation_reason)
     risk_allowed = bool(risk.get("allowed"))
-    active = bool(snapshot_recent and risk_allowed and not degraded)
+    context_ready = _context_ready(active_tick, snapshot)
+    active = bool(active_tick and snapshot_recent and context_ready and risk_allowed and not degraded)
     applies_to_paper_shadow = bool(active and risk_allowed)
     payload = {
         **eth_m30_candidate_profile(),
@@ -120,7 +128,7 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "active": active,
         "applies_to_paper_shadow": applies_to_paper_shadow,
         "applies_to_real_trading": False,
-        "reason": _state_reason(snapshot_recent, risk, degraded, degradation_reason),
+        "reason": _state_reason(bool(active_tick), snapshot_recent, context_ready, risk, degraded, degradation_reason),
         "risk_governor_allowed": risk_allowed,
         "risk_governor_reason": risk.get("reason") or "",
         "risk_state": risk.get("risk_state") or "normal",
@@ -128,6 +136,8 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "risk_governor": risk,
         "runtime_snapshot_available": bool(active_tick),
         "runtime_snapshot_recent": snapshot_recent,
+        "runtime_snapshot_complete": context_ready,
+        "runtime_snapshot_context": snapshot.get("runtime_snapshot_context") or active_tick.get("runtime_snapshot_context") or ("indicator_context" if context_ready else "tick_only" if active_tick else ""),
         "last_tick_at": last_tick_at,
         "snapshot_freshness_minutes": SNAPSHOT_FRESHNESS_MINUTES,
         "open_shadow_trades": 1 if open_trade else 0,
@@ -230,14 +240,30 @@ def _degradation_reason(stats: dict[str, Any]) -> str:
     return ""
 
 
-def _state_reason(snapshot_recent: bool, risk: dict[str, Any], degraded: bool, degradation_reason: str) -> str:
+def _state_reason(snapshot_available: bool, snapshot_recent: bool, context_ready: bool, risk: dict[str, Any], degraded: bool, degradation_reason: str) -> str:
     if degraded:
         return degradation_reason or "candidate_degraded"
-    if not snapshot_recent:
+    if not snapshot_available or not snapshot_recent:
         return "no_runtime_snapshot_for_requested_timeframe"
+    if not context_ready:
+        return "insufficient_bar_context"
     if not risk.get("allowed"):
         return f"risk_governor_block:{risk.get('reason') or 'blocked'}"
     return "paper_forward_candidate_ready"
+
+
+def _context_ready(tick: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    if bool(snapshot.get("runtime_snapshot_complete") or tick.get("runtime_snapshot_complete")):
+        return True
+    return bool(
+        tick
+        and _number(tick.get("last") or tick.get("price")) is not None
+        and _number(tick.get("score") or tick.get("final_score") or tick.get("entry_quality_score")) is not None
+        and _number(tick.get("momentum_score")) is not None
+        and _number(tick.get("trend_score")) is not None
+        and _number(tick.get("volatility_score")) is not None
+        and str(tick.get("regime") or tick.get("market_regime") or "").strip()
+    )
 
 
 def _snapshot_recent(value: str) -> bool:

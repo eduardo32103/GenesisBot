@@ -17,10 +17,11 @@ def update_tick(symbol: str, tick: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_mt5_symbol(clean)
     timestamp = _now()
     timeframe = _timeframe((tick or {}).get("timeframe"))
+    normalized_tick = _normalize_tick(clean, normalized, tick or {}, timeframe=timeframe)
     with _LOCK:
-        current = _update_tick_locked(clean, normalized, tick, timestamp, timeframe="")
+        current = _update_tick_locked(clean, normalized, normalized_tick, timestamp, timeframe="")
         if timeframe:
-            _update_tick_locked(clean, normalized, tick, timestamp, timeframe=timeframe)
+            _update_tick_locked(clean, normalized, normalized_tick, timestamp, timeframe=timeframe)
         return deepcopy(current)
 
 
@@ -105,6 +106,11 @@ def get_snapshot(symbol: str, timeframe: str = "") -> dict[str, Any] | None:
         return deepcopy(payload) if payload else None
 
 
+def runtime_snapshot_recent(symbol: str, timeframe: str = "", *, max_age_minutes: float = 90.0) -> bool:
+    snapshot = get_snapshot(symbol, timeframe) or {}
+    return _is_recent(snapshot.get("last_tick_at"), max_age_minutes=max_age_minutes)
+
+
 def snapshot_status(symbol: str = "") -> dict[str, Any]:
     clean = _symbol(symbol)
     with _LOCK:
@@ -127,7 +133,33 @@ def _symbol(value: object) -> str:
 
 
 def _timeframe(value: object) -> str:
-    return str(value or "").upper().strip()
+    raw = str(value or "").upper().strip()
+    if not raw:
+        return ""
+    raw = raw.replace("TIMEFRAME_", "").replace("PERIOD_", "").replace(" ", "")
+    aliases = {
+        "1": "M1",
+        "M1": "M1",
+        "5": "M5",
+        "M5": "M5",
+        "15": "M15",
+        "M15": "M15",
+        "30": "M30",
+        "M30": "M30",
+        "60": "H1",
+        "16385": "H1",
+        "H1": "H1",
+        "1H": "H1",
+        "240": "H4",
+        "16388": "H4",
+        "H4": "H4",
+        "4H": "H4",
+        "1440": "D1",
+        "16408": "D1",
+        "D1": "D1",
+        "1D": "D1",
+    }
+    return aliases.get(raw, raw)
 
 
 def _snapshot_key(symbol: str, timeframe: str = "") -> str:
@@ -137,11 +169,12 @@ def _snapshot_key(symbol: str, timeframe: str = "") -> str:
 
 
 def _update_tick_locked(clean: str, normalized: str, tick: dict[str, Any], timestamp: str, *, timeframe: str = "") -> dict[str, Any]:
+    canonical_symbol = _canonical_snapshot_symbol(clean, normalized)
     key = _snapshot_key(normalized or clean or "MT5", timeframe)
     current = _SNAPSHOTS.setdefault(
         key,
         {
-            "symbol": clean,
+            "symbol": canonical_symbol,
             "normalized_symbol": normalized or clean,
             "timeframe": timeframe,
             "created_at": timestamp,
@@ -152,11 +185,84 @@ def _update_tick_locked(clean: str, normalized: str, tick: dict[str, Any], times
         current["previous_tick"] = deepcopy(previous_tick)
     current["last_tick"] = deepcopy(dict(tick))
     current["last_tick_at"] = timestamp
-    current["symbol"] = clean or current.get("symbol") or normalized
+    current["symbol"] = canonical_symbol or current.get("symbol") or normalized
     current["normalized_symbol"] = normalized or current.get("normalized_symbol") or clean
     current["timeframe"] = timeframe or _timeframe((tick or {}).get("timeframe"))
+    current["bid"] = _number(tick.get("bid"))
+    current["ask"] = _number(tick.get("ask"))
+    current["last"] = _number(tick.get("last") or tick.get("price"))
+    current["spread"] = _number(tick.get("spread"))
+    current["runtime_snapshot_available"] = True
+    current["runtime_snapshot_recent"] = True
+    current["runtime_snapshot_complete"] = _has_indicator_context(tick)
+    current["runtime_snapshot_context"] = "indicator_context" if current["runtime_snapshot_complete"] else "tick_only"
     current["updated_at"] = timestamp
     return current
+
+
+def _normalize_tick(clean: str, normalized: str, tick: dict[str, Any], *, timeframe: str = "") -> dict[str, Any]:
+    payload = dict(tick or {})
+    payload["symbol"] = _canonical_snapshot_symbol(clean, normalized)
+    payload["normalized_symbol"] = normalized or clean
+    payload["timeframe"] = timeframe
+    bid = _number(payload.get("bid"))
+    ask = _number(payload.get("ask"))
+    last = _number(payload.get("last") or payload.get("price"))
+    if last is None and bid is not None and ask is not None:
+        last = (bid + ask) / 2.0
+    if last is None:
+        last = bid if bid is not None else ask
+    if last is not None:
+        payload["last"] = last
+    spread = _number(payload.get("spread"))
+    if spread is None and bid is not None and ask is not None:
+        spread = abs(ask - bid)
+    if spread is not None:
+        payload["spread"] = spread
+    payload["runtime_snapshot_available"] = True
+    payload["runtime_snapshot_complete"] = _has_indicator_context(payload)
+    payload["runtime_snapshot_context"] = "indicator_context" if payload["runtime_snapshot_complete"] else "tick_only"
+    return payload
+
+
+def _canonical_snapshot_symbol(clean: str, normalized: str) -> str:
+    if normalized in {"BTCUSD", "ETHUSD"}:
+        return normalized
+    return clean or normalized
+
+
+def _has_indicator_context(tick: dict[str, Any]) -> bool:
+    return bool(
+        tick
+        and _number(tick.get("last") or tick.get("price")) is not None
+        and _number(tick.get("score") or tick.get("final_score") or tick.get("entry_quality_score")) is not None
+        and _number(tick.get("momentum_score")) is not None
+        and _number(tick.get("trend_score")) is not None
+        and _number(tick.get("volatility_score")) is not None
+        and str(tick.get("regime") or tick.get("market_regime") or "").strip()
+    )
+
+
+def _is_recent(value: object, *, max_age_minutes: float) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+    return 0 <= age_seconds <= max(0.0, float(max_age_minutes or 0.0)) * 60
+
+
+def _number(value: object) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def _append_closed_locked(clean: str, normalized: str, trade: dict[str, Any], *, limit: int, timeframe: str = "") -> dict[str, Any]:

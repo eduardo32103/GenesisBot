@@ -32,6 +32,7 @@ from services.mt5.mt5_risk_governor import assess_runtime_risk, risk_state_paylo
 from services.mt5.mt5_runtime_snapshot import (
     append_closed_shadow_trade,
     get_snapshot,
+    runtime_snapshot_recent,
     snapshot_status,
     update_account_sync,
     update_adaptive_state,
@@ -385,6 +386,20 @@ class MT5SignalRouter:
             last_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
             available_tick = generic_snapshot.get("last_tick") if isinstance(generic_snapshot.get("last_tick"), dict) else {}
             available_timeframe = str(available_tick.get("timeframe") or generic_snapshot.get("timeframe") or "").upper().strip()
+            if (
+                requested_timeframe
+                and not last_tick
+                and available_tick
+                and (not available_timeframe or available_timeframe == requested_timeframe)
+                and runtime_snapshot_recent(symbol_info["mt5_symbol"])
+            ):
+                promoted_tick = {**available_tick, "timeframe": requested_timeframe}
+                snapshot = update_tick(symbol_info["mt5_symbol"], promoted_tick)
+                snapshot = get_snapshot(symbol_info["mt5_symbol"], requested_timeframe) or snapshot or {}
+                last_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+                available_timeframe = requested_timeframe
+            snapshot_recent = runtime_snapshot_recent(symbol_info["mt5_symbol"], requested_timeframe) if requested_timeframe else runtime_snapshot_recent(symbol_info["mt5_symbol"])
+            snapshot_complete = bool(snapshot.get("runtime_snapshot_complete") or (last_tick or {}).get("runtime_snapshot_complete"))
             promoted_status = self.promoted_profile(symbol=symbol_info["mt5_symbol"], timeframe=requested_timeframe) if requested_timeframe else {}
             candidate_status = (
                 eth_m30_forward_profile_state(symbol=symbol_info["mt5_symbol"], timeframe=requested_timeframe)
@@ -420,6 +435,11 @@ class MT5SignalRouter:
                     "warnings": ["Requested MT5 timeframe has no runtime snapshot yet."],
                     "risk_flags": ["fast_path_only", reason],
                     "last_tick": None,
+                    "runtime_snapshot_available": False,
+                    "runtime_snapshot_recent": False,
+                    "runtime_snapshot_complete": False,
+                    "runtime_snapshot_context": "",
+                    "last_tick_at": "",
                     "promoted_profile": promoted_status if promoted_status.get("active") else None,
                     "paper_forward_candidate": candidate_status or None,
                     "paper_forward_candidate_profile": candidate_status.get("profile") or (promoted_status.get("profile") if promoted_status.get("active") else ""),
@@ -452,6 +472,8 @@ class MT5SignalRouter:
             )
             promoted_profile = exploration.get("promoted_profile") if isinstance(exploration.get("promoted_profile"), dict) else None
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
+            if last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe) and not snapshot_complete:
+                reason = "insufficient_bar_context"
             if exploration.get("paper_exploration_created"):
                 reason = "real_trade_disabled_paper_probe_created"
             if not exploration.get("risk_governor_allowed", True):
@@ -489,6 +511,11 @@ class MT5SignalRouter:
                 "risk_flags": ["fast_path_only", reason],
                 "what_to_watch": [],
                 "last_tick": last_tick or None,
+                "runtime_snapshot_available": bool(last_tick),
+                "runtime_snapshot_recent": bool(snapshot_recent),
+                "runtime_snapshot_complete": bool(snapshot_complete),
+                "runtime_snapshot_context": snapshot.get("runtime_snapshot_context") or (last_tick or {}).get("runtime_snapshot_context") or "",
+                "last_tick_at": snapshot.get("last_tick_at") or "",
                 "paper_exploration_enabled": self.config.paper_exploration_enabled,
                 "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
                 "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
@@ -1290,12 +1317,13 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
         }
+    timeframe = _fast_timeframe(clean, symbol)
     tick = enrich_payload(
         {
             **clean,
             "symbol": symbol,
             "last": last,
-            "timeframe": str(clean.get("timeframe") or "").upper(),
+            "timeframe": timeframe,
             "source": str(clean.get("source") or "mt5_bridge"),
             "timestamp": str(clean.get("timestamp") or clean.get("bar_time") or _now()),
             "broker_touched": False,
@@ -1304,16 +1332,24 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
         }
     )
     snapshot = update_tick(symbol, tick)
+    runtime_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else tick
     queued = enqueue_mt5_event("mt5_ticks", symbol, tick)
-    exploration = evaluate_paper_exploration(symbol, tick=tick, config=config or MT5BridgeConfig.from_env(), trigger="tick")
+    exploration = evaluate_paper_exploration(symbol, tick=runtime_tick, config=config or MT5BridgeConfig.from_env(), trigger="tick")
     return {
         "ok": True,
         "status": "mt5_tick_recorded_fast_path",
-        "symbol": symbol,
+        "symbol": runtime_tick.get("symbol") or symbol,
         "tick_saved": bool(queued.get("queued")),
         "auto_forward_checked": True,
-        "tick": tick,
-        "snapshot": {"updated_at": snapshot.get("updated_at"), "last_tick_at": snapshot.get("last_tick_at")},
+        "tick": runtime_tick,
+        "snapshot": {
+            "updated_at": snapshot.get("updated_at"),
+            "last_tick_at": snapshot.get("last_tick_at"),
+            "runtime_snapshot_available": snapshot.get("runtime_snapshot_available"),
+            "runtime_snapshot_recent": snapshot.get("runtime_snapshot_recent"),
+            "runtime_snapshot_complete": snapshot.get("runtime_snapshot_complete"),
+            "runtime_snapshot_context": snapshot.get("runtime_snapshot_context"),
+        },
         "queue": queued,
         "warning": queued.get("warning") or "",
         "shadow_updates": [exploration.get("open_shadow_trade")] if exploration.get("open_shadow_trade") else [],
@@ -1346,6 +1382,50 @@ def _fast_price(payload: dict[str, Any]) -> float | None:
     if bid is not None and ask is not None:
         return (bid + ask) / 2.0
     return bid if bid is not None else ask
+
+
+def _fast_timeframe(payload: dict[str, Any], symbol: str) -> str:
+    for key in ("timeframe", "tf", "period", "chart_timeframe", "chart_period"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return _normalize_timeframe_value(value)
+    period_minutes = _maybe_float(payload.get("period_minutes") or payload.get("timeframe_minutes"))
+    if period_minutes is not None:
+        return _normalize_timeframe_value(int(period_minutes))
+    normalized = _normalized_symbol(symbol)
+    if normalized == "ETHUSD":
+        return "M30"
+    return ""
+
+
+def _normalize_timeframe_value(value: object) -> str:
+    raw = str(value or "").upper().strip()
+    if not raw:
+        return ""
+    raw = raw.replace("TIMEFRAME_", "").replace("PERIOD_", "").replace(" ", "")
+    aliases = {
+        "1": "M1",
+        "M1": "M1",
+        "5": "M5",
+        "M5": "M5",
+        "15": "M15",
+        "M15": "M15",
+        "30": "M30",
+        "M30": "M30",
+        "60": "H1",
+        "16385": "H1",
+        "H1": "H1",
+        "1H": "H1",
+        "240": "H4",
+        "16388": "H4",
+        "H4": "H4",
+        "4H": "H4",
+        "1440": "D1",
+        "16408": "D1",
+        "D1": "D1",
+        "1D": "D1",
+    }
+    return aliases.get(raw, raw)
 
 
 def _empty_performance_from_snapshot(symbol: str, timeframe: str, *, reason: str) -> dict[str, Any]:

@@ -14,7 +14,8 @@ def resolve_instrument(value: dict[str, Any] | str | None) -> dict[str, Any]:
     currency_base = _symbol(payload.get("currency_base"))
     currency_profit = _symbol(payload.get("currency_profit"))
     compact = original_symbol.replace("-", "").replace("/", "").rstrip(".")
-    compact_root = compact.rstrip("M")
+    compact_alnum = "".join(char for char in compact if char.isalnum())
+    compact_root = compact_alnum.rstrip("M")
     desc_l = description.casefold()
 
     if _looks_like_spot_btc(original_symbol, compact, compact_root, description, currency_base, currency_profit):
@@ -22,6 +23,20 @@ def resolve_instrument(value: dict[str, Any] | str | None) -> dict[str, Any]:
             original_symbol=original_symbol,
             normalized_symbol="BTCUSD",
             underlying="BTC",
+            instrument_type="crypto_spot",
+            is_spot_crypto=True,
+            description=description,
+            path=path,
+            currency_base=currency_base,
+            currency_profit=currency_profit,
+            warning="",
+        )
+
+    if _looks_like_spot_eth(original_symbol, compact_root, description, currency_base, currency_profit):
+        return _payload(
+            original_symbol=original_symbol,
+            normalized_symbol="ETHUSD",
+            underlying="ETH",
             instrument_type="crypto_spot",
             is_spot_crypto=True,
             description=description,
@@ -69,6 +84,8 @@ def symbol_aliases(value: dict[str, Any] | str | None) -> set[str]:
     original = str(info.get("original_symbol") or "").upper()
     if normalized == "BTCUSD":
         return {"BTCUSD", "BTCUSD.", "BTCUSDM", "BTCUSDm".upper(), "BTCUSDT", "BTC-USD", "XBTUSD"}
+    if normalized == "ETHUSD":
+        return {"ETHUSD", "ETHUSD.", "ETHUSDM", "ETHUSDm".upper(), "ETHUSDT", "ETH-USD"}
     if normalized == "BTC_PROXY":
         return {"BTC", "BTC_PROXY"}
     return {item for item in {normalized, original} if item}
@@ -104,12 +121,22 @@ def payload_matches_symbol(payload: dict[str, Any], symbol: str) -> bool:
 
 
 def _looks_like_spot_btc(symbol: str, compact: str, compact_root: str, description: str, currency_base: str, currency_profit: str) -> bool:
-    if compact in {"BTCUSD", "BTCUSDT", "XBTUSD", "BTCUSD."} or compact_root == "BTCUSD":
+    compact_alnum = "".join(char for char in compact if char.isalnum())
+    if compact_alnum in {"BTCUSD", "BTCUSDT", "XBTUSD"} or compact_root == "BTCUSD" or compact_root.startswith("BTCUSD"):
         return True
     if currency_base == "BTC" and currency_profit in {"USD", "USDT"}:
         return True
     desc_l = description.casefold()
     return "bitcoin vs. usd" in desc_l or "bitcoin vs usd" in desc_l
+
+
+def _looks_like_spot_eth(symbol: str, compact_root: str, description: str, currency_base: str, currency_profit: str) -> bool:
+    if compact_root in {"ETHUSD", "ETHUSDT"} or compact_root.startswith("ETHUSD"):
+        return True
+    if currency_base == "ETH" and currency_profit in {"USD", "USDT"}:
+        return True
+    desc_l = description.casefold()
+    return "ethereum vs. usd" in desc_l or "ethereum vs usd" in desc_l
 
 
 def _payload(
