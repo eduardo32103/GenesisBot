@@ -31,8 +31,16 @@ class MT5EthM30PaperForwardAnalyticsTests(unittest.TestCase):
         self.assertEqual(result["top_decision_reasons"]["profile_conditions_not_met:score_too_low"], 3)
         self.assertEqual(result["near_threshold_counts"]["score"]["within_5_below"], 3)
         self.assertEqual(result["near_threshold_counts"]["momentum_score"]["below"], 3)
+        self.assertEqual(result["near_miss_counts"]["within_1"], 1)
+        self.assertEqual(result["near_miss_counts"]["within_2"], 2)
+        self.assertEqual(result["near_miss_counts"]["within_3"], 2)
+        self.assertEqual(result["near_miss_counts"]["within_5"], 3)
+        self.assertEqual(result["score_gap_distribution"]["count"], 3)
         self.assertEqual(result["score_component_bottleneck"]["dominant_component"], "momentum_score")
+        self.assertEqual(result["bottleneck_component_ranking"][0]["component"], "momentum_score")
+        self.assertEqual(result["top_near_miss_timestamps"][0]["score"], 57.0)
         self.assertIn("investigate_score_components", result["recommendation_actions"])
+        self.assertIn("investigate_momentum_component", result["recommendation_actions"])
         self.assertIn("do_not_relax_thresholds_yet", result["recommendation_actions"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -125,6 +133,21 @@ def _snapshot(
         "decision": "NO_TRADE",
         "decision_reason": reason,
         "open_shadow_count": 0,
+        "runtime_snapshot_complete": complete,
+        "runtime_snapshot_context": context,
+        "bars_count": 100 if complete else 0,
+        "tick_merged_into_bar_context": complete,
+        "strategy_score": score,
+        "min_score": 58.0,
+        "score_gap_to_threshold": round(score - 58.0, 4),
+        "trend_score": trend,
+        "momentum_score": momentum,
+        "volatility_score": volatility,
+        "market_regime": "trend",
+        "session": "london_us",
+        "spread": 1.7,
+        "failed_components": "score_below_threshold,momentum_below_threshold" if momentum < 50 else "score_below_threshold",
+        "component_thresholds": '{"momentum_score": 50.0, "score": 58.0, "trend_score": 50.0, "volatility_score": 35.0}',
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
@@ -136,6 +159,19 @@ def _snapshot(
                 "runtime_snapshot_context": context,
                 "risk_governor_allowed": risk_allowed,
                 "risk_governor_reason": "risk_governor_pass" if risk_allowed else "spread_too_high",
+                "strategy_score": score,
+                "min_score": 58.0,
+                "score_gap_to_threshold": round(score - 58.0, 4),
+                "trend_score": trend,
+                "momentum_score": momentum,
+                "volatility_score": volatility,
+                "failed_components": ["score_below_threshold", "momentum_below_threshold"] if momentum < 50 else ["score_below_threshold"],
+                "component_thresholds": {
+                    "score": 58.0,
+                    "momentum_score": 50.0,
+                    "trend_score": 50.0,
+                    "volatility_score": 35.0,
+                },
                 "broker_touched": False,
                 "order_executed": False,
                 "order_policy": "journal_only_no_broker",

@@ -70,8 +70,17 @@ def analyze_eth_m30_paper_forward_snapshots(
     score_thresholds = _score_thresholds()
     near_threshold = _near_threshold_counts(rows, score_thresholds)
     bottleneck = _score_component_bottleneck(rows, score_thresholds)
+    near_miss_counts = _near_miss_counts(rows)
+    top_near_misses = _top_near_miss_rows(rows)
     shadow_stats = _shadow_trade_stats(shadow_trades or [], rows)
-    recommendation_actions = _recommendation_actions(total, reason_counts, risk_blocks, observed_broker_touched, observed_order_executed)
+    recommendation_actions = _recommendation_actions(
+        total,
+        reason_counts,
+        risk_blocks,
+        observed_broker_touched,
+        observed_order_executed,
+        bottleneck_component=str(bottleneck.get("dominant_component") or ""),
+    )
     result = {
         "ok": True,
         "status": "eth_m30_paper_forward_analytics_ready",
@@ -98,7 +107,11 @@ def analyze_eth_m30_paper_forward_snapshots(
             "volatility_score": _distribution(row["volatility_score"] for row in rows),
         },
         "near_threshold_counts": near_threshold,
+        "near_miss_counts": near_miss_counts,
+        "score_gap_distribution": _distribution(_score_gap(row) for row in rows),
         "score_component_bottleneck": bottleneck,
+        "bottleneck_component_ranking": bottleneck.get("component_ranking", []),
+        "top_near_miss_timestamps": top_near_misses,
         "session_distribution": _counts(row["session"] or "unknown" for row in rows),
         "regime_distribution": _counts(row["market_regime"] or "unknown" for row in rows),
         "spread_distribution": _distribution(row["spread"] for row in rows),
@@ -139,6 +152,7 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
     bottleneck = result.get("score_component_bottleneck") if isinstance(result.get("score_component_bottleneck"), dict) else {}
     distributions = result.get("score_distributions") if isinstance(result.get("score_distributions"), dict) else {}
     near = result.get("near_threshold_counts") if isinstance(result.get("near_threshold_counts"), dict) else {}
+    near_misses = result.get("near_miss_counts") if isinstance(result.get("near_miss_counts"), dict) else {}
     lines = [
         "# ETHUSD M30 Paper-Forward Analytics",
         "",
@@ -160,8 +174,12 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
         f"- Momentum distribution: `{distributions.get('momentum_score', {})}`",
         f"- Volatility distribution: `{distributions.get('volatility_score', {})}`",
         f"- Near threshold counts: `{near}`",
+        f"- Near-miss counts by score gap: `{near_misses}`",
+        f"- Score gap distribution: `{result.get('score_gap_distribution', {})}`",
         f"- Bottleneck: `{bottleneck.get('dominant_component', '')}`",
         f"- Bottleneck reason: `{bottleneck.get('reason', '')}`",
+        f"- Bottleneck ranking: `{result.get('bottleneck_component_ranking', [])}`",
+        f"- Top near-miss timestamps: `{result.get('top_near_miss_timestamps', [])}`",
         "",
         "## Context",
         f"- Session distribution: `{result.get('session_distribution', {})}`",
@@ -203,6 +221,31 @@ def _extract_row(snapshot: dict[str, Any]) -> dict[str, Any]:
     reason = snapshot.get("decision_reason") or decision.get("reason") or ""
     risk_allowed = _bool(snapshot.get("risk_governor_allowed"), default=_bool(decision.get("risk_governor_allowed"), default=True))
     risk_reason = str(snapshot.get("risk_governor_reason") or decision.get("risk_governor_reason") or "").strip()
+    thresholds = _score_thresholds()
+    score = _first_number(snapshot.get("strategy_score"), snapshot.get("score"), decision.get("strategy_score"), tick.get("score"), tick.get("final_score"), tick.get("entry_quality_score"), decision.get("score"))
+    min_score = _first_number(
+        snapshot.get("min_score"),
+        decision.get("min_score"),
+        (decision.get("component_thresholds") or {}).get("score") if isinstance(decision.get("component_thresholds"), dict) else None,
+    )
+    if min_score is None and score is not None:
+        min_score = thresholds["score"]
+    score_gap = _first_number(snapshot.get("score_gap_to_threshold"), decision.get("score_gap_to_threshold"))
+    if score_gap is None and score is not None and min_score is not None:
+        score_gap = score - min_score
+    trend_score = _first_number(snapshot.get("trend_score"), decision.get("trend_score"), tick.get("trend_score"))
+    momentum_score = _first_number(snapshot.get("momentum_score"), decision.get("momentum_score"), tick.get("momentum_score"))
+    volatility_score = _first_number(snapshot.get("volatility_score"), decision.get("volatility_score"), tick.get("volatility_score"))
+    failed_components = _failed_components(snapshot.get("failed_components"), decision.get("failed_components"))
+    if not failed_components:
+        failed_components = _derive_failed_components(
+            score=score,
+            min_score=min_score,
+            trend_score=trend_score,
+            momentum_score=momentum_score,
+            volatility_score=volatility_score,
+            thresholds=thresholds,
+        )
     return {
         "timestamp": snapshot.get("timestamp") or "",
         "symbol": snapshot.get("symbol") or decision.get("symbol") or "ETHUSD",
@@ -212,16 +255,24 @@ def _extract_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "decision": snapshot.get("decision") or decision.get("decision") or "",
         "decision_reason": reason,
         "risk_governor_blocked": str(reason).startswith("risk_governor_block") or (not risk_allowed and risk_reason not in {"", "risk_governor_pass"}),
-        "runtime_snapshot_complete": _bool(decision.get("runtime_snapshot_complete"), default=_bool(forward.get("runtime_snapshot_complete"), default=_bool(tick.get("runtime_snapshot_complete")))),
-        "runtime_snapshot_context": str(decision.get("runtime_snapshot_context") or forward.get("runtime_snapshot_context") or tick.get("runtime_snapshot_context") or "").strip(),
-        "score": _number(tick.get("score") or tick.get("final_score") or tick.get("entry_quality_score") or decision.get("score")),
-        "trend_score": _number(tick.get("trend_score") or decision.get("trend_score")),
-        "momentum_score": _number(tick.get("momentum_score") or decision.get("momentum_score")),
-        "volatility_score": _number(tick.get("volatility_score") or decision.get("volatility_score")),
-        "market_regime": str(tick.get("market_regime") or tick.get("regime") or decision.get("market_regime") or "").strip(),
-        "session": str(tick.get("session") or decision.get("session") or "").strip(),
+        "runtime_snapshot_complete": _bool(
+            snapshot.get("runtime_snapshot_complete"),
+            default=_bool(decision.get("runtime_snapshot_complete"), default=_bool(forward.get("runtime_snapshot_complete"), default=_bool(tick.get("runtime_snapshot_complete")))),
+        ),
+        "runtime_snapshot_context": str(
+            snapshot.get("runtime_snapshot_context") or decision.get("runtime_snapshot_context") or forward.get("runtime_snapshot_context") or tick.get("runtime_snapshot_context") or ""
+        ).strip(),
+        "score": score,
+        "min_score": min_score,
+        "score_gap_to_threshold": score_gap,
+        "trend_score": trend_score,
+        "momentum_score": momentum_score,
+        "volatility_score": volatility_score,
+        "failed_components": failed_components,
+        "market_regime": str(snapshot.get("market_regime") or tick.get("market_regime") or tick.get("regime") or decision.get("market_regime") or "").strip(),
+        "session": str(snapshot.get("session") or tick.get("session") or decision.get("session") or "").strip(),
         "hour": _number(tick.get("hour") or decision.get("hour")),
-        "spread": _number(tick.get("spread") or decision.get("spread")),
+        "spread": _first_number(snapshot.get("spread"), tick.get("spread"), decision.get("spread")),
         "open_shadow_count": _number(snapshot.get("open_shadow_count") or open_trades.get("open_count")) or 0,
         "broker_touched": _bool(snapshot.get("broker_touched"), default=_bool(decision.get("broker_touched"))),
         "order_executed": _bool(snapshot.get("order_executed"), default=_bool(decision.get("order_executed"))),
@@ -250,6 +301,50 @@ def _near_threshold_counts(rows: list[dict[str, Any]], thresholds: dict[str, flo
             "passed": sum(1 for value in values if value >= threshold),
         }
     return result
+
+
+def _near_miss_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    gaps = [_score_gap(row) for row in rows]
+    gaps = [float(gap) for gap in gaps if gap is not None and gap < 0]
+    return {
+        "within_1": sum(1 for gap in gaps if -1.0 <= gap < 0.0),
+        "within_2": sum(1 for gap in gaps if -2.0 <= gap < 0.0),
+        "within_3": sum(1 for gap in gaps if -3.0 <= gap < 0.0),
+        "within_5": sum(1 for gap in gaps if -5.0 <= gap < 0.0),
+    }
+
+
+def _top_near_miss_rows(rows: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    candidates = []
+    for row in rows:
+        gap = _score_gap(row)
+        if gap is None or gap >= 0:
+            continue
+        candidates.append(
+            {
+                "timestamp": row.get("timestamp") or "",
+                "decision_reason": row.get("decision_reason") or "",
+                "score": row.get("score"),
+                "min_score": row.get("min_score") or _score_thresholds()["score"],
+                "score_gap_to_threshold": round(float(gap), 4),
+                "momentum_score": row.get("momentum_score"),
+                "trend_score": row.get("trend_score"),
+                "volatility_score": row.get("volatility_score"),
+                "failed_components": row.get("failed_components") or [],
+            }
+        )
+    return sorted(candidates, key=lambda item: item["score_gap_to_threshold"], reverse=True)[:limit]
+
+
+def _score_gap(row: dict[str, Any]) -> float | None:
+    gap = _number(row.get("score_gap_to_threshold"))
+    if gap is not None:
+        return gap
+    score = _number(row.get("score"))
+    threshold = _number(row.get("min_score")) or _score_thresholds()["score"]
+    if score is None:
+        return None
+    return score - threshold
 
 
 def _score_component_bottleneck(rows: list[dict[str, Any]], thresholds: dict[str, float]) -> dict[str, Any]:
@@ -292,6 +387,16 @@ def _score_component_bottleneck(rows: list[dict[str, Any]], thresholds: dict[str
         "score_avg": score_avg,
         "score_threshold": thresholds["score"],
         "component_stats": component_stats,
+        "component_ranking": [
+            {
+                "component": key,
+                "below_threshold_count": stats.get("below_threshold_count", 0),
+                "avg_margin": stats.get("avg_margin"),
+                "avg_value": stats.get("avg_value"),
+                "threshold": stats.get("threshold"),
+            }
+            for key, stats in ranked
+        ],
     }
 
 
@@ -307,7 +412,15 @@ def _shadow_trade_stats(shadow_trades: list[dict[str, Any]], rows: list[dict[str
     }
 
 
-def _recommendation_actions(total: int, reason_counts: dict[str, int], risk_blocks: int, broker_count: int, order_count: int) -> list[str]:
+def _recommendation_actions(
+    total: int,
+    reason_counts: dict[str, int],
+    risk_blocks: int,
+    broker_count: int,
+    order_count: int,
+    *,
+    bottleneck_component: str = "",
+) -> list[str]:
     if broker_count or order_count:
         return ["halt_observation", "investigate_safety_violation", "no_real_trading"]
     actions = ["continue_observation"]
@@ -315,6 +428,8 @@ def _recommendation_actions(total: int, reason_counts: dict[str, int], risk_bloc
         actions.append("collect_more_samples")
     if any("score_too_low" in reason for reason in reason_counts):
         actions.append("investigate_score_components")
+    if bottleneck_component == "momentum_score":
+        actions.append("investigate_momentum_component")
     if risk_blocks:
         actions.append("review_risk_governor_blocks_without_relaxing")
     actions.extend(["do_not_relax_thresholds_yet", "no_real_trading"])
@@ -359,6 +474,44 @@ def _number(value: object) -> float | None:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def _first_number(*values: object) -> float | None:
+    for value in values:
+        parsed = _number(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _failed_components(*values: object) -> list[str]:
+    for value in values:
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        if isinstance(value, str) and value.strip():
+            return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _derive_failed_components(
+    *,
+    score: float | None,
+    min_score: float | None,
+    trend_score: float | None,
+    momentum_score: float | None,
+    volatility_score: float | None,
+    thresholds: dict[str, float],
+) -> list[str]:
+    failed: list[str] = []
+    if score is not None and min_score is not None and score < min_score:
+        failed.append("score_below_threshold")
+    if momentum_score is not None and momentum_score < thresholds["momentum_score"]:
+        failed.append("momentum_below_threshold")
+    if trend_score is not None and trend_score < thresholds["trend_score"]:
+        failed.append("trend_below_threshold")
+    if volatility_score is not None and volatility_score < thresholds["volatility_score"]:
+        failed.append("volatility_below_threshold")
+    return failed
 
 
 def _jsonable(value: Any) -> Any:

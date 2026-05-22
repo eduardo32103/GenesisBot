@@ -18,6 +18,7 @@ Write-Host "IntervalSec=$IntervalSec"
 Write-Host "Iterations=$Iterations"
 Write-Host "OutputDir=$OutputDir"
 Write-Host "TimeoutSec=$TimeoutSec"
+Write-Host "NearMissTelemetry=true"
 
 python -m services.mt5.mt5_eth_m30_paper_forward_monitor `
     --base-url $BaseUrl `

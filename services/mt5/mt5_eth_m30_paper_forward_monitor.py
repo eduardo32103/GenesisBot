@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from services.mt5.mt5_eth_m30_paper_forward_candidate import ETH_M30_PROFILE_RULES
+
 
 DEFAULT_BASE_URL = "https://genesisbot-production.up.railway.app"
 DEFAULT_OUTPUT_DIR = Path("data") / "backtests" / "multisymbol"
@@ -104,6 +106,7 @@ def collect_eth_m30_paper_forward_snapshot(
     decision = payloads.get("decision") or {}
     open_trades = payloads.get("shadow_trades_open") or {}
     health = payloads.get("health") or {}
+    features = _monitor_feature_fields(decision, forward)
     broker_touched = any(bool(item.get("broker_touched")) for item in payloads.values() if isinstance(item, dict))
     order_executed = any(bool(item.get("order_executed")) for item in payloads.values() if isinstance(item, dict))
     order_policy = _first_policy(payloads) or "journal_only_no_broker"
@@ -117,8 +120,10 @@ def collect_eth_m30_paper_forward_snapshot(
         "forward_status": forward.get("status") or "",
         "forward_profile": forward.get("profile") or "",
         "active": bool(forward.get("active")),
+        "forward_active": bool(forward.get("active")),
         "applies_to_paper_shadow": bool(forward.get("applies_to_paper_shadow")),
         "applies_to_real_trading": bool(forward.get("applies_to_real_trading")),
+        **features,
         "risk_state": risk.get("risk_state") or "",
         "risk_allowed": bool(risk.get("allowed")),
         "risk_reason": risk.get("reason") or "",
@@ -214,6 +219,23 @@ def write_eth_m30_paper_forward_monitor_outputs(result: dict[str, Any], output_d
         "decision",
         "decision_reason",
         "paper_forward_candidate_profile",
+        "runtime_snapshot_complete",
+        "runtime_snapshot_context",
+        "bars_count",
+        "tick_merged_into_bar_context",
+        "forward_active",
+        "applies_to_paper_shadow",
+        "strategy_score",
+        "min_score",
+        "score_gap_to_threshold",
+        "trend_score",
+        "momentum_score",
+        "volatility_score",
+        "market_regime",
+        "session",
+        "spread",
+        "failed_components",
+        "component_thresholds",
         "open_shadow_count",
         "broker_touched",
         "order_executed",
@@ -295,6 +317,11 @@ def print_monitor_result(result: dict[str, Any]) -> None:
     print(f"endpoint_failure_count={summary.get('endpoint_failure_count')}")
     print(f"monitor_status={summary.get('status')}")
     print(f"recommendation={summary.get('recommendation')}")
+    snapshots = result.get("snapshots") if isinstance(result.get("snapshots"), list) else []
+    latest = snapshots[-1] if snapshots else {}
+    print(f"latest_strategy_score={latest.get('strategy_score')}")
+    print(f"latest_score_gap_to_threshold={latest.get('score_gap_to_threshold')}")
+    print(f"latest_failed_components={latest.get('failed_components')}")
     print(f"broker_touched={result.get('broker_touched')}")
     print(f"order_executed={result.get('order_executed')}")
     print(f"order_policy={result.get('order_policy')}")
@@ -347,6 +374,79 @@ def _first_policy(payloads: dict[str, dict[str, Any]]) -> str:
         if policy:
             return policy
     return ""
+
+
+def _monitor_feature_fields(decision: dict[str, Any], forward: dict[str, Any]) -> dict[str, Any]:
+    tick = decision.get("last_tick") if isinstance(decision.get("last_tick"), dict) else {}
+    component_thresholds = decision.get("component_thresholds") if isinstance(decision.get("component_thresholds"), dict) else _default_component_thresholds()
+    failed_components = decision.get("failed_components") if isinstance(decision.get("failed_components"), list) else []
+    strategy_score = _number(decision.get("strategy_score") or tick.get("score") or tick.get("final_score") or tick.get("entry_quality_score"))
+    min_score = _number(decision.get("min_score") or component_thresholds.get("score"))
+    score_gap = _number(decision.get("score_gap_to_threshold"))
+    if score_gap is None and strategy_score is not None and min_score is not None:
+        score_gap = strategy_score - min_score
+    trend_score = _number(decision.get("trend_score") or tick.get("trend_score"))
+    momentum_score = _number(decision.get("momentum_score") or tick.get("momentum_score"))
+    volatility_score = _number(decision.get("volatility_score") or tick.get("volatility_score"))
+    if not failed_components:
+        failed_components = _derive_failed_components(
+            strategy_score=strategy_score,
+            min_score=min_score,
+            trend_score=trend_score,
+            momentum_score=momentum_score,
+            volatility_score=volatility_score,
+            thresholds=component_thresholds,
+        )
+    return {
+        "runtime_snapshot_complete": bool(decision.get("runtime_snapshot_complete") or forward.get("runtime_snapshot_complete") or tick.get("runtime_snapshot_complete")),
+        "runtime_snapshot_context": decision.get("runtime_snapshot_context") or forward.get("runtime_snapshot_context") or tick.get("runtime_snapshot_context") or "",
+        "bars_count": int(_number(decision.get("bars_count") or forward.get("bars_count") or tick.get("bars_count")) or 0),
+        "tick_merged_into_bar_context": bool(decision.get("tick_merged_into_bar_context") or forward.get("tick_merged_into_bar_context") or tick.get("tick_merged_into_bar_context")),
+        "strategy_score": strategy_score,
+        "min_score": min_score,
+        "score_gap_to_threshold": round(score_gap, 4) if score_gap is not None else None,
+        "trend_score": trend_score,
+        "momentum_score": momentum_score,
+        "volatility_score": volatility_score,
+        "market_regime": tick.get("market_regime") or tick.get("regime") or decision.get("market_regime") or "",
+        "session": tick.get("session") or decision.get("session") or "",
+        "spread": _number(tick.get("spread") or decision.get("spread")),
+        "failed_components": ",".join(str(item) for item in failed_components),
+        "component_thresholds": json.dumps(component_thresholds, sort_keys=True) if component_thresholds else "",
+    }
+
+
+def _default_component_thresholds() -> dict[str, float]:
+    return {
+        "score": float(_number(ETH_M30_PROFILE_RULES.get("min_score")) or 58.0),
+        "momentum_score": float(_number(ETH_M30_PROFILE_RULES.get("min_momentum_score")) or 50.0),
+        "trend_score": float(_number(ETH_M30_PROFILE_RULES.get("min_trend_score")) or 50.0),
+        "volatility_score": float(_number(ETH_M30_PROFILE_RULES.get("min_volatility_score")) or 35.0),
+    }
+
+
+def _derive_failed_components(
+    *,
+    strategy_score: float | None,
+    min_score: float | None,
+    trend_score: float | None,
+    momentum_score: float | None,
+    volatility_score: float | None,
+    thresholds: dict[str, Any],
+) -> list[str]:
+    failed: list[str] = []
+    if strategy_score is not None and min_score is not None and strategy_score < min_score:
+        failed.append("score_below_threshold")
+    momentum_threshold = _number(thresholds.get("momentum_score"))
+    trend_threshold = _number(thresholds.get("trend_score"))
+    volatility_threshold = _number(thresholds.get("volatility_score"))
+    if momentum_score is not None and momentum_threshold is not None and momentum_score < momentum_threshold:
+        failed.append("momentum_below_threshold")
+    if trend_score is not None and trend_threshold is not None and trend_score < trend_threshold:
+        failed.append("trend_below_threshold")
+    if volatility_score is not None and volatility_threshold is not None and volatility_score < volatility_threshold:
+        failed.append("volatility_below_threshold")
+    return failed
 
 
 def _safe_error(exc: Exception) -> str:

@@ -15,6 +15,7 @@ from services.mt5.mt5_backtester import MT5Backtester
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
 from services.mt5.mt5_eth_m30_paper_forward_candidate import (
+    ETH_M30_PROFILE_RULES,
     eth_m30_forward_profile_state,
     is_eth_m30_candidate_scope,
 )
@@ -482,6 +483,11 @@ class MT5SignalRouter:
                 reason = "real_trade_disabled_paper_probe_created"
             if not exploration.get("risk_governor_allowed", True):
                 reason = f"risk_governor_block:{exploration.get('risk_governor_reason') or 'blocked'}"
+            score_diagnostics = (
+                _eth_m30_score_diagnostics(last_tick)
+                if last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe)
+                else {}
+            )
             payload = {
                 "ok": True,
                 "symbol": symbol_info["mt5_symbol"],
@@ -524,6 +530,14 @@ class MT5SignalRouter:
                 "bars_count": int(snapshot.get("bars_count") or 0),
                 "snapshot_context_source": snapshot.get("snapshot_context_source") or "",
                 "tick_merged_into_bar_context": bool(snapshot.get("tick_merged_into_bar_context")),
+                "strategy_score": score_diagnostics.get("strategy_score"),
+                "min_score": score_diagnostics.get("min_score"),
+                "score_gap_to_threshold": score_diagnostics.get("score_gap_to_threshold"),
+                "trend_score": score_diagnostics.get("trend_score"),
+                "momentum_score": score_diagnostics.get("momentum_score"),
+                "volatility_score": score_diagnostics.get("volatility_score"),
+                "failed_components": score_diagnostics.get("failed_components", []),
+                "component_thresholds": score_diagnostics.get("component_thresholds", {}),
                 "paper_exploration_enabled": self.config.paper_exploration_enabled,
                 "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
                 "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
@@ -1459,6 +1473,39 @@ def _fast_bars(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
+    }
+
+
+def _eth_m30_score_diagnostics(tick: dict[str, Any]) -> dict[str, Any]:
+    active_tick = tick if isinstance(tick, dict) else {}
+    thresholds = {
+        "score": float(_maybe_float(ETH_M30_PROFILE_RULES.get("min_score")) or 58.0),
+        "momentum_score": float(_maybe_float(ETH_M30_PROFILE_RULES.get("min_momentum_score")) or 50.0),
+        "trend_score": float(_maybe_float(ETH_M30_PROFILE_RULES.get("min_trend_score")) or 50.0),
+        "volatility_score": float(_maybe_float(ETH_M30_PROFILE_RULES.get("min_volatility_score")) or 35.0),
+    }
+    values = {
+        "strategy_score": _maybe_float(active_tick.get("score") or active_tick.get("final_score") or active_tick.get("entry_quality_score")),
+        "momentum_score": _maybe_float(active_tick.get("momentum_score")),
+        "trend_score": _maybe_float(active_tick.get("trend_score")),
+        "volatility_score": _maybe_float(active_tick.get("volatility_score")),
+    }
+    failed: list[str] = []
+    if values["strategy_score"] is not None and values["strategy_score"] < thresholds["score"]:
+        failed.append("score_below_threshold")
+    if values["momentum_score"] is not None and values["momentum_score"] < thresholds["momentum_score"]:
+        failed.append("momentum_below_threshold")
+    if values["trend_score"] is not None and values["trend_score"] < thresholds["trend_score"]:
+        failed.append("trend_below_threshold")
+    if values["volatility_score"] is not None and values["volatility_score"] < thresholds["volatility_score"]:
+        failed.append("volatility_below_threshold")
+    gap = values["strategy_score"] - thresholds["score"] if values["strategy_score"] is not None else None
+    return {
+        **values,
+        "min_score": thresholds["score"],
+        "score_gap_to_threshold": round(gap, 4) if gap is not None else None,
+        "failed_components": failed,
+        "component_thresholds": thresholds,
     }
 
 
