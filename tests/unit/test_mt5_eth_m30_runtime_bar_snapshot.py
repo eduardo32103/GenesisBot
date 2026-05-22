@@ -4,10 +4,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from services.mt5.mt5_bridge import mt5_bars, mt5_decision, mt5_forward_profile_state, mt5_promoted_profile
+from services.mt5.mt5_bridge import mt5_bars, mt5_decision, mt5_forward_profile_state, mt5_promoted_profile, mt5_tick
 from services.mt5.mt5_eth_m30_paper_forward_candidate import ETH_M30_CANDIDATE_PROFILE
 from services.mt5.mt5_promoted_profile import reset_promoted_profiles_for_tests
-from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, update_open_shadow_trade
+from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, update_open_shadow_trade, update_snapshot
 
 
 class MT5EthM30RuntimeBarSnapshotTests(unittest.TestCase):
@@ -75,6 +75,82 @@ class MT5EthM30RuntimeBarSnapshotTests(unittest.TestCase):
         self.assertFalse(decision["broker_touched"])
         self.assertFalse(decision["order_executed"])
         self.assertEqual(decision["order_policy"], "journal_only_no_broker")
+
+    def test_tick_after_complete_bars_preserves_bar_context_and_updates_price(self) -> None:
+        mt5_bars(_bars_payload(_bars(100), spread=0.3))
+        before = get_snapshot("ETHUSD", "M30") or {}
+
+        tick_result = mt5_tick(
+            {
+                "symbol": "ETHUSD",
+                "timeframe": "M30",
+                "bid": 3333.1,
+                "ask": 3333.5,
+                "last": 3333.3,
+                "spread": 0.4,
+                "source": "unit_tick_after_bars",
+            }
+        )
+        snapshot = get_snapshot("ETHUSD", "M30") or {}
+        forward = mt5_forward_profile_state(symbol="ETHUSD", timeframe="M30")
+
+        self.assertTrue(tick_result["ok"])
+        self.assertTrue(tick_result["snapshot"]["runtime_snapshot_complete"])
+        self.assertEqual(tick_result["snapshot"]["runtime_snapshot_context"], "bar_context")
+        self.assertTrue(tick_result["snapshot"]["tick_merged_into_bar_context"])
+        self.assertTrue(snapshot["runtime_snapshot_complete"])
+        self.assertEqual(snapshot["runtime_snapshot_context"], "bar_context")
+        self.assertTrue(snapshot["tick_merged_into_bar_context"])
+        self.assertEqual(snapshot["snapshot_context_source"], "bar_context")
+        self.assertEqual(snapshot["bars_count"], 100)
+        self.assertEqual(snapshot["last_tick"]["last"], 3333.3)
+        self.assertEqual(snapshot["last_tick"]["spread"], 0.4)
+        self.assertEqual(snapshot["trend_score"], before["trend_score"])
+        self.assertEqual(snapshot["last_tick"]["trend_score"], before["trend_score"])
+        self.assertIn("ohlc_recent", snapshot)
+        self.assertTrue(forward["active"])
+        self.assertTrue(forward["runtime_snapshot_complete"])
+        self.assertEqual(forward["runtime_snapshot_context"], "bar_context")
+        self.assertFalse(forward["applies_to_real_trading"])
+        self.assertFalse(tick_result["broker_touched"])
+        self.assertFalse(tick_result["order_executed"])
+        self.assertEqual(tick_result["order_policy"], "journal_only_no_broker")
+
+        with patch("services.mt5.mt5_signal_router.enqueue_mt5_event", return_value={"queued": True}):
+            decision = mt5_decision("ETHUSD", timeframe="M30")
+
+        self.assertTrue(decision["runtime_snapshot_complete"])
+        self.assertEqual(decision["runtime_snapshot_context"], "bar_context")
+        self.assertNotEqual(decision["reason"], "insufficient_bar_context")
+        self.assertFalse(decision["broker_touched"])
+        self.assertFalse(decision["order_executed"])
+
+    def test_expired_bar_context_can_degrade_to_tick_only(self) -> None:
+        mt5_bars(_bars_payload(_bars(100), spread=0.3))
+        expired = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+        update_snapshot("ETHUSD", {"last_bars_at": expired, "bars_last_at": expired}, timeframe="M30")
+
+        mt5_tick(
+            {
+                "symbol": "ETHUSD",
+                "timeframe": "M30",
+                "bid": 3333.1,
+                "ask": 3333.5,
+                "last": 3333.3,
+                "spread": 0.4,
+                "source": "unit_tick_after_expired_bars",
+            }
+        )
+        snapshot = get_snapshot("ETHUSD", "M30") or {}
+        forward = mt5_forward_profile_state(symbol="ETHUSD", timeframe="M30")
+
+        self.assertFalse(snapshot["runtime_snapshot_complete"])
+        self.assertEqual(snapshot["runtime_snapshot_context"], "tick_only")
+        self.assertFalse(snapshot["tick_merged_into_bar_context"])
+        self.assertFalse(forward["active"])
+        self.assertEqual(forward["reason"], "insufficient_bar_context")
+        self.assertFalse(forward["broker_touched"])
+        self.assertFalse(forward["order_executed"])
 
     def test_risk_governor_blocks_before_paper_shadow_when_spread_high(self) -> None:
         mt5_bars(_bars_payload(_trend_bars(100), spread=99.0))

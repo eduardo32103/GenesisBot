@@ -210,21 +210,32 @@ def _update_tick_locked(clean: str, normalized: str, tick: dict[str, Any], times
         },
     )
     previous_tick = current.get("last_tick") if isinstance(current.get("last_tick"), dict) else None
+    preserve_bar_context = _bar_context_is_usable(current)
     if previous_tick:
         current["previous_tick"] = deepcopy(previous_tick)
-    current["last_tick"] = deepcopy(dict(tick))
+    stored_tick = _merge_tick_into_bar_context(previous_tick or {}, tick, current) if preserve_bar_context else deepcopy(dict(tick))
+    current["last_tick"] = stored_tick
     current["last_tick_at"] = timestamp
     current["symbol"] = canonical_symbol or current.get("symbol") or normalized
     current["normalized_symbol"] = normalized or current.get("normalized_symbol") or clean
     current["timeframe"] = timeframe or _timeframe((tick or {}).get("timeframe"))
-    current["bid"] = _number(tick.get("bid"))
-    current["ask"] = _number(tick.get("ask"))
-    current["last"] = _number(tick.get("last") or tick.get("price"))
-    current["spread"] = _number(tick.get("spread"))
+    current["bid"] = _number(tick.get("bid")) if _number(tick.get("bid")) is not None else current.get("bid")
+    current["ask"] = _number(tick.get("ask")) if _number(tick.get("ask")) is not None else current.get("ask")
+    current["last"] = _number(tick.get("last") or tick.get("price")) if _number(tick.get("last") or tick.get("price")) is not None else current.get("last")
+    current["spread"] = _number(tick.get("spread")) if _number(tick.get("spread")) is not None else current.get("spread")
     current["runtime_snapshot_available"] = True
     current["runtime_snapshot_recent"] = True
-    current["runtime_snapshot_complete"] = _has_indicator_context(tick)
-    current["runtime_snapshot_context"] = "indicator_context" if current["runtime_snapshot_complete"] else "tick_only"
+    if preserve_bar_context:
+        current["runtime_snapshot_complete"] = True
+        current["runtime_snapshot_context"] = "bar_context"
+        current["snapshot_context_source"] = "bar_context"
+        current["tick_merged_into_bar_context"] = True
+        current["bars_last_at"] = current.get("last_bars_at") or current.get("bars_last_at") or ""
+    else:
+        current["runtime_snapshot_complete"] = _has_indicator_context(stored_tick)
+        current["runtime_snapshot_context"] = "indicator_context" if current["runtime_snapshot_complete"] else "tick_only"
+        current["snapshot_context_source"] = "tick"
+        current["tick_merged_into_bar_context"] = False
     current["updated_at"] = timestamp
     return current
 
@@ -249,15 +260,25 @@ def _update_bars_locked(
     current["rsi"] = _number(context.get("rsi"))
     current["ema20"] = _number(context.get("ema20"))
     current["ema50"] = _number(context.get("ema50"))
+    current["score"] = _number(context.get("score") or enriched_tick.get("score"))
+    current["final_score"] = _number(context.get("final_score") or enriched_tick.get("final_score") or current.get("score"))
+    current["entry_quality_score"] = _number(context.get("entry_quality_score") or enriched_tick.get("entry_quality_score") or current.get("score"))
     current["trend_score"] = _number(context.get("trend_score"))
     current["momentum_score"] = _number(context.get("momentum_score"))
     current["volatility_score"] = _number(context.get("volatility_score"))
     current["market_regime"] = context.get("market_regime") or context.get("regime") or ""
+    current["regime"] = current["market_regime"]
+    current["side"] = context.get("side") or enriched_tick.get("side") or enriched_tick.get("side_hint") or ""
+    current["action"] = context.get("action") or enriched_tick.get("action") or ""
+    current["breakout_confirmed"] = bool(context.get("breakout_confirmed") or enriched_tick.get("breakout_confirmed"))
     current["runtime_snapshot_available"] = True
     current["runtime_snapshot_recent"] = True
     current["runtime_snapshot_complete"] = bool(context.get("runtime_snapshot_complete"))
     current["runtime_snapshot_context"] = context.get("runtime_snapshot_context") or ("bar_context" if current["runtime_snapshot_complete"] else "insufficient_bar_context")
     current["last_bars_at"] = timestamp
+    current["bars_last_at"] = timestamp
+    current["snapshot_context_source"] = "bar_context" if current["runtime_snapshot_context"] == "bar_context" else current["runtime_snapshot_context"]
+    current["tick_merged_into_bar_context"] = False
     current["updated_at"] = timestamp
     return current
 
@@ -303,6 +324,55 @@ def _has_indicator_context(tick: dict[str, Any]) -> bool:
         and _number(tick.get("volatility_score")) is not None
         and str(tick.get("regime") or tick.get("market_regime") or "").strip()
     )
+
+
+def _bar_context_is_usable(snapshot: dict[str, Any]) -> bool:
+    if not snapshot:
+        return False
+    context = str(snapshot.get("runtime_snapshot_context") or "").strip()
+    if context != "bar_context" or not bool(snapshot.get("runtime_snapshot_complete")):
+        return False
+    bars_count = int(_number(snapshot.get("bars_count")) or 0)
+    min_bars = int(_number(snapshot.get("min_bars_required")) or MIN_BAR_CONTEXT_BARS)
+    if bars_count < max(1, min_bars):
+        return False
+    return _is_recent(snapshot.get("last_bars_at") or snapshot.get("bars_last_at"), max_age_minutes=90.0)
+
+
+def _merge_tick_into_bar_context(previous_tick: dict[str, Any], tick: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(previous_tick or {})
+    for key, value in (tick or {}).items():
+        if value is not None and value != "":
+            merged[key] = deepcopy(value)
+    for key in (
+        "score",
+        "final_score",
+        "entry_quality_score",
+        "momentum_score",
+        "trend_score",
+        "volatility_score",
+        "atr",
+        "rsi",
+        "ema20",
+        "ema50",
+        "market_regime",
+        "regime",
+        "side",
+        "action",
+        "breakout_confirmed",
+        "bars_count",
+        "min_bars_required",
+    ):
+        if merged.get(key) in (None, "") and snapshot.get(key) not in (None, ""):
+            merged[key] = deepcopy(snapshot.get(key))
+    if merged.get("regime") in (None, "") and snapshot.get("market_regime") not in (None, ""):
+        merged["regime"] = deepcopy(snapshot.get("market_regime"))
+    merged["runtime_snapshot_available"] = True
+    merged["runtime_snapshot_recent"] = True
+    merged["runtime_snapshot_complete"] = True
+    merged["runtime_snapshot_context"] = "bar_context"
+    merged["tick_merged_into_bar_context"] = True
+    return merged
 
 
 def _is_recent(value: object, *, max_age_minutes: float) -> bool:
