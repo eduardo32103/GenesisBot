@@ -7,8 +7,6 @@
 #property version   "11.9"
 #property description "Genesis MT5 Bridge EA. Journal/demo bridge with kill switch enabled by default."
 
-#include <Trade/Trade.mqh>
-
 input string GenesisBaseUrl = "https://genesisbot-production.up.railway.app";
 input bool AllowLiveTrading = false;
 input bool DemoOnly = true;
@@ -19,14 +17,16 @@ input int MaxOpenTrades = 1;
 input int PollSeconds = 30;
 input int MagicNumber = 50501;
 input double MaxSpreadPoints = 50;
-input string AllowedSymbols = "BTC,BTCUSD,NVDA,SPY,QQQ,XAUUSD";
+input string AllowedSymbols = "BTCUSD,ETHUSD,EURUSD,GBPUSD,XAUUSD.b,USTEC.b,US500.b";
 input bool KillSwitch = false;
 input bool EnableTickPost = true;
+input bool SendBarsEnabled = true;
+input int BarsCount = 100;
+input int BarsEverySeconds = 300;
 input bool EnableSignalPost = false;
 input bool EnableAccountSync = true;
 input bool EnableDecisionPoll = true;
 
-CTrade trade;
 string EA_VERSION = "GenesisBridgeEA_v11_9_FORCE_TICK";
 string lastDecision = "WAIT";
 string lastConfidence = "low";
@@ -39,17 +39,22 @@ double lastHedgeScore = 0.0;
 double lastNoTradeScore = 0.0;
 datetime lastPoll = 0;
 datetime lastTickSent = 0;
+datetime lastBarsSent = 0;
+datetime lastBarsBarTime = 0;
 datetime lastJournalEvent = 0;
 int lastSignalHttpCode = 0;
 int lastTickHttpCode = 0;
+int lastBarsHttpCode = 0;
 int lastDecisionHttpCode = 0;
 int lastAccountHttpCode = 0;
 string lastSignalStatus = "never";
 string lastTickStatus = "never";
+string lastBarsStatus = "never";
 string lastDecisionStatus = "never";
 string lastAccountStatus = "never";
 string lastError = "";
 string lastTickError = "";
+string lastBarsError = "";
 string lastResponseShort = "";
 string lastInstrumentType = "";
 string lastSymbolDescription = "";
@@ -57,7 +62,6 @@ string lastSymbolPath = "";
 
 int OnInit()
 {
-   trade.SetExpertMagicNumber(MagicNumber);
    EventSetTimer(MathMax(PollSeconds, 5));
    Print("GenesisBridgeEA initialized. JournalOnly=", JournalOnly, " AllowLiveTrading=", AllowLiveTrading, " KillSwitch=", KillSwitch);
    if(EnableAccountSync)
@@ -92,6 +96,18 @@ void OnTimer()
       Print("MT5 SendTick disabled by EnableTickPost=false");
    }
 
+   if(SendBarsEnabled)
+   {
+      bool barsSent = MaybeSendBars();
+      if(!barsSent)
+         Print("MT5 bars warning: SendBars returned false but tick/decision flow will continue.");
+   }
+   else
+   {
+      lastBarsStatus = "disabled";
+      Print("MT5 SendBars disabled by SendBarsEnabled=false");
+   }
+
    if(EnableDecisionPoll)
       PollDecision();
    else
@@ -106,7 +122,7 @@ void OnTimer()
 void PollDecision()
 {
    string response = "";
-   lastDecisionHttpCode = GetJson("/api/genesis/mt5/decision?symbol=" + _Symbol, response);
+   lastDecisionHttpCode = GetJson("/api/genesis/mt5/decision?symbol=" + _Symbol + "&timeframe=" + TimeframeText(), response);
    lastDecisionStatus = HttpStatusText(lastDecisionHttpCode);
    lastDecisionRawResponse = response;
    if(StringLen(response) <= 0)
@@ -234,6 +250,115 @@ bool SendTick()
    return (lastTickHttpCode >= 200 && lastTickHttpCode < 300);
 }
 
+bool MaybeSendBars()
+{
+   if(!IsAllowedSymbol(_Symbol))
+   {
+      lastBarsHttpCode = -2;
+      lastBarsStatus = "symbol_not_allowed";
+      lastBarsError = "symbol not allowed for bars sender";
+      Print("MT5 SendBars skipped symbol_not_allowed symbol=", _Symbol);
+      return false;
+   }
+
+   datetime now = TimeCurrent();
+   datetime currentBarTime = iTime(_Symbol, _Period, 0);
+   bool intervalDue = true;
+   if(BarsEverySeconds > 0 && lastBarsSent > 0)
+      intervalDue = (now - lastBarsSent) >= BarsEverySeconds;
+   bool newBarDue = (currentBarTime > 0 && currentBarTime != lastBarsBarTime);
+
+   if(!intervalDue && !newBarDue)
+      return true;
+
+   bool sent = SendBars();
+   if(sent)
+   {
+      lastBarsSent = now;
+      if(currentBarTime > 0)
+         lastBarsBarTime = currentBarTime;
+   }
+   return sent;
+}
+
+bool SendBars()
+{
+   int requested = BarsCount;
+   if(requested < 100)
+      requested = 100;
+   if(requested > 500)
+      requested = 500;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   int copied = CopyRates(_Symbol, _Period, 0, requested, rates);
+   Print("MT5 SendBars start symbol=", _Symbol, " tf=", TimeframeText(), " bars=", copied);
+   if(copied < 100)
+   {
+      lastBarsHttpCode = -2;
+      lastBarsStatus = "insufficient_bars";
+      lastBarsError = "CopyRates returned " + IntegerToString(copied);
+      Print("MT5 SendBars local error=", lastBarsError);
+      return false;
+   }
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double last = LastMarketPrice();
+   if(bid <= 0.0)
+      bid = last;
+   if(ask <= 0.0)
+      ask = last;
+   if(last <= 0.0 && bid > 0.0 && ask > 0.0)
+      last = (bid + ask) / 2.0;
+
+   string payload = "{";
+   payload += "\"symbol\":\"" + EscapeJson(_Symbol) + "\",";
+   payload += "\"timeframe\":\"" + TimeframeText() + "\",";
+   payload += "\"bars_count\":" + IntegerToString(copied) + ",";
+   payload += "\"bid\":" + DoubleToString(bid, _Digits) + ",";
+   payload += "\"ask\":" + DoubleToString(ask, _Digits) + ",";
+   payload += "\"last\":" + DoubleToString(last, _Digits) + ",";
+   payload += "\"spread\":" + DoubleToString(ask - bid, _Digits) + ",";
+   payload += "\"source\":\"mt5_bridge_bars\",";
+   payload += "\"ea_version\":\"" + EA_VERSION + "\",";
+   payload += "\"broker_touched\":false,";
+   payload += "\"order_executed\":false,";
+   payload += "\"order_policy\":\"journal_only_no_broker\",";
+   payload += "\"bars\":[";
+   for(int i = copied - 1; i >= 0; i--)
+   {
+      if(i < copied - 1)
+         payload += ",";
+      payload += "{";
+      payload += "\"time\":\"" + TimeToIso(rates[i].time) + "\",";
+      payload += "\"open\":" + DoubleToString(rates[i].open, _Digits) + ",";
+      payload += "\"high\":" + DoubleToString(rates[i].high, _Digits) + ",";
+      payload += "\"low\":" + DoubleToString(rates[i].low, _Digits) + ",";
+      payload += "\"close\":" + DoubleToString(rates[i].close, _Digits) + ",";
+      payload += "\"volume\":" + IntegerToString((long)rates[i].tick_volume) + ",";
+      payload += "\"tick_volume\":" + IntegerToString((long)rates[i].tick_volume);
+      payload += "}";
+   }
+   payload += "]}";
+
+   string response = "";
+   lastBarsHttpCode = PostJson("/api/genesis/mt5/bars", payload, response);
+   lastBarsStatus = HttpStatusText(lastBarsHttpCode);
+   lastBarsError = "";
+   Print("MT5 SendBars HTTP=", lastBarsHttpCode);
+   Print("MT5 SendBars response=", ShortText(response, 350));
+   Print("MT5 SendBars response status=", JsonString(response, "status", "unknown"));
+   if(lastBarsHttpCode < 200 || lastBarsHttpCode >= 300)
+   {
+      lastBarsError = "HTTP " + IntegerToString(lastBarsHttpCode) + " err=" + IntegerToString(GetLastError());
+      Print("MT5 SendBars error=", GetLastError());
+      Print("MT5 SendBars response body=", ShortText(response, 500));
+      return false;
+   }
+   return true;
+}
+
 void SendSignalJournal(string decision, string rawDecision)
 {
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -303,53 +428,8 @@ void RequestOrderJournal(string decision)
 
 void ExecuteDemoOrder(string decision)
 {
-   if(JournalOnly || !AllowLiveTrading || KillSwitch)
-      return;
-   if(DemoOnly && AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
-   {
-      Print("Blocked before CTrade: account is not demo.");
-      return;
-   }
-   if(CurrentSpreadPoints() > MaxSpreadPoints)
-   {
-      Print("Blocked before CTrade: spread too high.");
-      return;
-   }
-   if(PositionsTotal() >= MaxOpenTrades)
-   {
-      Print("Blocked before CTrade: max open trades reached.");
-      return;
-   }
-   if(lastStop <= 0.0 || lastRiskPct <= 0.0 || lastRiskPct > MaxRiskPct)
-   {
-      Print("Blocked before CTrade: invalid stop or risk.");
-      return;
-   }
-
-   double lots = SafeLotSize();
-   bool sent = false;
-   if(decision == "BUY")
-      sent = trade.Buy(lots, _Symbol, 0.0, lastStop, lastTarget, "Genesis demo buy");
-   if(decision == "SELL")
-      sent = trade.Sell(lots, _Symbol, 0.0, lastStop, lastTarget, "Genesis demo sell");
-
-   string resultPayload = "{";
-   resultPayload += "\"source\":\"mt5_ea\",";
-   resultPayload += "\"symbol\":\"" + _Symbol + "\",";
-   resultPayload += "\"decision\":\"" + decision + "\",";
-   resultPayload += "\"demo_only\":" + BoolJson(DemoOnly) + ",";
-   resultPayload += "\"allow_live_trading\":" + BoolJson(AllowLiveTrading) + ",";
-   resultPayload += "\"journal_only\":" + BoolJson(JournalOnly) + ",";
-   resultPayload += "\"kill_switch\":" + BoolJson(KillSwitch) + ",";
-   resultPayload += "\"sent\":" + BoolJson(sent) + ",";
-   resultPayload += "\"retcode\":" + IntegerToString((int)trade.ResultRetcode()) + ",";
-   resultPayload += "\"comment\":\"" + EscapeJson(trade.ResultComment()) + "\",";
-   resultPayload += "\"broker_touched\":false,";
-   resultPayload += "\"order_policy\":\"demo_only\"";
-   resultPayload += "}";
-   string response = "";
-   PostJson("/api/genesis/mt5/order-result", resultPayload, response);
-   lastJournalEvent = TimeCurrent();
+   Print("Broker execution disabled in this Genesis phase. Decision=", decision, " order_policy=journal_only_no_broker");
+   return;
 }
 
 bool StringToUtf8Body(string text, char &body[])
@@ -477,6 +557,10 @@ void DrawPanel(string decision, string reason)
    text += "Last tick status: " + lastTickStatus + "\n";
    text += "LastTickHttpCode: " + IntegerToString(lastTickHttpCode) + "\n";
    text += "LastTickError: " + ShortText(lastTickError, 80) + "\n";
+   text += "LastBarsTime: " + TimeLabel(lastBarsSent) + "\n";
+   text += "Last bars status: " + lastBarsStatus + "\n";
+   text += "LastBarsHttpCode: " + IntegerToString(lastBarsHttpCode) + "\n";
+   text += "LastBarsError: " + ShortText(lastBarsError, 80) + "\n";
    text += "LastDecisionHttpCode: " + IntegerToString(lastDecisionHttpCode) + "\n";
    text += "LastAccountSyncHttpCode: " + IntegerToString(lastAccountHttpCode) + "\n";
    text += "Last error: " + ShortText(lastError, 80) + "\n";
@@ -568,6 +652,13 @@ string TimeLabel(datetime value)
    if(value <= 0)
       return "never";
    return TimeToString(value, TIME_DATE|TIME_SECONDS);
+}
+
+string TimeToIso(datetime value)
+{
+   MqlDateTime dt;
+   TimeToStruct(value, dt);
+   return StringFormat("%04d-%02d-%02dT%02d:%02d:%02d+00:00", dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
 }
 
 string ShortText(string value, int maxLen)
