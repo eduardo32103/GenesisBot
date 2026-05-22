@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol
+from services.mt5.mt5_eth_m30_paper_forward_candidate import active_eth_m30_paper_forward_candidate
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
 from services.mt5.mt5_promoted_profile import active_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
@@ -38,6 +39,8 @@ def evaluate_paper_exploration(
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
     active_timeframe = str(requested_timeframe or active_tick.get("timeframe") or "").upper().strip()
     promoted_profile = active_promoted_profile(clean_symbol, active_timeframe, snapshot=snapshot) if active_timeframe else {}
+    if not promoted_profile and active_timeframe:
+        promoted_profile = active_eth_m30_paper_forward_candidate(clean_symbol, active_timeframe, snapshot=snapshot)
     closed_event: dict[str, Any] | None = None
     opened_event: dict[str, Any] | None = None
     risk_governor = assess_runtime_risk(clean_symbol, timeframe=active_timeframe, tick=active_tick, open_trade=open_trade)
@@ -200,7 +203,7 @@ def _can_open(
     defense = _defense_state(closed_trades)
     if not cfg.paper_exploration_enabled:
         return False, "paper_exploration_disabled"
-    if normalized != "BTCUSD":
+    if normalized != "BTCUSD" and not promoted_profile:
         return False, "instrument_mismatch"
     if has_open_trade:
         return False, "active_open_trade"
@@ -222,6 +225,10 @@ def _can_open(
         return False, "negative_recent_edge"
     score = _score(tick)
     rules = _profile_rules(promoted_profile or {}, cfg)
+    session = _session_name(tick)
+    blocked_sessions = {str(item).casefold() for item in (promoted_profile or {}).get("profile_rules", {}).get("blocked_sessions", [])}
+    if session and session in blocked_sessions:
+        return False, f"session_blocked:{session}"
     has_evidence, evidence_reason = _has_entry_evidence(tick, snapshot)
     if not has_evidence:
         return False, evidence_reason
@@ -632,6 +639,15 @@ def _candidate_side(tick: dict[str, Any], snapshot: dict[str, Any]) -> str:
 
 
 def _profile_rules(promoted_profile: dict[str, Any], cfg: MT5BridgeConfig) -> dict[str, float]:
+    if promoted_profile.get("active") and promoted_profile.get("profile") == "eth_m30_vol_breakout_chop_guard_v1":
+        rules = promoted_profile.get("profile_rules") if isinstance(promoted_profile.get("profile_rules"), dict) else {}
+        return {
+            "min_score": float(_number(rules.get("min_score")) or 58.0),
+            "min_momentum_score": float(_number(rules.get("min_momentum_score")) or 50.0),
+            "min_trend_score": float(_number(rules.get("min_trend_score")) or 50.0),
+            "max_rsi_for_buy": 75.0,
+            "min_rsi_for_sell": 25.0,
+        }
     if promoted_profile.get("active") and promoted_profile.get("profile") == "quality_loose":
         return {
             "min_score": 50.0,
@@ -658,6 +674,36 @@ def _explicit_confirmation(tick: dict[str, Any], side: str) -> bool:
     if side == "sell":
         return "breakdown" in confirmation or "retest" in confirmation
     return False
+
+
+def _session_name(tick: dict[str, Any]) -> str:
+    hour = _hour(tick)
+    if hour is None:
+        return ""
+    if 21 <= hour <= 23:
+        return "off_session"
+    if 13 <= hour <= 20:
+        return "ny_core"
+    if 7 <= hour <= 20:
+        return "london_us"
+    if 0 <= hour <= 7:
+        return "asia"
+    return ""
+
+
+def _hour(tick: dict[str, Any]) -> int | None:
+    parsed = _number(tick.get("hour") or tick.get("hour_utc"))
+    if parsed is not None:
+        hour = int(parsed)
+        return hour if 0 <= hour <= 23 else None
+    value = str(tick.get("time") or tick.get("timestamp") or tick.get("datetime") or "").strip()
+    if not value:
+        return None
+    try:
+        parsed_dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed_dt.hour
 
 
 def _late_entry_risk(tick: dict[str, Any], *, side: str, price: float, rsi: float | None) -> bool:

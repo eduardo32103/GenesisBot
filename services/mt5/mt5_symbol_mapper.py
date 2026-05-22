@@ -93,7 +93,7 @@ def _env_symbol_map() -> dict[str, str]:
 
 
 def _env_allowed_symbols() -> list[str]:
-    raw = os.getenv("MT5_ALLOWED_SYMBOLS", "BTCUSD,NVDA,SPY,QQQ,XAUUSD").strip()
+    raw = os.getenv("MT5_ALLOWED_SYMBOLS", "BTCUSD,ETHUSD,NVDA,SPY,QQQ,XAUUSD").strip()
     return [item.strip().upper() for item in raw.split(",") if item.strip()]
 
 

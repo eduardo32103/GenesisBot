@@ -14,6 +14,10 @@ from services.mt5.mt5_account_state import normalize_account_state
 from services.mt5.mt5_backtester import MT5Backtester
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
+from services.mt5.mt5_eth_m30_paper_forward_candidate import (
+    eth_m30_forward_profile_state,
+    is_eth_m30_candidate_scope,
+)
 from services.mt5.mt5_forward_replay import MT5ForwardReplay
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event, ingest_status
@@ -382,6 +386,11 @@ class MT5SignalRouter:
             available_tick = generic_snapshot.get("last_tick") if isinstance(generic_snapshot.get("last_tick"), dict) else {}
             available_timeframe = str(available_tick.get("timeframe") or generic_snapshot.get("timeframe") or "").upper().strip()
             promoted_status = self.promoted_profile(symbol=symbol_info["mt5_symbol"], timeframe=requested_timeframe) if requested_timeframe else {}
+            candidate_status = (
+                eth_m30_forward_profile_state(symbol=symbol_info["mt5_symbol"], timeframe=requested_timeframe)
+                if is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe)
+                else {}
+            )
             if requested_timeframe and not last_tick:
                 risk_governor = assess_runtime_risk(symbol_info["mt5_symbol"], timeframe=requested_timeframe)
                 reason = "no_runtime_snapshot_for_requested_timeframe"
@@ -412,7 +421,9 @@ class MT5SignalRouter:
                     "risk_flags": ["fast_path_only", reason],
                     "last_tick": None,
                     "promoted_profile": promoted_status if promoted_status.get("active") else None,
-                    "paper_forward_candidate_profile": promoted_status.get("profile") if promoted_status.get("active") else "",
+                    "paper_forward_candidate": candidate_status or None,
+                    "paper_forward_candidate_profile": candidate_status.get("profile") or (promoted_status.get("profile") if promoted_status.get("active") else ""),
+                    "paper_forward_candidate_active": bool(candidate_status.get("active")),
                     "applies_to_real_trading": False,
                     "paper_exploration_enabled": self.config.paper_exploration_enabled,
                     "paper_exploration_created": False,
@@ -487,7 +498,9 @@ class MT5SignalRouter:
                 "suggested_lot_multiplier": exploration.get("suggested_lot_multiplier", 0.0),
                 "risk_governor": exploration.get("risk_governor") if isinstance(exploration.get("risk_governor"), dict) else {},
                 "promoted_profile": promoted_profile,
-                "paper_forward_candidate_profile": exploration.get("paper_forward_candidate_profile") or "",
+                "paper_forward_candidate": candidate_status or None,
+                "paper_forward_candidate_profile": candidate_status.get("profile") or exploration.get("paper_forward_candidate_profile") or "",
+                "paper_forward_candidate_active": bool(candidate_status.get("active") or (promoted_profile or {}).get("active")),
                 "applies_to_real_trading": False,
                 "open_shadow_trade_id": exploration.get("shadow_trade_id") or "",
                 "shadow_trade_id": exploration.get("shadow_trade_id") if exploration.get("paper_exploration_created") else "",
@@ -1136,6 +1149,8 @@ class MT5SignalRouter:
         return get_promoted_profile(symbol=symbol or "BTCUSD", timeframe=timeframe or "M30", memory=self.memory)
 
     def forward_profile_state(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+        if is_eth_m30_candidate_scope(symbol or "BTCUSD", timeframe or "M30"):
+            return eth_m30_forward_profile_state(symbol=symbol or "ETHUSD", timeframe=timeframe or "M30")
         return forward_profile_state(symbol=symbol or "BTCUSD", timeframe=timeframe or "M30", memory=self.memory)
 
     def _account_state_for_order(self, payload: dict[str, Any], symbol: str) -> dict[str, Any] | None:
