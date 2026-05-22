@@ -12,3 +12,10 @@ data/backtests/*.json
 !data/backtests/robust_optimizer_results.json
 !data/backtests/capital_preservation_optimizer_results.csv
 !data/backtests/capital_preservation_optimizer_results.json
+
+# Local MT5 multisymbol backtest artifacts
+data/backtests/multisymbol/*.csv
+data/backtests/multisymbol/*.json
+data/backtests/multisymbol/*summary.md
+data/backtests/multisymbol/*report.csv
+data/backtests/multisymbol/*report.json
