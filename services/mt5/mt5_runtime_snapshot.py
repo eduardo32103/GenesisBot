@@ -6,6 +6,7 @@ from threading import Lock
 from typing import Any
 
 from services.mt5.instrument_resolver import normalize_mt5_symbol
+from services.mt5.mt5_runtime_bar_context import MIN_BAR_CONTEXT_BARS, build_runtime_bar_context
 
 
 _LOCK = Lock()
@@ -22,6 +23,34 @@ def update_tick(symbol: str, tick: dict[str, Any]) -> dict[str, Any]:
         current = _update_tick_locked(clean, normalized, normalized_tick, timestamp, timeframe="")
         if timeframe:
             _update_tick_locked(clean, normalized, normalized_tick, timestamp, timeframe=timeframe)
+        return deepcopy(current)
+
+
+def update_bars(
+    symbol: str,
+    timeframe: str,
+    bars: list[dict[str, Any]],
+    *,
+    tick: dict[str, Any] | None = None,
+    min_bars: int = MIN_BAR_CONTEXT_BARS,
+) -> dict[str, Any]:
+    clean = _symbol(symbol)
+    normalized = normalize_mt5_symbol(clean)
+    clean_timeframe = _timeframe(timeframe)
+    canonical = _canonical_snapshot_symbol(clean, normalized)
+    context = build_runtime_bar_context(
+        bars,
+        symbol=canonical,
+        timeframe=clean_timeframe,
+        tick=tick,
+        min_bars=min_bars,
+    )
+    timestamp = _now()
+    enriched_tick = dict(context.get("enriched_tick") or {})
+    with _LOCK:
+        current = _update_bars_locked(clean, normalized, context, enriched_tick, timestamp, timeframe="")
+        if clean_timeframe:
+            _update_bars_locked(clean, normalized, context, enriched_tick, timestamp, timeframe=clean_timeframe)
         return deepcopy(current)
 
 
@@ -196,6 +225,39 @@ def _update_tick_locked(clean: str, normalized: str, tick: dict[str, Any], times
     current["runtime_snapshot_recent"] = True
     current["runtime_snapshot_complete"] = _has_indicator_context(tick)
     current["runtime_snapshot_context"] = "indicator_context" if current["runtime_snapshot_complete"] else "tick_only"
+    current["updated_at"] = timestamp
+    return current
+
+
+def _update_bars_locked(
+    clean: str,
+    normalized: str,
+    context: dict[str, Any],
+    enriched_tick: dict[str, Any],
+    timestamp: str,
+    *,
+    timeframe: str = "",
+) -> dict[str, Any]:
+    current = _update_tick_locked(clean, normalized, enriched_tick, timestamp, timeframe=timeframe)
+    current["bars_count"] = int(context.get("bars_count") or 0)
+    current["min_bars_required"] = int(context.get("min_bars_required") or MIN_BAR_CONTEXT_BARS)
+    current["ohlc_recent"] = deepcopy(context.get("ohlc_recent") if isinstance(context.get("ohlc_recent"), list) else [])
+    current["first_bar_time"] = context.get("first_bar_time") or ""
+    current["last_bar_time"] = context.get("last_bar_time") or ""
+    current["last_price"] = _number(context.get("last_price"))
+    current["atr"] = _number(context.get("atr"))
+    current["rsi"] = _number(context.get("rsi"))
+    current["ema20"] = _number(context.get("ema20"))
+    current["ema50"] = _number(context.get("ema50"))
+    current["trend_score"] = _number(context.get("trend_score"))
+    current["momentum_score"] = _number(context.get("momentum_score"))
+    current["volatility_score"] = _number(context.get("volatility_score"))
+    current["market_regime"] = context.get("market_regime") or context.get("regime") or ""
+    current["runtime_snapshot_available"] = True
+    current["runtime_snapshot_recent"] = True
+    current["runtime_snapshot_complete"] = bool(context.get("runtime_snapshot_complete"))
+    current["runtime_snapshot_context"] = context.get("runtime_snapshot_context") or ("bar_context" if current["runtime_snapshot_complete"] else "insufficient_bar_context")
+    current["last_bars_at"] = timestamp
     current["updated_at"] = timestamp
     return current
 

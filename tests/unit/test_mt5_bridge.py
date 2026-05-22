@@ -173,6 +173,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_account_sync_endpoint"], "/api/genesis/mt5/account-sync")
         self.assertEqual(app["genesis_mt5_signal_endpoint"], "/api/genesis/mt5/signal")
         self.assertEqual(app["genesis_mt5_tick_endpoint"], "/api/genesis/mt5/tick")
+        self.assertEqual(app["genesis_mt5_bars_endpoint"], "/api/genesis/mt5/bars")
         self.assertEqual(app["genesis_mt5_order_request_endpoint"], "/api/genesis/mt5/order-request")
         self.assertEqual(app["genesis_mt5_order_result_endpoint"], "/api/genesis/mt5/order-result")
         self.assertEqual(app["genesis_mt5_manual_tests_reset_endpoint"], "/api/genesis/mt5/manual-tests/reset")

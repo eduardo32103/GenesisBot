@@ -12,6 +12,7 @@ from services.mt5.mt5_bridge import (
     mt5_backtest_latest,
     mt5_backtest_optimize,
     mt5_backtest_run,
+    mt5_bars,
     mt5_config,
     mt5_debug_storage,
     mt5_decision,
@@ -158,6 +159,10 @@ def post_genesis_mt5_signal(payload: dict[str, Any] | None = None) -> dict[str, 
 
 def post_genesis_mt5_tick(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_tick(payload)
+
+
+def post_genesis_mt5_bars(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_bars(payload)
 
 
 def post_genesis_mt5_order_request(payload: dict[str, Any] | None = None) -> dict[str, Any]:

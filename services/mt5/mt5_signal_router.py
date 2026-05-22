@@ -36,6 +36,7 @@ from services.mt5.mt5_runtime_snapshot import (
     snapshot_status,
     update_account_sync,
     update_adaptive_state,
+    update_bars,
     update_decision,
     update_open_shadow_trade,
     update_performance,
@@ -474,6 +475,9 @@ class MT5SignalRouter:
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
             if last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe) and not snapshot_complete:
                 reason = "insufficient_bar_context"
+            elif last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe) and snapshot_complete and not exploration.get("paper_exploration_created"):
+                paper_reason = exploration.get("paper_exploration_reason") or "profile_conditions_not_met"
+                reason = f"profile_conditions_not_met:{paper_reason}"
             if exploration.get("paper_exploration_created"):
                 reason = "real_trade_disabled_paper_probe_created"
             if not exploration.get("risk_governor_allowed", True):
@@ -689,6 +693,9 @@ class MT5SignalRouter:
         if self.config.fast_path_only and self.memory is None:
             return _fast_tick(payload, config=self.config)
         return self.forward_engine.record_tick(payload)
+
+    def bars(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        return _fast_bars(payload, config=self.config)
 
     def performance(self, *, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
         if self.config.fast_path_only and self.memory is None:
@@ -1372,6 +1379,77 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
     }
 
 
+def _fast_bars(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None = None) -> dict[str, Any]:
+    raw_payload = payload or {}
+    clean = sanitize_payload(raw_payload)
+    symbol = str(clean.get("symbol") or clean.get("ticker") or "").upper().strip()
+    timeframe = _fast_timeframe(clean, symbol)
+    bars = _extract_bars(raw_payload)
+    if not symbol or not timeframe or not bars:
+        return {
+            "ok": False,
+            "status": "bars_missing_symbol_timeframe_or_data",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "bars_loaded": len(bars),
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    tick = clean.get("tick") if isinstance(clean.get("tick"), dict) else {}
+    tick = {
+        **tick,
+        **{key: clean[key] for key in ("bid", "ask", "last", "price", "spread", "source") if key in clean},
+        "timeframe": timeframe,
+    }
+    min_bars = int(_maybe_float(clean.get("min_bars") or clean.get("min_bars_required")) or 100)
+    snapshot = update_bars(symbol, timeframe, bars, tick=tick, min_bars=min_bars)
+    queued = enqueue_mt5_event(
+        "mt5_bars",
+        symbol,
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "bars_count": snapshot.get("bars_count") or len(bars),
+            "runtime_snapshot_complete": bool(snapshot.get("runtime_snapshot_complete")),
+            "runtime_snapshot_context": snapshot.get("runtime_snapshot_context") or "",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "timestamp": _now(),
+        },
+    )
+    return {
+        "ok": True,
+        "status": "mt5_bars_recorded_fast_path",
+        "symbol": snapshot.get("symbol") or symbol,
+        "normalized_symbol": snapshot.get("normalized_symbol") or _normalized_symbol(symbol),
+        "timeframe": snapshot.get("timeframe") or timeframe,
+        "bars_loaded": int(snapshot.get("bars_count") or len(bars)),
+        "min_bars_required": int(snapshot.get("min_bars_required") or min_bars),
+        "runtime_snapshot_available": bool(snapshot.get("runtime_snapshot_available")),
+        "runtime_snapshot_recent": bool(snapshot.get("runtime_snapshot_recent")),
+        "runtime_snapshot_complete": bool(snapshot.get("runtime_snapshot_complete")),
+        "runtime_snapshot_context": snapshot.get("runtime_snapshot_context") or "",
+        "last_price": snapshot.get("last_price") or snapshot.get("last"),
+        "trend_score": snapshot.get("trend_score"),
+        "momentum_score": snapshot.get("momentum_score"),
+        "volatility_score": snapshot.get("volatility_score"),
+        "market_regime": snapshot.get("market_regime"),
+        "rsi": snapshot.get("rsi"),
+        "atr": snapshot.get("atr"),
+        "ema20": snapshot.get("ema20"),
+        "ema50": snapshot.get("ema50"),
+        "first_bar_time": snapshot.get("first_bar_time") or "",
+        "last_bar_time": snapshot.get("last_bar_time") or "",
+        "tick_saved": bool(queued.get("queued")),
+        "queue": queued,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
 def _fast_price(payload: dict[str, Any]) -> float | None:
     for key in ("last", "price"):
         value = _maybe_float(payload.get(key))
@@ -1382,6 +1460,14 @@ def _fast_price(payload: dict[str, Any]) -> float | None:
     if bid is not None and ask is not None:
         return (bid + ask) / 2.0
     return bid if bid is not None else ask
+
+
+def _extract_bars(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("bars_data", "bars", "ohlc", "rates"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 def _fast_timeframe(payload: dict[str, Any], symbol: str) -> str:

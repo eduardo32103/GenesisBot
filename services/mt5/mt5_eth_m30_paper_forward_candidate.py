@@ -255,6 +255,11 @@ def _state_reason(snapshot_available: bool, snapshot_recent: bool, context_ready
 def _context_ready(tick: dict[str, Any], snapshot: dict[str, Any]) -> bool:
     if bool(snapshot.get("runtime_snapshot_complete") or tick.get("runtime_snapshot_complete")):
         return True
+    context = str(snapshot.get("runtime_snapshot_context") or tick.get("runtime_snapshot_context") or "").strip()
+    bars_count = int(_number(snapshot.get("bars_count") or tick.get("bars_count")) or 0)
+    min_bars = int(_number(snapshot.get("min_bars_required")) or 0)
+    if context in {"tick_only", "insufficient_bar_context"} or (min_bars > 0 and bars_count < min_bars):
+        return False
     return bool(
         tick
         and _number(tick.get("last") or tick.get("price")) is not None

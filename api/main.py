@@ -87,6 +87,7 @@ from api.routes.genesis import (
     post_genesis_mt5_learning_run,
     post_genesis_mt5_backtest_optimize,
     post_genesis_mt5_backtest_run,
+    post_genesis_mt5_bars,
     post_genesis_mt5_forward_replay_run,
     post_genesis_mt5_replay_reset,
     post_genesis_mt5_signal,
@@ -243,6 +244,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
         "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
         "genesis_mt5_tick_endpoint": "/api/genesis/mt5/tick",
+        "genesis_mt5_bars_endpoint": "/api/genesis/mt5/bars",
         "genesis_mt5_order_request_endpoint": "/api/genesis/mt5/order-request",
         "genesis_mt5_order_result_endpoint": "/api/genesis/mt5/order-result",
         "genesis_mt5_manual_tests_reset_endpoint": "/api/genesis/mt5/manual-tests/reset",
@@ -4117,6 +4119,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/tick":
             result = post_genesis_mt5_tick(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/bars":
+            result = post_genesis_mt5_bars(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

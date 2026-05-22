@@ -98,6 +98,10 @@ def mt5_tick(payload: dict[str, Any] | None, *, memory: MemoryStore | None = Non
     return build_router(memory).tick(payload)
 
 
+def mt5_bars(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return build_router(memory).bars(payload)
+
+
 def mt5_decision(symbol: str, *, memory: MemoryStore | None = None, timeframe: str = "") -> dict[str, Any]:
     return build_router(memory).decision(symbol, timeframe=timeframe)
 
