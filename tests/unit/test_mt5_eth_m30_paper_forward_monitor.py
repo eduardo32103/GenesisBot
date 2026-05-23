@@ -66,10 +66,12 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
                 "failed_components",
                 "component_thresholds",
                 "open_shadow_count",
+                "open_shadow_trade_ids",
                 "blocking_shadow_trade_id",
                 "risk_governor_open_trades_count",
                 "risk_governor_open_trades_source",
                 "shadow_open_endpoint_count",
+                "source_of_open_trade_count",
                 "shadow_occupancy_inconsistent",
             ]:
                 self.assertIn(key, row)
@@ -161,6 +163,7 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
         self.assertEqual(snapshot["shadow_open_endpoint_count"], 0)
         self.assertEqual(snapshot["risk_governor_open_trades_count"], 1)
         self.assertEqual(snapshot["blocking_shadow_trade_id"], "stale-shadow-1")
+        self.assertEqual(snapshot["source_of_open_trade_count"], "runtime_snapshot_open_shadow_trade")
         self.assertTrue(snapshot["shadow_occupancy_inconsistent"])
         self.assertFalse(snapshot["broker_touched"])
         self.assertFalse(snapshot["order_executed"])
@@ -218,12 +221,14 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
                 "failed_components": "score_below_threshold,momentum_below_threshold",
                 "component_thresholds": '{"momentum_score": 50.0, "score": 58.0, "trend_score": 50.0, "volatility_score": 35.0}',
                 "open_shadow_count": 0,
+                "open_shadow_trade_ids": [],
                 "blocking_shadow_trade_id": "",
                 "risk_governor_open_trades_count": 0,
                 "risk_governor_open_trades_source": "",
                 "risk_governor_open_trade_id": "",
                 "risk_governor_open_trade_status": "",
                 "shadow_open_endpoint_count": 0,
+                "source_of_open_trade_count": "none",
                 "shadow_occupancy_inconsistent": False,
                 "broker_touched": False,
                 "order_executed": False,

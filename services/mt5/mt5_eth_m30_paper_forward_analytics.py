@@ -70,10 +70,11 @@ def analyze_eth_m30_paper_forward_snapshots(
     score_thresholds = _score_thresholds()
     near_threshold = _near_threshold_counts(rows, score_thresholds)
     bottleneck = _score_component_bottleneck(rows, score_thresholds)
+    bottleneck_reasons = _bottleneck_reason_ranking(rows)
     near_miss_counts = _near_miss_counts(rows)
     top_near_misses = _top_near_miss_rows(rows)
     momentum_gate = _momentum_gate_report(rows, score_thresholds)
-    max_open_diagnostic = _max_open_trades_diagnostic(rows)
+    max_open_diagnostic = _max_open_trades_diagnostic(rows, shadow_trades or [])
     shadow_stats = _shadow_trade_stats(shadow_trades or [], rows)
     recommendation_actions = _recommendation_actions(
         total,
@@ -115,6 +116,7 @@ def analyze_eth_m30_paper_forward_snapshots(
         "momentum_gap_distribution": _distribution(row["momentum_gap_to_threshold"] for row in rows),
         "score_component_bottleneck": bottleneck,
         "bottleneck_component_ranking": bottleneck.get("component_ranking", []),
+        "bottleneck_reason_ranking": bottleneck_reasons,
         "top_near_miss_timestamps": top_near_misses,
         "momentum_gate_report": momentum_gate,
         "score_pass_momentum_fail_count": momentum_gate.get("score_pass_momentum_fail_count", 0),
@@ -193,6 +195,7 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
         f"- Bottleneck: `{bottleneck.get('dominant_component', '')}`",
         f"- Bottleneck reason: `{bottleneck.get('reason', '')}`",
         f"- Bottleneck ranking: `{result.get('bottleneck_component_ranking', [])}`",
+        f"- Bottleneck reason ranking: `{result.get('bottleneck_reason_ranking', [])}`",
         f"- Top near-miss timestamps: `{result.get('top_near_miss_timestamps', [])}`",
         f"- Score passed but momentum failed: `{result.get('score_pass_momentum_fail_count', 0)}`",
         f"- Momentum fail by session: `{result.get('momentum_fail_by_session', {})}`",
@@ -216,6 +219,7 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
         f"- Inconsistency detected: `{max_open.get('inconsistency_detected', False)}`",
         f"- Inconsistent rows: `{max_open.get('inconsistent_rows', [])}`",
         f"- Block rows: `{max_open.get('max_open_block_rows', [])}`",
+        f"- Shadow store review: `{max_open.get('shadow_store_review', {})}`",
         "",
         "## Recommendation",
     ]
@@ -283,6 +287,26 @@ def _extract_row(snapshot: dict[str, Any]) -> dict[str, Any]:
             volatility_score=volatility_score,
             thresholds=thresholds,
         )
+    open_shadow_count = _number(snapshot.get("open_shadow_count") or open_trades.get("open_count")) or 0
+    shadow_open_endpoint_count = _number(snapshot.get("shadow_open_endpoint_count") or open_trades.get("open_count")) or 0
+    risk_governor_open_count = (
+        _first_number(
+            snapshot.get("risk_governor_open_trades_count"),
+            decision.get("risk_governor_open_trades_count"),
+            ((decision.get("risk_governor") if isinstance(decision.get("risk_governor"), dict) else {}) or {}).get("open_trades_count"),
+        )
+        or 0
+    )
+    source_of_open_trade_count = str(snapshot.get("source_of_open_trade_count") or decision.get("source_of_open_trade_count") or "").strip()
+    if not source_of_open_trade_count:
+        if shadow_open_endpoint_count:
+            source_of_open_trade_count = "shadow_trades_open_endpoint"
+        elif open_shadow_count:
+            source_of_open_trade_count = "monitor_open_shadow_count"
+        elif risk_governor_open_count:
+            source_of_open_trade_count = str(snapshot.get("risk_governor_open_trades_source") or decision.get("risk_governor_open_trades_source") or "risk_governor")
+        else:
+            source_of_open_trade_count = "none"
     return {
         "timestamp": snapshot.get("timestamp") or "",
         "symbol": snapshot.get("symbol") or decision.get("symbol") or "ETHUSD",
@@ -316,19 +340,16 @@ def _extract_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "session": str(snapshot.get("session") or tick.get("session") or decision.get("session") or "").strip(),
         "hour": _number(tick.get("hour") or decision.get("hour")),
         "spread": _first_number(snapshot.get("spread"), tick.get("spread"), decision.get("spread")),
-        "open_shadow_count": _number(snapshot.get("open_shadow_count") or open_trades.get("open_count")) or 0,
+        "open_shadow_count": open_shadow_count,
+        "open_shadow_trade_ids": _id_list(snapshot.get("open_shadow_trade_ids"), decision.get("open_shadow_trade_ids"), open_trades.get("trades")),
         "blocking_shadow_trade_id": str(snapshot.get("blocking_shadow_trade_id") or decision.get("blocking_shadow_trade_id") or decision.get("risk_governor_open_trade_id") or ""),
         "risk_governor_reason": risk_reason,
-        "risk_governor_open_trades_count": _first_number(
-            snapshot.get("risk_governor_open_trades_count"),
-            decision.get("risk_governor_open_trades_count"),
-            ((decision.get("risk_governor") if isinstance(decision.get("risk_governor"), dict) else {}) or {}).get("open_trades_count"),
-        )
-        or 0,
+        "risk_governor_open_trades_count": risk_governor_open_count,
         "risk_governor_open_trades_source": str(snapshot.get("risk_governor_open_trades_source") or decision.get("risk_governor_open_trades_source") or ""),
         "risk_governor_open_trade_id": str(snapshot.get("risk_governor_open_trade_id") or decision.get("risk_governor_open_trade_id") or ""),
         "risk_governor_open_trade_status": str(snapshot.get("risk_governor_open_trade_status") or decision.get("risk_governor_open_trade_status") or ""),
-        "shadow_open_endpoint_count": _number(snapshot.get("shadow_open_endpoint_count") or open_trades.get("open_count")) or 0,
+        "shadow_open_endpoint_count": shadow_open_endpoint_count,
+        "source_of_open_trade_count": source_of_open_trade_count,
         "shadow_occupancy_inconsistent": _bool(snapshot.get("shadow_occupancy_inconsistent")),
         "broker_touched": _bool(snapshot.get("broker_touched"), default=_bool(decision.get("broker_touched"))),
         "order_executed": _bool(snapshot.get("order_executed"), default=_bool(decision.get("order_executed"))),
@@ -350,10 +371,15 @@ def _near_threshold_counts(rows: list[dict[str, Any]], thresholds: dict[str, flo
     for key, threshold in thresholds.items():
         values = [_number(row.get(key)) for row in rows]
         values = [float(value) for value in values if value is not None]
+        below_values = [value for value in values if value < threshold]
         result[key] = {
             "observed": len(values),
-            "below": sum(1 for value in values if value < threshold),
-            "within_5_below": sum(1 for value in values if threshold - 5 <= value < threshold),
+            "below": len(below_values),
+            "within_1_below": sum(1 for value in below_values if threshold - 1 <= value < threshold),
+            "within_2_below": sum(1 for value in below_values if threshold - 2 <= value < threshold),
+            "within_3_below": sum(1 for value in below_values if threshold - 3 <= value < threshold),
+            "within_5_below": sum(1 for value in below_values if threshold - 5 <= value < threshold),
+            "within_10_below": sum(1 for value in below_values if threshold - 10 <= value < threshold),
             "passed": sum(1 for value in values if value >= threshold),
         }
     return result
@@ -449,6 +475,8 @@ def _top_momentum_near_miss_rows(rows: list[dict[str, Any]], *, limit: int = 10)
                 "momentum_score": row.get("momentum_score"),
                 "min_momentum_score": row.get("min_momentum_score"),
                 "momentum_gap_to_threshold": round(float(gap), 4),
+                "trend_score": row.get("trend_score"),
+                "volatility_score": row.get("volatility_score"),
                 "session": row.get("session") or "",
                 "market_regime": row.get("market_regime") or "",
                 "failed_components": row.get("failed_components") or [],
@@ -457,7 +485,7 @@ def _top_momentum_near_miss_rows(rows: list[dict[str, Any]], *, limit: int = 10)
     return sorted(candidates, key=lambda item: item["momentum_gap_to_threshold"], reverse=True)[:limit]
 
 
-def _max_open_trades_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _max_open_trades_diagnostic(rows: list[dict[str, Any]], shadow_trades: list[dict[str, Any]]) -> dict[str, Any]:
     blocked = [row for row in rows if str(row.get("decision_reason") or "") == "risk_governor_block:max_open_trades_reached"]
     block_rows = [_max_open_row(row) for row in blocked]
     inconsistent = [
@@ -466,11 +494,28 @@ def _max_open_trades_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if int(_number(item.get("open_shadow_count")) or 0) == 0
         and int(_number(item.get("shadow_open_endpoint_count")) or 0) == 0
     ]
+    visible_blocks = [
+        item
+        for item in block_rows
+        if int(_number(item.get("open_shadow_count")) or 0) > 0
+        or int(_number(item.get("shadow_open_endpoint_count")) or 0) > 0
+        or bool(item.get("open_shadow_trade_ids"))
+    ]
+    journal_open = [trade for trade in shadow_trades if str(trade.get("status") or trade.get("lifecycle_status") or "").casefold() == "open"]
+    journal_closed = [trade for trade in shadow_trades if str(trade.get("status") or trade.get("lifecycle_status") or "").casefold() == "closed"]
     return {
         "max_open_block_count": len(blocked),
         "max_open_block_rows": block_rows[:10],
         "inconsistency_detected": bool(inconsistent),
         "inconsistent_rows": inconsistent[:10],
+        "shadow_store_review": {
+            "blocked_rows_with_visible_open_trade": len(visible_blocks),
+            "blocked_rows_with_endpoint_zero": sum(1 for item in block_rows if int(_number(item.get("shadow_open_endpoint_count")) or 0) == 0),
+            "latest_open_shadow_count": int(_number(rows[-1].get("open_shadow_count")) or 0) if rows else 0,
+            "journal_shadow_trades_available": bool(shadow_trades),
+            "journal_open_trades": len(journal_open),
+            "journal_closed_trades": len(journal_closed),
+        },
         "recommendation": "investigate_stale_runtime_open_shadow_trade_without_relaxing_risk_governor" if inconsistent else "no_shadow_occupancy_inconsistency_detected",
     }
 
@@ -480,12 +525,14 @@ def _max_open_row(row: dict[str, Any]) -> dict[str, Any]:
         "timestamp": row.get("timestamp") or "",
         "decision_reason": row.get("decision_reason") or "",
         "open_shadow_count": int(_number(row.get("open_shadow_count")) or 0),
+        "open_shadow_trade_ids": row.get("open_shadow_trade_ids") if isinstance(row.get("open_shadow_trade_ids"), list) else [],
         "shadow_open_endpoint_count": int(_number(row.get("shadow_open_endpoint_count")) or 0),
         "blocking_shadow_trade_id": row.get("blocking_shadow_trade_id") or "",
         "risk_governor_open_trades_count": int(_number(row.get("risk_governor_open_trades_count")) or 0),
         "risk_governor_open_trades_source": row.get("risk_governor_open_trades_source") or "",
         "risk_governor_open_trade_id": row.get("risk_governor_open_trade_id") or "",
         "risk_governor_open_trade_status": row.get("risk_governor_open_trade_status") or "",
+        "source_of_open_trade_count": row.get("source_of_open_trade_count") or "",
     }
 
 
@@ -561,6 +608,34 @@ def _score_component_bottleneck(rows: list[dict[str, Any]], thresholds: dict[str
     }
 
 
+def _bottleneck_reason_ranking(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counters = {
+        "momentum_below_threshold": 0,
+        "score_below_threshold": 0,
+        "session_blocked": 0,
+        "regime_blocked": 0,
+        "risk_governor_block": 0,
+    }
+    for row in rows:
+        reason = str(row.get("decision_reason") or "")
+        failed = row.get("failed_components") if isinstance(row.get("failed_components"), list) else []
+        if "momentum_below_threshold" in failed or "momentum_score_low" in reason:
+            counters["momentum_below_threshold"] += 1
+        if "score_below_threshold" in failed or "score_too_low" in reason:
+            counters["score_below_threshold"] += 1
+        if "session_blocked" in reason or "off_session" in reason:
+            counters["session_blocked"] += 1
+        if "regime_blocked" in reason or "regime" in reason or "chop_guard" in reason:
+            counters["regime_blocked"] += 1
+        if bool(row.get("risk_governor_blocked")) or reason.startswith("risk_governor_block"):
+            counters["risk_governor_block"] += 1
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(counters.items(), key=lambda item: (-item[1], item[0]))
+        if count
+    ]
+
+
 def _shadow_trade_stats(shadow_trades: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dict[str, Any]:
     open_from_rows = max((int(_number(row.get("open_shadow_count")) or 0) for row in rows), default=0)
     closed = [trade for trade in shadow_trades if str(trade.get("status") or trade.get("lifecycle_status") or "").casefold() == "closed"]
@@ -591,11 +666,11 @@ def _recommendation_actions(
     if any("score_too_low" in reason for reason in reason_counts):
         actions.append("investigate_score_components")
     if bottleneck_component == "momentum_score":
-        actions.append("investigate_momentum_component")
+        actions.append("investigate_momentum_gate")
     if risk_blocks:
         actions.append("review_risk_governor_blocks_without_relaxing")
     if shadow_occupancy_inconsistent:
-        actions.append("investigate_shadow_occupancy_source")
+        actions.append("fix_shadow_occupancy_mismatch")
     actions.extend(["do_not_relax_thresholds_yet", "no_real_trading"])
     return list(dict.fromkeys(actions))
 
@@ -655,6 +730,33 @@ def _failed_components(*values: object) -> list[str]:
         if isinstance(value, str) and value.strip():
             return [item.strip() for item in value.split(",") if item.strip()]
     return []
+
+
+def _id_list(*values: object) -> list[str]:
+    ids: list[str] = []
+    for value in values:
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    candidate = str(item.get("shadow_trade_id") or item.get("trade_id") or item.get("id") or "").strip()
+                    if candidate:
+                        ids.append(candidate)
+                else:
+                    candidate = str(item or "").strip()
+                    if candidate:
+                        ids.append(candidate)
+            continue
+        if isinstance(value, str) and value.strip():
+            raw = value.strip()
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw.replace("'", '"'))
+                    ids.extend(_id_list(parsed))
+                    continue
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            ids.extend(item.strip() for item in raw.split(",") if item.strip())
+    return list(dict.fromkeys(ids))
 
 
 def _derive_failed_components(

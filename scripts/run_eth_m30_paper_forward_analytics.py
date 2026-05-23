@@ -47,6 +47,7 @@ def main() -> int:
     print(f"top_momentum_near_misses={result['top_momentum_near_misses']}")
     print(f"score_component_bottleneck={bottleneck.get('dominant_component')}")
     print(f"bottleneck_component_ranking={result['bottleneck_component_ranking']}")
+    print(f"bottleneck_reason_ranking={result['bottleneck_reason_ranking']}")
     print(f"max_open_trades_diagnostic={result['max_open_trades_diagnostic']}")
     print(f"shadow_occupancy_inconsistency={result['shadow_occupancy_inconsistency']}")
     print(f"human_bottleneck_explanation={result['human_bottleneck_explanation']}")

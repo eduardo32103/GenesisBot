@@ -244,12 +244,14 @@ def write_eth_m30_paper_forward_monitor_outputs(result: dict[str, Any], output_d
         "failed_components",
         "component_thresholds",
         "open_shadow_count",
+        "open_shadow_trade_ids",
         "blocking_shadow_trade_id",
         "risk_governor_open_trades_count",
         "risk_governor_open_trades_source",
         "risk_governor_open_trade_id",
         "risk_governor_open_trade_status",
         "shadow_open_endpoint_count",
+        "source_of_open_trade_count",
         "shadow_occupancy_inconsistent",
         "broker_touched",
         "order_executed",
@@ -450,6 +452,7 @@ def _shadow_occupancy_fields(
 ) -> dict[str, Any]:
     risk_governor = decision.get("risk_governor") if isinstance(decision.get("risk_governor"), dict) else {}
     endpoint_count = int(_number(open_trades.get("open_count")) or 0)
+    open_shadow_trade_ids = _open_shadow_trade_ids(open_trades, decision)
     risk_count = int(
         _number(
             decision.get("risk_governor_open_trades_count")
@@ -468,17 +471,46 @@ def _shadow_occupancy_fields(
     )
     risk_reason = str(decision.get("risk_governor_reason") or risk.get("reason") or "").strip()
     inconsistent = risk_reason == "max_open_trades_reached" and endpoint_count == 0
+    risk_source = (
+        decision.get("risk_governor_open_trades_source")
+        or risk_governor.get("open_trades_source")
+        or ("risk_governor_block_without_open_endpoint_trade" if inconsistent else "")
+    )
+    source_of_open_trade_count = (
+        decision.get("source_of_open_trade_count")
+        or ("shadow_trades_open_endpoint" if endpoint_count else "")
+        or risk_source
+        or ("risk_governor" if risk_count else "none")
+    )
     return {
+        "open_shadow_trade_ids": open_shadow_trade_ids,
         "blocking_shadow_trade_id": str(blocking_id or ""),
         "risk_governor_open_trades_count": risk_count,
-        "risk_governor_open_trades_source": decision.get("risk_governor_open_trades_source")
-        or risk_governor.get("open_trades_source")
-        or ("risk_governor_block_without_open_endpoint_trade" if inconsistent else ""),
+        "risk_governor_open_trades_source": risk_source,
         "risk_governor_open_trade_id": str(decision.get("risk_governor_open_trade_id") or risk_governor.get("open_trade_id") or blocking_id or ""),
         "risk_governor_open_trade_status": str(decision.get("risk_governor_open_trade_status") or risk_governor.get("open_trade_status") or ""),
         "shadow_open_endpoint_count": endpoint_count,
+        "source_of_open_trade_count": str(source_of_open_trade_count or "none"),
         "shadow_occupancy_inconsistent": bool(inconsistent),
     }
+
+
+def _open_shadow_trade_ids(open_trades: dict[str, Any], decision: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    decision_ids = decision.get("open_shadow_trade_ids")
+    if isinstance(decision_ids, list):
+        ids.extend(str(item).strip() for item in decision_ids if str(item or "").strip())
+    trades = open_trades.get("trades") if isinstance(open_trades.get("trades"), list) else []
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        trade_id = str(trade.get("shadow_trade_id") or trade.get("trade_id") or trade.get("id") or "").strip()
+        if trade_id:
+            ids.append(trade_id)
+    blocking_id = str(decision.get("blocking_shadow_trade_id") or decision.get("risk_governor_open_trade_id") or "").strip()
+    if blocking_id and (int(_number(open_trades.get("open_count")) or 0) > 0 or ids):
+        ids.append(blocking_id)
+    return list(dict.fromkeys(ids))
 
 
 def _default_component_thresholds() -> dict[str, float]:

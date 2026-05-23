@@ -557,6 +557,8 @@ class MT5SignalRouter:
                 "risk_governor_open_trades_source": shadow_occupancy.get("risk_governor_open_trades_source", ""),
                 "risk_governor_open_trade_id": shadow_occupancy.get("risk_governor_open_trade_id", ""),
                 "risk_governor_open_trade_status": shadow_occupancy.get("risk_governor_open_trade_status", ""),
+                "open_shadow_trade_ids": shadow_occupancy.get("open_shadow_trade_ids", []),
+                "source_of_open_trade_count": shadow_occupancy.get("source_of_open_trade_count", ""),
                 "promoted_profile": promoted_profile,
                 "paper_forward_candidate": candidate_status or None,
                 "paper_forward_candidate_profile": candidate_status.get("profile") or exploration.get("paper_forward_candidate_profile") or "",
@@ -1544,12 +1546,15 @@ def _shadow_occupancy_diagnostics(snapshot: dict[str, Any], exploration: dict[st
     if risk_reason == "max_open_trades_reached" and not open_trade:
         source = "risk_governor_block_without_visible_snapshot_trade"
     trade_id = str(open_trade.get("shadow_trade_id") or open_trade.get("trade_id") or "").strip()
+    open_trade_ids = [trade_id] if trade_id else []
     return {
         "risk_governor_open_trades_count": open_count,
         "risk_governor_open_trades_source": source,
         "risk_governor_open_trade_id": trade_id,
         "risk_governor_open_trade_status": str(open_trade.get("status") or open_trade.get("lifecycle_status") or "").strip(),
         "blocking_shadow_trade_id": trade_id if risk_reason == "max_open_trades_reached" else "",
+        "open_shadow_trade_ids": open_trade_ids,
+        "source_of_open_trade_count": source,
     }
 
 

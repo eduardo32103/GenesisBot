@@ -30,7 +30,9 @@ class MT5EthM30PaperForwardAnalyticsTests(unittest.TestCase):
         self.assertEqual(result["decision_counts"]["NO_TRADE"], 3)
         self.assertEqual(result["top_decision_reasons"]["profile_conditions_not_met:score_too_low"], 3)
         self.assertEqual(result["near_threshold_counts"]["score"]["within_5_below"], 3)
+        self.assertEqual(result["near_threshold_counts"]["score"]["within_10_below"], 3)
         self.assertEqual(result["near_threshold_counts"]["momentum_score"]["below"], 3)
+        self.assertEqual(result["near_threshold_counts"]["momentum_score"]["within_3_below"], 3)
         self.assertEqual(result["near_miss_counts"]["within_1"], 1)
         self.assertEqual(result["near_miss_counts"]["within_2"], 2)
         self.assertEqual(result["near_miss_counts"]["within_3"], 2)
@@ -43,9 +45,10 @@ class MT5EthM30PaperForwardAnalyticsTests(unittest.TestCase):
         self.assertEqual(result["momentum_fail_by_regime"]["trend"], 3)
         self.assertEqual(result["score_component_bottleneck"]["dominant_component"], "momentum_score")
         self.assertEqual(result["bottleneck_component_ranking"][0]["component"], "momentum_score")
+        self.assertEqual(result["bottleneck_reason_ranking"][0]["reason"], "momentum_below_threshold")
         self.assertEqual(result["top_near_miss_timestamps"][0]["score"], 57.0)
         self.assertIn("investigate_score_components", result["recommendation_actions"])
-        self.assertIn("investigate_momentum_component", result["recommendation_actions"])
+        self.assertIn("investigate_momentum_gate", result["recommendation_actions"])
         self.assertIn("do_not_relax_thresholds_yet", result["recommendation_actions"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -64,7 +67,7 @@ class MT5EthM30PaperForwardAnalyticsTests(unittest.TestCase):
         self.assertEqual(result["top_momentum_near_misses"][0]["momentum_gap_to_threshold"], -0.8)
         self.assertEqual(result["momentum_fail_by_session"]["asia"], 1)
         self.assertIn("compuerta de momentum", result["human_bottleneck_explanation"])
-        self.assertIn("investigate_momentum_component", result["recommendation_actions"])
+        self.assertIn("investigate_momentum_gate", result["recommendation_actions"])
 
     def test_reports_max_open_trades_occupancy_inconsistency(self) -> None:
         result = analyze_eth_m30_paper_forward_snapshots(
@@ -83,8 +86,9 @@ class MT5EthM30PaperForwardAnalyticsTests(unittest.TestCase):
         self.assertEqual(diagnostic["max_open_block_count"], 1)
         self.assertTrue(diagnostic["inconsistency_detected"])
         self.assertEqual(diagnostic["inconsistent_rows"][0]["blocking_shadow_trade_id"], "stale-shadow-1")
+        self.assertEqual(diagnostic["max_open_block_rows"][0]["source_of_open_trade_count"], "runtime_snapshot_open_shadow_trade")
         self.assertTrue(result["shadow_occupancy_inconsistency"])
-        self.assertIn("investigate_shadow_occupancy_source", result["recommendation_actions"])
+        self.assertIn("fix_shadow_occupancy_mismatch", result["recommendation_actions"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
 
@@ -180,6 +184,7 @@ def _snapshot(
         "decision": "NO_TRADE",
         "decision_reason": reason,
         "open_shadow_count": open_shadow_count,
+        "open_shadow_trade_ids": [blocking_shadow_trade_id] if open_shadow_count and blocking_shadow_trade_id else [],
         "runtime_snapshot_complete": complete,
         "runtime_snapshot_context": context,
         "bars_count": 100 if complete else 0,
@@ -207,6 +212,7 @@ def _snapshot(
         "risk_governor_open_trade_id": blocking_shadow_trade_id,
         "risk_governor_open_trade_status": "closed" if risk_open_count else "",
         "shadow_open_endpoint_count": open_shadow_count,
+        "source_of_open_trade_count": "runtime_snapshot_open_shadow_trade" if risk_open_count else ("shadow_trades_open_endpoint" if open_shadow_count else "none"),
         "shadow_occupancy_inconsistent": bool(risk_open_count and open_shadow_count == 0),
         "broker_touched": False,
         "order_executed": False,
@@ -268,7 +274,10 @@ def _snapshot(
                 "order_executed": False,
                 "order_policy": "journal_only_no_broker",
             },
-            "shadow_trades_open": {"open_count": open_shadow_count, "trades": []},
+            "shadow_trades_open": {
+                "open_count": open_shadow_count,
+                "trades": [{"shadow_trade_id": blocking_shadow_trade_id, "status": "open"}] if open_shadow_count and blocking_shadow_trade_id else [],
+            },
         },
     }
 
