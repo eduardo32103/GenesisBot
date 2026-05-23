@@ -52,14 +52,25 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
                 "min_score",
                 "score_gap_to_threshold",
                 "trend_score",
+                "min_trend_score",
+                "trend_gap_to_threshold",
                 "momentum_score",
+                "min_momentum_score",
+                "momentum_gap_to_threshold",
                 "volatility_score",
+                "min_volatility_score",
+                "volatility_gap_to_threshold",
                 "market_regime",
                 "session",
                 "spread",
                 "failed_components",
                 "component_thresholds",
                 "open_shadow_count",
+                "blocking_shadow_trade_id",
+                "risk_governor_open_trades_count",
+                "risk_governor_open_trades_source",
+                "shadow_open_endpoint_count",
+                "shadow_occupancy_inconsistent",
             ]:
                 self.assertIn(key, row)
             self.assertTrue(row["runtime_snapshot_complete"])
@@ -69,6 +80,12 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
             self.assertEqual(row["strategy_score"], 54.0)
             self.assertEqual(row["min_score"], 58.0)
             self.assertEqual(row["score_gap_to_threshold"], -4.0)
+            self.assertEqual(row["min_momentum_score"], 50.0)
+            self.assertEqual(row["momentum_gap_to_threshold"], -3.0)
+            self.assertEqual(row["min_trend_score"], 50.0)
+            self.assertEqual(row["trend_gap_to_threshold"], 16.0)
+            self.assertEqual(row["min_volatility_score"], 35.0)
+            self.assertEqual(row["volatility_gap_to_threshold"], 11.0)
             self.assertIn("momentum_below_threshold", row["failed_components"])
             self.assertTrue(Path(result["output_paths"]["csv"]).exists())
             self.assertTrue(Path(result["output_paths"]["json"]).exists())
@@ -123,6 +140,31 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
         self.assertTrue(snapshot["degraded"])
         self.assertEqual(snapshot["degradation_reason"], "broker_touched_detected")
 
+    def test_monitor_logs_shadow_occupancy_source_for_max_open_blocks(self) -> None:
+        fetcher = _fake_fetcher(
+            decision_patch={
+                "reason": "risk_governor_block:max_open_trades_reached",
+                "risk_governor_allowed": False,
+                "risk_governor_reason": "max_open_trades_reached",
+                "blocking_shadow_trade_id": "stale-shadow-1",
+                "risk_governor_open_trades_count": 1,
+                "risk_governor_open_trades_source": "runtime_snapshot_open_shadow_trade",
+                "risk_governor_open_trade_id": "stale-shadow-1",
+                "risk_governor_open_trade_status": "closed",
+            }
+        )
+
+        snapshot = collect_eth_m30_paper_forward_snapshot(base_url="http://genesis.local", fetcher=fetcher)
+
+        self.assertEqual(snapshot["decision_reason"], "risk_governor_block:max_open_trades_reached")
+        self.assertEqual(snapshot["open_shadow_count"], 0)
+        self.assertEqual(snapshot["shadow_open_endpoint_count"], 0)
+        self.assertEqual(snapshot["risk_governor_open_trades_count"], 1)
+        self.assertEqual(snapshot["blocking_shadow_trade_id"], "stale-shadow-1")
+        self.assertTrue(snapshot["shadow_occupancy_inconsistent"])
+        self.assertFalse(snapshot["broker_touched"])
+        self.assertFalse(snapshot["order_executed"])
+
     def test_outputs_include_human_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = {
@@ -162,14 +204,27 @@ class MT5EthM30PaperForwardMonitorTests(unittest.TestCase):
                 "min_score": 58.0,
                 "score_gap_to_threshold": -4.0,
                 "trend_score": 66.0,
+                "min_trend_score": 50.0,
+                "trend_gap_to_threshold": 16.0,
                 "momentum_score": 47.0,
+                "min_momentum_score": 50.0,
+                "momentum_gap_to_threshold": -3.0,
                 "volatility_score": 46.0,
+                "min_volatility_score": 35.0,
+                "volatility_gap_to_threshold": 11.0,
                 "market_regime": "trend",
                 "session": "london_us",
                 "spread": 1.7,
                 "failed_components": "score_below_threshold,momentum_below_threshold",
                 "component_thresholds": '{"momentum_score": 50.0, "score": 58.0, "trend_score": 50.0, "volatility_score": 35.0}',
                 "open_shadow_count": 0,
+                "blocking_shadow_trade_id": "",
+                "risk_governor_open_trades_count": 0,
+                "risk_governor_open_trades_source": "",
+                "risk_governor_open_trade_id": "",
+                "risk_governor_open_trade_status": "",
+                "shadow_open_endpoint_count": 0,
+                "shadow_occupancy_inconsistent": False,
                 "broker_touched": False,
                 "order_executed": False,
                         "order_policy": "journal_only_no_broker",
@@ -227,8 +282,14 @@ def _fake_fetcher(decision_patch: dict | None = None):
                 "min_score": 58.0,
                 "score_gap_to_threshold": -4.0,
                 "trend_score": 66.0,
+                "min_trend_score": 50.0,
+                "trend_gap_to_threshold": 16.0,
                 "momentum_score": 47.0,
+                "min_momentum_score": 50.0,
+                "momentum_gap_to_threshold": -3.0,
                 "volatility_score": 46.0,
+                "min_volatility_score": 35.0,
+                "volatility_gap_to_threshold": 11.0,
                 "failed_components": ["score_below_threshold", "momentum_below_threshold"],
                 "component_thresholds": {
                     "score": 58.0,
@@ -236,6 +297,10 @@ def _fake_fetcher(decision_patch: dict | None = None):
                     "trend_score": 50.0,
                     "volatility_score": 35.0,
                 },
+                "risk_governor_open_trades_count": 0,
+                "risk_governor_open_trades_source": "",
+                "risk_governor_open_trade_id": "",
+                "risk_governor_open_trade_status": "",
                 "last_tick": {
                     "score": 54.0,
                     "trend_score": 66.0,

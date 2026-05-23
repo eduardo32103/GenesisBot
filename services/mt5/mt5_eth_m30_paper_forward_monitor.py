@@ -107,6 +107,7 @@ def collect_eth_m30_paper_forward_snapshot(
     open_trades = payloads.get("shadow_trades_open") or {}
     health = payloads.get("health") or {}
     features = _monitor_feature_fields(decision, forward)
+    occupancy = _shadow_occupancy_fields(decision, forward, risk, open_trades)
     broker_touched = any(bool(item.get("broker_touched")) for item in payloads.values() if isinstance(item, dict))
     order_executed = any(bool(item.get("order_executed")) for item in payloads.values() if isinstance(item, dict))
     order_policy = _first_policy(payloads) or "journal_only_no_broker"
@@ -134,7 +135,7 @@ def collect_eth_m30_paper_forward_snapshot(
         "paper_forward_candidate_profile": decision.get("paper_forward_candidate_profile") or forward.get("profile") or "",
         "paper_forward_candidate_active": bool(decision.get("paper_forward_candidate_active") or forward.get("active")),
         "open_shadow_count": int(_number(open_trades.get("open_count")) or 0),
-        "blocking_shadow_trade_id": decision.get("blocking_shadow_trade_id") or forward.get("blocking_shadow_trade_id") or "",
+        **occupancy,
         "paper_exploration_created": bool(decision.get("paper_exploration_created")),
         "paper_exploration_reason": decision.get("paper_exploration_reason") or "",
         "endpoint_failures": len(errors),
@@ -228,15 +229,28 @@ def write_eth_m30_paper_forward_monitor_outputs(result: dict[str, Any], output_d
         "strategy_score",
         "min_score",
         "score_gap_to_threshold",
+        "min_momentum_score",
+        "momentum_gap_to_threshold",
         "trend_score",
+        "min_trend_score",
+        "trend_gap_to_threshold",
         "momentum_score",
         "volatility_score",
+        "min_volatility_score",
+        "volatility_gap_to_threshold",
         "market_regime",
         "session",
         "spread",
         "failed_components",
         "component_thresholds",
         "open_shadow_count",
+        "blocking_shadow_trade_id",
+        "risk_governor_open_trades_count",
+        "risk_governor_open_trades_source",
+        "risk_governor_open_trade_id",
+        "risk_governor_open_trade_status",
+        "shadow_open_endpoint_count",
+        "shadow_occupancy_inconsistent",
         "broker_touched",
         "order_executed",
         "order_policy",
@@ -321,7 +335,10 @@ def print_monitor_result(result: dict[str, Any]) -> None:
     latest = snapshots[-1] if snapshots else {}
     print(f"latest_strategy_score={latest.get('strategy_score')}")
     print(f"latest_score_gap_to_threshold={latest.get('score_gap_to_threshold')}")
+    print(f"latest_momentum_score={latest.get('momentum_score')}")
+    print(f"latest_momentum_gap_to_threshold={latest.get('momentum_gap_to_threshold')}")
     print(f"latest_failed_components={latest.get('failed_components')}")
+    print(f"latest_shadow_occupancy_inconsistent={latest.get('shadow_occupancy_inconsistent')}")
     print(f"broker_touched={result.get('broker_touched')}")
     print(f"order_executed={result.get('order_executed')}")
     print(f"order_policy={result.get('order_policy')}")
@@ -388,6 +405,9 @@ def _monitor_feature_fields(decision: dict[str, Any], forward: dict[str, Any]) -
     trend_score = _number(decision.get("trend_score") or tick.get("trend_score"))
     momentum_score = _number(decision.get("momentum_score") or tick.get("momentum_score"))
     volatility_score = _number(decision.get("volatility_score") or tick.get("volatility_score"))
+    min_momentum_score = _number(decision.get("min_momentum_score") or component_thresholds.get("momentum_score"))
+    min_trend_score = _number(decision.get("min_trend_score") or component_thresholds.get("trend_score"))
+    min_volatility_score = _number(decision.get("min_volatility_score") or component_thresholds.get("volatility_score"))
     if not failed_components:
         failed_components = _derive_failed_components(
             strategy_score=strategy_score,
@@ -406,13 +426,58 @@ def _monitor_feature_fields(decision: dict[str, Any], forward: dict[str, Any]) -
         "min_score": min_score,
         "score_gap_to_threshold": round(score_gap, 4) if score_gap is not None else None,
         "trend_score": trend_score,
+        "min_trend_score": min_trend_score,
+        "trend_gap_to_threshold": _component_gap(trend_score, min_trend_score),
         "momentum_score": momentum_score,
+        "min_momentum_score": min_momentum_score,
+        "momentum_gap_to_threshold": _component_gap(momentum_score, min_momentum_score),
         "volatility_score": volatility_score,
+        "min_volatility_score": min_volatility_score,
+        "volatility_gap_to_threshold": _component_gap(volatility_score, min_volatility_score),
         "market_regime": tick.get("market_regime") or tick.get("regime") or decision.get("market_regime") or "",
         "session": tick.get("session") or decision.get("session") or "",
         "spread": _number(tick.get("spread") or decision.get("spread")),
         "failed_components": ",".join(str(item) for item in failed_components),
         "component_thresholds": json.dumps(component_thresholds, sort_keys=True) if component_thresholds else "",
+    }
+
+
+def _shadow_occupancy_fields(
+    decision: dict[str, Any],
+    forward: dict[str, Any],
+    risk: dict[str, Any],
+    open_trades: dict[str, Any],
+) -> dict[str, Any]:
+    risk_governor = decision.get("risk_governor") if isinstance(decision.get("risk_governor"), dict) else {}
+    endpoint_count = int(_number(open_trades.get("open_count")) or 0)
+    risk_count = int(
+        _number(
+            decision.get("risk_governor_open_trades_count")
+            or risk_governor.get("open_trades_count")
+            or risk.get("open_trades_count")
+            or 0
+        )
+        or 0
+    )
+    blocking_id = (
+        decision.get("blocking_shadow_trade_id")
+        or decision.get("risk_governor_open_trade_id")
+        or forward.get("blocking_shadow_trade_id")
+        or risk_governor.get("open_trade_id")
+        or ""
+    )
+    risk_reason = str(decision.get("risk_governor_reason") or risk.get("reason") or "").strip()
+    inconsistent = risk_reason == "max_open_trades_reached" and endpoint_count == 0
+    return {
+        "blocking_shadow_trade_id": str(blocking_id or ""),
+        "risk_governor_open_trades_count": risk_count,
+        "risk_governor_open_trades_source": decision.get("risk_governor_open_trades_source")
+        or risk_governor.get("open_trades_source")
+        or ("risk_governor_block_without_open_endpoint_trade" if inconsistent else ""),
+        "risk_governor_open_trade_id": str(decision.get("risk_governor_open_trade_id") or risk_governor.get("open_trade_id") or blocking_id or ""),
+        "risk_governor_open_trade_status": str(decision.get("risk_governor_open_trade_status") or risk_governor.get("open_trade_status") or ""),
+        "shadow_open_endpoint_count": endpoint_count,
+        "shadow_occupancy_inconsistent": bool(inconsistent),
     }
 
 
@@ -423,6 +488,12 @@ def _default_component_thresholds() -> dict[str, float]:
         "trend_score": float(_number(ETH_M30_PROFILE_RULES.get("min_trend_score")) or 50.0),
         "volatility_score": float(_number(ETH_M30_PROFILE_RULES.get("min_volatility_score")) or 35.0),
     }
+
+
+def _component_gap(value: float | None, threshold: float | None) -> float | None:
+    if value is None or threshold is None:
+        return None
+    return round(float(value) - float(threshold), 4)
 
 
 def _derive_failed_components(

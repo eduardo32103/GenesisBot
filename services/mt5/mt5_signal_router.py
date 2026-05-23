@@ -488,6 +488,7 @@ class MT5SignalRouter:
                 if last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe)
                 else {}
             )
+            shadow_occupancy = _shadow_occupancy_diagnostics(snapshot, exploration)
             payload = {
                 "ok": True,
                 "symbol": symbol_info["mt5_symbol"],
@@ -534,8 +535,14 @@ class MT5SignalRouter:
                 "min_score": score_diagnostics.get("min_score"),
                 "score_gap_to_threshold": score_diagnostics.get("score_gap_to_threshold"),
                 "trend_score": score_diagnostics.get("trend_score"),
+                "min_trend_score": score_diagnostics.get("min_trend_score"),
+                "trend_gap_to_threshold": score_diagnostics.get("trend_gap_to_threshold"),
                 "momentum_score": score_diagnostics.get("momentum_score"),
+                "min_momentum_score": score_diagnostics.get("min_momentum_score"),
+                "momentum_gap_to_threshold": score_diagnostics.get("momentum_gap_to_threshold"),
                 "volatility_score": score_diagnostics.get("volatility_score"),
+                "min_volatility_score": score_diagnostics.get("min_volatility_score"),
+                "volatility_gap_to_threshold": score_diagnostics.get("volatility_gap_to_threshold"),
                 "failed_components": score_diagnostics.get("failed_components", []),
                 "component_thresholds": score_diagnostics.get("component_thresholds", {}),
                 "paper_exploration_enabled": self.config.paper_exploration_enabled,
@@ -546,11 +553,16 @@ class MT5SignalRouter:
                 "risk_state": exploration.get("risk_state") or "normal",
                 "suggested_lot_multiplier": exploration.get("suggested_lot_multiplier", 0.0),
                 "risk_governor": exploration.get("risk_governor") if isinstance(exploration.get("risk_governor"), dict) else {},
+                "risk_governor_open_trades_count": shadow_occupancy.get("risk_governor_open_trades_count", 0),
+                "risk_governor_open_trades_source": shadow_occupancy.get("risk_governor_open_trades_source", ""),
+                "risk_governor_open_trade_id": shadow_occupancy.get("risk_governor_open_trade_id", ""),
+                "risk_governor_open_trade_status": shadow_occupancy.get("risk_governor_open_trade_status", ""),
                 "promoted_profile": promoted_profile,
                 "paper_forward_candidate": candidate_status or None,
                 "paper_forward_candidate_profile": candidate_status.get("profile") or exploration.get("paper_forward_candidate_profile") or "",
                 "paper_forward_candidate_active": bool(candidate_status.get("active") or (promoted_profile or {}).get("active")),
                 "applies_to_real_trading": False,
+                "blocking_shadow_trade_id": shadow_occupancy.get("blocking_shadow_trade_id", ""),
                 "open_shadow_trade_id": exploration.get("shadow_trade_id") or "",
                 "shadow_trade_id": exploration.get("shadow_trade_id") if exploration.get("paper_exploration_created") else "",
                 "order_policy": "journal_only_no_broker",
@@ -1490,6 +1502,11 @@ def _eth_m30_score_diagnostics(tick: dict[str, Any]) -> dict[str, Any]:
         "trend_score": _maybe_float(active_tick.get("trend_score")),
         "volatility_score": _maybe_float(active_tick.get("volatility_score")),
     }
+    component_gaps = {
+        "momentum_gap_to_threshold": _component_gap(values["momentum_score"], thresholds["momentum_score"]),
+        "trend_gap_to_threshold": _component_gap(values["trend_score"], thresholds["trend_score"]),
+        "volatility_gap_to_threshold": _component_gap(values["volatility_score"], thresholds["volatility_score"]),
+    }
     failed: list[str] = []
     if values["strategy_score"] is not None and values["strategy_score"] < thresholds["score"]:
         failed.append("score_below_threshold")
@@ -1504,8 +1521,35 @@ def _eth_m30_score_diagnostics(tick: dict[str, Any]) -> dict[str, Any]:
         **values,
         "min_score": thresholds["score"],
         "score_gap_to_threshold": round(gap, 4) if gap is not None else None,
+        "min_momentum_score": thresholds["momentum_score"],
+        "min_trend_score": thresholds["trend_score"],
+        "min_volatility_score": thresholds["volatility_score"],
+        **component_gaps,
         "failed_components": failed,
         "component_thresholds": thresholds,
+    }
+
+
+def _component_gap(value: float | None, threshold: float) -> float | None:
+    if value is None:
+        return None
+    return round(float(value) - float(threshold), 4)
+
+
+def _shadow_occupancy_diagnostics(snapshot: dict[str, Any], exploration: dict[str, Any]) -> dict[str, Any]:
+    open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    risk_reason = str(exploration.get("risk_governor_reason") or "").strip()
+    open_count = 1 if open_trade else 0
+    source = "runtime_snapshot_open_shadow_trade" if open_trade else "no_runtime_snapshot_open_shadow_trade"
+    if risk_reason == "max_open_trades_reached" and not open_trade:
+        source = "risk_governor_block_without_visible_snapshot_trade"
+    trade_id = str(open_trade.get("shadow_trade_id") or open_trade.get("trade_id") or "").strip()
+    return {
+        "risk_governor_open_trades_count": open_count,
+        "risk_governor_open_trades_source": source,
+        "risk_governor_open_trade_id": trade_id,
+        "risk_governor_open_trade_status": str(open_trade.get("status") or open_trade.get("lifecycle_status") or "").strip(),
+        "blocking_shadow_trade_id": trade_id if risk_reason == "max_open_trades_reached" else "",
     }
 
 

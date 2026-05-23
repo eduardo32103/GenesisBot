@@ -72,6 +72,8 @@ def analyze_eth_m30_paper_forward_snapshots(
     bottleneck = _score_component_bottleneck(rows, score_thresholds)
     near_miss_counts = _near_miss_counts(rows)
     top_near_misses = _top_near_miss_rows(rows)
+    momentum_gate = _momentum_gate_report(rows, score_thresholds)
+    max_open_diagnostic = _max_open_trades_diagnostic(rows)
     shadow_stats = _shadow_trade_stats(shadow_trades or [], rows)
     recommendation_actions = _recommendation_actions(
         total,
@@ -80,6 +82,7 @@ def analyze_eth_m30_paper_forward_snapshots(
         observed_broker_touched,
         observed_order_executed,
         bottleneck_component=str(bottleneck.get("dominant_component") or ""),
+        shadow_occupancy_inconsistent=bool(max_open_diagnostic.get("inconsistency_detected")),
     )
     result = {
         "ok": True,
@@ -109,9 +112,18 @@ def analyze_eth_m30_paper_forward_snapshots(
         "near_threshold_counts": near_threshold,
         "near_miss_counts": near_miss_counts,
         "score_gap_distribution": _distribution(_score_gap(row) for row in rows),
+        "momentum_gap_distribution": _distribution(row["momentum_gap_to_threshold"] for row in rows),
         "score_component_bottleneck": bottleneck,
         "bottleneck_component_ranking": bottleneck.get("component_ranking", []),
         "top_near_miss_timestamps": top_near_misses,
+        "momentum_gate_report": momentum_gate,
+        "score_pass_momentum_fail_count": momentum_gate.get("score_pass_momentum_fail_count", 0),
+        "top_momentum_near_misses": momentum_gate.get("top_momentum_near_misses", []),
+        "momentum_fail_by_session": momentum_gate.get("momentum_fail_by_session", {}),
+        "momentum_fail_by_regime": momentum_gate.get("momentum_fail_by_regime", {}),
+        "max_open_trades_diagnostic": max_open_diagnostic,
+        "shadow_occupancy_inconsistency": bool(max_open_diagnostic.get("inconsistency_detected")),
+        "human_bottleneck_explanation": _human_bottleneck_explanation(momentum_gate, bottleneck, max_open_diagnostic),
         "session_distribution": _counts(row["session"] or "unknown" for row in rows),
         "regime_distribution": _counts(row["market_regime"] or "unknown" for row in rows),
         "spread_distribution": _distribution(row["spread"] for row in rows),
@@ -153,6 +165,7 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
     distributions = result.get("score_distributions") if isinstance(result.get("score_distributions"), dict) else {}
     near = result.get("near_threshold_counts") if isinstance(result.get("near_threshold_counts"), dict) else {}
     near_misses = result.get("near_miss_counts") if isinstance(result.get("near_miss_counts"), dict) else {}
+    max_open = result.get("max_open_trades_diagnostic") if isinstance(result.get("max_open_trades_diagnostic"), dict) else {}
     lines = [
         "# ETHUSD M30 Paper-Forward Analytics",
         "",
@@ -176,10 +189,16 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
         f"- Near threshold counts: `{near}`",
         f"- Near-miss counts by score gap: `{near_misses}`",
         f"- Score gap distribution: `{result.get('score_gap_distribution', {})}`",
+        f"- Momentum gap distribution: `{result.get('momentum_gap_distribution', {})}`",
         f"- Bottleneck: `{bottleneck.get('dominant_component', '')}`",
         f"- Bottleneck reason: `{bottleneck.get('reason', '')}`",
         f"- Bottleneck ranking: `{result.get('bottleneck_component_ranking', [])}`",
         f"- Top near-miss timestamps: `{result.get('top_near_miss_timestamps', [])}`",
+        f"- Score passed but momentum failed: `{result.get('score_pass_momentum_fail_count', 0)}`",
+        f"- Momentum fail by session: `{result.get('momentum_fail_by_session', {})}`",
+        f"- Momentum fail by regime: `{result.get('momentum_fail_by_regime', {})}`",
+        f"- Top momentum near-misses: `{result.get('top_momentum_near_misses', [])}`",
+        f"- Human explanation: `{result.get('human_bottleneck_explanation', '')}`",
         "",
         "## Context",
         f"- Session distribution: `{result.get('session_distribution', {})}`",
@@ -191,6 +210,12 @@ def eth_m30_paper_forward_analytics_summary_markdown(result: dict[str, Any]) -> 
         f"- Open shadow trades latest: `{result.get('open_shadow_trades_latest', 0)}`",
         f"- Closed shadow trades: `{result.get('closed_shadow_trades', 0)}`",
         f"- Paper P/L: `{result.get('paper_pnl', 0.0)}`",
+        "",
+        "## Max Open Trades Diagnostic",
+        f"- Max-open blocks: `{max_open.get('max_open_block_count', 0)}`",
+        f"- Inconsistency detected: `{max_open.get('inconsistency_detected', False)}`",
+        f"- Inconsistent rows: `{max_open.get('inconsistent_rows', [])}`",
+        f"- Block rows: `{max_open.get('max_open_block_rows', [])}`",
         "",
         "## Recommendation",
     ]
@@ -236,6 +261,18 @@ def _extract_row(snapshot: dict[str, Any]) -> dict[str, Any]:
     trend_score = _first_number(snapshot.get("trend_score"), decision.get("trend_score"), tick.get("trend_score"))
     momentum_score = _first_number(snapshot.get("momentum_score"), decision.get("momentum_score"), tick.get("momentum_score"))
     volatility_score = _first_number(snapshot.get("volatility_score"), decision.get("volatility_score"), tick.get("volatility_score"))
+    min_momentum_score = _first_number(snapshot.get("min_momentum_score"), decision.get("min_momentum_score"), thresholds["momentum_score"])
+    min_trend_score = _first_number(snapshot.get("min_trend_score"), decision.get("min_trend_score"), thresholds["trend_score"])
+    min_volatility_score = _first_number(snapshot.get("min_volatility_score"), decision.get("min_volatility_score"), thresholds["volatility_score"])
+    momentum_gap = _first_number(snapshot.get("momentum_gap_to_threshold"), decision.get("momentum_gap_to_threshold"))
+    if momentum_gap is None and momentum_score is not None and min_momentum_score is not None:
+        momentum_gap = momentum_score - min_momentum_score
+    trend_gap = _first_number(snapshot.get("trend_gap_to_threshold"), decision.get("trend_gap_to_threshold"))
+    if trend_gap is None and trend_score is not None and min_trend_score is not None:
+        trend_gap = trend_score - min_trend_score
+    volatility_gap = _first_number(snapshot.get("volatility_gap_to_threshold"), decision.get("volatility_gap_to_threshold"))
+    if volatility_gap is None and volatility_score is not None and min_volatility_score is not None:
+        volatility_gap = volatility_score - min_volatility_score
     failed_components = _failed_components(snapshot.get("failed_components"), decision.get("failed_components"))
     if not failed_components:
         failed_components = _derive_failed_components(
@@ -266,14 +303,33 @@ def _extract_row(snapshot: dict[str, Any]) -> dict[str, Any]:
         "min_score": min_score,
         "score_gap_to_threshold": score_gap,
         "trend_score": trend_score,
+        "min_trend_score": min_trend_score,
+        "trend_gap_to_threshold": trend_gap,
         "momentum_score": momentum_score,
+        "min_momentum_score": min_momentum_score,
+        "momentum_gap_to_threshold": momentum_gap,
         "volatility_score": volatility_score,
+        "min_volatility_score": min_volatility_score,
+        "volatility_gap_to_threshold": volatility_gap,
         "failed_components": failed_components,
         "market_regime": str(snapshot.get("market_regime") or tick.get("market_regime") or tick.get("regime") or decision.get("market_regime") or "").strip(),
         "session": str(snapshot.get("session") or tick.get("session") or decision.get("session") or "").strip(),
         "hour": _number(tick.get("hour") or decision.get("hour")),
         "spread": _first_number(snapshot.get("spread"), tick.get("spread"), decision.get("spread")),
         "open_shadow_count": _number(snapshot.get("open_shadow_count") or open_trades.get("open_count")) or 0,
+        "blocking_shadow_trade_id": str(snapshot.get("blocking_shadow_trade_id") or decision.get("blocking_shadow_trade_id") or decision.get("risk_governor_open_trade_id") or ""),
+        "risk_governor_reason": risk_reason,
+        "risk_governor_open_trades_count": _first_number(
+            snapshot.get("risk_governor_open_trades_count"),
+            decision.get("risk_governor_open_trades_count"),
+            ((decision.get("risk_governor") if isinstance(decision.get("risk_governor"), dict) else {}) or {}).get("open_trades_count"),
+        )
+        or 0,
+        "risk_governor_open_trades_source": str(snapshot.get("risk_governor_open_trades_source") or decision.get("risk_governor_open_trades_source") or ""),
+        "risk_governor_open_trade_id": str(snapshot.get("risk_governor_open_trade_id") or decision.get("risk_governor_open_trade_id") or ""),
+        "risk_governor_open_trade_status": str(snapshot.get("risk_governor_open_trade_status") or decision.get("risk_governor_open_trade_status") or ""),
+        "shadow_open_endpoint_count": _number(snapshot.get("shadow_open_endpoint_count") or open_trades.get("open_count")) or 0,
+        "shadow_occupancy_inconsistent": _bool(snapshot.get("shadow_occupancy_inconsistent")),
         "broker_touched": _bool(snapshot.get("broker_touched"), default=_bool(decision.get("broker_touched"))),
         "order_executed": _bool(snapshot.get("order_executed"), default=_bool(decision.get("order_executed"))),
         "order_policy": str(snapshot.get("order_policy") or decision.get("order_policy") or forward.get("order_policy") or "journal_only_no_broker"),
@@ -345,6 +401,111 @@ def _score_gap(row: dict[str, Any]) -> float | None:
     if score is None:
         return None
     return score - threshold
+
+
+def _momentum_gate_report(rows: list[dict[str, Any]], thresholds: dict[str, float]) -> dict[str, Any]:
+    score_pass_momentum_fail = [
+        row
+        for row in rows
+        if (_number(row.get("score")) is not None and float(_number(row.get("score")) or 0.0) >= float(row.get("min_score") or thresholds["score"]))
+        and _momentum_failed(row)
+    ]
+    momentum_fail_rows = [row for row in rows if _momentum_failed(row)]
+    return {
+        "score_pass_momentum_fail_count": len(score_pass_momentum_fail),
+        "score_pass_momentum_fail_pct": _pct(len(score_pass_momentum_fail), len(rows)),
+        "momentum_fail_count": len(momentum_fail_rows),
+        "momentum_gap_distribution": _distribution(row.get("momentum_gap_to_threshold") for row in rows),
+        "top_momentum_near_misses": _top_momentum_near_miss_rows(rows),
+        "momentum_fail_by_session": _counts(row.get("session") or "unknown" for row in momentum_fail_rows),
+        "momentum_fail_by_regime": _counts(row.get("market_regime") or "unknown" for row in momentum_fail_rows),
+        "high_score_momentum_low_is_repeated": len(score_pass_momentum_fail) >= 3,
+    }
+
+
+def _momentum_failed(row: dict[str, Any]) -> bool:
+    failed = row.get("failed_components") if isinstance(row.get("failed_components"), list) else []
+    if "momentum_below_threshold" in failed:
+        return True
+    reason = str(row.get("decision_reason") or "")
+    if "momentum_score_low" in reason:
+        return True
+    gap = _number(row.get("momentum_gap_to_threshold"))
+    return gap is not None and gap < 0
+
+
+def _top_momentum_near_miss_rows(rows: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    candidates = []
+    for row in rows:
+        gap = _number(row.get("momentum_gap_to_threshold"))
+        if gap is None or gap >= 0:
+            continue
+        candidates.append(
+            {
+                "timestamp": row.get("timestamp") or "",
+                "decision_reason": row.get("decision_reason") or "",
+                "strategy_score": row.get("score"),
+                "score_gap_to_threshold": _score_gap(row),
+                "momentum_score": row.get("momentum_score"),
+                "min_momentum_score": row.get("min_momentum_score"),
+                "momentum_gap_to_threshold": round(float(gap), 4),
+                "session": row.get("session") or "",
+                "market_regime": row.get("market_regime") or "",
+                "failed_components": row.get("failed_components") or [],
+            }
+        )
+    return sorted(candidates, key=lambda item: item["momentum_gap_to_threshold"], reverse=True)[:limit]
+
+
+def _max_open_trades_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    blocked = [row for row in rows if str(row.get("decision_reason") or "") == "risk_governor_block:max_open_trades_reached"]
+    block_rows = [_max_open_row(row) for row in blocked]
+    inconsistent = [
+        item
+        for item in block_rows
+        if int(_number(item.get("open_shadow_count")) or 0) == 0
+        and int(_number(item.get("shadow_open_endpoint_count")) or 0) == 0
+    ]
+    return {
+        "max_open_block_count": len(blocked),
+        "max_open_block_rows": block_rows[:10],
+        "inconsistency_detected": bool(inconsistent),
+        "inconsistent_rows": inconsistent[:10],
+        "recommendation": "investigate_stale_runtime_open_shadow_trade_without_relaxing_risk_governor" if inconsistent else "no_shadow_occupancy_inconsistency_detected",
+    }
+
+
+def _max_open_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "timestamp": row.get("timestamp") or "",
+        "decision_reason": row.get("decision_reason") or "",
+        "open_shadow_count": int(_number(row.get("open_shadow_count")) or 0),
+        "shadow_open_endpoint_count": int(_number(row.get("shadow_open_endpoint_count")) or 0),
+        "blocking_shadow_trade_id": row.get("blocking_shadow_trade_id") or "",
+        "risk_governor_open_trades_count": int(_number(row.get("risk_governor_open_trades_count")) or 0),
+        "risk_governor_open_trades_source": row.get("risk_governor_open_trades_source") or "",
+        "risk_governor_open_trade_id": row.get("risk_governor_open_trade_id") or "",
+        "risk_governor_open_trade_status": row.get("risk_governor_open_trade_status") or "",
+    }
+
+
+def _human_bottleneck_explanation(
+    momentum_gate: dict[str, Any],
+    bottleneck: dict[str, Any],
+    max_open_diagnostic: dict[str, Any],
+) -> str:
+    score_pass_momentum_fail = int(momentum_gate.get("score_pass_momentum_fail_count") or 0)
+    dominant = str(bottleneck.get("dominant_component") or "")
+    if score_pass_momentum_fail:
+        return (
+            f"El score total ya supera el minimo en {score_pass_momentum_fail} muestras, "
+            "pero la compuerta de momentum sigue por debajo del minimo; no conviene relajar umbrales sin mas observacion."
+        )
+    if bool(max_open_diagnostic.get("inconsistency_detected")):
+        return "RiskGovernor reporto max_open_trades mientras el endpoint open mostro cero; revisar estado shadow stale antes de tocar estrategia."
+    if dominant:
+        return f"El cuello dominante observado es {dominant}; mantener observacion paper-only."
+    return "No hay suficientes muestras de componentes para explicar el cuello con confianza."
 
 
 def _score_component_bottleneck(rows: list[dict[str, Any]], thresholds: dict[str, float]) -> dict[str, Any]:
@@ -420,6 +581,7 @@ def _recommendation_actions(
     order_count: int,
     *,
     bottleneck_component: str = "",
+    shadow_occupancy_inconsistent: bool = False,
 ) -> list[str]:
     if broker_count or order_count:
         return ["halt_observation", "investigate_safety_violation", "no_real_trading"]
@@ -432,6 +594,8 @@ def _recommendation_actions(
         actions.append("investigate_momentum_component")
     if risk_blocks:
         actions.append("review_risk_governor_blocks_without_relaxing")
+    if shadow_occupancy_inconsistent:
+        actions.append("investigate_shadow_occupancy_source")
     actions.extend(["do_not_relax_thresholds_yet", "no_real_trading"])
     return list(dict.fromkeys(actions))
 
