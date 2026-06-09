@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.mt5.instrument_resolver import normalize_mt5_symbol
+from services.mt5.mt5_eth_m30_forward_degradation import ETH_M30_DEGRADATION_PROFILE, evaluate_eth_m30_forward_degradation
 from services.mt5.mt5_risk_governor import RiskGovernorLimits, assess_runtime_risk
 from services.mt5.mt5_runtime_snapshot import get_snapshot
 
@@ -73,6 +74,22 @@ def mt5_risk_recovery_status(symbol: str = "ETHUSD", *, timeframe: str = "M30") 
         "weekly_loss_pct": _float_value(account_state, "weekly_loss_pct"),
         "current_drawdown_pct": current_drawdown,
     }
+    degradation_guardrail = evaluate_eth_m30_forward_degradation(
+        symbol=clean_symbol,
+        timeframe=clean_timeframe,
+        profile=ETH_M30_DEGRADATION_PROFILE,
+        stats={
+            "trades_forward": current_metrics["trades_forward"],
+            "wins": current_metrics["wins"],
+            "losses": current_metrics["losses"],
+            "win_rate": current_metrics["win_rate"],
+            "profit_factor": current_metrics["profit_factor"],
+            "expectancy": current_metrics["expectancy"],
+        },
+        open_shadow_count=open_shadow_trades,
+        current_status="paper_forward_candidate",
+        risk_governor_reason=str(risk.get("reason") or ""),
+    )
     recovery_requirements = _recovery_requirements(
         explicit_negative_edge=explicit_negative_edge,
         summary_negative=summary_negative,
@@ -97,6 +114,7 @@ def mt5_risk_recovery_status(symbol: str = "ETHUSD", *, timeframe: str = "M30") 
         explicit_negative_edge=explicit_negative_edge,
         computed_recent_pf_rule=computed_recent_pf_rule,
         indefinite_block_risk=indefinite_block_risk,
+        degradation_recommendation=str(degradation_guardrail.get("recommendation") or ""),
     )
     return {
         "ok": True,
@@ -123,6 +141,9 @@ def mt5_risk_recovery_status(symbol: str = "ETHUSD", *, timeframe: str = "M30") 
         },
         "current_metrics": current_metrics,
         "recovery_requirements": recovery_requirements,
+        "forward_degradation_guardrail": degradation_guardrail,
+        "degradation_reason": degradation_guardrail.get("degradation_reason") or "",
+        "new_status": degradation_guardrail.get("new_status") or "",
         "indefinite_block_risk": indefinite_block_risk,
         "recommended_action": recommended_action,
         "applies_to_real_trading": False,
@@ -235,8 +256,11 @@ def _recommended_actions(
     explicit_negative_edge: bool,
     computed_recent_pf_rule: bool,
     indefinite_block_risk: bool,
+    degradation_recommendation: str = "",
 ) -> list[str]:
     actions: list[str] = ["continue_observation" if risk_allowed else "keep_blocked"]
+    if degradation_recommendation == "degrade_to_observation_only":
+        actions.append("degrade_to_observation_only")
     if explicit_negative_edge:
         actions.append("review_flag_source")
     if indefinite_block_risk:

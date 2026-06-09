@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.mt5.instrument_resolver import normalize_mt5_symbol
+from services.mt5.mt5_eth_m30_forward_degradation import evaluate_eth_m30_forward_degradation
 from services.mt5.mt5_risk_governor import assess_runtime_risk
 from services.mt5.mt5_runtime_snapshot import get_snapshot
 
@@ -112,7 +113,19 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
     risk = assess_runtime_risk(clean_symbol, timeframe=clean_timeframe, tick=active_tick, open_trade=open_trade)
     stats = _forward_stats(snapshot, generic_snapshot)
+    open_shadow_count = 1 if open_trade else 0
+    degradation_guardrail = evaluate_eth_m30_forward_degradation(
+        symbol=clean_symbol,
+        timeframe=clean_timeframe,
+        profile=ETH_M30_CANDIDATE_PROFILE,
+        stats=stats,
+        open_shadow_count=open_shadow_count,
+        current_status="paper_forward_candidate",
+        risk_governor_reason=str(risk.get("reason") or ""),
+    )
     degradation_reason = _degradation_reason(stats)
+    if degradation_guardrail.get("should_degrade"):
+        degradation_reason = str(degradation_guardrail.get("degradation_reason") or "early_forward_edge_failed")
     degraded = bool(degradation_reason)
     risk_allowed = bool(risk.get("allowed"))
     context_ready = _context_ready(active_tick, snapshot)
@@ -125,6 +138,8 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "symbol": clean_symbol,
         "normalized_symbol": normalize_mt5_symbol(clean_symbol) or clean_symbol,
         "timeframe": clean_timeframe,
+        "status": degradation_guardrail.get("new_status") if degradation_guardrail.get("should_degrade") else "paper_forward_candidate",
+        "mode": "observation_only" if degradation_guardrail.get("should_degrade") else "paper_only_forward",
         "active": active,
         "applies_to_paper_shadow": applies_to_paper_shadow,
         "applies_to_real_trading": False,
@@ -144,9 +159,10 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "snapshot_context_source": snapshot.get("snapshot_context_source") or "",
         "tick_merged_into_bar_context": bool(snapshot.get("tick_merged_into_bar_context") or active_tick.get("tick_merged_into_bar_context")),
         "snapshot_freshness_minutes": SNAPSHOT_FRESHNESS_MINUTES,
-        "open_shadow_trades": 1 if open_trade else 0,
+        "open_shadow_trades": open_shadow_count,
+        "open_shadow_count": open_shadow_count,
         "blocking_shadow_trade_id": open_trade.get("shadow_trade_id") or "",
-        "trades_forward": int(_number(stats.get("closed") or stats.get("closed_trades")) or 0),
+        "trades_forward": int(_number(stats.get("trades_forward") or stats.get("forward_closed") or stats.get("closed") or stats.get("closed_trades")) or 0),
         "wins": int(_number(stats.get("wins")) or 0),
         "losses": int(_number(stats.get("losses")) or 0),
         "win_rate": float(_number(stats.get("win_rate")) or 0.0),
@@ -155,6 +171,8 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "max_drawdown": float(_number(stats.get("max_drawdown") or stats.get("drawdown")) or 0.0),
         "degraded": degraded,
         "degradation_reason": degradation_reason,
+        "degradation_guardrail": degradation_guardrail,
+        "degradation_recommendation": degradation_guardrail.get("recommendation") or "",
         "automatic_promotion": False,
         "promoted_profile_mutated": False,
         "forward_state_mutated": False,

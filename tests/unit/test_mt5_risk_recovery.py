@@ -4,6 +4,9 @@ import unittest
 
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_risk_recovery
+from services.mt5.mt5_eth_m30_forward_degradation import eth_m30_forward_degradation_status
+from services.mt5.mt5_eth_m30_paper_forward_candidate import eth_m30_forward_profile_state
+from services.mt5.mt5_promoted_profile import get_promoted_profile, reset_promoted_profiles_for_tests
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_snapshot
 
@@ -11,6 +14,7 @@ from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests,
 class MT5RiskRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_runtime_snapshots_for_tests()
+        reset_promoted_profiles_for_tests()
 
     def test_explicit_performance_flag_blocks_despite_positive_metrics(self) -> None:
         _seed_eth_m30(
@@ -123,8 +127,68 @@ class MT5RiskRecoveryTests(unittest.TestCase):
             "/api/genesis/mt5/risk-recovery?symbol={symbol}&timeframe={timeframe}",
         )
 
+    def test_forward_degradation_guardrail_does_not_degrade_with_open_shadow_trade(self) -> None:
+        _seed_eth_m30(summary=_failed_early_forward_summary(), open_shadow=True)
 
-def _seed_eth_m30(*, summary: dict[str, object], adaptive: dict[str, object] | None = None) -> None:
+        result = eth_m30_forward_degradation_status(symbol="ETHUSD", timeframe="M30")
+
+        self.assertFalse(result["should_degrade"])
+        self.assertEqual(result["open_shadow_count"], 1)
+        self.assertEqual(result["recommendation"], "continue_observation")
+        self.assertFalse(result["promoted_profile_mutated"])
+        self.assertFalse(result["applies_to_real_trading"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_forward_degradation_guardrail_degrades_failed_early_forward(self) -> None:
+        _seed_eth_m30(summary=_failed_early_forward_summary(), adaptive={"current_loss_streak": 3, "negative_edge": True})
+
+        result = eth_m30_forward_degradation_status(symbol="ETHUSD", timeframe="M30")
+        state = eth_m30_forward_profile_state(symbol="ETHUSD", timeframe="M30")
+        recovery = mt5_risk_recovery_status("ETHUSD", timeframe="M30")
+
+        self.assertTrue(result["should_degrade"])
+        self.assertEqual(result["open_shadow_count"], 0)
+        self.assertEqual(result["recommendation"], "degrade_to_observation_only")
+        self.assertTrue(result["whether_degradation_is_safe"])
+        self.assertEqual(result["degradation_reason"], "early_forward_edge_failed")
+        self.assertEqual(result["new_status"], "observation_only")
+        self.assertEqual(state["status"], "observation_only")
+        self.assertFalse(state["active"])
+        self.assertFalse(state["applies_to_paper_shadow"])
+        self.assertFalse(state["applies_to_real_trading"])
+        self.assertEqual(state["degradation_reason"], "early_forward_edge_failed")
+        self.assertIn("degrade_to_observation_only", recovery["recommended_action"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_forward_degradation_guardrail_does_not_mutate_promoted_profile(self) -> None:
+        before = get_promoted_profile(symbol="ETHUSD", timeframe="M30")
+        _seed_eth_m30(summary=_failed_early_forward_summary())
+
+        state = eth_m30_forward_profile_state(symbol="ETHUSD", timeframe="M30")
+        after = get_promoted_profile(symbol="ETHUSD", timeframe="M30")
+
+        self.assertEqual(before["status"], "observation_only")
+        self.assertEqual(after["status"], "observation_only")
+        self.assertEqual(after["profile"], "")
+        self.assertEqual(state["status"], "observation_only")
+        self.assertFalse(state["automatic_promotion"])
+        self.assertFalse(state["promoted_profile_mutated"])
+        self.assertFalse(state["forward_state_mutated"])
+        self.assertFalse(state["broker_touched"])
+        self.assertFalse(state["order_executed"])
+        self.assertEqual(state["order_policy"], "journal_only_no_broker")
+
+
+def _seed_eth_m30(
+    *,
+    summary: dict[str, object],
+    adaptive: dict[str, object] | None = None,
+    open_shadow: bool = False,
+) -> None:
     update_snapshot(
         "ETHUSD",
         {
@@ -135,11 +199,29 @@ def _seed_eth_m30(*, summary: dict[str, object], adaptive: dict[str, object] | N
                 "spread": 1.5,
                 "regime": "trend",
             },
+            "open_shadow_trade": {"shadow_trade_id": "eth-m30-open", "status": "open"} if open_shadow else {},
             "latest_performance_summary": dict(summary),
             "latest_adaptive_state": dict(adaptive or {}),
+            "last_decision": {
+                "paper_forward_candidate_profile": "eth_m30_vol_breakout_chop_guard_v1",
+                "risk_governor_reason": "recent_edge_negative",
+            },
         },
         timeframe="M30",
     )
+
+
+def _failed_early_forward_summary() -> dict[str, object]:
+    return {
+        "trades_forward": 5,
+        "closed": 5,
+        "wins": 1,
+        "losses": 4,
+        "win_rate": 20.0,
+        "profit_factor": 0.0144,
+        "expectancy": -0.1025,
+        "negative_recent_edge": True,
+    }
 
 
 if __name__ == "__main__":
