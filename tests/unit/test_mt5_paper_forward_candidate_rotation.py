@@ -44,13 +44,13 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
-    def test_passing_non_degraded_candidate_is_recommended_for_human_review_only(self) -> None:
+    def test_passing_non_rejected_candidate_is_recommended_for_human_review_only(self) -> None:
         result = run_paper_forward_candidate_rotation(
             rows=[
                 {
-                    "symbol": "XAUUSD",
-                    "timeframe": "M15",
-                    "profile": "xauusd_m15_recent_session_open_continuation",
+                    "symbol": "US500",
+                    "timeframe": "H1",
+                    "profile": "us500_h1_recent_session_open_continuation",
                     "family": "recent_session_open_continuation",
                     "recent_closed": 22,
                     "total_closed": 70,
@@ -72,11 +72,12 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertFalse(result["automatic_promotion"])
         self.assertFalse(result["promoted_profile_mutated"])
         recommended = result["recommended_candidate"]
-        self.assertEqual(recommended["symbol"], "XAUUSD")
-        self.assertEqual(recommended["timeframe"], "M15")
+        self.assertEqual(recommended["symbol"], "US500")
+        self.assertEqual(recommended["timeframe"], "H1")
         self.assertEqual(recommended["candidate_status"], "paper_forward_review_ready")
         self.assertEqual(recommended["recommended_next_action"], "paper_forward_candidate_review")
         self.assertFalse(recommended["degraded_by_registry"])
+        self.assertFalse(recommended["rejected_by_research_registry"])
         self.assertFalse(recommended["sibling_risk"])
         self.assertEqual(recommended["rejection_reasons"], [])
         self.assertFalse(result["broker_touched"])
@@ -115,7 +116,7 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertIn("recent_pf_below_1_05", row["rejection_reasons"])
         self.assertIn("spread_x2_pf_below_0_95", row["rejection_reasons"])
 
-    def test_eth_m30_sibling_of_degraded_profile_is_blocked_from_review(self) -> None:
+    def test_eth_m30_rejected_cluster_profile_is_blocked_from_review(self) -> None:
         result = run_paper_forward_candidate_rotation(
             rows=[
                 {
@@ -151,13 +152,15 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
 
         self.assertEqual(result["recommendation"], "continue_research")
         self.assertIsNone(result["recommended_candidate"])
-        sibling = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
-        self.assertTrue(sibling["sibling_risk"])
-        self.assertEqual(sibling["sibling_of_degraded_profile"], "eth_m30_vol_breakout_chop_guard_v1")
-        self.assertEqual(sibling["sibling_risk_reason"], "similar_to_degraded_forward_profile")
-        self.assertEqual(sibling["candidate_status"], "blocked_by_sibling_risk")
-        self.assertEqual(sibling["recommended_next_action"], "manual_review_or_new_family_required")
-        self.assertIn("sibling_risk_similar_to_degraded_forward_profile", sibling["rejection_reasons"])
+        rejected = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
+        self.assertTrue(rejected["rejected_by_research_registry"])
+        self.assertEqual(rejected["candidate_status"], "excluded_by_research_rejection_registry")
+        self.assertEqual(rejected["recommended_next_action"], "skip_rejected_family")
+        self.assertEqual(
+            rejected["research_rejection_reason"],
+            "eth_m30_volatility_breakout_cluster_degraded_or_sibling_risk",
+        )
+        self.assertIn("research_rejection_registry", rejected["rejection_reasons"])
         excluded = result["excluded_by_degradation_registry"][0]
         self.assertEqual(excluded["candidate_status"], "excluded_by_degradation_registry")
         self.assertFalse(result["candidate_activated"])
@@ -196,9 +199,9 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
                     "spread_x2_pf": 1.934,
                 },
                 {
-                    "symbol": "XAUUSD",
-                    "timeframe": "M15",
-                    "profile": "xauusd_m15_recent_session_open_continuation",
+                    "symbol": "US500",
+                    "timeframe": "H1",
+                    "profile": "us500_h1_recent_session_open_continuation",
                     "family": "recent_session_open_continuation",
                     "recent_closed": 22,
                     "total_closed": 70,
@@ -215,13 +218,49 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
 
         self.assertEqual(result["recommendation"], "paper_forward_candidate_review")
         recommended = result["recommended_candidate"]
-        self.assertEqual(recommended["symbol"], "XAUUSD")
-        self.assertEqual(recommended["profile"], "xauusd_m15_recent_session_open_continuation")
+        self.assertEqual(recommended["symbol"], "US500")
+        self.assertEqual(recommended["profile"], "us500_h1_recent_session_open_continuation")
         self.assertFalse(recommended["sibling_risk"])
-        sibling = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
-        self.assertEqual(sibling["candidate_status"], "blocked_by_sibling_risk")
+        rejected = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
+        self.assertEqual(rejected["candidate_status"], "excluded_by_research_rejection_registry")
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["paper_forward_onboarding_started"])
+
+    def test_research_rejection_registry_family_is_excluded_even_if_metrics_pass(self) -> None:
+        result = run_paper_forward_candidate_rotation(
+            rows=[
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "profile": "xauusd_m15_recent_session_open_continuation",
+                    "family": "recent_session_open_continuation",
+                    "recent_closed": 24,
+                    "total_closed": 72,
+                    "recent_pf": 1.22,
+                    "total_pf": 1.34,
+                    "expectancy": 0.12,
+                    "monte_carlo_stressed_pf": 1.08,
+                    "spread_x2_pf": 1.01,
+                }
+            ],
+            include_priority_candidates=False,
+            load_default_sources=False,
+        )
+
+        self.assertEqual(result["recommendation"], "continue_research")
+        self.assertIsNone(result["recommended_candidate"])
+        rejected = result["excluded_by_research_rejection_registry"][0]
+        self.assertEqual(rejected["candidate_status"], "excluded_by_research_rejection_registry")
+        self.assertEqual(rejected["recommended_next_action"], "skip_rejected_family")
+        self.assertEqual(
+            rejected["research_rejection_reason"],
+            "xau_m15_session_open_continuation_failed_mc_and_remove_best_5",
+        )
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_rotation_without_useful_sources_requests_data_source_repair(self) -> None:
         result = run_paper_forward_candidate_rotation(load_default_sources=False)
@@ -269,7 +308,7 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
                 "\n".join(
                     [
                         "Symbol,Timeframe,strategy_profile,recent_trades,trades,recent_profit_factor,profit_factor,total_expectancy,mc_pf,spread_stress_pf",
-                        "XAUUSD,M15,xauusd_m15_recent_session_open_continuation,20,55,1.25,1.31,0.11,1.08,0.98",
+                        "US500,H1,us500_h1_recent_session_open_continuation,20,55,1.25,1.31,0.11,1.08,0.98",
                     ]
                 ),
                 encoding="utf-8",
@@ -285,8 +324,8 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertEqual(len(result["loaded_sources"]), 1)
         self.assertGreater(len(result["missing_sources"]), 0)
         recommended = result["recommended_candidate"]
-        self.assertEqual(recommended["symbol"], "XAUUSD")
-        self.assertEqual(recommended["timeframe"], "M15")
+        self.assertEqual(recommended["symbol"], "US500")
+        self.assertEqual(recommended["timeframe"], "H1")
         self.assertEqual(recommended["recent_closed"], 20)
         self.assertEqual(recommended["total_closed"], 55)
         self.assertEqual(recommended["recent_pf"], 1.25)

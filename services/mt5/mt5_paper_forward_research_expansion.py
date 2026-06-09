@@ -40,7 +40,8 @@ def run_paper_forward_research_expansion(
     excluded = [
         row
         for row in ranking
-        if row["candidate_status"] in {"excluded_by_degradation_registry", "blocked_by_sibling_risk"}
+        if row["candidate_status"]
+        in {"excluded_by_degradation_registry", "blocked_by_sibling_risk", "excluded_by_research_rejection_registry"}
     ]
     recommended = clean[0] if clean else None
     recommendation = "paper_forward_candidate_review" if recommended else "continue_research"
@@ -95,7 +96,7 @@ def _evaluate_research_candidate(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_degraded_cluster_guard(row: dict[str, Any]) -> dict[str, Any]:
-    if row.get("degraded_by_registry") or row.get("sibling_risk"):
+    if row.get("degraded_by_registry") or row.get("sibling_risk") or row.get("rejected_by_research_registry"):
         return row
     if not _is_eth_m30_volatility_breakout_cluster(row):
         return row
@@ -119,6 +120,8 @@ def _research_gate_failures(row: dict[str, Any]) -> tuple[list[str], dict[str, A
 
     if row.get("degraded_by_registry"):
         failures.append("degraded_by_registry")
+    if row.get("rejected_by_research_registry"):
+        failures.append("research_rejection_registry")
     if row.get("sibling_risk"):
         failures.append("sibling_risk")
 
@@ -172,6 +175,8 @@ def _min_gate(
 def _candidate_status(row: dict[str, Any], failed_gates: list[str]) -> str:
     if row.get("degraded_by_registry"):
         return "excluded_by_degradation_registry"
+    if row.get("rejected_by_research_registry"):
+        return "excluded_by_research_rejection_registry"
     if row.get("sibling_risk"):
         return "blocked_by_sibling_risk"
     if not failed_gates:
@@ -186,6 +191,8 @@ def _next_action(status: str) -> str:
         return "paper_forward_candidate_review"
     if status == "excluded_by_degradation_registry":
         return "skip_degraded_profile"
+    if status == "excluded_by_research_rejection_registry":
+        return "skip_rejected_family"
     if status == "blocked_by_sibling_risk":
         return "manual_review_or_new_family_required"
     if status == "near_miss_hardening_candidate":
@@ -194,7 +201,7 @@ def _next_action(status: str) -> str:
 
 
 def _hardening_recommendation(row: dict[str, Any], failed_gates: list[str]) -> str:
-    if row.get("degraded_by_registry") or row.get("sibling_risk"):
+    if row.get("degraded_by_registry") or row.get("sibling_risk") or row.get("rejected_by_research_registry"):
         return "discard_for_current_rotation"
     if not failed_gates:
         return "candidate_clean_for_human_review"
@@ -206,6 +213,7 @@ def _hardening_recommendation(row: dict[str, Any], failed_gates: list[str]) -> s
 def _worth_hardening(row: dict[str, Any], failed_gates: list[str]) -> bool:
     hard_blockers = {
         "degraded_by_registry",
+        "research_rejection_registry",
         "sibling_risk",
         "fragile_regime_dependency",
         "single_trade_dependency",
@@ -237,6 +245,8 @@ def _research_score(row: dict[str, Any], failed_gates: list[str]) -> float:
     score -= len(failed_gates) * 45.0
     if row.get("degraded_by_registry"):
         score -= 10_000.0
+    if row.get("rejected_by_research_registry"):
+        score -= 9_000.0
     if row.get("sibling_risk"):
         score -= 5_000.0
     return round(score, 4)
@@ -248,7 +258,8 @@ def _research_ranking_key(row: dict[str, Any]) -> tuple[int, float, str, str, st
         "near_miss_hardening_candidate": 1,
         "blocked_by_sibling_risk": 2,
         "research_gate_failed": 3,
-        "excluded_by_degradation_registry": 4,
+        "excluded_by_research_rejection_registry": 4,
+        "excluded_by_degradation_registry": 5,
     }
     return (
         ranks.get(row.get("candidate_status") or "", 5),

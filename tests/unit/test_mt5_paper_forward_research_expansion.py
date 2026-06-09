@@ -9,13 +9,13 @@ from services.mt5.mt5_paper_forward_research_expansion import run_paper_forward_
 
 
 class MT5PaperForwardResearchExpansionTests(unittest.TestCase):
-    def test_clean_non_sibling_candidate_is_recommended_for_review_only(self) -> None:
+    def test_clean_non_rejected_candidate_is_recommended_for_review_only(self) -> None:
         result = run_paper_forward_research_expansion(
             rows=[
                 {
-                    "symbol": "XAUUSD",
-                    "timeframe": "M15",
-                    "profile": "xauusd_m15_recent_session_open_continuation",
+                    "symbol": "US500",
+                    "timeframe": "H1",
+                    "profile": "us500_h1_recent_session_open_continuation",
                     "family": "recent_session_open_continuation",
                     "recent_closed": 24,
                     "total_closed": 72,
@@ -35,10 +35,11 @@ class MT5PaperForwardResearchExpansionTests(unittest.TestCase):
 
         self.assertEqual(result["recommendation"], "paper_forward_candidate_review")
         recommended = result["recommended_candidate"]
-        self.assertEqual(recommended["symbol"], "XAUUSD")
+        self.assertEqual(recommended["symbol"], "US500")
         self.assertEqual(recommended["candidate_status"], "paper_forward_review_ready")
         self.assertEqual(recommended["recommended_next_action"], "paper_forward_candidate_review")
         self.assertFalse(recommended["degraded_by_registry"])
+        self.assertFalse(recommended["rejected_by_research_registry"])
         self.assertFalse(recommended["sibling_risk"])
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["paper_forward_onboarding_started"])
@@ -46,7 +47,7 @@ class MT5PaperForwardResearchExpansionTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
-    def test_eth_m30_sibling_candidate_is_blocked_and_not_recommended(self) -> None:
+    def test_eth_m30_rejected_cluster_candidate_is_blocked_and_not_recommended(self) -> None:
         result = run_paper_forward_research_expansion(
             rows=[
                 _degraded_eth_chop_guard_row(),
@@ -74,10 +75,13 @@ class MT5PaperForwardResearchExpansionTests(unittest.TestCase):
         self.assertEqual(result["recommendation"], "continue_research")
         self.assertIsNone(result["recommended_candidate"])
         blocked = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
-        self.assertTrue(blocked["sibling_risk"])
-        self.assertEqual(blocked["sibling_of_degraded_profile"], "eth_m30_vol_breakout_chop_guard_v1")
-        self.assertEqual(blocked["candidate_status"], "blocked_by_sibling_risk")
-        self.assertEqual(blocked["recommended_next_action"], "manual_review_or_new_family_required")
+        self.assertTrue(blocked["rejected_by_research_registry"])
+        self.assertEqual(blocked["candidate_status"], "excluded_by_research_rejection_registry")
+        self.assertEqual(blocked["recommended_next_action"], "skip_rejected_family")
+        self.assertEqual(
+            blocked["research_rejection_reason"],
+            "eth_m30_volatility_breakout_cluster_degraded_or_sibling_risk",
+        )
         excluded = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_chop_guard_v1")
         self.assertEqual(excluded["candidate_status"], "excluded_by_degradation_registry")
         self.assertTrue(result["excluded_by_registry_or_sibling_risk"])
@@ -120,7 +124,7 @@ class MT5PaperForwardResearchExpansionTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
-    def test_eth_m30_volatility_breakout_cluster_is_blocked_from_expansion(self) -> None:
+    def test_eth_m30_volatility_breakout_cluster_is_rejected_from_expansion(self) -> None:
         result = run_paper_forward_research_expansion(
             rows=[
                 {
@@ -147,11 +151,13 @@ class MT5PaperForwardResearchExpansionTests(unittest.TestCase):
         self.assertEqual(result["recommendation"], "continue_research")
         self.assertIsNone(result["recommended_candidate"])
         row = result["ranking"][0]
-        self.assertTrue(row["sibling_risk"])
-        self.assertEqual(row["sibling_of_degraded_profile"], "eth_m30_vol_breakout_chop_guard_v1")
-        self.assertEqual(row["sibling_risk_reason"], "same_degraded_eth_m30_volatility_breakout_cluster")
-        self.assertEqual(row["candidate_status"], "blocked_by_sibling_risk")
-        self.assertEqual(row["recommended_next_action"], "manual_review_or_new_family_required")
+        self.assertTrue(row["rejected_by_research_registry"])
+        self.assertEqual(row["candidate_status"], "excluded_by_research_rejection_registry")
+        self.assertEqual(row["recommended_next_action"], "skip_rejected_family")
+        self.assertEqual(
+            row["research_rejection_reason"],
+            "eth_m30_volatility_breakout_cluster_degraded_or_sibling_risk",
+        )
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["paper_forward_onboarding_started"])
 

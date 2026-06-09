@@ -11,6 +11,7 @@ from services.mt5.mt5_backtester import _load_bars, _settings
 from services.mt5.mt5_config import get_mt5_config
 from services.mt5.mt5_forward_profile_degradation_registry import forward_profile_degradation
 from services.mt5.mt5_multi_symbol_recent_first import MultiSymbolConfig, _first_csv_price, evaluate_multi_symbol_config
+from services.mt5.mt5_research_rejection_registry import research_rejection, research_rejection_registry_status
 from services.mt5.mt5_recent_first_research import RecentFirstVariant
 from services.mt5.mt5_strategy_research_v2 import _features_by_index
 from services.mt5.mt5_symbol_cost_model import build_symbol_cost_model
@@ -136,10 +137,14 @@ def run_new_family_edge_discovery(
     excluded: list[dict[str, Any]] = []
     for row in merged:
         assessed = _evaluate_row(row)
-        if assessed.get("candidate_pool_eligible"):
-            evaluated.append(assessed)
-        elif assessed.get("degraded_by_registry") or assessed.get("sibling_risk"):
+        if assessed.get("candidate_status") in {
+            "excluded_by_degradation_registry",
+            "blocked_by_sibling_risk",
+            "excluded_by_research_rejection_registry",
+        }:
             excluded.append(assessed)
+        elif assessed.get("candidate_pool_eligible"):
+            evaluated.append(assessed)
 
     evaluated.sort(key=_ranking_key)
     excluded.sort(key=_excluded_key)
@@ -168,6 +173,7 @@ def run_new_family_edge_discovery(
         "offline_errors": offline_errors,
         "useful_rows": len(merged),
         "skipped_family_ideas": list(_SKIPPED_FAMILY_IDEAS),
+        "research_rejection_registry": research_rejection_registry_status(),
         "next_expansion": _next_expansion(recommended, near_misses),
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
@@ -188,8 +194,9 @@ def run_new_family_edge_discovery(
 
 def _evaluate_row(row: dict[str, Any]) -> dict[str, Any]:
     degraded = forward_profile_degradation(row["symbol"], row["timeframe"], row["profile"])
-    sibling_risk, sibling_of, sibling_reason = (False, "", "") if degraded else _sibling_risk(row)
     conceptual_family = _NEW_FAMILY_MAP.get(row["family"], "")
+    rejected = research_rejection(row["symbol"], row["timeframe"], row["profile"], row["family"], conceptual_family)
+    sibling_risk, sibling_of, sibling_reason = (False, "", "") if degraded or rejected else _sibling_risk(row)
     candidate_pool_eligible = bool(conceptual_family) and not _is_failed_family_cluster(row)
 
     assessed = {
@@ -197,6 +204,10 @@ def _evaluate_row(row: dict[str, Any]) -> dict[str, Any]:
         "conceptual_family": conceptual_family,
         "degraded_by_registry": bool(degraded),
         "degradation_reason": degraded.get("degradation_reason") or "",
+        "rejected_by_research_registry": bool(rejected),
+        "research_rejection_status": rejected.get("rejection_status") or "",
+        "research_rejection_reason": rejected.get("rejection_reason") or "",
+        "research_rejection_registry_version": rejected.get("reviewed_at_version") or "",
         "sibling_risk": sibling_risk,
         "sibling_of_degraded_profile": sibling_of,
         "sibling_risk_reason": sibling_reason,
@@ -206,6 +217,9 @@ def _evaluate_row(row: dict[str, Any]) -> dict[str, Any]:
     if assessed["degraded_by_registry"]:
         status = "excluded_by_degradation_registry"
         next_action = "skip_degraded_profile"
+    elif assessed["rejected_by_research_registry"]:
+        status = "excluded_by_research_rejection_registry"
+        next_action = "skip_rejected_family"
     elif assessed["sibling_risk"]:
         status = "blocked_by_sibling_risk"
         next_action = "manual_review_or_new_family_required"
@@ -238,6 +252,8 @@ def _gate_reasons(row: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
     shortfalls: dict[str, Any] = {}
     if row.get("degraded_by_registry"):
         reasons.append("degraded_by_registry")
+    if row.get("rejected_by_research_registry"):
+        reasons.append("research_rejection_registry")
     if row.get("sibling_risk"):
         reasons.append("sibling_risk")
     _min_gate(reasons, shortfalls, row, "recent_closed", MIN_RECENT_CLOSED)
@@ -282,6 +298,7 @@ def _min_gate(
 def _worth_near_miss(row: dict[str, Any], rejection_reasons: list[str]) -> bool:
     hard_blockers = {
         "degraded_by_registry",
+        "research_rejection_registry",
         "sibling_risk",
         "fragile_regime_dependency",
         "single_trade_dependency",
@@ -313,6 +330,8 @@ def _score(row: dict[str, Any], rejection_reasons: list[str]) -> float:
     score -= len(rejection_reasons) * 45.0
     if row.get("degraded_by_registry"):
         score -= 10_000.0
+    if row.get("rejected_by_research_registry"):
+        score -= 9_000.0
     if row.get("sibling_risk"):
         score -= 5_000.0
     return round(score, 4)

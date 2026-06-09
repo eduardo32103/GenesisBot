@@ -9,6 +9,10 @@ from services.mt5.mt5_forward_profile_degradation_registry import (
     forward_profile_degradation,
     forward_profile_degradation_registry_status,
 )
+from services.mt5.mt5_research_rejection_registry import (
+    research_rejection,
+    research_rejection_registry_status,
+)
 
 
 MIN_RECENT_CLOSED = 15
@@ -133,7 +137,8 @@ def run_paper_forward_candidate_rotation(
     ranking.sort(key=_ranking_key)
 
     excluded = [row for row in ranking if row["degraded_by_registry"]]
-    eligible = [row for row in ranking if not row["degraded_by_registry"]]
+    research_rejected = [row for row in ranking if row["rejected_by_research_registry"] and not row["degraded_by_registry"]]
+    eligible = [row for row in ranking if not row["degraded_by_registry"] and not row["rejected_by_research_registry"]]
     review_ready = [row for row in eligible if row["candidate_status"] == "paper_forward_review_ready"]
     recommended = review_ready[0] if review_ready else None
     if useful_rows == 0:
@@ -150,11 +155,13 @@ def run_paper_forward_candidate_rotation(
         "ranking": ranking,
         "eligible_candidates": eligible,
         "excluded_by_degradation_registry": excluded,
+        "excluded_by_research_rejection_registry": research_rejected,
         "loaded_sources": loaded_sources,
         "missing_sources": missing_sources,
         "skipped_sources": skipped_sources,
         "useful_rows": useful_rows,
         "registry": forward_profile_degradation_registry_status(),
+        "research_rejection_registry": research_rejection_registry_status(),
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
@@ -176,6 +183,8 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
     timeframe = _timeframe(row.get("timeframe"))
     profile = str(row.get("profile") or row.get("family") or "").strip()
     degraded = forward_profile_degradation(symbol, timeframe, profile)
+    family = str(row.get("family") or _infer_family(profile) or "").strip()
+    rejected = research_rejection(symbol, timeframe, profile, family)
     metrics = {
         "recent_closed": int(_number(row.get("recent_closed")) or 0),
         "total_closed": int(_number(row.get("total_closed")) or 0),
@@ -188,10 +197,13 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
     }
     fragile = _flag(row.get("fragile_regime_dependency") or row.get("fragile_regime") or row.get("fragile"))
     single_trade_dependency = _flag(row.get("single_trade_dependency"))
-    reasons = _gate_reasons(metrics, fragile=fragile, degraded=bool(degraded))
+    reasons = _gate_reasons(metrics, fragile=fragile, degraded=bool(degraded), rejected=bool(rejected))
     if degraded:
         candidate_status = "excluded_by_degradation_registry"
         next_action = "skip_degraded_profile"
+    elif rejected:
+        candidate_status = "excluded_by_research_rejection_registry"
+        next_action = "skip_rejected_family"
     elif reasons:
         candidate_status = "gate_failed"
         next_action = "continue_research"
@@ -202,20 +214,24 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "symbol": symbol,
         "timeframe": timeframe,
         "profile": profile,
-        "family": str(row.get("family") or _infer_family(profile) or "").strip(),
+        "family": family,
         **metrics,
         "fragile_regime_dependency": fragile,
         "single_trade_dependency": single_trade_dependency,
         "degraded_by_registry": bool(degraded),
         "degradation_reason": degraded.get("degradation_reason") or "",
         "degradation_registry_version": degraded.get("registry_version") or "",
+        "rejected_by_research_registry": bool(rejected),
+        "research_rejection_status": rejected.get("rejection_status") or "",
+        "research_rejection_reason": rejected.get("rejection_reason") or "",
+        "research_rejection_registry_version": rejected.get("reviewed_at_version") or "",
         "sibling_risk": False,
         "sibling_of_degraded_profile": "",
         "sibling_risk_reason": "",
         "candidate_status": candidate_status,
         "recommended_next_action": next_action,
         "rejection_reasons": reasons,
-        "rotation_score": _rotation_score(metrics, fragile=fragile, degraded=bool(degraded)),
+        "rotation_score": _rotation_score(metrics, fragile=fragile, degraded=bool(degraded), rejected=bool(rejected)),
         "source": str(row.get("source") or ""),
         "priority": int(_number(row.get("priority")) or 1000),
         "broker_touched": False,
@@ -224,10 +240,12 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _gate_reasons(metrics: dict[str, Any], *, fragile: bool, degraded: bool) -> list[str]:
+def _gate_reasons(metrics: dict[str, Any], *, fragile: bool, degraded: bool, rejected: bool) -> list[str]:
     reasons: list[str] = []
     if degraded:
         reasons.append("degraded_by_persistent_registry")
+    if rejected:
+        reasons.append("research_rejection_registry")
     if int(metrics["recent_closed"]) < MIN_RECENT_CLOSED:
         reasons.append("recent_closed_below_15")
     if int(metrics["total_closed"]) < MIN_TOTAL_CLOSED:
@@ -259,7 +277,7 @@ def _apply_sibling_risk_guard(ranking: list[dict[str, Any]]) -> list[dict[str, A
     guarded: list[dict[str, Any]] = []
     for row in ranking:
         updated = {**row}
-        if not updated.get("degraded_by_registry"):
+        if not updated.get("degraded_by_registry") and not updated.get("rejected_by_research_registry"):
             sibling = _matching_degraded_sibling(updated, degraded_refs)
             if sibling:
                 updated["sibling_risk"] = True
@@ -334,8 +352,8 @@ def _metrics_are_sibling_close(row: dict[str, Any], degraded: dict[str, Any]) ->
     )
 
 
-def _rotation_score(metrics: dict[str, Any], *, fragile: bool, degraded: bool) -> float:
-    if degraded:
+def _rotation_score(metrics: dict[str, Any], *, fragile: bool, degraded: bool, rejected: bool = False) -> float:
+    if degraded or rejected:
         return -10_000.0
     score = 0.0
     score += min(int(metrics["recent_closed"]), 80) * 3.0
@@ -355,10 +373,12 @@ def _ranking_key(row: dict[str, Any]) -> tuple[int, float, int, str, str]:
         status_rank = 0
     elif row["candidate_status"] == "blocked_by_sibling_risk":
         status_rank = 1
+    elif row["candidate_status"] == "excluded_by_research_rejection_registry":
+        status_rank = 3
     elif not row["degraded_by_registry"]:
         status_rank = 2
     else:
-        status_rank = 3
+        status_rank = 4
     return (status_rank, -float(row["rotation_score"]), int(row.get("priority") or 1000), row["symbol"], row["profile"])
 
 

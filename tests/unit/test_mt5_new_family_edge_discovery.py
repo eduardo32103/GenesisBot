@@ -49,7 +49,7 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
-    def test_failed_clusters_are_blocked_by_sibling_or_registry(self) -> None:
+    def test_failed_clusters_are_excluded_by_research_rejection_registry(self) -> None:
         result = run_new_family_edge_discovery(
             rows=[
                 {
@@ -97,6 +97,21 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
                     "spread_x2_pf": 1.2,
                     "remove_best_5_pf": 1.1,
                 },
+                {
+                    "symbol": "BTCUSD",
+                    "timeframe": "M30",
+                    "family": "recent_london_us_breakout",
+                    "profile": "btc_m30_london_us_breakout_strict_trailing",
+                    "recent_closed": 25,
+                    "total_closed": 80,
+                    "recent_pf": 1.4,
+                    "total_pf": 1.8,
+                    "expectancy": 0.2,
+                    "monte_carlo_stressed_pf": 1.1,
+                    "monte_carlo_stressed_expectancy": 0.04,
+                    "spread_x2_pf": 1.2,
+                    "remove_best_5_pf": 1.1,
+                },
             ],
             load_default_sources=False,
         )
@@ -105,11 +120,13 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
         self.assertIsNone(result["recommended_candidate"])
         self.assertEqual(result["ranking"], [])
         excluded = result["excluded_by_registry_or_sibling_risk"]
-        reasons = {row["sibling_risk_reason"] for row in excluded}
-        self.assertIn("failed_eth_m30_volatility_breakout_cluster", reasons)
-        self.assertIn("failed_xau_m15_session_open_continuation_hardening", reasons)
-        self.assertIn("failed_btc_h1_ema_reclaim_hardening", reasons)
-        self.assertTrue(all(row["candidate_status"] == "blocked_by_sibling_risk" for row in excluded))
+        reasons = {row["research_rejection_reason"] for row in excluded}
+        self.assertIn("eth_m30_volatility_breakout_cluster_degraded_or_sibling_risk", reasons)
+        self.assertIn("xau_m15_session_open_continuation_failed_mc_and_remove_best_5", reasons)
+        self.assertIn("btc_h1_ema_reclaim_failed_pf_mc_remove_best_and_dependency_gates", reasons)
+        self.assertIn("btc_m30_london_us_breakout_failed_deep_sample_validation", reasons)
+        self.assertTrue(all(row["candidate_status"] == "excluded_by_research_rejection_registry" for row in excluded))
+        self.assertTrue(all(row["recommended_next_action"] == "skip_rejected_family" for row in excluded))
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["paper_forward_onboarding_started"])
 
