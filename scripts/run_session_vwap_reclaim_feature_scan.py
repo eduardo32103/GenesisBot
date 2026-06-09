@@ -42,6 +42,11 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"evaluations_count={result.get('evaluations_count')}",
         f"recommendation={result.get('recommendation')}",
         f"recommended_next_research_phase={result.get('recommended_next_research_phase')}",
+        f"proxy_only={result.get('proxy_only')}",
+        f"requires_real_hardening={result.get('requires_real_hardening')}",
+        f"hardening_required_before_candidate={result.get('hardening_required_before_candidate')}",
+        f"cannot_be_paper_forward_candidate={result.get('cannot_be_paper_forward_candidate')}",
+        f"proxy_reliability_warning={result.get('proxy_reliability_warning')}",
         f"candidate_activated={result.get('candidate_activated')}",
         f"paper_forward_onboarding_started={result.get('paper_forward_onboarding_started')}",
         f"applies_to_real_trading={result.get('applies_to_real_trading')}",
@@ -70,6 +75,8 @@ def _edge_lines(rows: list[dict[str, Any]]) -> list[str]:
         + f"signals={row.get('signal_count')} recent={row.get('recent_signal_count')} "
         + f"pf={row.get('profit_factor_proxy')} exp={row.get('expectancy_proxy')} "
         + f"recent_exp={row.get('recent_expectancy_proxy')} status={row.get('scan_status')} "
+        + f"proxy_only={row.get('proxy_only')} requires_real_hardening={row.get('requires_real_hardening')} "
+        + f"cannot_be_paper_forward_candidate={row.get('cannot_be_paper_forward_candidate')} "
         + f"reasons={','.join(row.get('rejection_reasons') or []) or 'none'}"
         for row in rows[:12]
     ]
@@ -82,7 +89,8 @@ def _rejected_lines(rows: list[dict[str, Any]]) -> list[str]:
         "- "
         + f"{row.get('symbol')} {row.get('timeframe')} {row.get('profile')} "
         + f"status={row.get('scan_status') or row.get('candidate_status')} "
-        + f"reason={row.get('research_rejection_reason') or row.get('degradation_reason') or row.get('rejection_reason') or row.get('sibling_risk_reason')}"
+        + f"reason={row.get('research_rejection_reason') or row.get('degradation_reason') or row.get('rejection_reason') or row.get('sibling_risk_reason')} "
+        + f"proxy_warning={row.get('proxy_reliability_warning') or ''}"
         for row in rows[:20]
     ]
 

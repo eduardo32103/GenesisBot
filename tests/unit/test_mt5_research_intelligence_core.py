@@ -32,8 +32,17 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
         self.assertTrue(result["avoid_next"])
         self.assertTrue(result["next_hypotheses"])
         self.assertTrue(result["priority_queue"])
-        self.assertEqual(result["priority_queue"][0]["family_name"], "session_vwap_reclaim")
-        self.assertEqual(result["recommended_next_research_phase"], "design_session_vwap_reclaim_processed_feature_scan")
+        self.assertIn(
+            result["priority_queue"][0]["family_name"],
+            {"multi_timeframe_trend_pullback", "volatility_compression_breakout"},
+        )
+        self.assertIn(
+            result["recommended_next_research_phase"],
+            {
+                "design_multi_timeframe_trend_pullback_processed_feature_scan",
+                "design_volatility_compression_breakout_processed_feature_scan",
+            },
+        )
 
     def test_failure_patterns_cover_closed_research_branches(self) -> None:
         result = run_research_intelligence_core(
@@ -53,6 +62,9 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
             "total_pf_weakness",
             "insufficient_recent_sample",
             "unstable_deep_sample",
+            "proxy_false_positive_after_costs",
+            "cost_adjusted_edge_failure",
+            "feature_scan_to_hardening_decay",
         }:
             self.assertIn(category, categories)
 
@@ -61,6 +73,7 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
         self.assertIn("XAUUSD M15", rejected_labels)
         self.assertIn("BTCUSD H1", rejected_labels)
         self.assertIn("BTCUSD M30", rejected_labels)
+        self.assertIn("EURUSD H1", rejected_labels)
 
     def test_hypotheses_do_not_repeat_rejected_family_markers(self) -> None:
         result = run_research_intelligence_core(
@@ -73,6 +86,9 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
         self.assertIn("session_vwap_reclaim", names)
         self.assertIn("volatility_compression_breakout", names)
         self.assertIn("multi_timeframe_trend_pullback", names)
+        session = [row for row in result["priority_queue"] if row["family_name"] == "session_vwap_reclaim"]
+        self.assertEqual(len(session), 1)
+        self.assertGreater(result["priority_queue"][0]["priority_score"], session[0]["priority_score"])
         for rejected in {
             "recent_session_open_continuation",
             "recent_ema_reclaim",

@@ -5,7 +5,7 @@ from fnmatch import fnmatchcase
 from typing import Any
 
 
-RESEARCH_REJECTION_REGISTRY_VERSION = "2026-06-09.mt5_research_rejection_registry.v1"
+RESEARCH_REJECTION_REGISTRY_VERSION = "2026-06-09.mt5_research_rejection_registry.v2"
 
 _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -79,6 +79,20 @@ _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
         ),
         "rejection_status": "rejected_as_correlated_family",
         "rejection_reason": "btc_m30_opening_range_fakeout_correlated_with_failed_london_us_breakout",
+        "applies_to_paper_forward_candidate": True,
+        "applies_to_real_trading": False,
+        "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,
+        "allow_future_research": False,
+        "allow_manual_override": True,
+    },
+    {
+        "symbol": "EURUSD",
+        "timeframe": "H1",
+        "family_profile_patterns": (
+            "*session_vwap_reclaim*",
+        ),
+        "rejection_status": "rejected_after_real_hardening",
+        "rejection_reason": "proxy_false_positive_after_costs_and_mc_failure",
         "applies_to_paper_forward_candidate": True,
         "applies_to_real_trading": False,
         "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,

@@ -13,7 +13,7 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
         status = research_rejection_registry_status()
 
         self.assertTrue(status["ok"])
-        self.assertEqual(status["count"], 5)
+        self.assertEqual(status["count"], 6)
         self.assertFalse(status["broker_touched"])
         self.assertFalse(status["order_executed"])
         self.assertEqual(status["order_policy"], "journal_only_no_broker")
@@ -56,6 +56,23 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
             btc_m30_fakeout["rejection_reason"],
             "btc_m30_opening_range_fakeout_correlated_with_failed_london_us_breakout",
         )
+
+    def test_eurusd_h1_session_vwap_reclaim_false_positive_matches_only_cluster(self) -> None:
+        rejected = research_rejection("EURUSD", "H1", "session_vwap_reclaim|mode=distance_filter")
+        unrelated_timeframe = research_rejection("EURUSD", "M30", "session_vwap_reclaim|mode=distance_filter")
+        unrelated_family = research_rejection("EURUSD", "H1", "multi_timeframe_trend_pullback")
+
+        self.assertEqual(rejected["rejection_status"], "rejected_after_real_hardening")
+        self.assertEqual(rejected["rejection_reason"], "proxy_false_positive_after_costs_and_mc_failure")
+        self.assertTrue(rejected["applies_to_paper_forward_candidate"])
+        self.assertFalse(rejected["applies_to_real_trading"])
+        self.assertFalse(rejected["allow_future_research"])
+        self.assertTrue(rejected["allow_manual_override"])
+        self.assertFalse(rejected["broker_touched"])
+        self.assertFalse(rejected["order_executed"])
+        self.assertEqual(rejected["order_policy"], "journal_only_no_broker")
+        self.assertEqual(unrelated_timeframe, {})
+        self.assertEqual(unrelated_family, {})
 
     def test_unrelated_candidate_is_not_rejected(self) -> None:
         self.assertEqual(

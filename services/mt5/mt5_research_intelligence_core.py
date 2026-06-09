@@ -309,6 +309,14 @@ def _avoid_next(rejected_clusters: list[dict[str, Any]], failure_patterns: list[
                 "recommended_action": "prefer_new_family_design",
             }
         )
+    if "proxy_false_positive_after_costs" in category_set:
+        avoid.append(
+            {
+                "scope": "session_vwap_reclaim proxy-only scans",
+                "reason": "A VWAP proxy edge decayed after cost-aware hardening and Monte Carlo validation.",
+                "recommended_action": "penalize_proxy_family_until_recalibrated",
+            }
+        )
     return avoid
 
 
@@ -396,6 +404,8 @@ def _next_hypotheses(failure_patterns: list[dict[str, Any]]) -> list[dict[str, A
             priority += 4
         if "remove_best_dependency" in categories and template["family_name"] in {"rsi_divergence_confirmation", "session_vwap_reclaim"}:
             priority += 3
+        if "proxy_false_positive_after_costs" in categories and template["family_name"] == "session_vwap_reclaim":
+            priority -= 30
         if "single_trade_dependency" in categories and template["family_name"] == "liquidity_sweep_reversal_v2":
             priority -= 8
         if "sibling_of_failed_profile" in categories and template["family_name"] == "ema_slope_pullback":
@@ -435,6 +445,14 @@ def _recommended_phase(priority_queue: list[dict[str, Any]]) -> str:
 def _classify_reason(reason: str) -> list[str]:
     text = reason.casefold()
     categories: list[str] = []
+    if "proxy_false_positive" in text:
+        categories.append("proxy_false_positive_after_costs")
+        categories.append("cost_adjusted_edge_failure")
+        categories.append("feature_scan_to_hardening_decay")
+    if "after_cost" in text or "cost_adjusted" in text or "costs" in text:
+        categories.append("cost_adjusted_edge_failure")
+    if "feature_scan" in text and "hardening" in text:
+        categories.append("feature_scan_to_hardening_decay")
     if "recent_closed" in text or "total_closed" in text or "closed_below" in text or "recent sample" in text:
         categories.append("insufficient_recent_sample")
     if "monte_carlo" in text or "_mc_" in text or " mc" in text:

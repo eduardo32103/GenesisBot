@@ -25,6 +25,11 @@ class MT5SessionVwapReclaimFeatureScanTests(unittest.TestCase):
         self.assertEqual(result["scanned_symbols"], ["US500"])
         self.assertEqual(result["scanned_timeframes"], ["M30"])
         self.assertEqual(result["evaluations_count"], 4)
+        self.assertTrue(result["proxy_only"])
+        self.assertTrue(result["requires_real_hardening"])
+        self.assertTrue(result["hardening_required_before_candidate"])
+        self.assertTrue(result["cannot_be_paper_forward_candidate"])
+        self.assertEqual(result["proxy_reliability_warning"], "proxy_only_requires_real_hardening")
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["paper_forward_onboarding_started"])
         self.assertFalse(result["applies_to_real_trading"])
@@ -42,6 +47,10 @@ class MT5SessionVwapReclaimFeatureScanTests(unittest.TestCase):
         self.assertFalse(edge["degraded_by_registry"])
         self.assertFalse(edge["rejected_by_research_registry"])
         self.assertFalse(edge["sibling_risk"])
+        self.assertTrue(edge["proxy_only"])
+        self.assertTrue(edge["requires_real_hardening"])
+        self.assertTrue(edge["hardening_required_before_candidate"])
+        self.assertTrue(edge["cannot_be_paper_forward_candidate"])
 
     def test_missing_volume_blocks_scan_promotion(self) -> None:
         bars = [{key: value for key, value in bar.items() if key != "volume"} for bar in _reclaim_bars(days=10)]
@@ -86,6 +95,35 @@ class MT5SessionVwapReclaimFeatureScanTests(unittest.TestCase):
         self.assertFalse(skipped["order_executed"])
         self.assertEqual(skipped["order_policy"], "journal_only_no_broker")
 
+    def test_eurusd_h1_session_vwap_reclaim_is_excluded_after_hardening_false_positive(self) -> None:
+        result = run_session_vwap_reclaim_feature_scan(
+            evaluations=[{"symbol": "EURUSD", "timeframe": "H1", "bars": _reclaim_bars()}],
+            symbols=["EURUSD"],
+            timeframes=["H1"],
+            max_evaluations=4,
+        )
+
+        self.assertEqual(result["recommendation"], "continue_research")
+        self.assertEqual(result["top_feature_edges"], [])
+        self.assertTrue(result["rejected_by_registry"])
+        self.assertEqual(result["proxy_reliability_warning"], "proxy_false_positive_after_costs")
+        for row in result["rejected_by_registry"]:
+            self.assertEqual(row["symbol"], "EURUSD")
+            self.assertEqual(row["timeframe"], "H1")
+            self.assertEqual(row["family"], "session_vwap_reclaim")
+            self.assertEqual(row["research_rejection_reason"], "proxy_false_positive_after_costs_and_mc_failure")
+            self.assertEqual(row["scan_status"], "excluded_by_registry_or_sibling_risk")
+            self.assertTrue(row["rejected_by_research_registry"])
+            self.assertTrue(row["proxy_only"])
+            self.assertTrue(row["requires_real_hardening"])
+            self.assertTrue(row["cannot_be_paper_forward_candidate"])
+            self.assertEqual(row["proxy_reliability_warning"], "proxy_false_positive_after_costs")
+            self.assertFalse(row["candidate_activated"])
+            self.assertFalse(row["paper_forward_onboarding_started"])
+            self.assertFalse(row["broker_touched"])
+            self.assertFalse(row["order_executed"])
+            self.assertEqual(row["order_policy"], "journal_only_no_broker")
+
     def test_feature_scan_does_not_mark_new_family_as_rejected_registry_sibling(self) -> None:
         result = run_session_vwap_reclaim_feature_scan(
             evaluations=[{"symbol": "BTCUSD", "timeframe": "M30", "bars": _reclaim_bars()}],
@@ -116,6 +154,9 @@ class MT5SessionVwapReclaimFeatureScanTests(unittest.TestCase):
         self.assertIn("scanned_timeframes=M30", text)
         self.assertIn("candidate_activated=False", text)
         self.assertIn("paper_forward_onboarding_started=False", text)
+        self.assertIn("proxy_only=True", text)
+        self.assertIn("requires_real_hardening=True", text)
+        self.assertIn("cannot_be_paper_forward_candidate=True", text)
         self.assertIn("broker_touched=False", text)
         self.assertIn("order_executed=False", text)
         self.assertIn("order_policy=journal_only_no_broker", text)
