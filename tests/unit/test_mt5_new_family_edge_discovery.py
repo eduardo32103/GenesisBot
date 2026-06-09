@@ -5,6 +5,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.run_new_family_edge_discovery import main as discovery_main
 from services.mt5.mt5_new_family_edge_discovery import run_new_family_edge_discovery
@@ -36,6 +37,10 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result["recommendation"], "paper_forward_candidate_review")
+        self.assertEqual(result["mode"], "processed_sources_only")
+        self.assertFalse(result["offline_backtests_run"])
+        self.assertEqual(result["offline_evaluations"], 0)
+        self.assertFalse(result["interrupted_or_timed_out"])
         recommended = result["recommended_candidate"]
         self.assertEqual(recommended["symbol"], "US500")
         self.assertEqual(recommended["candidate_status"], "paper_forward_review_ready")
@@ -117,6 +122,8 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result["recommendation"], "continue_research")
+        self.assertEqual(result["mode"], "processed_sources_only")
+        self.assertFalse(result["offline_backtests_run"])
         self.assertIsNone(result["recommended_candidate"])
         self.assertEqual(result["ranking"], [])
         excluded = result["excluded_by_registry_or_sibling_risk"]
@@ -155,6 +162,7 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result["recommendation"], "continue_research")
+        self.assertEqual(result["mode"], "processed_sources_only")
         self.assertEqual(len(result["top_near_misses"]), 1)
         near_miss = result["top_near_misses"][0]
         self.assertEqual(near_miss["candidate_status"], "near_miss")
@@ -192,6 +200,7 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
 
         row = result["ranking"][0]
         self.assertEqual(result["recommendation"], "continue_research")
+        self.assertEqual(result["mode"], "processed_sources_only")
         self.assertEqual(row["candidate_status"], "research_gate_failed")
         self.assertIn("remove_best_5_pf_below_1", row["rejection_reasons"])
         self.assertIn("fragile_regime_dependency", row["rejection_reasons"])
@@ -204,8 +213,12 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
         result = run_new_family_edge_discovery(load_default_sources=False)
 
         self.assertEqual(result["recommendation"], "continue_research")
+        self.assertEqual(result["mode"], "processed_sources_only")
         self.assertIsNone(result["recommended_candidate"])
         self.assertEqual(result["useful_rows"], 0)
+        self.assertFalse(result["offline_backtests_run"])
+        self.assertEqual(result["offline_evaluations"], 0)
+        self.assertFalse(result["interrupted_or_timed_out"])
         self.assertEqual(result["families_evaluated"], [])
         self.assertEqual(result["symbol_timeframes_evaluated"], [])
         self.assertFalse(result["candidate_activated"])
@@ -228,10 +241,99 @@ class MT5NewFamilyEdgeDiscoveryTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with contextlib.redirect_stdout(io.StringIO()):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
                 code = discovery_main(["--results-dir", str(root)])
 
         self.assertEqual(code, 0)
+        text = output.getvalue()
+        self.assertIn("mode=processed_sources_only", text)
+        self.assertIn("offline_backtests_run=False", text)
+        self.assertIn("offline_evaluations=0", text)
+        self.assertIn("candidate_activated=False", text)
+        self.assertIn("paper_forward_onboarding_started=False", text)
+        self.assertIn("broker_touched=False", text)
+        self.assertIn("order_executed=False", text)
+        self.assertIn("order_policy=journal_only_no_broker", text)
+
+    def test_run_offline_backtests_flag_is_required_for_heavy_mode(self) -> None:
+        fake_result = {
+            "ok": True,
+            "mode": "offline_backtests",
+            "recommendation": "continue_research",
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+            "applies_to_real_trading": False,
+            "useful_rows": 0,
+            "offline_backtests_run": True,
+            "offline_evaluations": 0,
+            "interrupted_or_timed_out": False,
+            "interruption_reason": "",
+            "max_runtime_seconds": 0.5,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+            "loaded_sources": [],
+            "missing_sources": [],
+            "skipped_sources": [],
+            "offline_errors": [],
+            "families_evaluated": [],
+            "symbol_timeframes_evaluated": [],
+            "ranking": [],
+            "top_near_misses": [],
+            "excluded_by_registry_or_sibling_risk": [],
+            "skipped_family_ideas": [],
+            "next_expansion": [],
+            "recommended_candidate": None,
+        }
+        with patch("scripts.run_new_family_edge_discovery.run_new_family_edge_discovery", return_value=fake_result) as mocked:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = discovery_main(["--run-offline-backtests", "--max-runtime-seconds", "0.5"])
+
+        self.assertEqual(code, 0)
+        kwargs = mocked.call_args.kwargs
+        self.assertTrue(kwargs["include_offline_backtests"])
+        self.assertEqual(kwargs["max_runtime_seconds"], 0.5)
+
+    def test_keyboard_interrupt_in_heavy_mode_returns_safe_continue_research(self) -> None:
+        with patch(
+            "services.mt5.mt5_new_family_edge_discovery._offline_gap_backtest_rows",
+            side_effect=KeyboardInterrupt,
+        ):
+            result = run_new_family_edge_discovery(
+                rows=[
+                    {
+                        "symbol": "US500",
+                        "timeframe": "M30",
+                        "family": "recent_failed_breakout_reversal",
+                        "profile": "us500_m30_failed_breakout_reversal_clean",
+                        "recent_closed": 22,
+                        "total_closed": 70,
+                        "recent_pf": 1.22,
+                        "total_pf": 1.34,
+                        "expectancy": 0.12,
+                        "monte_carlo_stressed_pf": 1.08,
+                        "monte_carlo_stressed_expectancy": 0.03,
+                        "spread_x2_pf": 1.02,
+                        "remove_best_5_pf": 1.01,
+                    }
+                ],
+                load_default_sources=False,
+                include_offline_backtests=True,
+                max_runtime_seconds=0.5,
+            )
+
+        self.assertEqual(result["mode"], "offline_backtests")
+        self.assertTrue(result["offline_backtests_run"])
+        self.assertTrue(result["interrupted_or_timed_out"])
+        self.assertEqual(result["interruption_reason"], "keyboard_interrupt")
+        self.assertEqual(result["recommendation"], "continue_research")
+        self.assertIsNone(result["recommended_candidate"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
 
 if __name__ == "__main__":

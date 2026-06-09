@@ -110,25 +110,41 @@ def run_new_family_edge_discovery(
     max_bars: int = 20000,
     monte_carlo_simulations: int = 150,
     per_evaluation_timeout_seconds: float = 1.5,
+    max_runtime_seconds: float = 15.0,
 ) -> dict[str, Any]:
     started = time.monotonic()
+    mode = "offline_backtests" if include_offline_backtests else "processed_sources_only"
+    max_runtime_seconds = max(0.1, float(max_runtime_seconds or 15.0))
+    interrupted_or_timed_out = False
+    interruption_reason = ""
+    discovered_rows: list[dict[str, Any]] = []
+    loaded_sources: list[str] = []
+    missing_sources: list[str] = []
+    skipped_sources: list[dict[str, str]] = []
+    offline_rows: list[dict[str, Any]] = []
+    offline_errors: list[dict[str, str]] = []
     discovered_rows, loaded_sources, missing_sources, skipped_sources = _load_existing_result_rows(
         result_paths or [],
         search_root=search_root,
         load_default_sources=load_default_sources,
     )
     source_rows = discovered_rows + list(rows or [])
-    offline_rows: list[dict[str, Any]] = []
-    offline_errors: list[dict[str, str]] = []
     if include_offline_backtests:
-        offline_rows, offline_errors = _offline_gap_backtest_rows(
-            source_rows,
-            csv_root=Path(search_root) if search_root else _DEFAULT_CSV_DIR,
-            max_evaluations=max_offline_evaluations,
-            max_bars=max_bars,
-            monte_carlo_simulations=monte_carlo_simulations,
-            timeout_seconds=per_evaluation_timeout_seconds,
-        )
+        try:
+            offline_rows, offline_errors, interrupted_or_timed_out, interruption_reason = _offline_gap_backtest_rows(
+                source_rows,
+                csv_root=Path(search_root) if search_root else _DEFAULT_CSV_DIR,
+                max_evaluations=max_offline_evaluations,
+                max_bars=max_bars,
+                monte_carlo_simulations=monte_carlo_simulations,
+                timeout_seconds=per_evaluation_timeout_seconds,
+                started=started,
+                max_runtime_seconds=max_runtime_seconds,
+            )
+        except KeyboardInterrupt:
+            interrupted_or_timed_out = True
+            interruption_reason = "keyboard_interrupt"
+            offline_errors.append({"error": "keyboard_interrupt"})
         source_rows.extend(offline_rows)
     normalized = [_normalize_row(row) for row in source_rows if _is_useful_source_row(row)]
     merged = _merge_rows(normalized)
@@ -150,12 +166,13 @@ def run_new_family_edge_discovery(
     excluded.sort(key=_excluded_key)
     candidates = [row for row in evaluated if row["candidate_status"] == "paper_forward_review_ready"]
     near_misses = [row for row in evaluated if row["candidate_status"] == "near_miss"]
-    recommended = candidates[0] if candidates else None
+    recommended = None if interrupted_or_timed_out else (candidates[0] if candidates else None)
     recommendation = "paper_forward_candidate_review" if recommended else "continue_research"
 
     return {
         "ok": True,
         "status": "new_family_edge_discovery_ready",
+        "mode": mode,
         "recommendation": recommendation,
         "recommended_candidate": recommended,
         "candidates": candidates,
@@ -171,6 +188,9 @@ def run_new_family_edge_discovery(
         "offline_backtests_run": include_offline_backtests,
         "offline_evaluations": len(offline_rows),
         "offline_errors": offline_errors,
+        "interrupted_or_timed_out": interrupted_or_timed_out,
+        "interruption_reason": interruption_reason,
+        "max_runtime_seconds": max_runtime_seconds,
         "useful_rows": len(merged),
         "skipped_family_ideas": list(_SKIPPED_FAMILY_IDEAS),
         "research_rejection_registry": research_rejection_registry_status(),
@@ -401,7 +421,9 @@ def _offline_gap_backtest_rows(
     max_bars: int,
     monte_carlo_simulations: int,
     timeout_seconds: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    started: float,
+    max_runtime_seconds: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], bool, str]:
     present_families = {
         normalized["family"]
         for row in source_rows
@@ -414,12 +436,15 @@ def _offline_gap_backtest_rows(
         if family not in present_families
     ]
     if not missing_families:
-        return [], []
+        return [], [], False, ""
 
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     evaluations = 0
     for csv_path in _csv_targets(csv_root):
+        if _runtime_exceeded(started, max_runtime_seconds):
+            errors.append({"error": "max_runtime_seconds_exceeded", "csv_path": str(csv_path)})
+            return rows, errors, True, "max_runtime_seconds_exceeded"
         if evaluations >= max_evaluations:
             break
         symbol = _symbol_from_csv_path(csv_path)
@@ -433,6 +458,9 @@ def _offline_gap_backtest_rows(
         settings, bars, cost_model = loaded
         features_by_index = _features_by_index(bars)
         for family in missing_families:
+            if _runtime_exceeded(started, max_runtime_seconds):
+                errors.append({"error": "max_runtime_seconds_exceeded", "csv_path": str(csv_path), "family": family})
+                return rows, errors, True, "max_runtime_seconds_exceeded"
             if evaluations >= max_evaluations:
                 break
             config = _offline_config(family, timeframe)
@@ -449,6 +477,9 @@ def _offline_gap_backtest_rows(
                     cost_model=cost_model.as_dict(),
                     monte_carlo_simulations=monte_carlo_simulations,
                 )
+            except KeyboardInterrupt:
+                errors.append({"csv_path": str(csv_path), "family": family, "error": "keyboard_interrupt"})
+                return rows, errors, True, "keyboard_interrupt"
             except Exception as exc:  # pragma: no cover - defensive around research helpers
                 errors.append({"csv_path": str(csv_path), "family": family, "error": type(exc).__name__})
                 continue
@@ -467,7 +498,11 @@ def _offline_gap_backtest_rows(
                     "source_csv": str(csv_path),
                 }
             )
-    return rows, errors
+    return rows, errors, False, ""
+
+
+def _runtime_exceeded(started: float, max_runtime_seconds: float) -> bool:
+    return time.monotonic() - started >= max_runtime_seconds
 
 
 def _load_offline_bars(
