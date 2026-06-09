@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_signal_router import MT5SignalRouter
 
 
@@ -24,6 +25,10 @@ def mt5_ops_status(*, memory: MemoryStore | None = None, symbol: str = "") -> di
 
 def mt5_risk_state(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return build_router(memory).risk_state(symbol=symbol, timeframe=timeframe)
+
+
+def mt5_risk_recovery(*, memory: MemoryStore | None = None, symbol: str = "ETHUSD", timeframe: str = "M30") -> dict[str, Any]:
+    return mt5_risk_recovery_status(symbol=symbol, timeframe=timeframe)
 
 
 def mt5_ui_summary(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:

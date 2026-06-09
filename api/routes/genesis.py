@@ -36,6 +36,7 @@ from services.mt5.mt5_bridge import (
     mt5_performance,
     mt5_performance_auto,
     mt5_promoted_profile,
+    mt5_risk_recovery,
     mt5_risk_state,
     mt5_replay_results,
     mt5_replay_reset,
@@ -87,6 +88,10 @@ def get_genesis_mt5_ops_status(symbol: str = "") -> dict[str, Any]:
 
 def get_genesis_mt5_risk_state(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return mt5_risk_state(symbol=symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_risk_recovery(symbol: str = "ETHUSD", timeframe: str = "M30") -> dict[str, Any]:
+    return mt5_risk_recovery(symbol=symbol, timeframe=timeframe)
 
 
 def get_genesis_mt5_ui_summary(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
