@@ -111,6 +111,8 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
             last_tick_at = str(generic_snapshot.get("last_tick_at") or "")
     snapshot_recent = _snapshot_recent(last_tick_at)
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    if not open_trade:
+        open_trade = generic_snapshot.get("open_shadow_trade") if isinstance(generic_snapshot.get("open_shadow_trade"), dict) else {}
     risk = assess_runtime_risk(clean_symbol, timeframe=clean_timeframe, tick=active_tick, open_trade=open_trade)
     stats = _forward_stats(snapshot, generic_snapshot)
     open_shadow_count = 1 if open_trade else 0
@@ -127,9 +129,10 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
     if degradation_guardrail.get("should_degrade"):
         degradation_reason = str(degradation_guardrail.get("degradation_reason") or "early_forward_edge_failed")
     degraded = bool(degradation_reason)
+    guardrail_blocks_paper = bool(degradation_guardrail.get("degradation_guardrail_active"))
     risk_allowed = bool(risk.get("allowed"))
     context_ready = _context_ready(active_tick, snapshot)
-    active = bool(active_tick and snapshot_recent and context_ready and risk_allowed and not degraded)
+    active = bool(active_tick and snapshot_recent and context_ready and risk_allowed and not degraded and not guardrail_blocks_paper)
     applies_to_paper_shadow = bool(active and risk_allowed)
     payload = {
         **eth_m30_candidate_profile(),
@@ -138,8 +141,8 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "symbol": clean_symbol,
         "normalized_symbol": normalize_mt5_symbol(clean_symbol) or clean_symbol,
         "timeframe": clean_timeframe,
-        "status": degradation_guardrail.get("new_status") if degradation_guardrail.get("should_degrade") else "paper_forward_candidate",
-        "mode": "observation_only" if degradation_guardrail.get("should_degrade") else "paper_only_forward",
+        "status": degradation_guardrail.get("new_status") if degradation_guardrail.get("degradation_guardrail_active") else "paper_forward_candidate",
+        "mode": "observation_only" if degradation_guardrail.get("degradation_guardrail_active") else "paper_only_forward",
         "active": active,
         "applies_to_paper_shadow": applies_to_paper_shadow,
         "applies_to_real_trading": False,
@@ -173,6 +176,12 @@ def eth_m30_forward_profile_state(*, symbol: str = ETH_M30_SYMBOL, timeframe: st
         "degradation_reason": degradation_reason,
         "degradation_guardrail": degradation_guardrail,
         "degradation_recommendation": degradation_guardrail.get("recommendation") or "",
+        "degradation_guardrail_active": bool(degradation_guardrail.get("degradation_guardrail_active")),
+        "pending_degradation_until_shadow_closes": bool(degradation_guardrail.get("pending_degradation_until_shadow_closes")),
+        "paper_probe_allowed": bool(degradation_guardrail.get("paper_probe_allowed")),
+        "registry_degraded": bool(degradation_guardrail.get("registry_degraded")),
+        "degradation_source": degradation_guardrail.get("degradation_source") or "",
+        "registry_version": degradation_guardrail.get("registry_version") or "",
         "automatic_promotion": False,
         "promoted_profile_mutated": False,
         "forward_state_mutated": False,

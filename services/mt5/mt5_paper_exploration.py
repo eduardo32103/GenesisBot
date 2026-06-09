@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol
+from services.mt5.mt5_eth_m30_forward_degradation import ETH_M30_DEGRADATION_PROFILE, evaluate_eth_m30_forward_degradation
 from services.mt5.mt5_eth_m30_paper_forward_candidate import active_eth_m30_paper_forward_candidate
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
 from services.mt5.mt5_promoted_profile import active_promoted_profile
@@ -43,7 +44,27 @@ def evaluate_paper_exploration(
         promoted_profile = active_eth_m30_paper_forward_candidate(clean_symbol, active_timeframe, snapshot=snapshot)
     closed_event: dict[str, Any] | None = None
     opened_event: dict[str, Any] | None = None
+    performance_payload: dict[str, Any] | None = None
     risk_governor = assess_runtime_risk(clean_symbol, timeframe=active_timeframe, tick=active_tick, open_trade=open_trade)
+    initial_degradation_guardrail = _forward_degradation_guardrail(
+        clean_symbol,
+        active_timeframe,
+        snapshot,
+        promoted_profile,
+        open_shadow_count=1 if open_trade else 0,
+        risk_governor_reason=str(risk_governor.get("reason") or ""),
+        performance_payload=None,
+    )
+    if initial_degradation_guardrail.get("degradation_guardrail_active"):
+        return _forward_degradation_blocked_result(
+            cfg,
+            trigger=trigger,
+            guardrail=initial_degradation_guardrail,
+            risk_governor=risk_governor,
+            promoted_profile=promoted_profile,
+            open_trade=open_trade,
+            summary=snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {},
+        )
 
     if open_trade:
         open_trade, closed_event = _update_open_trade(open_trade, active_tick, cfg)
@@ -56,19 +77,34 @@ def evaluate_paper_exploration(
                 "last_closed_at": closed_event.get("closed_at") or _now(),
                 "last_reason": closed_event.get("exit_reason") or "",
             }
+            performance_payload = update_runtime_performance(clean_symbol)
+            snapshot = get_snapshot(clean_symbol, active_timeframe) if active_timeframe else get_snapshot(clean_symbol)
+            snapshot = snapshot or {}
         else:
             update_open_shadow_trade(clean_symbol, open_trade, timeframe=active_timeframe)
 
-    can_open, block_reason = _can_open(
+    degradation_guardrail = _forward_degradation_guardrail(
         clean_symbol,
-        normalized,
-        active_tick,
-        cfg,
-        state,
-        bool(open_trade and not closed_event),
+        active_timeframe,
+        snapshot,
         promoted_profile,
-        snapshot=snapshot,
+        open_shadow_count=1 if open_trade and not closed_event else 0,
+        risk_governor_reason=str(risk_governor.get("reason") or ""),
+        performance_payload=performance_payload,
     )
+    if degradation_guardrail.get("should_degrade"):
+        can_open, block_reason = False, f"forward_degraded:{degradation_guardrail.get('degradation_reason') or 'early_forward_edge_failed'}"
+    else:
+        can_open, block_reason = _can_open(
+            clean_symbol,
+            normalized,
+            active_tick,
+            cfg,
+            state,
+            bool(open_trade and not closed_event),
+            promoted_profile,
+            snapshot=snapshot,
+        )
     if can_open:
         side = _candidate_side(active_tick, snapshot)
         risk_governor = assess_runtime_risk(
@@ -107,7 +143,8 @@ def evaluate_paper_exploration(
         block_reason = ""
 
     update_snapshot(clean_symbol, {"paper_exploration_state": state})
-    performance_payload = update_runtime_performance(clean_symbol)
+    if performance_payload is None:
+        performance_payload = update_runtime_performance(clean_symbol)
     result = {
         "paper_exploration_enabled": cfg.paper_exploration_enabled,
         "paper_exploration_attempted": bool(cfg.paper_exploration_enabled),
@@ -123,6 +160,14 @@ def evaluate_paper_exploration(
         "risk_governor": risk_governor,
         "promoted_profile": promoted_profile or None,
         "paper_forward_candidate_profile": promoted_profile.get("profile") if promoted_profile else "",
+        "degradation_guardrail": degradation_guardrail,
+        "degradation_guardrail_active": bool(degradation_guardrail.get("degradation_guardrail_active")),
+        "degradation_reason": degradation_guardrail.get("degradation_reason") or "",
+        "degradation_source": degradation_guardrail.get("degradation_source") or "",
+        "registry_degraded": bool(degradation_guardrail.get("registry_degraded")),
+        "registry_version": degradation_guardrail.get("registry_version") or "",
+        "pending_degradation_until_shadow_closes": bool(degradation_guardrail.get("pending_degradation_until_shadow_closes")),
+        "paper_probe_allowed": bool(degradation_guardrail.get("paper_probe_allowed")),
         "shadow_trade_id": (opened_event or open_trade or {}).get("shadow_trade_id") or "",
         "open_shadow_trade": opened_event or ({} if closed_event else open_trade),
         "closed_shadow_trade": closed_event,
@@ -185,6 +230,83 @@ def update_runtime_performance(symbol: str) -> dict[str, Any]:
     update_performance(clean_symbol, summary_payload, payload)
     update_adaptive_state(clean_symbol, _adaptive_from_summary(clean_symbol, summary_payload))
     return payload
+
+
+def _forward_degradation_guardrail(
+    symbol: str,
+    timeframe: str,
+    snapshot: dict[str, Any],
+    promoted_profile: dict[str, Any] | None,
+    *,
+    open_shadow_count: int,
+    risk_governor_reason: str,
+    performance_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile = str((promoted_profile or {}).get("profile") or ETH_M30_DEGRADATION_PROFILE)
+    summary = {}
+    if isinstance(performance_payload, dict):
+        summary = performance_payload.get("summary") if isinstance(performance_payload.get("summary"), dict) else {}
+    if not summary:
+        summary = snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {}
+    return evaluate_eth_m30_forward_degradation(
+        symbol=symbol,
+        timeframe=timeframe,
+        profile=profile,
+        stats=summary,
+        open_shadow_count=open_shadow_count,
+        current_status="paper_forward_candidate",
+        risk_governor_reason=risk_governor_reason,
+    )
+
+
+def _forward_degradation_blocked_result(
+    cfg: MT5BridgeConfig,
+    *,
+    trigger: str,
+    guardrail: dict[str, Any],
+    risk_governor: dict[str, Any],
+    promoted_profile: dict[str, Any] | None,
+    open_trade: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    reason = _forward_degraded_reason(guardrail)
+    return {
+        "paper_exploration_enabled": cfg.paper_exploration_enabled,
+        "paper_exploration_attempted": bool(cfg.paper_exploration_enabled),
+        "paper_exploration_created": False,
+        "paper_exploration_closed": False,
+        "paper_exploration_reason": reason,
+        "risk_governor_allowed": False,
+        "risk_governor_reason": risk_governor.get("reason") or guardrail.get("risk_governor_reason") or "",
+        "risk_state": risk_governor.get("risk_state") or "normal",
+        "suggested_lot_multiplier": 0.0,
+        "risk_governor": risk_governor,
+        "promoted_profile": promoted_profile or None,
+        "paper_forward_candidate_profile": guardrail.get("profile") or (promoted_profile or {}).get("profile") or "",
+        "degradation_guardrail": guardrail,
+        "degradation_guardrail_active": True,
+        "degradation_reason": guardrail.get("degradation_reason") or "",
+        "degradation_source": guardrail.get("degradation_source") or "",
+        "registry_degraded": bool(guardrail.get("registry_degraded")),
+        "registry_version": guardrail.get("registry_version") or "",
+        "pending_degradation_until_shadow_closes": bool(guardrail.get("pending_degradation_until_shadow_closes")),
+        "paper_probe_allowed": False,
+        "shadow_trade_id": "",
+        "open_shadow_trade": open_trade if guardrail.get("pending_degradation_until_shadow_closes") else {},
+        "closed_shadow_trade": None,
+        "latest_performance_summary": dict(summary or {}),
+        "trigger": trigger,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _forward_degraded_reason(guardrail: dict[str, Any]) -> str:
+    reason = str(guardrail.get("degradation_reason") or "early_forward_edge_failed")
+    if guardrail.get("pending_degradation_until_shadow_closes"):
+        return f"pending_degradation_until_shadow_closes:{reason}"
+    return f"forward_degraded:{reason}"
 
 
 def _can_open(

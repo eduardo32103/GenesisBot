@@ -19,6 +19,7 @@ from services.mt5.mt5_eth_m30_paper_forward_candidate import (
     eth_m30_forward_profile_state,
     is_eth_m30_candidate_scope,
 )
+from services.mt5.mt5_eth_m30_forward_degradation import eth_m30_forward_degradation_status
 from services.mt5.mt5_forward_replay import MT5ForwardReplay
 from services.mt5.mt5_forward_test import MT5ForwardTestEngine
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event, ingest_status
@@ -410,7 +411,10 @@ class MT5SignalRouter:
             )
             if requested_timeframe and not last_tick:
                 risk_governor = assess_runtime_risk(symbol_info["mt5_symbol"], timeframe=requested_timeframe)
+                degradation_guardrail = _eth_m30_runtime_degradation_guardrail(symbol_info["mt5_symbol"], requested_timeframe)
                 reason = "no_runtime_snapshot_for_requested_timeframe"
+                if degradation_guardrail.get("degradation_guardrail_active"):
+                    reason = _forward_degraded_reason(degradation_guardrail)
                 payload = {
                     "ok": True,
                     "symbol": symbol_info["mt5_symbol"],
@@ -445,11 +449,19 @@ class MT5SignalRouter:
                     "promoted_profile": promoted_status if promoted_status.get("active") else None,
                     "paper_forward_candidate": candidate_status or None,
                     "paper_forward_candidate_profile": candidate_status.get("profile") or (promoted_status.get("profile") if promoted_status.get("active") else ""),
-                    "paper_forward_candidate_active": bool(candidate_status.get("active")),
+                    "paper_forward_candidate_active": bool(candidate_status.get("active")) and not bool(degradation_guardrail.get("degradation_guardrail_active")),
                     "applies_to_real_trading": False,
                     "paper_exploration_enabled": self.config.paper_exploration_enabled,
                     "paper_exploration_created": False,
                     "paper_exploration_reason": reason,
+                    "degradation_guardrail": degradation_guardrail,
+                    "degradation_guardrail_active": bool(degradation_guardrail.get("degradation_guardrail_active")),
+                    "degradation_reason": degradation_guardrail.get("degradation_reason") or "",
+                    "degradation_source": degradation_guardrail.get("degradation_source") or "",
+                    "registry_degraded": bool(degradation_guardrail.get("registry_degraded")),
+                    "registry_version": degradation_guardrail.get("registry_version") or "",
+                    "pending_degradation_until_shadow_closes": bool(degradation_guardrail.get("pending_degradation_until_shadow_closes")),
+                    "paper_probe_allowed": bool(degradation_guardrail.get("paper_probe_allowed", True)),
                     "risk_governor_allowed": bool(risk_governor.get("allowed")),
                     "risk_governor_reason": risk_governor.get("reason") or "",
                     "risk_state": risk_governor.get("risk_state") or "normal",
@@ -465,16 +477,23 @@ class MT5SignalRouter:
                 payload["event"] = None
                 payload["queue"] = queued
                 return payload
-            exploration = evaluate_paper_exploration(
-                symbol_info["mt5_symbol"],
-                tick=last_tick if requested_timeframe else None,
-                config=self.config,
-                trigger="decision",
-                timeframe=requested_timeframe,
+            degradation_guardrail = _eth_m30_runtime_degradation_guardrail(symbol_info["mt5_symbol"], requested_timeframe)
+            exploration = (
+                _forward_degraded_exploration(degradation_guardrail, trigger="decision")
+                if degradation_guardrail.get("degradation_guardrail_active")
+                else evaluate_paper_exploration(
+                    symbol_info["mt5_symbol"],
+                    tick=last_tick if requested_timeframe else None,
+                    config=self.config,
+                    trigger="decision",
+                    timeframe=requested_timeframe,
+                )
             )
             promoted_profile = exploration.get("promoted_profile") if isinstance(exploration.get("promoted_profile"), dict) else None
             reason = "fast_path_snapshot_only" if last_tick else "no_fast_snapshot"
-            if last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe) and not snapshot_complete:
+            if exploration.get("degradation_guardrail_active"):
+                reason = _forward_degraded_reason(exploration)
+            elif last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe) and not snapshot_complete:
                 reason = "insufficient_bar_context"
             elif last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe) and snapshot_complete and not exploration.get("paper_exploration_created"):
                 paper_reason = exploration.get("paper_exploration_reason") or "profile_conditions_not_met"
@@ -483,6 +502,8 @@ class MT5SignalRouter:
                 reason = "real_trade_disabled_paper_probe_created"
             if not exploration.get("risk_governor_allowed", True):
                 reason = f"risk_governor_block:{exploration.get('risk_governor_reason') or 'blocked'}"
+            if exploration.get("degradation_guardrail_active"):
+                reason = _forward_degraded_reason(exploration)
             score_diagnostics = (
                 _eth_m30_score_diagnostics(last_tick)
                 if last_tick and is_eth_m30_candidate_scope(symbol_info["mt5_symbol"], requested_timeframe)
@@ -548,6 +569,14 @@ class MT5SignalRouter:
                 "paper_exploration_enabled": self.config.paper_exploration_enabled,
                 "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
                 "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+                "degradation_guardrail": exploration.get("degradation_guardrail") if isinstance(exploration.get("degradation_guardrail"), dict) else {},
+                "degradation_guardrail_active": bool(exploration.get("degradation_guardrail_active")),
+                "degradation_reason": exploration.get("degradation_reason") or "",
+                "degradation_source": exploration.get("degradation_source") or "",
+                "registry_degraded": bool(exploration.get("registry_degraded")),
+                "registry_version": exploration.get("registry_version") or "",
+                "pending_degradation_until_shadow_closes": bool(exploration.get("pending_degradation_until_shadow_closes")),
+                "paper_probe_allowed": bool(exploration.get("paper_probe_allowed", True)),
                 "risk_governor_allowed": bool(exploration.get("risk_governor_allowed", True)),
                 "risk_governor_reason": exploration.get("risk_governor_reason") or "",
                 "risk_state": exploration.get("risk_state") or "normal",
@@ -562,7 +591,7 @@ class MT5SignalRouter:
                 "promoted_profile": promoted_profile,
                 "paper_forward_candidate": candidate_status or None,
                 "paper_forward_candidate_profile": candidate_status.get("profile") or exploration.get("paper_forward_candidate_profile") or "",
-                "paper_forward_candidate_active": bool(candidate_status.get("active") or (promoted_profile or {}).get("active")),
+                "paper_forward_candidate_active": bool(candidate_status.get("active") or (promoted_profile or {}).get("active")) and not bool(exploration.get("degradation_guardrail_active")),
                 "applies_to_real_trading": False,
                 "blocking_shadow_trade_id": shadow_occupancy.get("blocking_shadow_trade_id", ""),
                 "open_shadow_trade_id": exploration.get("shadow_trade_id") or "",
@@ -1373,7 +1402,13 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
     snapshot = update_tick(symbol, tick)
     runtime_tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else tick
     queued = enqueue_mt5_event("mt5_ticks", symbol, tick)
-    exploration = evaluate_paper_exploration(symbol, tick=runtime_tick, config=config or MT5BridgeConfig.from_env(), trigger="tick")
+    timeframe = str(runtime_tick.get("timeframe") or "").upper().strip()
+    degradation_guardrail = _eth_m30_runtime_degradation_guardrail(symbol, timeframe)
+    exploration = (
+        _forward_degraded_exploration(degradation_guardrail, trigger="tick")
+        if degradation_guardrail.get("degradation_guardrail_active")
+        else evaluate_paper_exploration(symbol, tick=runtime_tick, config=config or MT5BridgeConfig.from_env(), trigger="tick")
+    )
     return {
         "ok": True,
         "status": "mt5_tick_recorded_fast_path",
@@ -1402,6 +1437,14 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
         "paper_exploration_created": bool(exploration.get("paper_exploration_created")),
         "paper_exploration_closed": bool(exploration.get("paper_exploration_closed")),
         "paper_exploration_reason": exploration.get("paper_exploration_reason") or "",
+        "degradation_guardrail": exploration.get("degradation_guardrail") if isinstance(exploration.get("degradation_guardrail"), dict) else {},
+        "degradation_guardrail_active": bool(exploration.get("degradation_guardrail_active")),
+        "degradation_reason": exploration.get("degradation_reason") or "",
+        "degradation_source": exploration.get("degradation_source") or "",
+        "registry_degraded": bool(exploration.get("registry_degraded")),
+        "registry_version": exploration.get("registry_version") or "",
+        "pending_degradation_until_shadow_closes": bool(exploration.get("pending_degradation_until_shadow_closes")),
+        "paper_probe_allowed": bool(exploration.get("paper_probe_allowed", True)),
         "risk_governor_allowed": bool(exploration.get("risk_governor_allowed", True)),
         "risk_governor_reason": exploration.get("risk_governor_reason") or "",
         "risk_state": exploration.get("risk_state") or "normal",
@@ -1556,6 +1599,62 @@ def _shadow_occupancy_diagnostics(snapshot: dict[str, Any], exploration: dict[st
         "open_shadow_trade_ids": open_trade_ids,
         "source_of_open_trade_count": source,
     }
+
+
+def _eth_m30_runtime_degradation_guardrail(symbol: str, timeframe: str) -> dict[str, Any]:
+    if not is_eth_m30_candidate_scope(symbol, timeframe):
+        return {}
+    return eth_m30_forward_degradation_status(symbol=symbol, timeframe=timeframe)
+
+
+def _forward_degraded_exploration(guardrail: dict[str, Any], *, trigger: str) -> dict[str, Any]:
+    metrics = {
+        "trades_forward": guardrail.get("trades_forward", 0),
+        "wins": guardrail.get("wins", 0),
+        "losses": guardrail.get("losses", 0),
+        "win_rate": guardrail.get("win_rate", 0.0),
+        "profit_factor": guardrail.get("profit_factor", 0.0),
+        "expectancy": guardrail.get("expectancy", 0.0),
+    }
+    reason = _forward_degraded_reason({"degradation_guardrail": guardrail, **guardrail})
+    return {
+        "paper_exploration_enabled": True,
+        "paper_exploration_attempted": True,
+        "paper_exploration_created": False,
+        "paper_exploration_closed": False,
+        "paper_exploration_reason": reason,
+        "risk_governor_allowed": False,
+        "risk_governor_reason": guardrail.get("risk_governor_reason") or "",
+        "risk_state": "normal",
+        "suggested_lot_multiplier": 0.0,
+        "risk_governor": {},
+        "promoted_profile": None,
+        "paper_forward_candidate_profile": guardrail.get("profile") or "",
+        "shadow_trade_id": "",
+        "open_shadow_trade": {},
+        "closed_shadow_trade": None,
+        "latest_performance_summary": metrics,
+        "degradation_guardrail": guardrail,
+        "degradation_guardrail_active": bool(guardrail.get("degradation_guardrail_active")),
+        "degradation_reason": guardrail.get("degradation_reason") or "",
+        "degradation_source": guardrail.get("degradation_source") or "",
+        "registry_degraded": bool(guardrail.get("registry_degraded")),
+        "registry_version": guardrail.get("registry_version") or "",
+        "pending_degradation_until_shadow_closes": bool(guardrail.get("pending_degradation_until_shadow_closes")),
+        "paper_probe_allowed": bool(guardrail.get("paper_probe_allowed")),
+        "trigger": trigger,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _forward_degraded_reason(exploration: dict[str, Any]) -> str:
+    guardrail = exploration.get("degradation_guardrail") if isinstance(exploration.get("degradation_guardrail"), dict) else exploration
+    reason = str(guardrail.get("degradation_reason") or "early_forward_edge_failed")
+    if guardrail.get("pending_degradation_until_shadow_closes"):
+        return f"pending_degradation_until_shadow_closes:{reason}"
+    return f"forward_degraded:{reason}"
 
 
 def _fast_price(payload: dict[str, Any]) -> float | None:

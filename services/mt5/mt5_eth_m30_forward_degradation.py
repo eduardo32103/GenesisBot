@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.mt5.mt5_forward_profile_degradation_registry import forward_profile_degradation
 from services.mt5.mt5_runtime_snapshot import get_snapshot
 
 
@@ -17,6 +18,8 @@ def eth_m30_forward_degradation_status(symbol: str = "ETHUSD", *, timeframe: str
     generic_snapshot = get_snapshot(clean_symbol) or {}
     stats = _forward_stats(snapshot, generic_snapshot)
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    if not open_trade:
+        open_trade = generic_snapshot.get("open_shadow_trade") if isinstance(generic_snapshot.get("open_shadow_trade"), dict) else {}
     decision = snapshot.get("last_decision") if isinstance(snapshot.get("last_decision"), dict) else {}
     profile = str(
         decision.get("paper_forward_candidate_profile")
@@ -48,7 +51,10 @@ def evaluate_eth_m30_forward_degradation(
     clean_timeframe = _timeframe(timeframe)
     clean_profile = str(profile or "").strip()
     metrics = _metrics(stats)
-    safe_to_degrade = int(open_shadow_count or 0) == 0
+    open_count = int(open_shadow_count or 0)
+    safe_to_degrade = open_count == 0
+    registry_entry = forward_profile_degradation(clean_symbol, clean_timeframe, clean_profile)
+    registry_degraded = bool(registry_entry)
     scope_matches = (
         clean_symbol == ETH_M30_DEGRADATION_SYMBOL
         and clean_timeframe == ETH_M30_DEGRADATION_TIMEFRAME
@@ -61,10 +67,23 @@ def evaluate_eth_m30_forward_degradation(
         and metrics["profit_factor"] < 0.9
         and metrics["expectancy"] <= 0
     )
-    should_degrade = bool(scope_matches and safe_to_degrade and edge_failed)
-    recommendation = "degrade_to_observation_only" if should_degrade else "continue_observation"
-    degradation_reason = "early_forward_edge_failed" if should_degrade else ""
-    new_status = "observation_only" if should_degrade else str(current_status or "paper_forward_candidate")
+    pending_degradation = bool((registry_degraded or (scope_matches and edge_failed)) and not safe_to_degrade)
+    should_degrade = bool((registry_degraded or (scope_matches and edge_failed)) and safe_to_degrade)
+    recommendation = (
+        "degrade_to_observation_only"
+        if should_degrade
+        else "pending_degradation_until_shadow_closes"
+        if pending_degradation
+        else "continue_observation"
+    )
+    degradation_reason = (
+        str(registry_entry.get("degradation_reason") or "early_forward_edge_failed")
+        if registry_degraded
+        else "early_forward_edge_failed"
+        if should_degrade or pending_degradation
+        else ""
+    )
+    new_status = "observation_only" if should_degrade or pending_degradation or registry_degraded else str(current_status or "paper_forward_candidate")
     return {
         "ok": True,
         "status": "eth_m30_forward_degradation_guardrail_ready",
@@ -73,15 +92,22 @@ def evaluate_eth_m30_forward_degradation(
         "profile": clean_profile,
         "current_status": str(current_status or ""),
         "new_status": new_status,
-        "active_after_guardrail": False if should_degrade else None,
-        "applies_to_paper_shadow_after_guardrail": False if should_degrade else None,
-        "open_shadow_count": int(open_shadow_count or 0),
+        "active_after_guardrail": False if should_degrade or pending_degradation or registry_degraded else None,
+        "applies_to_paper_shadow_after_guardrail": False if should_degrade or pending_degradation or registry_degraded else None,
+        "open_shadow_count": open_count,
         **metrics,
+        "registry_degraded": registry_degraded,
+        "registry_entry": registry_entry,
+        "degradation_source": registry_entry.get("degradation_source") or ("runtime_forward_guardrail" if should_degrade or pending_degradation else ""),
+        "registry_version": registry_entry.get("registry_version") or "",
         "risk_governor_reason": risk_governor_reason,
         "scope_matches": scope_matches,
         "edge_failed": edge_failed,
         "whether_degradation_is_safe": safe_to_degrade,
         "should_degrade": should_degrade,
+        "degradation_guardrail_active": bool(should_degrade or pending_degradation),
+        "pending_degradation_until_shadow_closes": pending_degradation,
+        "paper_probe_allowed": not bool(should_degrade or pending_degradation),
         "recommendation": recommendation,
         "degradation_reason": degradation_reason,
         "applies_to_real_trading": False,

@@ -28,6 +28,8 @@ def mt5_risk_recovery_status(symbol: str = "ETHUSD", *, timeframe: str = "M30") 
     if not active_tick:
         active_tick = generic_snapshot.get("last_tick") if isinstance(generic_snapshot.get("last_tick"), dict) else {}
     open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    if not open_trade:
+        open_trade = generic_snapshot.get("open_shadow_trade") if isinstance(generic_snapshot.get("open_shadow_trade"), dict) else {}
     spread = _spread(active_tick)
 
     recent_closed = int(_number(summary.get("closed") or summary.get("closed_trades")) or 0)
@@ -142,7 +144,13 @@ def mt5_risk_recovery_status(symbol: str = "ETHUSD", *, timeframe: str = "M30") 
         "current_metrics": current_metrics,
         "recovery_requirements": recovery_requirements,
         "forward_degradation_guardrail": degradation_guardrail,
+        "degradation_guardrail_active": bool(degradation_guardrail.get("degradation_guardrail_active")),
         "degradation_reason": degradation_guardrail.get("degradation_reason") or "",
+        "degradation_source": degradation_guardrail.get("degradation_source") or "",
+        "registry_degraded": bool(degradation_guardrail.get("registry_degraded")),
+        "registry_version": degradation_guardrail.get("registry_version") or "",
+        "pending_degradation_until_shadow_closes": bool(degradation_guardrail.get("pending_degradation_until_shadow_closes")),
+        "paper_probe_allowed": bool(degradation_guardrail.get("paper_probe_allowed")),
         "new_status": degradation_guardrail.get("new_status") or "",
         "indefinite_block_risk": indefinite_block_risk,
         "recommended_action": recommended_action,
