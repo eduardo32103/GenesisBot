@@ -29,6 +29,8 @@ _KNOWN_RESULT_FILENAMES = (
     "multi_symbol_recent_first_cost_calibrated_results.csv",
     "multi_symbol_recent_first_results.json",
     "multi_symbol_recent_first_results.csv",
+    "multi_symbol_cost_model_report.json",
+    "multi_symbol_cost_model_report.csv",
     "eth_m30_volatility_hardening_results.json",
     "eth_m30_volatility_hardening_results.csv",
     "eth_m30_capital_preservation_results.json",
@@ -98,6 +100,8 @@ _ALIASES = {
     "expectancy": ("expectancy", "total_expectancy", "expectancy_total", "recent_expectancy"),
     "monte_carlo_stressed_pf": ("monte_carlo_stressed_pf", "mc_pf", "stressed_pf"),
     "spread_x2_pf": ("spread_x2_pf", "spread_stress_pf"),
+    "remove_best_5_pf": ("remove_best_5_pf",),
+    "single_trade_dependency": ("single_trade_dependency", "single_trade_dependent"),
 }
 
 
@@ -180,8 +184,10 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "expectancy": float(_number(row.get("expectancy") or row.get("total_expectancy") or row.get("recent_expectancy")) or 0.0),
         "monte_carlo_stressed_pf": float(_number(row.get("monte_carlo_stressed_pf")) or 0.0),
         "spread_x2_pf": float(_number(row.get("spread_x2_pf")) or 0.0),
+        "remove_best_5_pf": _number(row.get("remove_best_5_pf")),
     }
     fragile = _flag(row.get("fragile_regime_dependency") or row.get("fragile_regime") or row.get("fragile"))
+    single_trade_dependency = _flag(row.get("single_trade_dependency"))
     reasons = _gate_reasons(metrics, fragile=fragile, degraded=bool(degraded))
     if degraded:
         candidate_status = "excluded_by_degradation_registry"
@@ -199,6 +205,7 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "family": str(row.get("family") or _infer_family(profile) or "").strip(),
         **metrics,
         "fragile_regime_dependency": fragile,
+        "single_trade_dependency": single_trade_dependency,
         "degraded_by_registry": bool(degraded),
         "degradation_reason": degraded.get("degradation_reason") or "",
         "degradation_registry_version": degraded.get("registry_version") or "",
@@ -389,6 +396,8 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
         "expectancy": float(_number(_get_alias(row, "expectancy")) or 0.0),
         "monte_carlo_stressed_pf": float(_number(_get_alias(row, "monte_carlo_stressed_pf")) or 0.0),
         "spread_x2_pf": float(_number(_get_alias(row, "spread_x2_pf")) or 0.0),
+        "remove_best_5_pf": _number(_get_alias(row, "remove_best_5_pf")),
+        "single_trade_dependency": _flag(_get_alias(row, "single_trade_dependency")),
     }
 
 
@@ -505,7 +514,7 @@ def _is_processed_results_path(path: Path) -> bool:
     if path.suffix.lower() not in {".csv", ".json"}:
         return False
     name = path.name.casefold()
-    return "results" in name or "summary" in name
+    return "results" in name or "summary" in name or "report" in name
 
 
 def _infer_family(profile: object) -> str:
