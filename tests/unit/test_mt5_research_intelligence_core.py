@@ -36,13 +36,7 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
             result["priority_queue"][0]["family_name"],
             {"multi_timeframe_trend_pullback", "volatility_compression_breakout"},
         )
-        self.assertIn(
-            result["recommended_next_research_phase"],
-            {
-                "design_multi_timeframe_trend_pullback_processed_feature_scan",
-                "design_volatility_compression_breakout_processed_feature_scan",
-            },
-        )
+        self.assertEqual(result["recommended_next_research_phase"], "design_volatility_compression_breakout_processed_feature_scan")
 
     def test_failure_patterns_cover_closed_research_branches(self) -> None:
         result = run_research_intelligence_core(
@@ -63,6 +57,8 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
             "insufficient_recent_sample",
             "unstable_deep_sample",
             "proxy_false_positive_after_costs",
+            "proxy_false_positive_after_monte_carlo_failure",
+            "monte_carlo_fragility_with_large_sample",
             "cost_adjusted_edge_failure",
             "feature_scan_to_hardening_decay",
         }:
@@ -74,6 +70,7 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
         self.assertIn("BTCUSD H1", rejected_labels)
         self.assertIn("BTCUSD M30", rejected_labels)
         self.assertIn("EURUSD H1", rejected_labels)
+        self.assertIn("USTEC M30", rejected_labels)
 
     def test_hypotheses_do_not_repeat_rejected_family_markers(self) -> None:
         result = run_research_intelligence_core(
@@ -117,6 +114,31 @@ class MT5ResearchIntelligenceCoreTests(unittest.TestCase):
         ]
         self.assertEqual(len(watchlist), 1)
         self.assertEqual(watchlist[0]["recommended_action"], "watchlist_revisit_later")
+
+    def test_core_keeps_next_trend_pullback_variant_when_non_rejected_opportunity_remains(self) -> None:
+        discovery = _discovery_result()
+        discovery["top_near_misses"] = [
+            {
+                "symbol": "ETHUSD",
+                "timeframe": "M15",
+                "profile": "ethusd_m15_multi_timeframe_trend_pullback_watch",
+                "family": "multi_timeframe_trend_pullback",
+                "candidate_status": "near_miss",
+                "rejection_reasons": ["profit_factor_proxy_below_1_20"],
+            }
+        ]
+        result = run_research_intelligence_core(
+            rotation_result=_rotation_result(),
+            expansion_result=_expansion_result(),
+            discovery_result=discovery,
+        )
+
+        self.assertEqual(result["recommended_next_research_phase"], "design_next_trend_pullback_variant_hardening")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_script_runs_fast_without_heavy_backtests_or_activation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

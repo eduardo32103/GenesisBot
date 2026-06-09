@@ -170,7 +170,7 @@ def run_research_intelligence_core(
         "core_version": CORE_VERSION,
         "mode": "processed_sources_and_registries_only",
         "recommendation": "research_plan_ready",
-        "recommended_next_research_phase": _recommended_phase(priority_queue),
+        "recommended_next_research_phase": _recommended_phase(priority_queue, unresolved, failure_patterns),
         "rejected_clusters": rejected_clusters,
         "failure_patterns": failure_patterns,
         "avoid_next": avoid_next,
@@ -317,6 +317,14 @@ def _avoid_next(rejected_clusters: list[dict[str, Any]], failure_patterns: list[
                 "recommended_action": "penalize_proxy_family_until_recalibrated",
             }
         )
+    if "proxy_false_positive_after_monte_carlo_failure" in category_set:
+        avoid.append(
+            {
+                "scope": "USTEC M30/H1 multi_timeframe_trend_pullback",
+                "reason": "The strongest trend-pullback proxy failed real hardening on Monte Carlo despite a large sample.",
+                "recommended_action": "skip_rejected_cluster_keep_other_trend_pullback_variants",
+            }
+        )
     return avoid
 
 
@@ -406,6 +414,8 @@ def _next_hypotheses(failure_patterns: list[dict[str, Any]]) -> list[dict[str, A
             priority += 3
         if "proxy_false_positive_after_costs" in categories and template["family_name"] == "session_vwap_reclaim":
             priority -= 30
+        if "proxy_false_positive_after_monte_carlo_failure" in categories and template["family_name"] == "multi_timeframe_trend_pullback":
+            priority -= 18
         if "single_trade_dependency" in categories and template["family_name"] == "liquidity_sweep_reversal_v2":
             priority -= 8
         if "sibling_of_failed_profile" in categories and template["family_name"] == "ema_slope_pullback":
@@ -435,7 +445,21 @@ def _priority_queue(hypotheses: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _recommended_phase(priority_queue: list[dict[str, Any]]) -> str:
+def _recommended_phase(
+    priority_queue: list[dict[str, Any]],
+    unresolved: list[dict[str, Any]],
+    failure_patterns: list[dict[str, Any]],
+) -> str:
+    categories = {row["category"] for row in failure_patterns}
+    if "proxy_false_positive_after_monte_carlo_failure" in categories:
+        has_trend_pullback_opportunity = any(
+            str(row.get("family") or "").casefold() == "multi_timeframe_trend_pullback"
+            and not _is_ustec_m30_trend_pullback(row)
+            for row in unresolved
+        )
+        if has_trend_pullback_opportunity:
+            return "design_next_trend_pullback_variant_hardening"
+        return "design_volatility_compression_breakout_processed_feature_scan"
     if not priority_queue:
         return "refresh_processed_results_before_research"
     top = priority_queue[0]["family_name"]
@@ -446,8 +470,12 @@ def _classify_reason(reason: str) -> list[str]:
     text = reason.casefold()
     categories: list[str] = []
     if "proxy_false_positive" in text:
-        categories.append("proxy_false_positive_after_costs")
-        categories.append("cost_adjusted_edge_failure")
+        if "monte_carlo" in text:
+            categories.append("proxy_false_positive_after_monte_carlo_failure")
+            categories.append("monte_carlo_fragility_with_large_sample")
+        else:
+            categories.append("proxy_false_positive_after_costs")
+            categories.append("cost_adjusted_edge_failure")
         categories.append("feature_scan_to_hardening_decay")
     if "after_cost" in text or "cost_adjusted" in text or "costs" in text:
         categories.append("cost_adjusted_edge_failure")
@@ -508,6 +536,12 @@ def _cluster_label(cluster: dict[str, Any]) -> str:
 
 def _row_label(row: dict[str, Any]) -> str:
     return f"{row.get('symbol')} {row.get('timeframe')} {row.get('profile') or row.get('family')}"
+
+
+def _is_ustec_m30_trend_pullback(row: dict[str, Any]) -> bool:
+    symbol = str(row.get("symbol") or "").upper().replace(".B", "")
+    profile = str(row.get("profile") or row.get("family") or "").casefold()
+    return symbol in {"USTEC", "USTECB", "NAS100"} and str(row.get("timeframe") or "").upper() == "M30" and "trend_pullback" in profile
 
 
 def _dedupe(values: list[str]) -> list[str]:

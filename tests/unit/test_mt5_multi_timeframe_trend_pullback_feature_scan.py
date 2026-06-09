@@ -112,6 +112,53 @@ class MT5MultiTimeframeTrendPullbackFeatureScanTests(unittest.TestCase):
         self.assertNotIn("research_rejection_registry", row["rejection_reasons"])
         self.assertNotIn("sibling_risk", row["rejection_reasons"])
 
+    def test_ustec_m30_h1_trend_pullback_is_excluded_but_m15_remains_available(self) -> None:
+        result = run_multi_timeframe_trend_pullback_feature_scan(
+            evaluations=[
+                {
+                    "symbol": "NAS100",
+                    "timeframe": "M30",
+                    "higher_timeframe": "H1",
+                    "bars": _pullback_bars(minutes=30, count=720),
+                    "higher_bars": _higher_trend_bars(count=360),
+                },
+                {
+                    "symbol": "USTEC",
+                    "timeframe": "M15",
+                    "higher_timeframe": "H1",
+                    "bars": _pullback_bars(minutes=15, count=720),
+                    "higher_bars": _higher_trend_bars(count=360),
+                },
+            ],
+            symbols=["USTEC"],
+            timeframes=["M15", "M30"],
+            max_evaluations=10,
+        )
+
+        self.assertTrue(result["rejected_by_registry"])
+        self.assertEqual(result["proxy_reliability_warning"], "proxy_false_positive_after_monte_carlo_failure")
+        rejected = [row for row in result["rejected_by_registry"] if row["timeframe"] == "M30"]
+        self.assertTrue(rejected)
+        for row in rejected:
+            self.assertEqual(row["symbol"], "USTEC")
+            self.assertEqual(row["higher_timeframe"], "H1")
+            self.assertTrue(row["rejected_by_research_registry"])
+            self.assertEqual(row["research_rejection_reason"], "proxy_false_positive_after_monte_carlo_failure")
+            self.assertEqual(row["scan_status"], "excluded_by_registry_or_sibling_risk")
+            self.assertEqual(row["proxy_reliability_warning"], "proxy_false_positive_after_monte_carlo_failure")
+            self.assertFalse(row["candidate_activated"])
+            self.assertFalse(row["paper_forward_onboarding_started"])
+            self.assertFalse(row["broker_touched"])
+            self.assertFalse(row["order_executed"])
+            self.assertEqual(row["order_policy"], "journal_only_no_broker")
+
+        m15_rows = [row for row in result["results"] if row["timeframe"] == "M15"]
+        self.assertTrue(m15_rows)
+        self.assertTrue(all(not row["rejected_by_research_registry"] for row in m15_rows))
+        self.assertTrue(all("research_rejection_registry" not in row["rejection_reasons"] for row in m15_rows))
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
     def test_script_runs_fast_with_local_csv_without_activation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

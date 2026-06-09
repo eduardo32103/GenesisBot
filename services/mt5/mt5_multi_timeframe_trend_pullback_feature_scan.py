@@ -145,6 +145,7 @@ def run_multi_timeframe_trend_pullback_feature_scan(
         "requires_real_hardening": True,
         "hardening_required_before_candidate": True,
         "cannot_be_paper_forward_candidate": True,
+        "proxy_reliability_warning": _proxy_reliability_warning(rejected_by_registry),
         "recommendation": recommendation,
         "recommended_next_research_phase": recommended_next,
         "candidate_activated": False,
@@ -282,6 +283,7 @@ def _evaluate_variant(
         "degradation_reason": degraded.get("degradation_reason") or "",
         "rejected_by_research_registry": bool(rejected),
         "research_rejection_reason": rejected.get("rejection_reason") or "",
+        "proxy_reliability_warning": _row_proxy_warning(rejected),
         "sibling_risk": sibling,
         "sibling_risk_reason": "sibling_of_failed_profile" if sibling else "",
         "rejection_reasons": reasons,
@@ -496,6 +498,24 @@ def _scan_status(reasons: list[str], metrics: dict[str, Any]) -> str:
     if set(reasons) <= soft and int(metrics["signal_count"]) >= 30:
         return "near_miss"
     return "feature_gate_failed"
+
+
+def _proxy_reliability_warning(rows: list[dict[str, Any]]) -> str:
+    for row in rows:
+        warning = str(row.get("proxy_reliability_warning") or "")
+        if warning:
+            return warning
+        reason = str(row.get("research_rejection_reason") or row.get("rejection_reason") or "")
+        if "proxy_false_positive_after_monte_carlo" in reason:
+            return "proxy_false_positive_after_monte_carlo_failure"
+    return "proxy_only_requires_real_hardening"
+
+
+def _row_proxy_warning(rejected: dict[str, Any]) -> str:
+    reason = str(rejected.get("rejection_reason") or "")
+    if "proxy_false_positive_after_monte_carlo" in reason:
+        return "proxy_false_positive_after_monte_carlo_failure"
+    return ""
 
 
 def _data_quality(bars: list[dict[str, Any]], higher_bars: list[dict[str, Any]]) -> str:

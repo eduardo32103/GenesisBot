@@ -46,6 +46,7 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"requires_real_hardening={result.get('requires_real_hardening')}",
         f"hardening_required_before_candidate={result.get('hardening_required_before_candidate')}",
         f"cannot_be_paper_forward_candidate={result.get('cannot_be_paper_forward_candidate')}",
+        f"proxy_reliability_warning={result.get('proxy_reliability_warning')}",
         f"candidate_activated={result.get('candidate_activated')}",
         f"paper_forward_onboarding_started={result.get('paper_forward_onboarding_started')}",
         f"applies_to_real_trading={result.get('applies_to_real_trading')}",
@@ -76,6 +77,7 @@ def _edge_lines(rows: list[dict[str, Any]]) -> list[str]:
         + f"recent_exp={row.get('recent_expectancy_proxy')} status={row.get('scan_status')} "
         + f"proxy_only={row.get('proxy_only')} requires_real_hardening={row.get('requires_real_hardening')} "
         + f"cannot_be_paper_forward_candidate={row.get('cannot_be_paper_forward_candidate')} "
+        + f"proxy_warning={row.get('proxy_reliability_warning') or ''} "
         + f"reasons={','.join(row.get('rejection_reasons') or []) or 'none'}"
         for row in rows[:12]
     ]
@@ -88,7 +90,8 @@ def _rejected_lines(rows: list[dict[str, Any]]) -> list[str]:
         "- "
         + f"{row.get('symbol')} {row.get('timeframe')}/{row.get('higher_timeframe')} {row.get('profile')} "
         + f"status={row.get('scan_status') or row.get('candidate_status')} "
-        + f"reason={row.get('research_rejection_reason') or row.get('degradation_reason') or row.get('rejection_reason') or row.get('sibling_risk_reason')}"
+        + f"reason={row.get('research_rejection_reason') or row.get('degradation_reason') or row.get('rejection_reason') or row.get('sibling_risk_reason')} "
+        + f"proxy_warning={row.get('proxy_reliability_warning') or ''}"
         for row in rows[:20]
     ]
 

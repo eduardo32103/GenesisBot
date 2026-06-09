@@ -13,7 +13,7 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
         status = research_rejection_registry_status()
 
         self.assertTrue(status["ok"])
-        self.assertEqual(status["count"], 6)
+        self.assertEqual(status["count"], 7)
         self.assertFalse(status["broker_touched"])
         self.assertFalse(status["order_executed"])
         self.assertEqual(status["order_policy"], "journal_only_no_broker")
@@ -73,6 +73,23 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
         self.assertEqual(rejected["order_policy"], "journal_only_no_broker")
         self.assertEqual(unrelated_timeframe, {})
         self.assertEqual(unrelated_family, {})
+
+    def test_ustec_m30_trend_pullback_false_positive_matches_aliases_only_cluster(self) -> None:
+        rejected = research_rejection("USTEC", "M30", "multi_timeframe_trend_pullback|mode=rsi_filter|higher=H1")
+        alias = research_rejection("NAS100", "M30", "ustec_m30_h1_trend_pullback_fast_loss_cut", "trend_pullback")
+        unrelated_timeframe = research_rejection("USTEC.b", "M15", "multi_timeframe_trend_pullback|mode=baseline|higher=H1")
+        unrelated_symbol = research_rejection("US500", "M30", "multi_timeframe_trend_pullback|mode=baseline|higher=H1")
+
+        self.assertEqual(rejected["rejection_status"], "rejected_after_real_hardening")
+        self.assertEqual(rejected["rejection_reason"], "proxy_false_positive_after_monte_carlo_failure")
+        self.assertEqual(rejected["higher_timeframe"], "H1")
+        self.assertEqual(alias["rejection_reason"], "proxy_false_positive_after_monte_carlo_failure")
+        self.assertFalse(rejected["applies_to_real_trading"])
+        self.assertFalse(rejected["broker_touched"])
+        self.assertFalse(rejected["order_executed"])
+        self.assertEqual(rejected["order_policy"], "journal_only_no_broker")
+        self.assertEqual(unrelated_timeframe, {})
+        self.assertEqual(unrelated_symbol, {})
 
     def test_unrelated_candidate_is_not_rejected(self) -> None:
         self.assertEqual(

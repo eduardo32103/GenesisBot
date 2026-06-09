@@ -5,7 +5,7 @@ from fnmatch import fnmatchcase
 from typing import Any
 
 
-RESEARCH_REJECTION_REGISTRY_VERSION = "2026-06-09.mt5_research_rejection_registry.v2"
+RESEARCH_REJECTION_REGISTRY_VERSION = "2026-06-09.mt5_research_rejection_registry.v3"
 
 _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -99,6 +99,23 @@ _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
         "allow_future_research": False,
         "allow_manual_override": True,
     },
+    {
+        "symbol": "USTEC",
+        "aliases": ("USTEC.b", "NAS100"),
+        "timeframe": "M30",
+        "higher_timeframe": "H1",
+        "family_profile_patterns": (
+            "*multi_timeframe_trend_pullback*",
+            "*trend_pullback*",
+        ),
+        "rejection_status": "rejected_after_real_hardening",
+        "rejection_reason": "proxy_false_positive_after_monte_carlo_failure",
+        "applies_to_paper_forward_candidate": True,
+        "applies_to_real_trading": False,
+        "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,
+        "allow_future_research": False,
+        "allow_manual_override": True,
+    },
 )
 
 
@@ -113,7 +130,8 @@ def research_rejection(
     clean_timeframe = _timeframe(timeframe)
     blob = _blob(profile, family, conceptual_family)
     for item in _RESEARCH_REJECTIONS:
-        if _symbol(item.get("symbol")) != clean_symbol:
+        symbols = {_symbol(item.get("symbol")), *{_symbol(alias) for alias in item.get("aliases") or ()}}
+        if clean_symbol not in symbols:
             continue
         if _timeframe(item.get("timeframe")) != clean_timeframe:
             continue
@@ -147,7 +165,7 @@ def _symbol(value: object) -> str:
     symbol = str(value or "").upper().strip().replace(".B", "")
     if symbol == "XAUUSDB":
         return "XAUUSD"
-    if symbol == "USTECB":
+    if symbol in {"USTECB", "NAS100"}:
         return "USTEC"
     return symbol
 
