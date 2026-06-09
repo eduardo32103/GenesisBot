@@ -67,7 +67,10 @@ def _human_summary(result: dict[str, Any]) -> str:
             "Ranking:",
         ]
     )
-    header = "symbol | timeframe | profile | family | recent_closed | total_closed | recent_pf | total_pf | expectancy | mc_pf | spread_x2_pf | degraded | status | action"
+    header = (
+        "symbol | timeframe | profile | family | recent_closed | total_closed | recent_pf | total_pf | expectancy | "
+        "mc_pf | spread_x2_pf | degraded | sibling_risk | sibling_of_degraded_profile | sibling_risk_reason | status | action"
+    )
     lines.append(header)
     lines.append("-" * len(header))
     for row in result.get("ranking") or []:
@@ -86,6 +89,9 @@ def _human_summary(result: dict[str, Any]) -> str:
                     str(row.get("monte_carlo_stressed_pf") or 0.0),
                     str(row.get("spread_x2_pf") or 0.0),
                     str(row.get("degraded_by_registry") or False),
+                    str(row.get("sibling_risk") or False),
+                    str(row.get("sibling_of_degraded_profile") or ""),
+                    str(row.get("sibling_risk_reason") or ""),
                     str(row.get("candidate_status") or ""),
                     str(row.get("recommended_next_action") or ""),
                 ]

@@ -38,6 +38,7 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertTrue(excluded["degraded_by_registry"])
         self.assertEqual(excluded["candidate_status"], "excluded_by_degradation_registry")
         self.assertEqual(excluded["recommended_next_action"], "skip_degraded_profile")
+        self.assertFalse(excluded["sibling_risk"])
         self.assertIn("degraded_by_persistent_registry", excluded["rejection_reasons"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -76,6 +77,7 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertEqual(recommended["candidate_status"], "paper_forward_review_ready")
         self.assertEqual(recommended["recommended_next_action"], "paper_forward_candidate_review")
         self.assertFalse(recommended["degraded_by_registry"])
+        self.assertFalse(recommended["sibling_risk"])
         self.assertEqual(recommended["rejection_reasons"], [])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -112,6 +114,114 @@ class MT5PaperForwardCandidateRotationTests(unittest.TestCase):
         self.assertIn("total_closed_below_45", row["rejection_reasons"])
         self.assertIn("recent_pf_below_1_05", row["rejection_reasons"])
         self.assertIn("spread_x2_pf_below_0_95", row["rejection_reasons"])
+
+    def test_eth_m30_sibling_of_degraded_profile_is_blocked_from_review(self) -> None:
+        result = run_paper_forward_candidate_rotation(
+            rows=[
+                {
+                    "symbol": "ETHUSD",
+                    "timeframe": "M30",
+                    "profile": "eth_m30_vol_breakout_chop_guard_v1",
+                    "family": "recent_volatility_breakout",
+                    "recent_closed": 21,
+                    "total_closed": 82,
+                    "recent_pf": 1.4045,
+                    "total_pf": 1.8823,
+                    "expectancy": 0.2349,
+                    "monte_carlo_stressed_pf": 1.1472,
+                    "spread_x2_pf": 1.9349,
+                },
+                {
+                    "symbol": "ETHUSD",
+                    "timeframe": "M30",
+                    "profile": "eth_m30_vol_breakout_regime_filtered_v1",
+                    "family": "recent_volatility_breakout",
+                    "recent_closed": 21,
+                    "total_closed": 82,
+                    "recent_pf": 1.4045,
+                    "total_pf": 1.8814,
+                    "expectancy": 0.2344,
+                    "monte_carlo_stressed_pf": 1.1464,
+                    "spread_x2_pf": 1.934,
+                },
+            ],
+            include_priority_candidates=False,
+            load_default_sources=False,
+        )
+
+        self.assertEqual(result["recommendation"], "continue_research")
+        self.assertIsNone(result["recommended_candidate"])
+        sibling = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
+        self.assertTrue(sibling["sibling_risk"])
+        self.assertEqual(sibling["sibling_of_degraded_profile"], "eth_m30_vol_breakout_chop_guard_v1")
+        self.assertEqual(sibling["sibling_risk_reason"], "similar_to_degraded_forward_profile")
+        self.assertEqual(sibling["candidate_status"], "blocked_by_sibling_risk")
+        self.assertEqual(sibling["recommended_next_action"], "manual_review_or_new_family_required")
+        self.assertIn("sibling_risk_similar_to_degraded_forward_profile", sibling["rejection_reasons"])
+        excluded = result["excluded_by_degradation_registry"][0]
+        self.assertEqual(excluded["candidate_status"], "excluded_by_degradation_registry")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_rotation_prefers_non_sibling_candidate_when_available(self) -> None:
+        result = run_paper_forward_candidate_rotation(
+            rows=[
+                {
+                    "symbol": "ETHUSD",
+                    "timeframe": "M30",
+                    "profile": "eth_m30_vol_breakout_chop_guard_v1",
+                    "family": "recent_volatility_breakout",
+                    "recent_closed": 21,
+                    "total_closed": 82,
+                    "recent_pf": 1.4045,
+                    "total_pf": 1.8823,
+                    "expectancy": 0.2349,
+                    "monte_carlo_stressed_pf": 1.1472,
+                    "spread_x2_pf": 1.9349,
+                },
+                {
+                    "symbol": "ETHUSD",
+                    "timeframe": "M30",
+                    "profile": "eth_m30_vol_breakout_regime_filtered_v1",
+                    "family": "recent_volatility_breakout",
+                    "recent_closed": 21,
+                    "total_closed": 82,
+                    "recent_pf": 1.4045,
+                    "total_pf": 1.8814,
+                    "expectancy": 0.2344,
+                    "monte_carlo_stressed_pf": 1.1464,
+                    "spread_x2_pf": 1.934,
+                },
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "profile": "xauusd_m15_recent_session_open_continuation",
+                    "family": "recent_session_open_continuation",
+                    "recent_closed": 22,
+                    "total_closed": 70,
+                    "recent_pf": 1.28,
+                    "total_pf": 1.42,
+                    "expectancy": 0.18,
+                    "monte_carlo_stressed_pf": 1.11,
+                    "spread_x2_pf": 1.02,
+                },
+            ],
+            include_priority_candidates=False,
+            load_default_sources=False,
+        )
+
+        self.assertEqual(result["recommendation"], "paper_forward_candidate_review")
+        recommended = result["recommended_candidate"]
+        self.assertEqual(recommended["symbol"], "XAUUSD")
+        self.assertEqual(recommended["profile"], "xauusd_m15_recent_session_open_continuation")
+        self.assertFalse(recommended["sibling_risk"])
+        sibling = next(row for row in result["ranking"] if row["profile"] == "eth_m30_vol_breakout_regime_filtered_v1")
+        self.assertEqual(sibling["candidate_status"], "blocked_by_sibling_risk")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
 
     def test_rotation_without_useful_sources_requests_data_source_repair(self) -> None:
         result = run_paper_forward_candidate_rotation(load_default_sources=False)

@@ -17,6 +17,8 @@ MIN_TOTAL_PF = 1.15
 MIN_RECENT_PF = 1.05
 MIN_MONTE_CARLO_STRESSED_PF = 1.05
 MIN_SPREAD_X2_PF = 0.95
+SIBLING_MAX_CLOSED_DELTA = 5
+SIBLING_MAX_PF_DELTA = 0.10
 MAX_RESULTS_FILE_BYTES = 2_000_000
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -123,6 +125,7 @@ def run_paper_forward_candidate_rotation(
 
     merged = _merge_rows(normalized_rows)
     ranking = [_evaluate_candidate(row) for row in merged]
+    ranking = _apply_sibling_risk_guard(ranking)
     ranking.sort(key=_ranking_key)
 
     excluded = [row for row in ranking if row["degraded_by_registry"]]
@@ -199,6 +202,9 @@ def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:
         "degraded_by_registry": bool(degraded),
         "degradation_reason": degraded.get("degradation_reason") or "",
         "degradation_registry_version": degraded.get("registry_version") or "",
+        "sibling_risk": False,
+        "sibling_of_degraded_profile": "",
+        "sibling_risk_reason": "",
         "candidate_status": candidate_status,
         "recommended_next_action": next_action,
         "rejection_reasons": reasons,
@@ -234,6 +240,93 @@ def _gate_reasons(metrics: dict[str, Any], *, fragile: bool, degraded: bool) -> 
     return reasons
 
 
+def _apply_sibling_risk_guard(ranking: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    degraded_refs = [
+        row
+        for row in ranking
+        if row.get("degraded_by_registry") and _has_sibling_reference_metrics(row)
+    ]
+    if not degraded_refs:
+        return ranking
+
+    guarded: list[dict[str, Any]] = []
+    for row in ranking:
+        updated = {**row}
+        if not updated.get("degraded_by_registry"):
+            sibling = _matching_degraded_sibling(updated, degraded_refs)
+            if sibling:
+                updated["sibling_risk"] = True
+                updated["sibling_of_degraded_profile"] = sibling.get("profile") or ""
+                updated["sibling_risk_reason"] = "similar_to_degraded_forward_profile"
+                updated["candidate_status"] = "blocked_by_sibling_risk"
+                updated["recommended_next_action"] = "manual_review_or_new_family_required"
+                reasons = list(updated.get("rejection_reasons") or [])
+                if "sibling_risk_similar_to_degraded_forward_profile" not in reasons:
+                    reasons.append("sibling_risk_similar_to_degraded_forward_profile")
+                updated["rejection_reasons"] = reasons
+        guarded.append(updated)
+    return guarded
+
+
+def _matching_degraded_sibling(row: dict[str, Any], degraded_refs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for degraded in degraded_refs:
+        if row.get("symbol") != degraded.get("symbol"):
+            continue
+        if row.get("timeframe") != degraded.get("timeframe"):
+            continue
+        if not _same_base_family(row, degraded):
+            continue
+        if not _metrics_are_sibling_close(row, degraded):
+            continue
+        return degraded
+    return None
+
+
+def _has_sibling_reference_metrics(row: dict[str, Any]) -> bool:
+    return (
+        int(_number(row.get("recent_closed")) or 0) > 0
+        and int(_number(row.get("total_closed")) or 0) > 0
+        and float(_number(row.get("total_pf")) or 0.0) > 0.0
+        and float(_number(row.get("monte_carlo_stressed_pf")) or 0.0) > 0.0
+    )
+
+
+def _same_base_family(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_bases = _family_bases(left.get("profile"), left.get("family"))
+    right_bases = _family_bases(right.get("profile"), right.get("family"))
+    return bool(left_bases & right_bases)
+
+
+def _family_bases(*values: object) -> set[str]:
+    bases: set[str] = set()
+    for value in values:
+        raw = str(value or "").casefold().strip()
+        if not raw:
+            continue
+        if "vol_breakout" in raw or "volatility_breakout" in raw:
+            bases.add("volatility_breakout")
+        if "session_open_continuation" in raw:
+            bases.add("session_open_continuation")
+        if "liquidity_sweep" in raw:
+            bases.add("liquidity_sweep")
+        if "range_reversion" in raw:
+            bases.add("range_reversion")
+        if "ema_reclaim" in raw:
+            bases.add("ema_reclaim")
+        if "momentum_pullback" in raw:
+            bases.add("momentum_pullback")
+    return bases
+
+
+def _metrics_are_sibling_close(row: dict[str, Any], degraded: dict[str, Any]) -> bool:
+    return (
+        abs(int(_number(row.get("total_closed")) or 0) - int(_number(degraded.get("total_closed")) or 0)) <= SIBLING_MAX_CLOSED_DELTA
+        and abs(int(_number(row.get("recent_closed")) or 0) - int(_number(degraded.get("recent_closed")) or 0)) <= SIBLING_MAX_CLOSED_DELTA
+        and abs(float(_number(row.get("total_pf")) or 0.0) - float(_number(degraded.get("total_pf")) or 0.0)) <= SIBLING_MAX_PF_DELTA
+        and abs(float(_number(row.get("monte_carlo_stressed_pf")) or 0.0) - float(_number(degraded.get("monte_carlo_stressed_pf")) or 0.0)) <= SIBLING_MAX_PF_DELTA
+    )
+
+
 def _rotation_score(metrics: dict[str, Any], *, fragile: bool, degraded: bool) -> float:
     if degraded:
         return -10_000.0
@@ -251,7 +344,14 @@ def _rotation_score(metrics: dict[str, Any], *, fragile: bool, degraded: bool) -
 
 
 def _ranking_key(row: dict[str, Any]) -> tuple[int, float, int, str, str]:
-    status_rank = 0 if row["candidate_status"] == "paper_forward_review_ready" else 1 if not row["degraded_by_registry"] else 2
+    if row["candidate_status"] == "paper_forward_review_ready":
+        status_rank = 0
+    elif row["candidate_status"] == "blocked_by_sibling_risk":
+        status_rank = 1
+    elif not row["degraded_by_registry"]:
+        status_rank = 2
+    else:
+        status_rank = 3
     return (status_rank, -float(row["rotation_score"]), int(row.get("priority") or 1000), row["symbol"], row["profile"])
 
 
