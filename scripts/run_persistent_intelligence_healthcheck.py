@@ -26,9 +26,14 @@ def main(argv: list[str] | None = None) -> int:
 def _human_summary(result: dict[str, Any]) -> str:
     lines = [
         "MT5 Persistent Intelligence Healthcheck",
+        f"provider={result.get('provider')}",
         f"db_available={result.get('db_available')}",
         f"db_degraded={result.get('db_degraded')}",
         f"tables_ready={result.get('tables_ready')}",
+        f"table_count={result.get('table_count')}",
+        f"missing_tables={','.join(result.get('missing_tables') or [])}",
+        f"database_env_ready={((result.get('env') if isinstance(result.get('env'), dict) else {}) or {}).get('database_env_ready')}",
+        f"postgres_driver_available={((result.get('env') if isinstance(result.get('env'), dict) else {}) or {}).get('postgres_driver_available')}",
         f"supabase_env_ready={((result.get('env') if isinstance(result.get('env'), dict) else {}) or {}).get('supabase_env_ready')}",
         f"permission_select={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('select')}",
         f"permission_insert={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('insert')}",

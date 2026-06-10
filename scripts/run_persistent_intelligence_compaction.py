@@ -32,6 +32,8 @@ def _human_summary(result: dict[str, Any]) -> str:
     return "\n".join(
         [
             "MT5 Persistent Intelligence Compaction",
+            f"provider={result.get('provider')}",
+            f"db_degraded={result.get('db_degraded')}",
             f"dry_run={result.get('dry_run')}",
             f"older_than_days={result.get('older_than_days')}",
             f"rows_scanned={result.get('rows_scanned')}",

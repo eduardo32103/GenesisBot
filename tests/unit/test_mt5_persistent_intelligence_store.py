@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import unittest
 import json
+from unittest.mock import patch
 
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
 from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES
 from services.mt5.mt5_persistent_intelligence_store import (
     MT5PersistentIntelligenceStore,
+    RailwayPostgresClient,
     SupabaseRestClient,
     _reset_persistent_intelligence_counters_for_tests,
     persist_adaptive_governor_state,
@@ -22,7 +24,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         _reset_persistent_intelligence_counters_for_tests()
 
-    def test_missing_supabase_config_degrades_safely_and_keeps_no_trade(self) -> None:
+    def test_missing_database_config_degrades_safely_and_keeps_no_trade(self) -> None:
         store = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
 
         result = store.healthcheck()
@@ -31,12 +33,90 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["db_available"])
         self.assertTrue(result["db_degraded"])
         self.assertFalse(result["tables_ready"])
-        self.assertEqual(result["recommendation"], "configure_supabase_env")
+        self.assertEqual(result["recommendation"], "configure_database_env")
+        self.assertEqual(result["provider"], "supabase_rest")
         self.assertEqual(result["decision"], "NO_TRADE")
         self.assertEqual(result["reason"], "persistent_intelligence_db_degraded")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_detects_database_url_provider_without_printing_secret(self) -> None:
+        database_url = "postgresql://genesis:SUPERPASS@example.railway.internal:5432/railway?sslmode=require"
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": database_url,
+                "SUPABASE_URL": "https://example.supabase.co",
+                "SUPABASE_SERVICE_ROLE_KEY": "SUPASECRET",
+            },
+            clear=True,
+        ), patch.object(RailwayPostgresClient, "table_ready", side_effect=RuntimeError("connection refused")):
+            store = MT5PersistentIntelligenceStore()
+            result = store.healthcheck()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertEqual(result["provider"], "railway_postgres")
+        self.assertTrue(result["env"]["database_url_present"])
+        self.assertNotIn("SUPERPASS", serialized)
+        self.assertNotIn(database_url, serialized)
+        self.assertFalse(result["secrets_printed"])
+
+    def test_detects_supabase_provider_when_forced_without_printing_key(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://genesis:SUPERPASS@example.railway.internal:5432/railway",
+                "SUPABASE_URL": "https://example.supabase.co",
+                "SUPABASE_SERVICE_ROLE_KEY": "SUPASECRET",
+                "PERSISTENT_DB_PROVIDER": "supabase_rest",
+            },
+            clear=True,
+        ), patch.object(SupabaseRestClient, "table_ready", side_effect=RuntimeError("connection refused")):
+            store = MT5PersistentIntelligenceStore()
+            result = store.healthcheck()
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertEqual(result["provider"], "supabase_rest")
+        self.assertTrue(result["env"]["supabase_url_present"])
+        self.assertTrue(result["env"]["supabase_secret_key_present"])
+        self.assertNotIn("SUPASECRET", serialized)
+        self.assertNotIn("SUPERPASS", serialized)
+
+    def test_missing_postgres_driver_recommends_install_driver(self) -> None:
+        client = RailwayPostgresClient(database_url="postgresql://user:pass@localhost:5432/db", driver_available=False)
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.healthcheck()
+
+        self.assertEqual(result["provider"], "railway_postgres")
+        self.assertFalse(result["db_available"])
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["recommendation"], "install_postgres_driver")
+        self.assertFalse(result["env"]["postgres_driver_available"])
+
+    def test_railway_postgres_client_uses_parameterized_sql(self) -> None:
+        client = RailwayPostgresClient(database_url="postgresql://user:pass@localhost:5432/db", driver_available=True)
+        captured: list[tuple[str, list[object]]] = []
+
+        with patch.object(client, "_execute", side_effect=lambda sql, values: captured.append((sql, values))):
+            client.insert(
+                "mt5_decision_events",
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "H1",
+                    "decision": "NO_TRADE",
+                    "reason": "risk_governor_block:recent_edge_negative",
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                },
+            )
+
+        sql, values = captured[0]
+        self.assertIn("%s", sql)
+        self.assertNotIn("EURUSD", sql)
+        self.assertIn("EURUSD", values)
 
     def test_missing_tables_degrades_safely_with_apply_schema_recommendation(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
@@ -46,6 +126,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertTrue(result["db_available"])
         self.assertTrue(result["db_degraded"])
         self.assertFalse(result["tables_ready"])
+        self.assertEqual(len(result["missing_tables"]), len(REQUIRED_TABLES))
         self.assertEqual(result["recommendation"], "apply_schema_sql")
         self.assertTrue(result["env"]["supabase_env_ready"])
         self.assertFalse(result["broker_touched"])
@@ -59,6 +140,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
             self.assertIn(f"create table if not exists public.{table}", lowered)
         self.assertIn("create index if not exists", lowered)
         self.assertIn("enable row level security", lowered)
+        self.assertIn("create extension if not exists pgcrypto", lowered)
         for forbidden in ("drop table", "truncate", "delete from"):
             self.assertNotIn(forbidden, lowered)
 

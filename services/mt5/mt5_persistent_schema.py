@@ -30,7 +30,7 @@ TABLE_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 CREATE_SCHEMA_SQL = r"""
-create extension if not exists pgcrypto with schema extensions;
+create extension if not exists pgcrypto;
 
 create table if not exists public.mt5_profile_state (
   id uuid primary key default gen_random_uuid(),
