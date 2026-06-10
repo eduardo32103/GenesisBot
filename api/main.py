@@ -68,6 +68,7 @@ from api.routes.genesis import (
     get_genesis_mt5_paper_defense,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
+    get_genesis_mt5_persistent_intelligence_status,
     get_genesis_mt5_promoted_profile,
     get_genesis_mt5_replay_results,
     get_genesis_mt5_replay_status,
@@ -228,6 +229,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_ops_status_endpoint": "/api/genesis/mt5/ops/status?symbol={symbol}",
         "genesis_mt5_risk_state_endpoint": "/api/genesis/mt5/risk-state?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_risk_recovery_endpoint": "/api/genesis/mt5/risk-recovery?symbol={symbol}&timeframe={timeframe}",
+        "genesis_mt5_persistent_intelligence_status_endpoint": "/api/genesis/mt5/persistent-intelligence/status",
         "genesis_mt5_ui_summary_endpoint": "/api/genesis/mt5/ui-summary?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_instrument_endpoint": "/api/genesis/mt5/instrument?symbol={symbol}",
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}&timeframe={timeframe}",
@@ -4716,6 +4718,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             symbol = (query.get("symbol") or query.get("ticker") or ["ETHUSD"])[0]
             timeframe = (query.get("timeframe") or ["M30"])[0]
             payload_data = get_genesis_mt5_risk_recovery(symbol=symbol, timeframe=timeframe)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/persistent-intelligence/status":
+            payload_data = get_genesis_mt5_persistent_intelligence_status()
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
