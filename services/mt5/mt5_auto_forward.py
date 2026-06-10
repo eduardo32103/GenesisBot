@@ -6,6 +6,7 @@ from typing import Any
 
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforcement
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
@@ -200,6 +201,41 @@ class MT5AutoForward:
             actionable=final_actionable,
             warnings=list(symbol_info.get("warnings") or []),
         )
+        adaptive_enforcement = adaptive_governor_enforcement(
+            symbol=raw_symbol,
+            timeframe=str(clean.get("timeframe") or ""),
+            profile=str(decision.get("strategy_profile") or decision.get("profile") or ""),
+            open_trades=self.shadow.open_trades(),
+            load_shadow_snapshot=False,
+        )
+        if adaptive_enforcement.get("blocked"):
+            final_decision = "NO_TRADE"
+            final_actionable = False
+            decision.update(
+                {
+                    "decision": "NO_TRADE",
+                    "action": "NO_TRADE",
+                    "actionable": False,
+                    "reason": adaptive_enforcement.get("reason") or "adaptive_governor:blocked",
+                    "entry": None,
+                    "stop_loss": None,
+                    "take_profit": None,
+                    "risk_pct": 0.0,
+                    "risk_reward": 0.0,
+                    "adaptive_governor": adaptive_enforcement,
+                    "adaptive_governor_blocked": True,
+                    "adaptive_governor_reason": adaptive_enforcement.get("reason") or "",
+                    "adaptive_governor_global_state": adaptive_enforcement.get("adaptive_governor_global_state") or "",
+                    "adaptive_governor_circuit_breakers": adaptive_enforcement.get("circuit_breakers") if isinstance(adaptive_enforcement.get("circuit_breakers"), list) else [],
+                    "paper_exploration_created": False,
+                    "shadow_trade_id": "",
+                    "candidate_activated": False,
+                    "paper_forward_onboarding_started": False,
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                }
+            )
         logging.getLogger("genesis.mt5").info(
             "MT5_AUTO_FORWARD_EVAL symbol=%s decision=%s actionable=%s reason=%s",
             raw_symbol,
@@ -477,6 +513,28 @@ class MT5AutoForward:
                 "reason": caution_filter.get("reason") or "paper_caution_block",
                 "decision": built,
                 "paper_caution_filter": caution_filter,
+            }
+        adaptive_enforcement = adaptive_governor_enforcement(
+            symbol=symbol,
+            timeframe=str(tick.get("timeframe") or "H1").upper(),
+            profile="BTCUSD_PAPER_EXPLORATION_V1",
+            open_trades=self.shadow.open_trades(),
+            load_shadow_snapshot=False,
+        )
+        if adaptive_enforcement.get("blocked"):
+            return {
+                "created": False,
+                "enabled": True,
+                "reason": adaptive_enforcement.get("reason") or "adaptive_governor:blocked",
+                "decision": built,
+                "shadow_trade_id": "",
+                "adaptive_governor": adaptive_enforcement,
+                "adaptive_governor_blocked": True,
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
             }
         shadow = self.shadow.create_shadow_trade(
             {

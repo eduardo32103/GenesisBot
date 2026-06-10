@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol
+from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforcement
 from services.mt5.mt5_eth_m30_forward_degradation import ETH_M30_DEGRADATION_PROFILE, evaluate_eth_m30_forward_degradation
 from services.mt5.mt5_eth_m30_paper_forward_candidate import active_eth_m30_paper_forward_candidate
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
@@ -95,6 +96,22 @@ def evaluate_paper_exploration(
     if degradation_guardrail.get("should_degrade"):
         can_open, block_reason = False, f"forward_degraded:{degradation_guardrail.get('degradation_reason') or 'early_forward_edge_failed'}"
     else:
+        adaptive_enforcement = adaptive_governor_enforcement(
+            symbol=clean_symbol,
+            timeframe=active_timeframe,
+            profile=str((promoted_profile or {}).get("profile") or ""),
+        )
+        if adaptive_enforcement.get("blocked"):
+            return _adaptive_governor_blocked_result(
+                cfg,
+                trigger=trigger,
+                enforcement=adaptive_enforcement,
+                risk_governor=risk_governor,
+                promoted_profile=promoted_profile,
+                open_trade=open_trade if open_trade and not closed_event else {},
+                closed_event=closed_event,
+                summary=(performance_payload or {}).get("summary") if isinstance(performance_payload, dict) else {},
+            )
         can_open, block_reason = _can_open(
             clean_symbol,
             normalized,
@@ -168,6 +185,12 @@ def evaluate_paper_exploration(
         "registry_version": degradation_guardrail.get("registry_version") or "",
         "pending_degradation_until_shadow_closes": bool(degradation_guardrail.get("pending_degradation_until_shadow_closes")),
         "paper_probe_allowed": bool(degradation_guardrail.get("paper_probe_allowed")),
+        "adaptive_governor": adaptive_enforcement if "adaptive_enforcement" in locals() else {},
+        "adaptive_governor_blocked": False,
+        "adaptive_governor_reason": "",
+        "adaptive_governor_global_state": (adaptive_enforcement if "adaptive_enforcement" in locals() else {}).get("adaptive_governor_global_state", ""),
+        "adaptive_governor_recommended_next_action": (adaptive_enforcement if "adaptive_enforcement" in locals() else {}).get("adaptive_governor_recommended_next_action", ""),
+        "adaptive_governor_circuit_breakers": (adaptive_enforcement if "adaptive_enforcement" in locals() else {}).get("circuit_breakers", []),
         "shadow_trade_id": (opened_event or open_trade or {}).get("shadow_trade_id") or "",
         "open_shadow_trade": opened_event or ({} if closed_event else open_trade),
         "closed_shadow_trade": closed_event,
@@ -294,6 +317,58 @@ def _forward_degradation_blocked_result(
         "shadow_trade_id": "",
         "open_shadow_trade": open_trade if guardrail.get("pending_degradation_until_shadow_closes") else {},
         "closed_shadow_trade": None,
+        "latest_performance_summary": dict(summary or {}),
+        "trigger": trigger,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _adaptive_governor_blocked_result(
+    cfg: MT5BridgeConfig,
+    *,
+    trigger: str,
+    enforcement: dict[str, Any],
+    risk_governor: dict[str, Any],
+    promoted_profile: dict[str, Any] | None,
+    open_trade: dict[str, Any],
+    closed_event: dict[str, Any] | None,
+    summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    reason = str(enforcement.get("reason") or "adaptive_governor:blocked")
+    return {
+        "paper_exploration_enabled": cfg.paper_exploration_enabled,
+        "paper_exploration_attempted": bool(cfg.paper_exploration_enabled),
+        "paper_exploration_created": False,
+        "paper_exploration_closed": bool(closed_event),
+        "paper_exploration_reason": reason,
+        "risk_governor_allowed": False,
+        "risk_governor_reason": risk_governor.get("reason") or "",
+        "risk_state": risk_governor.get("risk_state") or "normal",
+        "suggested_lot_multiplier": 0.0,
+        "risk_governor": risk_governor,
+        "promoted_profile": promoted_profile or None,
+        "paper_forward_candidate_profile": (promoted_profile or {}).get("profile") or "",
+        "degradation_guardrail": {},
+        "degradation_guardrail_active": False,
+        "degradation_reason": "",
+        "degradation_source": "",
+        "registry_degraded": False,
+        "registry_version": "",
+        "pending_degradation_until_shadow_closes": False,
+        "paper_probe_allowed": False,
+        "adaptive_governor": enforcement,
+        "adaptive_governor_blocked": True,
+        "adaptive_governor_reason": reason,
+        "adaptive_governor_global_state": enforcement.get("adaptive_governor_global_state") or "",
+        "adaptive_governor_recommended_next_action": enforcement.get("adaptive_governor_recommended_next_action") or "",
+        "adaptive_governor_circuit_breakers": enforcement.get("circuit_breakers") if isinstance(enforcement.get("circuit_breakers"), list) else [],
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "shadow_trade_id": "",
+        "open_shadow_trade": open_trade or {},
+        "closed_shadow_trade": closed_event,
         "latest_performance_summary": dict(summary or {}),
         "trigger": trigger,
         "broker_touched": False,

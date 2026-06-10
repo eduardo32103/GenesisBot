@@ -11,6 +11,7 @@ from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol, resolve_instrument, symbol_aliases
 from services.mt5.mt5_account_state import normalize_account_state
+from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforcement
 from services.mt5.mt5_backtester import MT5Backtester
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
@@ -500,7 +501,9 @@ class MT5SignalRouter:
                 reason = f"profile_conditions_not_met:{paper_reason}"
             if exploration.get("paper_exploration_created"):
                 reason = "real_trade_disabled_paper_probe_created"
-            if not exploration.get("risk_governor_allowed", True):
+            if exploration.get("adaptive_governor_blocked"):
+                reason = exploration.get("adaptive_governor_reason") or exploration.get("paper_exploration_reason") or "adaptive_governor:blocked"
+            elif not exploration.get("risk_governor_allowed", True):
                 reason = f"risk_governor_block:{exploration.get('risk_governor_reason') or 'blocked'}"
             if exploration.get("degradation_guardrail_active"):
                 reason = _forward_degraded_reason(exploration)
@@ -577,6 +580,12 @@ class MT5SignalRouter:
                 "registry_version": exploration.get("registry_version") or "",
                 "pending_degradation_until_shadow_closes": bool(exploration.get("pending_degradation_until_shadow_closes")),
                 "paper_probe_allowed": bool(exploration.get("paper_probe_allowed", True)),
+                "adaptive_governor": exploration.get("adaptive_governor") if isinstance(exploration.get("adaptive_governor"), dict) else {},
+                "adaptive_governor_blocked": bool(exploration.get("adaptive_governor_blocked")),
+                "adaptive_governor_reason": exploration.get("adaptive_governor_reason") or "",
+                "adaptive_governor_global_state": exploration.get("adaptive_governor_global_state") or "",
+                "adaptive_governor_recommended_next_action": exploration.get("adaptive_governor_recommended_next_action") or "",
+                "adaptive_governor_circuit_breakers": exploration.get("adaptive_governor_circuit_breakers") if isinstance(exploration.get("adaptive_governor_circuit_breakers"), list) else [],
                 "risk_governor_allowed": bool(exploration.get("risk_governor_allowed", True)),
                 "risk_governor_reason": exploration.get("risk_governor_reason") or "",
                 "risk_state": exploration.get("risk_state") or "normal",
@@ -702,12 +711,29 @@ class MT5SignalRouter:
         intent = MT5OrderIntent.from_payload(body)
         account = self._account_state_for_order(body, intent.symbol)
         guard = self.risk_guard.evaluate_order(intent, account_state=account)
-        shadow = self.shadow.create_from_order_request(body, account_state=account, min_rr=self.config.min_rr)
+        adaptive_enforcement = adaptive_governor_enforcement(
+            symbol=intent.symbol,
+            timeframe=str(intent.timeframe or body.get("timeframe") or ""),
+            profile=str(intent.strategy_profile or body.get("strategy_profile") or body.get("profile") or ""),
+        )
+        shadow = (
+            {
+                "created": False,
+                "status": "adaptive_governor_blocked",
+                "reason": adaptive_enforcement.get("reason") or "adaptive_governor:blocked",
+                "trade": {},
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+            if adaptive_enforcement.get("blocked")
+            else self.shadow.create_from_order_request(body, account_state=account, min_rr=self.config.min_rr)
+        )
         shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
         order_payload = {
             **intent.to_payload(),
             "guard": guard,
-            "status": "blocked" if guard["blocked"] else "journal_only",
+            "status": "blocked" if guard["blocked"] or adaptive_enforcement.get("blocked") else "journal_only",
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
             "order_executed": False,
@@ -715,7 +741,12 @@ class MT5SignalRouter:
             "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
             "shadow_trade_status": shadow.get("status") or "",
             "shadow_trade_reason": shadow.get("reason") or "",
-            "reason": guard["primary_reason"] if guard["blocked"] else "execution_disabled_in_phase",
+            "reason": adaptive_enforcement.get("reason") if adaptive_enforcement.get("blocked") else guard["primary_reason"] if guard["blocked"] else "execution_disabled_in_phase",
+            "adaptive_governor": adaptive_enforcement,
+            "adaptive_governor_blocked": bool(adaptive_enforcement.get("blocked")),
+            "adaptive_governor_reason": adaptive_enforcement.get("reason") or "",
+            "adaptive_governor_global_state": adaptive_enforcement.get("adaptive_governor_global_state") or "",
+            "adaptive_governor_circuit_breakers": adaptive_enforcement.get("circuit_breakers") if isinstance(adaptive_enforcement.get("circuit_breakers"), list) else [],
             "phase": "Fase 11 demo/journal only",
         }
         request_event = self.journal.save("mt5_order_requests", intent.symbol, order_payload)
@@ -1445,6 +1476,12 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
         "registry_version": exploration.get("registry_version") or "",
         "pending_degradation_until_shadow_closes": bool(exploration.get("pending_degradation_until_shadow_closes")),
         "paper_probe_allowed": bool(exploration.get("paper_probe_allowed", True)),
+        "adaptive_governor": exploration.get("adaptive_governor") if isinstance(exploration.get("adaptive_governor"), dict) else {},
+        "adaptive_governor_blocked": bool(exploration.get("adaptive_governor_blocked")),
+        "adaptive_governor_reason": exploration.get("adaptive_governor_reason") or "",
+        "adaptive_governor_global_state": exploration.get("adaptive_governor_global_state") or "",
+        "adaptive_governor_recommended_next_action": exploration.get("adaptive_governor_recommended_next_action") or "",
+        "adaptive_governor_circuit_breakers": exploration.get("adaptive_governor_circuit_breakers") if isinstance(exploration.get("adaptive_governor_circuit_breakers"), list) else [],
         "risk_governor_allowed": bool(exploration.get("risk_governor_allowed", True)),
         "risk_governor_reason": exploration.get("risk_governor_reason") or "",
         "risk_state": exploration.get("risk_state") or "normal",

@@ -27,6 +27,23 @@ _REVIEW_STATUSES = {
     "hardening_candidate_found",
 }
 
+_BLOCKING_GLOBAL_STATES = {
+    "kill_switch",
+    "pause_new_entries",
+    "degrade_to_observation_only",
+    "observation_only",
+    "no_trade",
+}
+
+_BLOCKING_RECOMMENDED_ACTIONS = {
+    "kill_switch",
+    "pause_new_entries",
+    "degrade_to_observation_only",
+    "observation_only",
+    "skip_rejected_family",
+    "continue_research",
+}
+
 
 def run_adaptive_strategy_governor(
     *,
@@ -114,6 +131,90 @@ def run_adaptive_strategy_governor(
         "averaging_down_enabled": False,
         "increase_size_after_loss_enabled": False,
         "safety_state": _safety_state(),
+        **_safety(),
+    }
+
+
+def adaptive_governor_enforcement(
+    *,
+    symbol: str,
+    timeframe: str = "",
+    profile: str = "",
+    governor_result: dict[str, Any] | None = None,
+    closed_trades: list[dict[str, Any]] | None = None,
+    open_trades: list[dict[str, Any]] | None = None,
+    runtime_snapshot: dict[str, Any] | None = None,
+    limits: dict[str, Any] | None = None,
+    load_shadow_snapshot: bool = True,
+) -> dict[str, Any]:
+    clean_symbol = _symbol(symbol)
+    clean_timeframe = _timeframe(timeframe)
+    clean_profile = str(profile or "").strip()
+    governor = governor_result or run_adaptive_strategy_governor(
+        closed_trades=closed_trades,
+        open_trades=open_trades,
+        runtime_snapshot=runtime_snapshot,
+        limits=limits,
+        load_shadow_snapshot=load_shadow_snapshot,
+        load_rotation=False,
+        load_intelligence=False,
+    )
+    circuit_breakers = governor.get("circuit_breakers") if isinstance(governor.get("circuit_breakers"), list) else []
+    direct_degradation = forward_profile_degradation(clean_symbol, clean_timeframe, clean_profile) if clean_profile else {}
+    direct_rejection = research_rejection(clean_symbol, clean_timeframe, clean_profile, _infer_family(clean_profile)) if clean_profile else {}
+    sibling_risk = _matching_sibling_risk(governor, clean_symbol, clean_timeframe, clean_profile)
+
+    reason = ""
+    blocking_action = ""
+    if _active_breaker(circuit_breakers, "max_open_shadow_trades"):
+        reason = "adaptive_governor:max_open_shadow_trades"
+        blocking_action = "kill_switch"
+    elif str(governor.get("global_state") or "") == "kill_switch":
+        reason = "adaptive_governor:kill_switch"
+        blocking_action = "kill_switch"
+    elif direct_degradation:
+        reason = "adaptive_governor:observation_only"
+        blocking_action = "observation_only"
+    elif direct_rejection:
+        reason = "adaptive_governor:skip_rejected_family"
+        blocking_action = "skip_rejected_family"
+    elif sibling_risk:
+        reason = "adaptive_governor:sibling_risk"
+        blocking_action = "skip_sibling_risk"
+    elif str(governor.get("global_state") or "") in _BLOCKING_GLOBAL_STATES:
+        state = str(governor.get("global_state") or "no_trade")
+        reason = "adaptive_governor:missing_data" if state == "no_trade" else f"adaptive_governor:{state}"
+        blocking_action = state
+    elif str(governor.get("recommended_next_action") or "") in _BLOCKING_RECOMMENDED_ACTIONS:
+        action = str(governor.get("recommended_next_action") or "")
+        reason = f"adaptive_governor:{action}"
+        blocking_action = action
+
+    blocked = bool(reason)
+    return {
+        "ok": True,
+        "status": "adaptive_governor_enforcement_ready",
+        "allowed": not blocked,
+        "blocked": blocked,
+        "decision": "NO_TRADE" if blocked else "ALLOW_PAPER_REVIEW",
+        "reason": reason,
+        "blocking_action": blocking_action,
+        "safe_to_open_new_shadow": not blocked,
+        "paper_exploration_created": False,
+        "shadow_trade_id": "",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "adaptive_governor": governor,
+        "adaptive_governor_global_state": governor.get("global_state") or "",
+        "adaptive_governor_recommended_next_action": governor.get("recommended_next_action") or "",
+        "circuit_breakers": circuit_breakers,
+        "degraded_by_registry": bool(direct_degradation),
+        "degradation_reason": direct_degradation.get("degradation_reason") or "",
+        "rejected_by_research_registry": bool(direct_rejection),
+        "research_rejection_reason": direct_rejection.get("rejection_reason") or "",
+        "sibling_risk": bool(sibling_risk),
+        "sibling_risk_reason": sibling_risk.get("sibling_risk_reason") or "",
+        "applies_to_real_trading": False,
         **_safety(),
     }
 
@@ -383,6 +484,37 @@ def _candidate_is_blocked(row: dict[str, Any]) -> bool:
         or status in {"excluded_by_degradation_registry", "excluded_by_research_rejection_registry", "blocked_by_sibling_risk"}
         or action in {"skip_degraded_profile", "skip_rejected_family", "manual_review_or_new_family_required"}
     )
+
+
+def _matching_sibling_risk(governor: dict[str, Any], symbol: str, timeframe: str, profile: str) -> dict[str, Any]:
+    if not profile:
+        return {}
+    for key in ("rejected_candidates", "rotation_candidates"):
+        value = governor.get(key)
+        if not isinstance(value, list):
+            continue
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            if not bool(row.get("sibling_risk")):
+                continue
+            if _symbol(row.get("symbol")) != symbol:
+                continue
+            if _timeframe(row.get("timeframe")) != timeframe:
+                continue
+            row_profile = str(row.get("profile") or row.get("family") or "").strip()
+            if row_profile == profile:
+                return row
+    return {}
+
+
+def _active_breaker(circuit_breakers: list[Any], name: str) -> bool:
+    for row in circuit_breakers:
+        if not isinstance(row, dict):
+            continue
+        if row.get("name") == name and row.get("active"):
+            return True
+    return False
 
 
 def _candidate_row(row: dict[str, Any]) -> dict[str, Any]:
