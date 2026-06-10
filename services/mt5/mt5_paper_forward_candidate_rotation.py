@@ -9,6 +9,7 @@ from services.mt5.mt5_forward_profile_degradation_registry import (
     forward_profile_degradation,
     forward_profile_degradation_registry_status,
 )
+from services.mt5.mt5_persistent_intelligence_store import persist_candidate_rotation_run
 from services.mt5.mt5_research_rejection_registry import (
     research_rejection,
     research_rejection_registry_status,
@@ -147,7 +148,7 @@ def run_paper_forward_candidate_rotation(
     else:
         recommendation = "paper_forward_candidate_review" if recommended else "continue_research"
 
-    return {
+    result = {
         "ok": True,
         "status": "paper_forward_candidate_rotation_ready",
         "recommendation": recommendation,
@@ -176,6 +177,15 @@ def run_paper_forward_candidate_rotation(
         "increase_size_after_loss_enabled": False,
         **_safety(),
     }
+    result["persistent_intelligence_candidate_rotation_run"] = persist_candidate_rotation_run(
+        {
+            "recommendation": result["recommendation"],
+            "recommended_candidate": recommended or {},
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+        }
+    )
+    return result
 
 
 def _evaluate_candidate(row: dict[str, Any]) -> dict[str, Any]:

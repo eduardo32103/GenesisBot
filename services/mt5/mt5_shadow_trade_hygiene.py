@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from services.mt5.mt5_persistent_intelligence_store import persist_risk_event
+
 
 DEFAULT_MAX_OPEN_SHADOW_TRADES = 3
 DEFAULT_MAX_PROFILE_OPEN_SHADOWS = 1
@@ -30,7 +32,7 @@ def run_shadow_trade_hygiene(
         duplicate_clusters=duplicate_clusters,
         profile_clusters=profile_clusters,
     )
-    return {
+    result = {
         "ok": True,
         "status": "shadow_trade_hygiene_ready",
         "mode": "report_only_no_auto_close",
@@ -48,6 +50,20 @@ def run_shadow_trade_hygiene(
         "applies_to_real_trading": False,
         **_safety(),
     }
+    if recommended_cleanup_action not in {"monitor_open_shadow_trades", "no_open_shadow_cleanup_needed"} or not safe_to_open:
+        result["persistent_intelligence_risk_event"] = persist_risk_event(
+            {
+                "symbol": "",
+                "timeframe": "",
+                "risk_state": "shadow_hygiene",
+                "allowed": bool(safe_to_open and not duplicate_clusters and not profile_clusters),
+                "reason": recommended_cleanup_action,
+                "circuit_breaker": "shadow_trade_hygiene",
+                "open_shadow_count": len(trades),
+                "recommended_action": recommended_cleanup_action,
+            }
+        )
+    return result
 
 
 def _load_open_trades(load_shadow_snapshot: bool) -> list[dict[str, Any]]:

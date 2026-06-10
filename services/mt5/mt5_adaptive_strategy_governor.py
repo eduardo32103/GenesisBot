@@ -6,6 +6,11 @@ from typing import Any
 
 from services.mt5.mt5_forward_profile_degradation_registry import forward_profile_degradation
 from services.mt5.mt5_paper_forward_candidate_rotation import run_paper_forward_candidate_rotation
+from services.mt5.mt5_persistent_intelligence_store import (
+    persist_adaptive_governor_state,
+    persist_research_lesson,
+    persist_risk_event,
+)
 from services.mt5.mt5_research_intelligence_core import run_research_intelligence_core
 from services.mt5.mt5_research_rejection_registry import research_rejection
 
@@ -100,7 +105,7 @@ def run_adaptive_strategy_governor(
     paused_profiles = [row for row in profiles if row["active_state"] == "paused"]
     degraded_profiles = [row for row in profiles if row["active_state"] == "observation_only"]
 
-    return {
+    result = {
         "ok": True,
         "status": "adaptive_strategy_governor_ready",
         "governor_version": GOVERNOR_VERSION,
@@ -133,6 +138,8 @@ def run_adaptive_strategy_governor(
         "safety_state": _safety_state(),
         **_safety(),
     }
+    _persist_governor_result(result)
+    return result
 
 
 def adaptive_governor_enforcement(
@@ -191,7 +198,7 @@ def adaptive_governor_enforcement(
         blocking_action = action
 
     blocked = bool(reason)
-    return {
+    result = {
         "ok": True,
         "status": "adaptive_governor_enforcement_ready",
         "allowed": not blocked,
@@ -217,6 +224,98 @@ def adaptive_governor_enforcement(
         "applies_to_real_trading": False,
         **_safety(),
     }
+    _persist_enforcement_result(clean_symbol, clean_timeframe, clean_profile, result)
+    return result
+
+
+def _persist_governor_result(result: dict[str, Any]) -> None:
+    profiles = result.get("profile_states") if isinstance(result.get("profile_states"), list) else []
+    breakers = result.get("circuit_breakers") if isinstance(result.get("circuit_breakers"), list) else []
+    open_shadow_trades = sum(int(row.get("open_shadow_trades") or 0) for row in profiles if isinstance(row, dict))
+    result["persistent_intelligence_governor_state"] = persist_adaptive_governor_state(
+        {
+            "global_state": result.get("global_state") or "",
+            "recommended_next_action": result.get("recommended_next_action") or "",
+            "active_profiles": result.get("active_profiles") or [],
+            "paused_profiles": result.get("paused_profiles") or [],
+            "degraded_profiles": result.get("degraded_profiles") or [],
+            "circuit_breakers": breakers,
+            "open_shadow_trades": open_shadow_trades,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    )
+    active_breakers = [row for row in breakers if isinstance(row, dict) and row.get("active")]
+    if active_breakers:
+        breaker = active_breakers[0]
+        result["persistent_intelligence_risk_event"] = persist_risk_event(
+            {
+                "symbol": "",
+                "timeframe": "",
+                "risk_state": result.get("global_state") or "blocked",
+                "allowed": False,
+                "reason": breaker.get("reason") or result.get("reason") or "",
+                "circuit_breaker": breaker.get("name") or "",
+                "open_shadow_count": open_shadow_trades,
+                "recommended_action": result.get("recommended_next_action") or "NO_TRADE",
+            }
+        )
+    lessons: list[dict[str, Any]] = []
+    for row in profiles:
+        if not isinstance(row, dict):
+            continue
+        if not (row.get("degraded_by_registry") or row.get("rejected_by_research_registry") or row.get("recommended_action") == "degrade_to_observation_only"):
+            continue
+        failure_pattern = row.get("research_rejection_reason") or row.get("degradation_reason") or row.get("recommended_action") or ""
+        lessons.append(
+            persist_research_lesson(
+                {
+                    "family": _infer_family(row.get("profile")),
+                    "symbol": row.get("symbol") or "",
+                    "timeframe": row.get("timeframe") or "",
+                    "lesson_type": "profile_blocked_by_governor",
+                    "failure_pattern": failure_pattern,
+                    "summary": f"{row.get('profile')} blocked by adaptive governor: {failure_pattern}",
+                    "avoid_next": [row.get("profile") or ""],
+                    "recommended_next_research_phase": result.get("recommended_next_action") or "continue_research",
+                }
+            )
+        )
+        if len(lessons) >= 5:
+            break
+    if lessons:
+        result["persistent_intelligence_research_lessons"] = lessons
+
+
+def _persist_enforcement_result(symbol: str, timeframe: str, profile: str, result: dict[str, Any]) -> None:
+    if not result.get("blocked"):
+        return
+    result["persistent_intelligence_risk_event"] = persist_risk_event(
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "risk_state": result.get("adaptive_governor_global_state") or "blocked",
+            "allowed": False,
+            "reason": result.get("reason") or "adaptive_governor:blocked",
+            "circuit_breaker": result.get("blocking_action") or "adaptive_governor",
+            "open_shadow_count": 0,
+            "recommended_action": result.get("adaptive_governor_recommended_next_action") or result.get("blocking_action") or "NO_TRADE",
+        }
+    )
+    if result.get("degraded_by_registry") or result.get("rejected_by_research_registry"):
+        result["persistent_intelligence_research_lesson"] = persist_research_lesson(
+            {
+                "family": _infer_family(profile),
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "lesson_type": "runtime_profile_blocked",
+                "failure_pattern": result.get("research_rejection_reason") or result.get("degradation_reason") or result.get("reason") or "",
+                "summary": f"{profile} blocked before paper shadow creation.",
+                "avoid_next": [profile],
+                "recommended_next_research_phase": result.get("blocking_action") or "continue_research",
+            }
+        )
 
 
 def _load_shadow_snapshot(

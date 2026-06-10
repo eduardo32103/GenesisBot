@@ -121,6 +121,59 @@ class MT5PersistentIntelligenceStore:
     def status(self) -> dict[str, Any]:
         return self.healthcheck(write_test_event=False)
 
+    def recent_events(self, *, limit: int = 10) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 10), 50))
+        decisions = self._safe_select(
+            "mt5_decision_events",
+            params={
+                "select": "timestamp,symbol,timeframe,decision,reason,profile,risk_state,risk_allowed,risk_reason,broker_touched,order_executed,order_policy",
+                "order": "timestamp.desc",
+                "limit": str(safe_limit),
+            },
+        )
+        risk_events = self._safe_select(
+            "mt5_risk_events",
+            params={
+                "select": "timestamp,symbol,timeframe,risk_state,allowed,reason,circuit_breaker,open_shadow_count,recommended_action",
+                "order": "timestamp.desc",
+                "limit": str(safe_limit),
+            },
+        )
+        shadow_events = self._safe_select(
+            "mt5_shadow_trades",
+            params={
+                "select": "shadow_trade_id,symbol,timeframe,profile,side,status,opened_at,closed_at,pnl,r_multiple,exit_reason,broker_touched,order_executed,order_policy",
+                "order": "opened_at.desc",
+                "limit": str(safe_limit),
+            },
+        )
+        research_lessons = self._safe_select(
+            "mt5_research_lessons",
+            params={
+                "select": "timestamp,family,symbol,timeframe,lesson_type,failure_pattern,summary,recommended_next_research_phase",
+                "order": "timestamp.desc",
+                "limit": str(safe_limit),
+            },
+        )
+        degraded = any(
+            bool(result.get("db_degraded"))
+            for result in (decisions, risk_events, shadow_events, research_lessons)
+        )
+        return {
+            "ok": True,
+            "status": "persistent_intelligence_recent_events_ready",
+            "limit": safe_limit,
+            "recent_decisions": _safety_rows(decisions.get("rows") or []),
+            "recent_risk_events": _safety_rows(risk_events.get("rows") or []),
+            "recent_shadow_events": _safety_rows(shadow_events.get("rows") or []),
+            "recent_research_lessons": _safety_rows(research_lessons.get("rows") or []),
+            "db_degraded": degraded,
+            "failed_writes": _FAILED_WRITES,
+            "queued_writes": _QUEUED_WRITES,
+            "secrets_printed": False,
+            **_safety(),
+        }
+
     def healthcheck(self, *, write_test_event: bool = False) -> dict[str, Any]:
         env_status = _env_status(self.client)
         client_available = bool(getattr(self.client, "available", False))
@@ -513,6 +566,77 @@ def compact_old_decision_events(
     )
 
 
+def persistent_intelligence_recent_events(*, limit: int = 10) -> dict[str, Any]:
+    return MT5PersistentIntelligenceStore().recent_events(limit=limit)
+
+
+def persist_decision_event(
+    payload: dict[str, Any],
+    *,
+    critical: bool = False,
+    store: MT5PersistentIntelligenceStore | None = None,
+) -> dict[str, Any]:
+    result = (store or MT5PersistentIntelligenceStore()).record_decision_event(payload)
+    return _runtime_persistence_result("decision_event", result, critical=critical)
+
+
+def persist_risk_event(
+    payload: dict[str, Any],
+    *,
+    critical: bool = False,
+    store: MT5PersistentIntelligenceStore | None = None,
+) -> dict[str, Any]:
+    result = (store or MT5PersistentIntelligenceStore()).record_risk_event(payload)
+    return _runtime_persistence_result("risk_event", result, critical=critical)
+
+
+def persist_shadow_trade(
+    payload: dict[str, Any],
+    *,
+    critical: bool = False,
+    store: MT5PersistentIntelligenceStore | None = None,
+) -> dict[str, Any]:
+    result = (store or MT5PersistentIntelligenceStore()).record_shadow_trade(payload)
+    return _runtime_persistence_result("shadow_trade", result, critical=critical)
+
+
+def persist_adaptive_governor_state(
+    payload: dict[str, Any],
+    *,
+    critical: bool = False,
+    store: MT5PersistentIntelligenceStore | None = None,
+) -> dict[str, Any]:
+    result = (store or MT5PersistentIntelligenceStore()).record_adaptive_governor_state(payload)
+    return _runtime_persistence_result("adaptive_governor_state", result, critical=critical)
+
+
+def persist_research_lesson(
+    payload: dict[str, Any],
+    *,
+    critical: bool = False,
+    store: MT5PersistentIntelligenceStore | None = None,
+) -> dict[str, Any]:
+    result = (store or MT5PersistentIntelligenceStore()).record_research_lesson(payload)
+    return _runtime_persistence_result("research_lesson", result, critical=critical)
+
+
+def persist_candidate_rotation_run(
+    payload: dict[str, Any],
+    *,
+    critical: bool = False,
+    store: MT5PersistentIntelligenceStore | None = None,
+) -> dict[str, Any]:
+    result = (store or MT5PersistentIntelligenceStore()).record_candidate_rotation_run(payload)
+    return _runtime_persistence_result("candidate_rotation_run", result, critical=critical)
+
+
+def _reset_persistent_intelligence_counters_for_tests() -> None:
+    global _LAST_WRITE_AT, _FAILED_WRITES, _QUEUED_WRITES
+    _LAST_WRITE_AT = ""
+    _FAILED_WRITES = 0
+    _QUEUED_WRITES = 0
+
+
 def _env_status(client: Any) -> dict[str, Any]:
     url_configured = bool(getattr(client, "url_configured", False))
     key_configured = bool(getattr(client, "key_configured", False))
@@ -586,8 +710,9 @@ def _write_unavailable(table: str, reason: str) -> dict[str, Any]:
 
 
 def _write_failed(table: str, exc: Exception, started: float) -> dict[str, Any]:
-    global _FAILED_WRITES
+    global _FAILED_WRITES, _QUEUED_WRITES
     _FAILED_WRITES += 1
+    _QUEUED_WRITES += 1
     return {
         "ok": False,
         "table": table,
@@ -597,6 +722,39 @@ def _write_failed(table: str, exc: Exception, started: float) -> dict[str, Any]:
         "duration_ms": int((time.monotonic() - started) * 1000),
         **_safety(),
     }
+
+
+def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *, critical: bool) -> dict[str, Any]:
+    ok = bool(write_result.get("ok"))
+    critical_failed = bool(critical and not ok)
+    return {
+        "ok": ok,
+        "event_type": event_type,
+        "write": write_result,
+        "db_degraded": bool(write_result.get("db_degraded")),
+        "queued": bool(write_result.get("queued")),
+        "failed_writes": _FAILED_WRITES,
+        "queued_writes": _QUEUED_WRITES,
+        "critical": bool(critical),
+        "critical_persistence_failed": critical_failed,
+        "decision": "NO_TRADE" if critical_failed else "",
+        "reason": "persistent_intelligence_db_degraded" if critical_failed else "",
+        "secrets_printed": False,
+        **_safety(),
+    }
+
+
+def _safety_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        clean = _sanitize_row(row)
+        clean["broker_touched"] = False
+        clean["order_executed"] = False
+        clean.setdefault("order_policy", "journal_only_no_broker")
+        compact.append(clean)
+    return compact
 
 
 def _sanitize_row(row: dict[str, Any]) -> dict[str, Any]:

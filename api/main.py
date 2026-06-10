@@ -68,6 +68,7 @@ from api.routes.genesis import (
     get_genesis_mt5_paper_defense,
     get_genesis_mt5_performance,
     get_genesis_mt5_performance_auto,
+    get_genesis_mt5_persistent_intelligence_recent_events,
     get_genesis_mt5_persistent_intelligence_status,
     get_genesis_mt5_promoted_profile,
     get_genesis_mt5_replay_results,
@@ -230,6 +231,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_risk_state_endpoint": "/api/genesis/mt5/risk-state?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_risk_recovery_endpoint": "/api/genesis/mt5/risk-recovery?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_persistent_intelligence_status_endpoint": "/api/genesis/mt5/persistent-intelligence/status",
+        "genesis_mt5_persistent_intelligence_recent_events_endpoint": "/api/genesis/mt5/persistent-intelligence/recent-events?limit=10",
         "genesis_mt5_ui_summary_endpoint": "/api/genesis/mt5/ui-summary?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_instrument_endpoint": "/api/genesis/mt5/instrument?symbol={symbol}",
         "genesis_mt5_decision_endpoint": "/api/genesis/mt5/decision?symbol={symbol}&timeframe={timeframe}",
@@ -4723,6 +4725,13 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/persistent-intelligence/status":
             payload_data = get_genesis_mt5_persistent_intelligence_status()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/persistent-intelligence/recent-events":
+            query = parse_qs(parsed.query)
+            limit = int((query.get("limit") or ["10"])[0] or 10)
+            payload_data = get_genesis_mt5_persistent_intelligence_recent_events(limit=limit)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

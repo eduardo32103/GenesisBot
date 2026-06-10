@@ -29,6 +29,11 @@ from services.mt5.mt5_order_model import MT5OrderIntent, sanitize_payload
 from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_paper_exploration import evaluate_paper_exploration, update_runtime_performance
 from services.mt5.mt5_performance import MT5Performance
+from services.mt5.mt5_persistent_intelligence_store import (
+    persist_decision_event,
+    persist_risk_event,
+    persist_shadow_trade,
+)
 from services.mt5.mt5_promoted_profile import forward_profile_state, get_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig, MT5RiskGuard
 from services.mt5.mt5_risk_governor import assess_runtime_risk, risk_state_payload
@@ -381,6 +386,7 @@ class MT5SignalRouter:
             payload = _base_decision(symbol_info, "NO_TRADE", "low", "symbol_not_mapped_or_not_allowed")
             if not (self.config.fast_path_only and self.memory is None):
                 self.journal.save("mt5_decisions", symbol_info.get("mt5_symbol") or symbol, payload)
+            _persist_decision_and_risk(payload, self.config)
             return payload
 
         if self.config.fast_path_only and self.memory is None:
@@ -477,6 +483,7 @@ class MT5SignalRouter:
                 queued = enqueue_mt5_event("mt5_decisions", symbol_info["mt5_symbol"], payload)
                 payload["event"] = None
                 payload["queue"] = queued
+                _persist_decision_and_risk(payload, self.config)
                 return payload
             degradation_guardrail = _eth_m30_runtime_degradation_guardrail(symbol_info["mt5_symbol"], requested_timeframe)
             exploration = (
@@ -614,6 +621,7 @@ class MT5SignalRouter:
             queued = enqueue_mt5_event("mt5_decisions", symbol_info["mt5_symbol"], payload)
             payload["event"] = None
             payload["queue"] = queued
+            _persist_decision_and_risk(payload, self.config)
             return payload
 
         context = GenesisBrain(memory=self.memory).build_trading_context(symbol_info["genesis_symbol"])
@@ -704,6 +712,7 @@ class MT5SignalRouter:
         }
         event = self.journal.save("mt5_decisions", symbol_info["mt5_symbol"], payload, confidence=payload["confidence"])
         payload["event"] = event
+        _persist_decision_and_risk(payload, self.config)
         return payload
 
     def order_request(self, payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -753,6 +762,21 @@ class MT5SignalRouter:
         risk_event = None
         if guard["blocked"]:
             risk_event = self.journal.save("mt5_risk_blocks", intent.symbol, order_payload)
+        if guard["blocked"] or adaptive_enforcement.get("blocked"):
+            order_payload["persistent_intelligence_risk_event"] = persist_risk_event(
+                {
+                    "symbol": intent.symbol,
+                    "timeframe": str(intent.timeframe or body.get("timeframe") or ""),
+                    "risk_state": "blocked",
+                    "allowed": False,
+                    "reason": order_payload.get("reason") or "",
+                    "circuit_breaker": "adaptive_governor" if adaptive_enforcement.get("blocked") else "risk_guard",
+                    "open_shadow_count": 0,
+                    "recommended_action": adaptive_enforcement.get("blocking_action") or "NO_TRADE",
+                }
+            )
+        if shadow.get("created") and shadow_trade:
+            order_payload["persistent_intelligence_shadow_trade"] = persist_shadow_trade(shadow_trade)
         return {
             "ok": True,
             "status": order_payload["status"],
@@ -933,11 +957,17 @@ class MT5SignalRouter:
             append_closed_shadow_trade(clean_symbol, closed, timeframe=timeframe)
             enqueue_mt5_event("mt5_shadow_trades", clean_symbol, closed)
             update_runtime_performance(clean_symbol)
-            return _shadow_close_response(True, clean_symbol, "mt5_shadow_trade_closed", trade_id=trade_id, reason=reason, closed_trade=closed)
+            response = _shadow_close_response(True, clean_symbol, "mt5_shadow_trade_closed", trade_id=trade_id, reason=reason, closed_trade=closed)
+            response["persistent_intelligence_shadow_trade"] = persist_shadow_trade(closed)
+            return response
         result = self.shadow.close_shadow_trade(shadow_trade_id=trade_id, reason=reason, symbol=clean_symbol)
         if not result.get("ok"):
             return _shadow_close_response(False, clean_symbol, str(result.get("status") or "shadow_trade_not_found"), trade_id=trade_id, reason=reason)
-        return _shadow_close_response(True, clean_symbol, "mt5_shadow_trade_closed", trade_id=trade_id, reason=reason, closed_trade=result.get("closed_trade"))
+        response = _shadow_close_response(True, clean_symbol, "mt5_shadow_trade_closed", trade_id=trade_id, reason=reason, closed_trade=result.get("closed_trade"))
+        closed_trade = result.get("closed_trade") if isinstance(result.get("closed_trade"), dict) else {}
+        if closed_trade:
+            response["persistent_intelligence_shadow_trade"] = persist_shadow_trade(closed_trade)
+        return response
 
     def debug_storage(self, *, symbol: str = "", limit: int = 20) -> dict[str, Any]:
         started = time.monotonic()
@@ -2024,6 +2054,64 @@ def _maybe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _persist_decision_and_risk(payload: dict[str, Any], config: MT5BridgeConfig | None = None) -> None:
+    critical = _decision_persistence_is_critical(payload, config)
+    persistence = persist_decision_event(payload, critical=critical)
+    payload["persistent_intelligence"] = persistence
+    if persistence.get("critical_persistence_failed"):
+        payload.update(
+            {
+                "decision": "NO_TRADE",
+                "reason": "persistent_intelligence_db_degraded",
+                "actionable": False,
+                "entry": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "risk_pct": 0.0,
+                "risk_reward": 0.0,
+            }
+        )
+    risk_event = _decision_risk_event_payload(payload)
+    if risk_event:
+        payload["persistent_intelligence_risk_event"] = persist_risk_event(risk_event, critical=critical)
+
+
+def _decision_persistence_is_critical(payload: dict[str, Any], config: MT5BridgeConfig | None) -> bool:
+    decision = str(payload.get("decision") or "").upper().strip()
+    if decision not in {"BUY", "SELL"}:
+        return False
+    if config is None:
+        return False
+    return bool(config.live_trading_enabled or config.order_execution_enabled)
+
+
+def _decision_risk_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    reason = str(payload.get("reason") or payload.get("risk_governor_reason") or payload.get("adaptive_governor_reason") or "")
+    blocked = bool(
+        str(reason).startswith(("risk_governor_block:", "adaptive_governor:", "forward_degraded:", "pending_degradation_until_shadow_closes:"))
+        or payload.get("adaptive_governor_blocked")
+        or payload.get("degradation_guardrail_active")
+        or not bool(payload.get("risk_governor_allowed", True))
+    )
+    if not blocked:
+        return {}
+    circuit_breaker = "risk_governor"
+    if payload.get("adaptive_governor_blocked") or str(reason).startswith("adaptive_governor:"):
+        circuit_breaker = "adaptive_governor"
+    elif payload.get("degradation_guardrail_active") or str(reason).startswith(("forward_degraded:", "pending_degradation_until_shadow_closes:")):
+        circuit_breaker = "forward_degradation_guardrail"
+    return {
+        "symbol": payload.get("symbol") or "",
+        "timeframe": payload.get("timeframe") or payload.get("requested_timeframe") or "",
+        "risk_state": payload.get("risk_state") or payload.get("adaptive_governor_global_state") or "blocked",
+        "allowed": False,
+        "reason": reason or "blocked",
+        "circuit_breaker": circuit_breaker,
+        "open_shadow_count": payload.get("risk_governor_open_trades_count") or 0,
+        "recommended_action": payload.get("adaptive_governor_recommended_next_action") or "NO_TRADE",
+    }
 
 
 def _now() -> str:

@@ -9,6 +9,7 @@ from services.mt5.mt5_forward_profile_degradation_registry import forward_profil
 from services.mt5.mt5_new_family_edge_discovery import run_new_family_edge_discovery
 from services.mt5.mt5_paper_forward_candidate_rotation import run_paper_forward_candidate_rotation
 from services.mt5.mt5_paper_forward_research_expansion import run_paper_forward_research_expansion
+from services.mt5.mt5_persistent_intelligence_store import persist_research_lesson
 from services.mt5.mt5_research_rejection_registry import research_rejection_registry_status
 
 
@@ -164,7 +165,7 @@ def run_research_intelligence_core(
     next_hypotheses = _next_hypotheses(failure_patterns)
     priority_queue = _priority_queue(next_hypotheses)
 
-    return {
+    result = {
         "ok": True,
         "status": "research_intelligence_core_ready",
         "core_version": CORE_VERSION,
@@ -201,6 +202,34 @@ def run_research_intelligence_core(
         "duration_ms": int((time.monotonic() - started) * 1000),
         **_safety(),
     }
+    _persist_research_intelligence_lessons(result)
+    return result
+
+
+def _persist_research_intelligence_lessons(result: dict[str, Any]) -> None:
+    lessons: list[dict[str, Any]] = []
+    next_phase = str(result.get("recommended_next_research_phase") or "continue_research")
+    for cluster in result.get("rejected_clusters") or []:
+        if not isinstance(cluster, dict):
+            continue
+        lessons.append(
+            persist_research_lesson(
+                {
+                    "family": cluster.get("profile_or_pattern") or "",
+                    "symbol": cluster.get("symbol") or "",
+                    "timeframe": cluster.get("timeframe") or "",
+                    "lesson_type": cluster.get("source") or "research_rejection",
+                    "failure_pattern": cluster.get("rejection_reason") or "",
+                    "summary": f"{cluster.get('profile_or_pattern') or 'cluster'} remains excluded: {cluster.get('rejection_reason') or ''}",
+                    "avoid_next": result.get("avoid_next") or [],
+                    "recommended_next_research_phase": next_phase,
+                }
+            )
+        )
+        if len(lessons) >= 5:
+            break
+    if lessons:
+        result["persistent_intelligence_research_lessons"] = lessons
 
 
 def _rejected_clusters(degradation_registry: dict[str, Any], rejection_registry: dict[str, Any]) -> list[dict[str, Any]]:

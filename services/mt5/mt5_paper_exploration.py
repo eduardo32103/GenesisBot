@@ -9,6 +9,7 @@ from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforc
 from services.mt5.mt5_eth_m30_forward_degradation import ETH_M30_DEGRADATION_PROFILE, evaluate_eth_m30_forward_degradation
 from services.mt5.mt5_eth_m30_paper_forward_candidate import active_eth_m30_paper_forward_candidate
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
+from services.mt5.mt5_persistent_intelligence_store import persist_risk_event, persist_shadow_trade
 from services.mt5.mt5_promoted_profile import active_promoted_profile
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
 from services.mt5.mt5_risk_governor import assess_runtime_risk
@@ -57,7 +58,7 @@ def evaluate_paper_exploration(
         performance_payload=None,
     )
     if initial_degradation_guardrail.get("degradation_guardrail_active"):
-        return _forward_degradation_blocked_result(
+        result = _forward_degradation_blocked_result(
             cfg,
             trigger=trigger,
             guardrail=initial_degradation_guardrail,
@@ -66,6 +67,8 @@ def evaluate_paper_exploration(
             open_trade=open_trade,
             summary=snapshot.get("latest_performance_summary") if isinstance(snapshot.get("latest_performance_summary"), dict) else {},
         )
+        _persist_paper_exploration_events(clean_symbol, active_timeframe, result)
+        return result
 
     if open_trade:
         open_trade, closed_event = _update_open_trade(open_trade, active_tick, cfg)
@@ -102,7 +105,7 @@ def evaluate_paper_exploration(
             profile=str((promoted_profile or {}).get("profile") or ""),
         )
         if adaptive_enforcement.get("blocked"):
-            return _adaptive_governor_blocked_result(
+            result = _adaptive_governor_blocked_result(
                 cfg,
                 trigger=trigger,
                 enforcement=adaptive_enforcement,
@@ -112,6 +115,8 @@ def evaluate_paper_exploration(
                 closed_event=closed_event,
                 summary=(performance_payload or {}).get("summary") if isinstance(performance_payload, dict) else {},
             )
+            _persist_paper_exploration_events(clean_symbol, active_timeframe, result, closed_event=closed_event)
+            return result
         can_open, block_reason = _can_open(
             clean_symbol,
             normalized,
@@ -200,6 +205,13 @@ def evaluate_paper_exploration(
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
     }
+    _persist_paper_exploration_events(
+        clean_symbol,
+        active_timeframe,
+        result,
+        opened_event=opened_event,
+        closed_event=closed_event,
+    )
     return result
 
 
@@ -280,6 +292,53 @@ def _forward_degradation_guardrail(
         current_status="paper_forward_candidate",
         risk_governor_reason=risk_governor_reason,
     )
+
+
+def _persist_paper_exploration_events(
+    symbol: str,
+    timeframe: str,
+    result: dict[str, Any],
+    *,
+    opened_event: dict[str, Any] | None = None,
+    closed_event: dict[str, Any] | None = None,
+) -> None:
+    persisted: dict[str, Any] = {}
+    if opened_event:
+        persisted["opened_shadow_trade"] = persist_shadow_trade(opened_event)
+    if closed_event:
+        persisted["closed_shadow_trade"] = persist_shadow_trade(closed_event)
+    risk_blocked = bool(
+        result.get("degradation_guardrail_active")
+        or result.get("adaptive_governor_blocked")
+        or not bool(result.get("risk_governor_allowed", True))
+    )
+    if risk_blocked:
+        reason = (
+            result.get("adaptive_governor_reason")
+            or result.get("paper_exploration_reason")
+            or result.get("risk_governor_reason")
+            or result.get("degradation_reason")
+            or "paper_exploration_blocked"
+        )
+        circuit_breaker = "risk_governor"
+        if result.get("adaptive_governor_blocked"):
+            circuit_breaker = "adaptive_governor"
+        elif result.get("degradation_guardrail_active"):
+            circuit_breaker = "forward_degradation_guardrail"
+        persisted["risk_event"] = persist_risk_event(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "risk_state": result.get("risk_state") or result.get("adaptive_governor_global_state") or "blocked",
+                "allowed": False,
+                "reason": reason,
+                "circuit_breaker": circuit_breaker,
+                "open_shadow_count": 1 if result.get("open_shadow_trade") else 0,
+                "recommended_action": result.get("adaptive_governor_recommended_next_action") or "NO_TRADE",
+            }
+        )
+    if persisted:
+        result["persistent_intelligence"] = persisted
 
 
 def _forward_degradation_blocked_result(

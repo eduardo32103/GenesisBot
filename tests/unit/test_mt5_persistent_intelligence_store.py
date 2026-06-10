@@ -9,10 +9,19 @@ from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLE
 from services.mt5.mt5_persistent_intelligence_store import (
     MT5PersistentIntelligenceStore,
     SupabaseRestClient,
+    _reset_persistent_intelligence_counters_for_tests,
+    persist_adaptive_governor_state,
+    persist_decision_event,
+    persist_research_lesson,
+    persist_risk_event,
+    persist_shadow_trade,
 )
 
 
 class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_persistent_intelligence_counters_for_tests()
+
     def test_missing_supabase_config_degrades_safely_and_keeps_no_trade(self) -> None:
         store = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
 
@@ -140,6 +149,91 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(row["order_executed"])
         self.assertEqual(row["order_policy"], "journal_only_no_broker")
 
+    def test_runtime_persistence_helpers_record_compact_events(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        decision = persist_decision_event(
+            {
+                "symbol": "EURUSD",
+                "timeframe": "H1",
+                "decision": "NO_TRADE",
+                "reason": "risk_governor_block:recent_edge_negative",
+                "profile": "test_profile",
+                "strategy_score": 61.5,
+                "risk_state": "blocked",
+                "risk_allowed": False,
+                "risk_reason": "recent_edge_negative",
+                "bars_data": [{"open": 1, "high": 2, "low": 0, "close": 1}],
+                "raw_ticks": list(range(100)),
+            },
+            store=store,
+        )
+        risk = persist_risk_event(
+            {
+                "symbol": "EURUSD",
+                "timeframe": "H1",
+                "risk_state": "blocked",
+                "allowed": False,
+                "reason": "recent_edge_negative",
+                "circuit_breaker": "risk_governor",
+                "open_shadow_count": 0,
+                "recommended_action": "NO_TRADE",
+            },
+            store=store,
+        )
+        shadow = persist_shadow_trade(
+            {
+                "shadow_trade_id": "paper-test-2",
+                "symbol": "EURUSD",
+                "timeframe": "H1",
+                "profile": "test_profile",
+                "side": "sell",
+                "status": "closed",
+                "pnl": 1.2,
+                "r_multiple": 0.8,
+                "exit_reason": "take_profit",
+            },
+            store=store,
+        )
+        governor = persist_adaptive_governor_state(
+            {
+                "global_state": "watch",
+                "recommended_next_action": "continue_research",
+                "active_profiles": [],
+                "paused_profiles": [],
+                "degraded_profiles": [],
+                "circuit_breakers": [],
+                "open_shadow_trades": 0,
+            },
+            store=store,
+        )
+        lesson = persist_research_lesson(
+            {
+                "family": "session_vwap_reclaim",
+                "symbol": "EURUSD",
+                "timeframe": "H1",
+                "lesson_type": "rejected_after_real_hardening",
+                "failure_pattern": "proxy_false_positive_after_costs",
+                "summary": "Hardening failed after costs.",
+                "avoid_next": ["eurusd_h1_session_vwap_reclaim"],
+                "recommended_next_research_phase": "continue_research",
+            },
+            store=store,
+        )
+
+        self.assertTrue(decision["ok"])
+        self.assertTrue(risk["ok"])
+        self.assertTrue(shadow["ok"])
+        self.assertTrue(governor["ok"])
+        self.assertTrue(lesson["ok"])
+        decision_row = client.inserted[0]["payload"]
+        self.assertNotIn("bars_data", decision_row)
+        self.assertNotIn("raw_ticks", decision_row)
+        self.assertFalse(decision_row["broker_touched"])
+        self.assertFalse(decision_row["order_executed"])
+        self.assertEqual(decision_row["order_policy"], "journal_only_no_broker")
+
     def test_get_degraded_and_rejected_fallback_to_local_registries_when_db_missing(self) -> None:
         store = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
 
@@ -178,6 +272,59 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_db_write_failure_degrades_safely_and_marks_critical_no_trade(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_FailingWriteClient())
+
+        result = persist_decision_event(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M30",
+                "decision": "BUY",
+                "reason": "unit_test",
+                "profile": "test_profile",
+            },
+            critical=True,
+            store=store,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["db_degraded"])
+        self.assertTrue(result["queued"])
+        self.assertEqual(result["failed_writes"], 1)
+        self.assertEqual(result["queued_writes"], 1)
+        self.assertTrue(result["critical_persistence_failed"])
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "persistent_intelligence_db_degraded")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_recent_events_returns_compact_safety_summary(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_decision_events": [
+                    {"symbol": "BTCUSD", "timeframe": "M30", "decision": "NO_TRADE", "reason": "blocked"}
+                ],
+                "mt5_risk_events": [{"symbol": "BTCUSD", "timeframe": "M30", "reason": "blocked"}],
+                "mt5_shadow_trades": [{"shadow_trade_id": "paper-1", "symbol": "BTCUSD", "timeframe": "M30"}],
+                "mt5_research_lessons": [{"family": "test", "summary": "small"}],
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.recent_events(limit=5)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["db_degraded"])
+        self.assertEqual(len(result["recent_decisions"]), 1)
+        self.assertEqual(len(result["recent_risk_events"]), 1)
+        self.assertEqual(len(result["recent_shadow_events"]), 1)
+        self.assertEqual(len(result["recent_research_lessons"]), 1)
+        self.assertFalse(result["recent_decisions"][0]["broker_touched"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_endpoint_is_exposed_and_route_returns_safe_status(self) -> None:
         app = create_app()
         payload = get_genesis_mt5_persistent_intelligence_status()
@@ -185,6 +332,10 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(
             app["genesis_mt5_persistent_intelligence_status_endpoint"],
             "/api/genesis/mt5/persistent-intelligence/status",
+        )
+        self.assertEqual(
+            app["genesis_mt5_persistent_intelligence_recent_events_endpoint"],
+            "/api/genesis/mt5/persistent-intelligence/recent-events?limit=10",
         )
         self.assertTrue(payload["ok"])
         self.assertIn("db_available", payload)
@@ -239,6 +390,24 @@ class _MissingTablesClient:
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
         raise RuntimeError("relation does not exist")
+
+
+class _FailingWriteClient:
+    available = True
+    url_configured = True
+    key_configured = True
+
+    def table_ready(self, table: str) -> bool:
+        return True
+
+    def insert(self, table: str, payload: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("supabase write timeout")
+
+    def upsert(self, table: str, payload: dict[str, object], *, on_conflict: tuple[str, ...]) -> dict[str, object]:
+        raise RuntimeError("supabase write timeout")
+
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        return []
 
 
 if __name__ == "__main__":

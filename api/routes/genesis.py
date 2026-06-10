@@ -32,6 +32,7 @@ from services.mt5.mt5_bridge import (
     mt5_order_request,
     mt5_order_result,
     mt5_paper_defense,
+    mt5_persistent_intelligence_recent_events,
     mt5_outcomes_recent,
     mt5_performance,
     mt5_performance_auto,
@@ -97,6 +98,10 @@ def get_genesis_mt5_risk_recovery(symbol: str = "ETHUSD", timeframe: str = "M30"
 
 def get_genesis_mt5_persistent_intelligence_status() -> dict[str, Any]:
     return mt5_persistent_intelligence_status()
+
+
+def get_genesis_mt5_persistent_intelligence_recent_events(limit: int = 10) -> dict[str, Any]:
+    return mt5_persistent_intelligence_recent_events(limit=limit)
 
 
 def get_genesis_mt5_ui_summary(symbol: str = "", timeframe: str = "") -> dict[str, Any]:

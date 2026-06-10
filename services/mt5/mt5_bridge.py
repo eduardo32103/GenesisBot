@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
-from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_status
+from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_recent_events, persistent_intelligence_status
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_signal_router import MT5SignalRouter
 
@@ -34,6 +34,10 @@ def mt5_risk_recovery(*, memory: MemoryStore | None = None, symbol: str = "ETHUS
 
 def mt5_persistent_intelligence_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
     return persistent_intelligence_status(write_test_event=False)
+
+
+def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = None, limit: int = 10) -> dict[str, Any]:
+    return persistent_intelligence_recent_events(limit=limit)
 
 
 def mt5_ui_summary(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
