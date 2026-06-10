@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol
 from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforcement
+from services.mt5.mt5_capital_protection_governor import capital_protection_enforcement
 from services.mt5.mt5_eth_m30_forward_degradation import ETH_M30_DEGRADATION_PROFILE, evaluate_eth_m30_forward_degradation
 from services.mt5.mt5_eth_m30_paper_forward_candidate import active_eth_m30_paper_forward_candidate
 from services.mt5.mt5_ingest_queue import enqueue_mt5_event
@@ -99,6 +100,24 @@ def evaluate_paper_exploration(
     if degradation_guardrail.get("should_degrade"):
         can_open, block_reason = False, f"forward_degraded:{degradation_guardrail.get('degradation_reason') or 'early_forward_edge_failed'}"
     else:
+        capital_enforcement = capital_protection_enforcement(
+            symbol=clean_symbol,
+            timeframe=active_timeframe,
+            profile=str((promoted_profile or {}).get("profile") or ""),
+        )
+        if capital_enforcement.get("blocked"):
+            result = _capital_protection_blocked_result(
+                cfg,
+                trigger=trigger,
+                enforcement=capital_enforcement,
+                risk_governor=risk_governor,
+                promoted_profile=promoted_profile,
+                open_trade=open_trade if open_trade and not closed_event else {},
+                closed_event=closed_event,
+                summary=(performance_payload or {}).get("summary") if isinstance(performance_payload, dict) else {},
+            )
+            _persist_paper_exploration_events(clean_symbol, active_timeframe, result, closed_event=closed_event)
+            return result
         adaptive_enforcement = adaptive_governor_enforcement(
             symbol=clean_symbol,
             timeframe=active_timeframe,
@@ -109,6 +128,26 @@ def evaluate_paper_exploration(
                 cfg,
                 trigger=trigger,
                 enforcement=adaptive_enforcement,
+                risk_governor=risk_governor,
+                promoted_profile=promoted_profile,
+                open_trade=open_trade if open_trade and not closed_event else {},
+                closed_event=closed_event,
+                summary=(performance_payload or {}).get("summary") if isinstance(performance_payload, dict) else {},
+            )
+            _persist_paper_exploration_events(clean_symbol, active_timeframe, result, closed_event=closed_event)
+            return result
+        from services.mt5.mt5_strategy_tournament import strategy_tournament_enforcement
+
+        tournament_enforcement = strategy_tournament_enforcement(
+            symbol=clean_symbol,
+            timeframe=active_timeframe,
+            profile=str((promoted_profile or {}).get("profile") or ""),
+        )
+        if tournament_enforcement.get("blocked"):
+            result = _strategy_tournament_blocked_result(
+                cfg,
+                trigger=trigger,
+                enforcement=tournament_enforcement,
                 risk_governor=risk_governor,
                 promoted_profile=promoted_profile,
                 open_trade=open_trade if open_trade and not closed_event else {},
@@ -196,6 +235,13 @@ def evaluate_paper_exploration(
         "adaptive_governor_global_state": (adaptive_enforcement if "adaptive_enforcement" in locals() else {}).get("adaptive_governor_global_state", ""),
         "adaptive_governor_recommended_next_action": (adaptive_enforcement if "adaptive_enforcement" in locals() else {}).get("adaptive_governor_recommended_next_action", ""),
         "adaptive_governor_circuit_breakers": (adaptive_enforcement if "adaptive_enforcement" in locals() else {}).get("circuit_breakers", []),
+        "capital_protection": capital_enforcement if "capital_enforcement" in locals() else {},
+        "capital_protection_blocked": False,
+        "capital_protection_reason": "",
+        "capital_state": (capital_enforcement if "capital_enforcement" in locals() else {}).get("capital_state", ""),
+        "strategy_tournament": tournament_enforcement if "tournament_enforcement" in locals() else {},
+        "strategy_tournament_blocked": False,
+        "strategy_tournament_reason": "",
         "shadow_trade_id": (opened_event or open_trade or {}).get("shadow_trade_id") or "",
         "open_shadow_trade": opened_event or ({} if closed_event else open_trade),
         "closed_shadow_trade": closed_event,
@@ -310,31 +356,39 @@ def _persist_paper_exploration_events(
     risk_blocked = bool(
         result.get("degradation_guardrail_active")
         or result.get("adaptive_governor_blocked")
+        or result.get("capital_protection_blocked")
+        or result.get("strategy_tournament_blocked")
         or not bool(result.get("risk_governor_allowed", True))
     )
     if risk_blocked:
         reason = (
-            result.get("adaptive_governor_reason")
+            result.get("capital_protection_reason")
+            or result.get("adaptive_governor_reason")
+            or result.get("strategy_tournament_reason")
             or result.get("paper_exploration_reason")
             or result.get("risk_governor_reason")
             or result.get("degradation_reason")
             or "paper_exploration_blocked"
         )
         circuit_breaker = "risk_governor"
-        if result.get("adaptive_governor_blocked"):
+        if result.get("capital_protection_blocked"):
+            circuit_breaker = "capital_protection_governor"
+        elif result.get("adaptive_governor_blocked"):
             circuit_breaker = "adaptive_governor"
+        elif result.get("strategy_tournament_blocked"):
+            circuit_breaker = "strategy_tournament"
         elif result.get("degradation_guardrail_active"):
             circuit_breaker = "forward_degradation_guardrail"
         persisted["risk_event"] = persist_risk_event(
             {
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "risk_state": result.get("risk_state") or result.get("adaptive_governor_global_state") or "blocked",
+                "risk_state": result.get("risk_state") or result.get("capital_state") or result.get("adaptive_governor_global_state") or "blocked",
                 "allowed": False,
                 "reason": reason,
                 "circuit_breaker": circuit_breaker,
                 "open_shadow_count": 1 if result.get("open_shadow_trade") else 0,
-                "recommended_action": result.get("adaptive_governor_recommended_next_action") or "NO_TRADE",
+                "recommended_action": result.get("capital_protection_recommended_action") or result.get("adaptive_governor_recommended_next_action") or result.get("strategy_tournament_recommended_action") or "NO_TRADE",
             }
         )
     if persisted:
@@ -423,6 +477,128 @@ def _adaptive_governor_blocked_result(
         "adaptive_governor_global_state": enforcement.get("adaptive_governor_global_state") or "",
         "adaptive_governor_recommended_next_action": enforcement.get("adaptive_governor_recommended_next_action") or "",
         "adaptive_governor_circuit_breakers": enforcement.get("circuit_breakers") if isinstance(enforcement.get("circuit_breakers"), list) else [],
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "shadow_trade_id": "",
+        "open_shadow_trade": open_trade or {},
+        "closed_shadow_trade": closed_event,
+        "latest_performance_summary": dict(summary or {}),
+        "trigger": trigger,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _capital_protection_blocked_result(
+    cfg: MT5BridgeConfig,
+    *,
+    trigger: str,
+    enforcement: dict[str, Any],
+    risk_governor: dict[str, Any],
+    promoted_profile: dict[str, Any] | None,
+    open_trade: dict[str, Any],
+    closed_event: dict[str, Any] | None,
+    summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    reason = str(enforcement.get("reason") or "capital_protection:blocked")
+    governor = enforcement.get("capital_governor") if isinstance(enforcement.get("capital_governor"), dict) else {}
+    return {
+        "paper_exploration_enabled": cfg.paper_exploration_enabled,
+        "paper_exploration_attempted": bool(cfg.paper_exploration_enabled),
+        "paper_exploration_created": False,
+        "paper_exploration_closed": bool(closed_event),
+        "paper_exploration_reason": reason,
+        "risk_governor_allowed": False,
+        "risk_governor_reason": risk_governor.get("reason") or "",
+        "risk_state": risk_governor.get("risk_state") or governor.get("capital_state") or "blocked",
+        "suggested_lot_multiplier": 0.0,
+        "risk_governor": risk_governor,
+        "promoted_profile": promoted_profile or None,
+        "paper_forward_candidate_profile": (promoted_profile or {}).get("profile") or "",
+        "degradation_guardrail": {},
+        "degradation_guardrail_active": False,
+        "degradation_reason": "",
+        "degradation_source": "",
+        "registry_degraded": False,
+        "registry_version": "",
+        "pending_degradation_until_shadow_closes": False,
+        "paper_probe_allowed": False,
+        "capital_protection": enforcement,
+        "capital_protection_blocked": True,
+        "capital_protection_reason": reason,
+        "capital_state": enforcement.get("capital_state") or governor.get("capital_state") or "",
+        "capital_protection_recommended_action": governor.get("recommended_action") or "",
+        "adaptive_governor": {},
+        "adaptive_governor_blocked": False,
+        "adaptive_governor_reason": "",
+        "adaptive_governor_global_state": "",
+        "adaptive_governor_recommended_next_action": "",
+        "adaptive_governor_circuit_breakers": [],
+        "strategy_tournament": {},
+        "strategy_tournament_blocked": False,
+        "strategy_tournament_reason": "",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "shadow_trade_id": "",
+        "open_shadow_trade": open_trade or {},
+        "closed_shadow_trade": closed_event,
+        "latest_performance_summary": dict(summary or {}),
+        "trigger": trigger,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+def _strategy_tournament_blocked_result(
+    cfg: MT5BridgeConfig,
+    *,
+    trigger: str,
+    enforcement: dict[str, Any],
+    risk_governor: dict[str, Any],
+    promoted_profile: dict[str, Any] | None,
+    open_trade: dict[str, Any],
+    closed_event: dict[str, Any] | None,
+    summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    reason = str(enforcement.get("reason") or "strategy_tournament:blocked")
+    tournament = enforcement.get("strategy_tournament") if isinstance(enforcement.get("strategy_tournament"), dict) else {}
+    return {
+        "paper_exploration_enabled": cfg.paper_exploration_enabled,
+        "paper_exploration_attempted": bool(cfg.paper_exploration_enabled),
+        "paper_exploration_created": False,
+        "paper_exploration_closed": bool(closed_event),
+        "paper_exploration_reason": reason,
+        "risk_governor_allowed": False,
+        "risk_governor_reason": risk_governor.get("reason") or "",
+        "risk_state": risk_governor.get("risk_state") or "blocked",
+        "suggested_lot_multiplier": 0.0,
+        "risk_governor": risk_governor,
+        "promoted_profile": promoted_profile or None,
+        "paper_forward_candidate_profile": (promoted_profile or {}).get("profile") or "",
+        "degradation_guardrail": {},
+        "degradation_guardrail_active": False,
+        "degradation_reason": "",
+        "degradation_source": "",
+        "registry_degraded": False,
+        "registry_version": "",
+        "pending_degradation_until_shadow_closes": False,
+        "paper_probe_allowed": False,
+        "capital_protection": {},
+        "capital_protection_blocked": False,
+        "capital_protection_reason": "",
+        "capital_state": "",
+        "adaptive_governor": {},
+        "adaptive_governor_blocked": False,
+        "adaptive_governor_reason": "",
+        "adaptive_governor_global_state": "",
+        "adaptive_governor_recommended_next_action": "",
+        "adaptive_governor_circuit_breakers": [],
+        "strategy_tournament": enforcement,
+        "strategy_tournament_blocked": True,
+        "strategy_tournament_reason": reason,
+        "strategy_tournament_recommended_action": tournament.get("recommended_action") or "",
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "shadow_trade_id": "",

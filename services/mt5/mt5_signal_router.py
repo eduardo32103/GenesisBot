@@ -13,6 +13,7 @@ from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbo
 from services.mt5.mt5_account_state import normalize_account_state
 from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforcement
 from services.mt5.mt5_backtester import MT5Backtester
+from services.mt5.mt5_capital_protection_governor import capital_protection_enforcement
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_db_circuit_breaker import is_db_degraded, record_db_error, status_payload as db_status_payload
 from services.mt5.mt5_eth_m30_paper_forward_candidate import (
@@ -52,6 +53,7 @@ from services.mt5.mt5_runtime_snapshot import (
     update_tick,
 )
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading, get_recent_mt5_shadow_trades_fast, is_main_metric_trade
+from services.mt5.mt5_strategy_tournament import strategy_tournament_enforcement
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 from services.mt5.mt5_ui_summary import build_mt5_ui_summary, load_robust_optimizer_payload
 from services.mt5.mt5_adaptive_recommendations import MT5AdaptiveRecommendationEngine
@@ -720,29 +722,62 @@ class MT5SignalRouter:
         intent = MT5OrderIntent.from_payload(body)
         account = self._account_state_for_order(body, intent.symbol)
         guard = self.risk_guard.evaluate_order(intent, account_state=account)
+        timeframe = str(intent.timeframe or body.get("timeframe") or "")
+        profile = str(intent.strategy_profile or body.get("strategy_profile") or body.get("profile") or "")
+        capital_enforcement = capital_protection_enforcement(
+            symbol=intent.symbol,
+            timeframe=timeframe,
+            profile=profile,
+            load_persistent=True,
+        )
         adaptive_enforcement = adaptive_governor_enforcement(
             symbol=intent.symbol,
-            timeframe=str(intent.timeframe or body.get("timeframe") or ""),
-            profile=str(intent.strategy_profile or body.get("strategy_profile") or body.get("profile") or ""),
+            timeframe=timeframe,
+            profile=profile,
         )
+        tournament_enforcement = strategy_tournament_enforcement(
+            symbol=intent.symbol,
+            timeframe=timeframe,
+            profile=profile,
+            load_shadow_snapshot=False,
+            load_persistent=True,
+            load_rotation=False,
+        )
+        governor_blocked = bool(
+            capital_enforcement.get("blocked")
+            or adaptive_enforcement.get("blocked")
+            or tournament_enforcement.get("blocked")
+        )
+        if capital_enforcement.get("blocked"):
+            shadow_status = "capital_protection_blocked"
+            shadow_reason = capital_enforcement.get("reason") or "capital_protection:blocked"
+        elif adaptive_enforcement.get("blocked"):
+            shadow_status = "adaptive_governor_blocked"
+            shadow_reason = adaptive_enforcement.get("reason") or "adaptive_governor:blocked"
+        elif tournament_enforcement.get("blocked"):
+            shadow_status = "strategy_tournament_blocked"
+            shadow_reason = tournament_enforcement.get("reason") or "strategy_tournament:blocked"
+        else:
+            shadow_status = ""
+            shadow_reason = ""
         shadow = (
             {
                 "created": False,
-                "status": "adaptive_governor_blocked",
-                "reason": adaptive_enforcement.get("reason") or "adaptive_governor:blocked",
+                "status": shadow_status,
+                "reason": shadow_reason,
                 "trade": {},
                 "broker_touched": False,
                 "order_executed": False,
                 "order_policy": "journal_only_no_broker",
             }
-            if adaptive_enforcement.get("blocked")
+            if governor_blocked
             else self.shadow.create_from_order_request(body, account_state=account, min_rr=self.config.min_rr)
         )
         shadow_trade = shadow.get("trade") if isinstance(shadow.get("trade"), dict) else {}
         order_payload = {
             **intent.to_payload(),
             "guard": guard,
-            "status": "blocked" if guard["blocked"] or adaptive_enforcement.get("blocked") else "journal_only",
+            "status": "blocked" if guard["blocked"] or governor_blocked else "journal_only",
             "order_policy": "journal_only_no_broker",
             "broker_touched": False,
             "order_executed": False,
@@ -750,29 +785,43 @@ class MT5SignalRouter:
             "shadow_trade_id": shadow_trade.get("shadow_trade_id") or "",
             "shadow_trade_status": shadow.get("status") or "",
             "shadow_trade_reason": shadow.get("reason") or "",
-            "reason": adaptive_enforcement.get("reason") if adaptive_enforcement.get("blocked") else guard["primary_reason"] if guard["blocked"] else "execution_disabled_in_phase",
+            "reason": shadow_reason if governor_blocked else guard["primary_reason"] if guard["blocked"] else "execution_disabled_in_phase",
+            "capital_protection": capital_enforcement,
+            "capital_protection_blocked": bool(capital_enforcement.get("blocked")),
+            "capital_protection_reason": capital_enforcement.get("reason") or "",
+            "capital_state": capital_enforcement.get("capital_state") or "",
             "adaptive_governor": adaptive_enforcement,
             "adaptive_governor_blocked": bool(adaptive_enforcement.get("blocked")),
             "adaptive_governor_reason": adaptive_enforcement.get("reason") or "",
             "adaptive_governor_global_state": adaptive_enforcement.get("adaptive_governor_global_state") or "",
             "adaptive_governor_circuit_breakers": adaptive_enforcement.get("circuit_breakers") if isinstance(adaptive_enforcement.get("circuit_breakers"), list) else [],
+            "strategy_tournament": tournament_enforcement,
+            "strategy_tournament_blocked": bool(tournament_enforcement.get("blocked")),
+            "strategy_tournament_reason": tournament_enforcement.get("reason") or "",
             "phase": "Fase 11 demo/journal only",
         }
         request_event = self.journal.save("mt5_order_requests", intent.symbol, order_payload)
         risk_event = None
         if guard["blocked"]:
             risk_event = self.journal.save("mt5_risk_blocks", intent.symbol, order_payload)
-        if guard["blocked"] or adaptive_enforcement.get("blocked"):
+        if guard["blocked"] or governor_blocked:
+            circuit_breaker = "risk_guard"
+            if capital_enforcement.get("blocked"):
+                circuit_breaker = "capital_protection_governor"
+            elif adaptive_enforcement.get("blocked"):
+                circuit_breaker = "adaptive_governor"
+            elif tournament_enforcement.get("blocked"):
+                circuit_breaker = "strategy_tournament"
             order_payload["persistent_intelligence_risk_event"] = persist_risk_event(
                 {
                     "symbol": intent.symbol,
-                    "timeframe": str(intent.timeframe or body.get("timeframe") or ""),
+                    "timeframe": timeframe,
                     "risk_state": "blocked",
                     "allowed": False,
                     "reason": order_payload.get("reason") or "",
-                    "circuit_breaker": "adaptive_governor" if adaptive_enforcement.get("blocked") else "risk_guard",
+                    "circuit_breaker": circuit_breaker,
                     "open_shadow_count": 0,
-                    "recommended_action": adaptive_enforcement.get("blocking_action") or "NO_TRADE",
+                    "recommended_action": capital_enforcement.get("recommended_action") or adaptive_enforcement.get("blocking_action") or tournament_enforcement.get("recommended_action") or "NO_TRADE",
                 }
             )
         if shadow.get("created") and shadow_trade:
@@ -2088,29 +2137,51 @@ def _decision_persistence_is_critical(payload: dict[str, Any], config: MT5Bridge
 
 
 def _decision_risk_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    reason = str(payload.get("reason") or payload.get("risk_governor_reason") or payload.get("adaptive_governor_reason") or "")
+    reason = str(
+        payload.get("reason")
+        or payload.get("risk_governor_reason")
+        or payload.get("capital_protection_reason")
+        or payload.get("adaptive_governor_reason")
+        or payload.get("strategy_tournament_reason")
+        or ""
+    )
     blocked = bool(
-        str(reason).startswith(("risk_governor_block:", "adaptive_governor:", "forward_degraded:", "pending_degradation_until_shadow_closes:"))
+        str(reason).startswith(
+            (
+                "risk_governor_block:",
+                "capital_protection:",
+                "adaptive_governor:",
+                "strategy_tournament:",
+                "forward_degraded:",
+                "pending_degradation_until_shadow_closes:",
+            )
+        )
+        or payload.get("capital_protection_blocked")
         or payload.get("adaptive_governor_blocked")
+        or payload.get("strategy_tournament_blocked")
         or payload.get("degradation_guardrail_active")
         or not bool(payload.get("risk_governor_allowed", True))
     )
     if not blocked:
         return {}
     circuit_breaker = "risk_governor"
-    if payload.get("adaptive_governor_blocked") or str(reason).startswith("adaptive_governor:"):
+    if payload.get("capital_protection_blocked") or str(reason).startswith("capital_protection:"):
+        circuit_breaker = "capital_protection_governor"
+    elif payload.get("adaptive_governor_blocked") or str(reason).startswith("adaptive_governor:"):
         circuit_breaker = "adaptive_governor"
+    elif payload.get("strategy_tournament_blocked") or str(reason).startswith("strategy_tournament:"):
+        circuit_breaker = "strategy_tournament"
     elif payload.get("degradation_guardrail_active") or str(reason).startswith(("forward_degraded:", "pending_degradation_until_shadow_closes:")):
         circuit_breaker = "forward_degradation_guardrail"
     return {
         "symbol": payload.get("symbol") or "",
         "timeframe": payload.get("timeframe") or payload.get("requested_timeframe") or "",
-        "risk_state": payload.get("risk_state") or payload.get("adaptive_governor_global_state") or "blocked",
+        "risk_state": payload.get("risk_state") or payload.get("capital_state") or payload.get("adaptive_governor_global_state") or "blocked",
         "allowed": False,
         "reason": reason or "blocked",
         "circuit_breaker": circuit_breaker,
         "open_shadow_count": payload.get("risk_governor_open_trades_count") or 0,
-        "recommended_action": payload.get("adaptive_governor_recommended_next_action") or "NO_TRADE",
+        "recommended_action": payload.get("capital_protection_recommended_action") or payload.get("adaptive_governor_recommended_next_action") or payload.get("strategy_tournament_recommended_action") or "NO_TRADE",
     }
 
 

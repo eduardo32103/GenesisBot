@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
 from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_recent_events, persistent_intelligence_status
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_signal_router import MT5SignalRouter
+from services.mt5.mt5_strategy_tournament import run_strategy_tournament
 
 
 def build_router(memory: MemoryStore | None = None) -> MT5SignalRouter:
@@ -38,6 +40,14 @@ def mt5_persistent_intelligence_status(*, memory: MemoryStore | None = None) -> 
 
 def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = None, limit: int = 10) -> dict[str, Any]:
     return persistent_intelligence_recent_events(limit=limit)
+
+
+def mt5_capital_protection_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return run_capital_protection_governor()
+
+
+def mt5_strategy_tournament_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return run_strategy_tournament()
 
 
 def mt5_ui_summary(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:

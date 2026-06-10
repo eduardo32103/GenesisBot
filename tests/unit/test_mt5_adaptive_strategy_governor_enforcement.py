@@ -134,7 +134,24 @@ class MT5AdaptiveStrategyGovernorEnforcementTests(unittest.TestCase):
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
         }
-        with patch("services.mt5.mt5_paper_exploration.adaptive_governor_enforcement", return_value=blocked):
+        allowed_capital = {
+            "ok": True,
+            "blocked": False,
+            "allowed": True,
+            "decision": "ALLOW_PAPER_REVIEW",
+            "reason": "",
+            "capital_state": "normal",
+            "safe_to_open_new_shadow": True,
+            "paper_exploration_created": False,
+            "shadow_trade_id": "",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        with patch("services.mt5.mt5_paper_exploration.capital_protection_enforcement", return_value=allowed_capital), patch(
+            "services.mt5.mt5_paper_exploration.adaptive_governor_enforcement",
+            return_value=blocked,
+        ):
             result = evaluate_paper_exploration(
                 "BTCUSD",
                 tick={

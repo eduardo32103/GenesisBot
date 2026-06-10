@@ -7,6 +7,7 @@ from typing import Any
 from services.genesis.genesis_brain import GenesisBrain
 from services.genesis.memory_store import MemoryStore
 from services.mt5.mt5_adaptive_strategy_governor import adaptive_governor_enforcement
+from services.mt5.mt5_capital_protection_governor import capital_protection_enforcement
 from services.mt5.mt5_decision_signal_builder import build_actionable_mt5_decision
 from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_order_model import sanitize_payload
@@ -14,6 +15,7 @@ from services.mt5.mt5_paper_defense import MT5PaperDefense
 from services.mt5.mt5_performance import MT5Performance
 from services.mt5.mt5_risk_guard import MT5BridgeConfig
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading
+from services.mt5.mt5_strategy_tournament import strategy_tournament_enforcement
 from services.mt5.mt5_symbol_mapper import MT5SymbolMapper
 
 
@@ -201,6 +203,26 @@ class MT5AutoForward:
             actionable=final_actionable,
             warnings=list(symbol_info.get("warnings") or []),
         )
+        capital_enforcement = capital_protection_enforcement(
+            symbol=raw_symbol,
+            timeframe=str(clean.get("timeframe") or ""),
+            profile=str(decision.get("strategy_profile") or decision.get("profile") or ""),
+            load_persistent=True,
+        )
+        if capital_enforcement.get("blocked"):
+            final_decision = "NO_TRADE"
+            final_actionable = False
+            decision.update(
+                _governor_decision_block(
+                    reason=capital_enforcement.get("reason") or "capital_protection:blocked",
+                    extra={
+                        "capital_protection": capital_enforcement,
+                        "capital_protection_blocked": True,
+                        "capital_protection_reason": capital_enforcement.get("reason") or "",
+                        "capital_state": capital_enforcement.get("capital_state") or "",
+                    },
+                )
+            )
         adaptive_enforcement = adaptive_governor_enforcement(
             symbol=raw_symbol,
             timeframe=str(clean.get("timeframe") or ""),
@@ -208,7 +230,7 @@ class MT5AutoForward:
             open_trades=self.shadow.open_trades(),
             load_shadow_snapshot=False,
         )
-        if adaptive_enforcement.get("blocked"):
+        if not capital_enforcement.get("blocked") and adaptive_enforcement.get("blocked"):
             final_decision = "NO_TRADE"
             final_actionable = False
             decision.update(
@@ -236,6 +258,28 @@ class MT5AutoForward:
                     "order_policy": "journal_only_no_broker",
                 }
             )
+        tournament_enforcement = strategy_tournament_enforcement(
+            symbol=raw_symbol,
+            timeframe=str(clean.get("timeframe") or ""),
+            profile=str(decision.get("strategy_profile") or decision.get("profile") or ""),
+            load_shadow_snapshot=False,
+            load_persistent=True,
+            load_rotation=False,
+        )
+        if not capital_enforcement.get("blocked") and not adaptive_enforcement.get("blocked") and tournament_enforcement.get("blocked"):
+            final_decision = "NO_TRADE"
+            final_actionable = False
+            decision.update(
+                _governor_decision_block(
+                    reason=tournament_enforcement.get("reason") or "strategy_tournament:blocked",
+                    extra={
+                        "strategy_tournament": tournament_enforcement,
+                        "strategy_tournament_blocked": True,
+                        "strategy_tournament_reason": tournament_enforcement.get("reason") or "",
+                    },
+                )
+            )
+        block_reasons = _block_reasons(decision.get("reason") or block_reason or reason, context=context, has_open_trade=bool(open_trades_before), market_scores=market_scores)
         logging.getLogger("genesis.mt5").info(
             "MT5_AUTO_FORWARD_EVAL symbol=%s decision=%s actionable=%s reason=%s",
             raw_symbol,
@@ -276,14 +320,27 @@ class MT5AutoForward:
         else:
             self.shadow.record_no_trade_signal({**decision, "price": last})
             logging.getLogger("genesis.mt5").info("MT5_AUTO_FORWARD_BLOCKED symbol=%s reason=%s", raw_symbol, decision["reason"])
-            exploration = self._maybe_create_exploration_trade(
-                symbol=raw_symbol,
-                tick=clean,
-                symbol_info=symbol_info,
-                context=context,
-                market_scores=market_scores,
-                strict_reason=decision["reason"],
-            )
+            if decision.get("capital_protection_blocked") or decision.get("adaptive_governor_blocked") or decision.get("strategy_tournament_blocked"):
+                exploration = {
+                    "created": False,
+                    "enabled": self.config.paper_exploration_enabled,
+                    "reason": decision["reason"],
+                    "shadow_trade_id": "",
+                    "candidate_activated": False,
+                    "paper_forward_onboarding_started": False,
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                }
+            else:
+                exploration = self._maybe_create_exploration_trade(
+                    symbol=raw_symbol,
+                    tick=clean,
+                    symbol_info=symbol_info,
+                    context=context,
+                    market_scores=market_scores,
+                    strict_reason=decision["reason"],
+                )
 
         self._record_no_trade_evaluation(
             symbol=raw_symbol,
@@ -514,6 +571,27 @@ class MT5AutoForward:
                 "decision": built,
                 "paper_caution_filter": caution_filter,
             }
+        capital_enforcement = capital_protection_enforcement(
+            symbol=symbol,
+            timeframe=str(tick.get("timeframe") or "H1").upper(),
+            profile="BTCUSD_PAPER_EXPLORATION_V1",
+            load_persistent=True,
+        )
+        if capital_enforcement.get("blocked"):
+            return {
+                "created": False,
+                "enabled": True,
+                "reason": capital_enforcement.get("reason") or "capital_protection:blocked",
+                "decision": built,
+                "shadow_trade_id": "",
+                "capital_protection": capital_enforcement,
+                "capital_protection_blocked": True,
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
         adaptive_enforcement = adaptive_governor_enforcement(
             symbol=symbol,
             timeframe=str(tick.get("timeframe") or "H1").upper(),
@@ -530,6 +608,29 @@ class MT5AutoForward:
                 "shadow_trade_id": "",
                 "adaptive_governor": adaptive_enforcement,
                 "adaptive_governor_blocked": True,
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        tournament_enforcement = strategy_tournament_enforcement(
+            symbol=symbol,
+            timeframe=str(tick.get("timeframe") or "H1").upper(),
+            profile="BTCUSD_PAPER_EXPLORATION_V1",
+            load_shadow_snapshot=False,
+            load_persistent=True,
+            load_rotation=False,
+        )
+        if tournament_enforcement.get("blocked"):
+            return {
+                "created": False,
+                "enabled": True,
+                "reason": tournament_enforcement.get("reason") or "strategy_tournament:blocked",
+                "decision": built,
+                "shadow_trade_id": "",
+                "strategy_tournament": tournament_enforcement,
+                "strategy_tournament_blocked": True,
                 "candidate_activated": False,
                 "paper_forward_onboarding_started": False,
                 "broker_touched": False,
@@ -786,6 +887,28 @@ def _blocked(reason: str) -> dict[str, Any]:
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
+    }
+
+
+def _governor_decision_block(*, reason: str, extra: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "decision": "NO_TRADE",
+        "action": "NO_TRADE",
+        "actionable": False,
+        "reason": reason,
+        "entry": None,
+        "stop_loss": None,
+        "take_profit": None,
+        "risk_pct": 0.0,
+        "risk_reward": 0.0,
+        "paper_exploration_created": False,
+        "shadow_trade_id": "",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+        **extra,
     }
 
 

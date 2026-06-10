@@ -13,6 +13,7 @@ from services.mt5.mt5_bridge import (
     mt5_backtest_optimize,
     mt5_backtest_run,
     mt5_bars,
+    mt5_capital_protection_status,
     mt5_config,
     mt5_debug_storage,
     mt5_decision,
@@ -50,6 +51,7 @@ from services.mt5.mt5_bridge import (
     mt5_shadow_trades_close_expired,
     mt5_shadow_trades_open,
     mt5_status,
+    mt5_strategy_tournament_status,
     mt5_strategy_profiles,
     mt5_tick,
     mt5_ui_summary,
@@ -102,6 +104,14 @@ def get_genesis_mt5_persistent_intelligence_status() -> dict[str, Any]:
 
 def get_genesis_mt5_persistent_intelligence_recent_events(limit: int = 10) -> dict[str, Any]:
     return mt5_persistent_intelligence_recent_events(limit=limit)
+
+
+def get_genesis_mt5_capital_protection_status() -> dict[str, Any]:
+    return mt5_capital_protection_status()
+
+
+def get_genesis_mt5_strategy_tournament_status() -> dict[str, Any]:
+    return mt5_strategy_tournament_status()
 
 
 def get_genesis_mt5_ui_summary(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
