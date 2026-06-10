@@ -34,6 +34,8 @@ class SupabaseRestClient:
         self.url = str(url or "").rstrip("/")
         self.key = str(key or "")
         self.timeout_seconds = float(timeout_seconds or 5.0)
+        self.url_configured = bool(self.url)
+        self.key_configured = bool(self.key)
 
     @classmethod
     def from_env(cls) -> "SupabaseRestClient":
@@ -120,46 +122,91 @@ class MT5PersistentIntelligenceStore:
         return self.healthcheck(write_test_event=False)
 
     def healthcheck(self, *, write_test_event: bool = False) -> dict[str, Any]:
-        db_available = bool(getattr(self.client, "available", False))
+        env_status = _env_status(self.client)
+        client_available = bool(getattr(self.client, "available", False))
         table_status: dict[str, bool] = {}
-        if db_available:
+        table_errors: dict[str, str] = {}
+        if client_available:
             for table in REQUIRED_TABLES:
                 try:
                     table_status[table] = bool(self.client.table_ready(table))
-                except Exception:
+                except Exception as exc:
                     table_status[table] = False
+                    table_errors[table] = _safe_error(exc)
         else:
             table_status = {table: False for table in REQUIRED_TABLES}
         tables_ready = all(table_status.values()) if table_status else False
+        db_available = client_available and not _connection_unavailable(table_errors)
+        permission_checks = {
+            "select": bool(db_available and any(table_status.values())),
+            "insert": False,
+            "upsert": False,
+            "write_test_event_required": True,
+        }
         test_write = {"attempted": False, "ok": False}
         if write_test_event and db_available and tables_ready:
-            result = self.record_research_lesson(
+            insert_result = self.record_decision_event(
                 {
-                    "family": "persistent_intelligence_healthcheck",
-                    "lesson_type": "healthcheck",
-                    "summary": "Safe write probe from persistent intelligence healthcheck.",
-                    "recommended_next_research_phase": "none",
+                    "symbol": "HEALTHCHECK",
+                    "timeframe": "NA",
+                    "decision": "NO_TRADE",
+                    "reason": "persistent_intelligence_healthcheck",
+                    "profile": "persistent_intelligence_healthcheck",
+                    "risk_state": "diagnostic",
+                    "risk_allowed": False,
+                    "risk_reason": "healthcheck_only",
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
                 }
             )
-            test_write = {"attempted": True, "ok": bool(result.get("ok"))}
-        recommendation = "persistent_intelligence_ready" if db_available and tables_ready else "configure_supabase_or_apply_schema"
+            upsert_result = self.upsert_profile_state(
+                {
+                    "symbol": "HEALTHCHECK",
+                    "timeframe": "NA",
+                    "profile": "persistent_intelligence_healthcheck",
+                    "status": "diagnostic",
+                    "active": False,
+                    "applies_to_paper_shadow": False,
+                    "applies_to_real_trading": False,
+                    "registry_source": "persistent_intelligence_healthcheck",
+                }
+            )
+            permission_checks["insert"] = bool(insert_result.get("ok"))
+            permission_checks["upsert"] = bool(upsert_result.get("ok"))
+            test_write = {
+                "attempted": True,
+                "ok": bool(insert_result.get("ok") and upsert_result.get("ok")),
+                "decision_event": insert_result,
+                "profile_state_upsert": upsert_result,
+            }
+        recommendation = _healthcheck_recommendation(
+            env_status=env_status,
+            db_available=db_available,
+            tables_ready=tables_ready,
+            write_test_event=write_test_event,
+            permission_checks=permission_checks,
+        )
         return {
             "ok": True,
             "status": "persistent_intelligence_status_ready",
             "store_version": STORE_VERSION,
             "schema_version": PERSISTENT_INTELLIGENCE_SCHEMA_VERSION,
-            "db_available": db_available and tables_ready,
-            "db_degraded": not (db_available and tables_ready),
+            "env": env_status,
+            "db_available": db_available,
+            "db_degraded": not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))),
             "tables_ready": tables_ready,
             "table_status": table_status,
+            "table_errors": table_errors,
+            "permission_checks": permission_checks,
             "last_write_at": _LAST_WRITE_AT,
             "failed_writes": _FAILED_WRITES,
             "queued_writes": _QUEUED_WRITES,
-            "estimated_storage_mode": "supabase_rest" if db_available else "local_runtime_only",
+            "estimated_storage_mode": "supabase_rest" if db_available and tables_ready else "local_runtime_only",
             "test_write": test_write,
             "recommendation": recommendation,
             "critical_persistence_available": db_available and tables_ready,
-            "decision": "NO_TRADE" if not (db_available and tables_ready) else "NO_TRADE",
+            "decision": "NO_TRADE",
             "reason": "persistent_intelligence_db_degraded" if not (db_available and tables_ready) else "persistent_intelligence_ready",
             "schema": persistent_schema_status(),
             "secrets_printed": False,
@@ -394,6 +441,14 @@ class MT5PersistentIntelligenceStore:
             "status": "persistent_intelligence_compaction_ready",
             "dry_run": bool(dry_run),
             "older_than_days": int(older_than_days or 30),
+            "retention_plan": {
+                "decision_events": "keep_recent_detail_and_summarize_historical_events",
+                "risk_events": "keep_critical_events_complete",
+                "shadow_trades": "keep_all_compact_trade_rows",
+                "research_lessons": "keep_all",
+                "raw_ticks": "do_not_store",
+                "ohlc_csv": "do_not_store",
+            },
             "rows_scanned": len(rows),
             "rows_summarized": len(rows),
             "rows_deleted": 0,
@@ -456,6 +511,60 @@ def compact_old_decision_events(
         dry_run=dry_run,
         confirm_delete_detail=confirm_delete_detail,
     )
+
+
+def _env_status(client: Any) -> dict[str, Any]:
+    url_configured = bool(getattr(client, "url_configured", False))
+    key_configured = bool(getattr(client, "key_configured", False))
+    if not hasattr(client, "url_configured") and getattr(client, "available", False):
+        url_configured = True
+    if not hasattr(client, "key_configured") and getattr(client, "available", False):
+        key_configured = True
+    return {
+        "supabase_url_present": url_configured,
+        "supabase_secret_key_present": key_configured,
+        "supabase_env_ready": bool(url_configured and key_configured),
+        "secret_values_printed": False,
+    }
+
+
+def _healthcheck_recommendation(
+    *,
+    env_status: dict[str, Any],
+    db_available: bool,
+    tables_ready: bool,
+    write_test_event: bool,
+    permission_checks: dict[str, Any],
+) -> str:
+    if not env_status.get("supabase_env_ready"):
+        return "configure_supabase_env"
+    if not db_available:
+        return "verify_supabase_connection"
+    if not tables_ready:
+        return "apply_schema_sql"
+    if write_test_event and not (permission_checks.get("insert") and permission_checks.get("upsert")):
+        return "verify_supabase_insert_upsert_permissions"
+    return "persistent_intelligence_ready"
+
+
+def _connection_unavailable(table_errors: dict[str, str]) -> bool:
+    if not table_errors:
+        return False
+    text = " ".join(table_errors.values()).casefold()
+    connection_markers = (
+        "timed out",
+        "timeout",
+        "connection refused",
+        "name or service not known",
+        "nodename nor servname",
+        "network is unreachable",
+        "temporary failure in name resolution",
+        "401",
+        "unauthorized",
+        "invalid api key",
+        "invalid jwt",
+    )
+    return any(marker in text for marker in connection_markers)
 
 
 def _write_ok(table: str, started: float) -> dict[str, Any]:

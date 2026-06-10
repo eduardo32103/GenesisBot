@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import json
 
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
+from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES
 from services.mt5.mt5_persistent_intelligence_store import (
     MT5PersistentIntelligenceStore,
     SupabaseRestClient,
@@ -20,13 +22,38 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["db_available"])
         self.assertTrue(result["db_degraded"])
         self.assertFalse(result["tables_ready"])
+        self.assertEqual(result["recommendation"], "configure_supabase_env")
         self.assertEqual(result["decision"], "NO_TRADE")
         self.assertEqual(result["reason"], "persistent_intelligence_db_degraded")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
-    def test_healthcheck_checks_tables_and_can_write_safe_test_lesson(self) -> None:
+    def test_missing_tables_degrades_safely_with_apply_schema_recommendation(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+
+        result = store.healthcheck()
+
+        self.assertTrue(result["db_available"])
+        self.assertTrue(result["db_degraded"])
+        self.assertFalse(result["tables_ready"])
+        self.assertEqual(result["recommendation"], "apply_schema_sql")
+        self.assertTrue(result["env"]["supabase_env_ready"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_schema_sql_contains_all_tables_indexes_and_no_destructive_ops(self) -> None:
+        lowered = CREATE_SCHEMA_SQL.casefold()
+
+        for table in REQUIRED_TABLES:
+            self.assertIn(f"create table if not exists public.{table}", lowered)
+        self.assertIn("create index if not exists", lowered)
+        self.assertIn("enable row level security", lowered)
+        for forbidden in ("drop table", "truncate", "delete from"):
+            self.assertNotIn(forbidden, lowered)
+
+    def test_healthcheck_checks_tables_and_can_write_safe_test_event(self) -> None:
         client = _FakeClient()
         store = MT5PersistentIntelligenceStore(client=client)
 
@@ -37,10 +64,27 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertTrue(result["tables_ready"])
         self.assertTrue(result["test_write"]["attempted"])
         self.assertTrue(result["test_write"]["ok"])
-        self.assertEqual(client.inserted[-1]["table"], "mt5_research_lessons")
+        self.assertTrue(result["permission_checks"]["insert"])
+        self.assertTrue(result["permission_checks"]["upsert"])
+        self.assertEqual(client.inserted[-1]["table"], "mt5_decision_events")
+        inserted = client.inserted[-1]["payload"]
+        self.assertEqual(inserted["symbol"], "HEALTHCHECK")
+        self.assertEqual(inserted["timeframe"], "NA")
+        self.assertFalse(inserted["broker_touched"])
+        self.assertFalse(inserted["order_executed"])
+        self.assertEqual(inserted["order_policy"], "journal_only_no_broker")
+        self.assertEqual(client.upserted[-1]["table"], "mt5_profile_state")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_healthcheck_does_not_print_secret_values(self) -> None:
+        result = MT5PersistentIntelligenceStore(client=_MissingTablesClient(secret="SUPERSECRET")).healthcheck()
+        serialized = json.dumps(result, sort_keys=True)
+
+        self.assertNotIn("SUPERSECRET", serialized)
+        self.assertFalse(result["secrets_printed"])
+        self.assertFalse(result["env"]["secret_values_printed"])
 
     def test_upsert_profile_state_forces_real_trading_false(self) -> None:
         client = _FakeClient()
@@ -127,6 +171,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(result["rows_summarized"], 3)
         self.assertEqual(result["rows_deleted"], 0)
         self.assertFalse(result["critical_data_deleted"])
+        self.assertIn("decision_events", result["retention_plan"])
         self.assertEqual(result["summary"]["by_decision"]["NO_TRADE"], 3)
         self.assertEqual(len(client.inserted), 0)
         self.assertFalse(result["broker_touched"])
@@ -150,6 +195,8 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
 
 class _FakeClient:
     available = True
+    url_configured = True
+    key_configured = True
 
     def __init__(self, *, selected: dict[str, list[dict[str, object]]] | None = None) -> None:
         self.selected = selected or {}
@@ -171,6 +218,27 @@ class _FakeClient:
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
         return [dict(row) for row in self.selected.get(table, [])]
+
+
+class _MissingTablesClient:
+    available = True
+    url_configured = True
+    key_configured = True
+
+    def __init__(self, *, secret: str = "") -> None:
+        self.secret = secret
+
+    def table_ready(self, table: str) -> bool:
+        raise RuntimeError("relation does not exist")
+
+    def insert(self, table: str, payload: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("relation does not exist")
+
+    def upsert(self, table: str, payload: dict[str, object], *, on_conflict: tuple[str, ...]) -> dict[str, object]:
+        raise RuntimeError("relation does not exist")
+
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        raise RuntimeError("relation does not exist")
 
 
 if __name__ == "__main__":

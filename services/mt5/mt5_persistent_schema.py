@@ -30,6 +30,8 @@ TABLE_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 CREATE_SCHEMA_SQL = r"""
+create extension if not exists pgcrypto with schema extensions;
+
 create table if not exists public.mt5_profile_state (
   id uuid primary key default gen_random_uuid(),
   symbol text not null,
@@ -205,6 +207,37 @@ alter table public.mt5_research_rejection_registry enable row level security;
 alter table public.mt5_candidate_rotation_runs enable row level security;
 alter table public.mt5_adaptive_governor_state enable row level security;
 alter table public.mt5_research_lessons enable row level security;
+
+create index if not exists idx_mt5_profile_state_symbol_timeframe_profile
+  on public.mt5_profile_state(symbol, timeframe, profile);
+create index if not exists idx_mt5_profile_performance_symbol_timeframe_profile
+  on public.mt5_profile_performance(symbol, timeframe, profile);
+create index if not exists idx_mt5_shadow_trades_symbol_timeframe_profile
+  on public.mt5_shadow_trades(symbol, timeframe, profile);
+create index if not exists idx_mt5_shadow_trades_opened_at
+  on public.mt5_shadow_trades(opened_at);
+create index if not exists idx_mt5_decision_events_symbol_timeframe_profile
+  on public.mt5_decision_events(symbol, timeframe, profile);
+create index if not exists idx_mt5_decision_events_timestamp
+  on public.mt5_decision_events(timestamp);
+create index if not exists idx_mt5_risk_events_symbol_timeframe
+  on public.mt5_risk_events(symbol, timeframe);
+create index if not exists idx_mt5_risk_events_timestamp
+  on public.mt5_risk_events(timestamp);
+create index if not exists idx_mt5_strategy_registry_symbol_timeframe_profile
+  on public.mt5_strategy_registry(symbol, timeframe, profile);
+create index if not exists idx_mt5_degradation_registry_symbol_timeframe_profile
+  on public.mt5_degradation_registry(symbol, timeframe, profile);
+create index if not exists idx_mt5_research_rejection_registry_symbol_timeframe
+  on public.mt5_research_rejection_registry(symbol, timeframe);
+create index if not exists idx_mt5_candidate_rotation_runs_timestamp
+  on public.mt5_candidate_rotation_runs(timestamp);
+create index if not exists idx_mt5_adaptive_governor_state_timestamp
+  on public.mt5_adaptive_governor_state(timestamp);
+create index if not exists idx_mt5_research_lessons_symbol_timeframe
+  on public.mt5_research_lessons(symbol, timeframe);
+create index if not exists idx_mt5_research_lessons_timestamp
+  on public.mt5_research_lessons(timestamp);
 """
 
 

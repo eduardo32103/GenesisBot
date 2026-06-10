@@ -29,6 +29,10 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"db_available={result.get('db_available')}",
         f"db_degraded={result.get('db_degraded')}",
         f"tables_ready={result.get('tables_ready')}",
+        f"supabase_env_ready={((result.get('env') if isinstance(result.get('env'), dict) else {}) or {}).get('supabase_env_ready')}",
+        f"permission_select={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('select')}",
+        f"permission_insert={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('insert')}",
+        f"permission_upsert={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('upsert')}",
         f"last_write_at={result.get('last_write_at')}",
         f"failed_writes={result.get('failed_writes')}",
         f"queued_writes={result.get('queued_writes')}",
@@ -51,7 +55,7 @@ def _human_summary(result: dict[str, Any]) -> str:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check Supabase persistent intelligence readiness without touching broker.")
-    parser.add_argument("--write-test-event", action="store_true", help="Write one safe research lesson if all tables are ready.")
+    parser.add_argument("--write-test-event", action="store_true", help="Write safe HEALTHCHECK rows if all tables are ready.")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 

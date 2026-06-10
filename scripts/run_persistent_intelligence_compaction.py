@@ -41,6 +41,7 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"broker_touched={result.get('broker_touched')}",
             f"order_executed={result.get('order_executed')}",
             f"order_policy={result.get('order_policy')}",
+            f"retention_plan={json.dumps(result.get('retention_plan') or {}, ensure_ascii=True, sort_keys=True)}",
             f"summary={json.dumps(result.get('summary') or {}, ensure_ascii=True, sort_keys=True)}",
         ]
     )
