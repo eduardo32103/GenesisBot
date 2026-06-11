@@ -19,6 +19,10 @@ class MT5ShadowTradeHygieneTests(unittest.TestCase):
         )
 
         self.assertEqual(result["open_shadow_trades"], 4)
+        self.assertEqual(result["open_shadow_trades_total"], 4)
+        self.assertEqual(result["by_symbol"]["BTCUSD"], 1)
+        self.assertEqual(result["by_timeframe"]["M30"], 2)
+        self.assertEqual(result["max_profile_exposure"], 1)
         self.assertFalse(result["safe_to_open_new_shadow"])
         self.assertEqual(result["recommended_cleanup_action"], "review_open_shadow_over_limit_before_new_entries")
         self.assertFalse(result["closed_shadow_trades"])
@@ -37,11 +41,14 @@ class MT5ShadowTradeHygieneTests(unittest.TestCase):
             ],
             max_open_shadow_trades=5,
             max_profile_open_shadows=1,
+            stale_hours=1000000,
             load_shadow_snapshot=False,
         )
 
         self.assertTrue(result["safe_to_open_new_shadow"])
         self.assertEqual(len(result["duplicate_shadow_clusters"]), 1)
+        self.assertEqual(len(result["duplicates"]), 1)
+        self.assertEqual(len(result["safe_to_close_paper_only"]), 1)
         self.assertEqual(result["duplicate_shadow_clusters"][0]["open_count"], 2)
         self.assertEqual(len(result["profiles_with_too_many_open_shadows"]), 1)
         self.assertEqual(result["profiles_with_too_many_open_shadows"][0]["open_count"], 3)
@@ -58,6 +65,8 @@ class MT5ShadowTradeHygieneTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result["stale_shadow_trades"]), 1)
+        self.assertEqual(len(result["stale_trades"]), 1)
+        self.assertEqual(len(result["safe_to_close_paper_only"]), 1)
         self.assertEqual(result["stale_shadow_trades"][0]["shadow_trade_id"], "shadow-old")
         self.assertEqual(result["recommended_cleanup_action"], "review_stale_shadow_trades")
         self.assertFalse(result["closed_shadow_trades"])

@@ -435,11 +435,34 @@ class MT5PersistentIntelligenceStore:
             **_safety(),
         }
 
+    def open_shadow_trades(self, *, limit: int = 500) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 500), 500))
+        result = self._safe_select(
+            "mt5_shadow_trades",
+            params={
+                "select": "shadow_trade_id,symbol,timeframe,profile,side,entry_price,exit_price,pnl,r_multiple,status,opened_at,closed_at,exit_reason,broker_touched,order_executed,order_policy",
+                "status": "eq.open",
+                "closed_at": "is.null",
+                "order": "opened_at.desc",
+                "limit": str(safe_limit),
+            },
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "status": "persistent_intelligence_open_shadow_trades_ready",
+            "provider": _client_provider(self.client),
+            "open_trades": _safety_rows(result.get("rows") or []),
+            "db_degraded": bool(result.get("db_degraded")),
+            "reason": result.get("reason") or "",
+            **_backpressure_status(self.client),
+            **_safety(),
+        }
+
     def healthcheck(self, *, write_test_event: bool = False) -> dict[str, Any]:
         env_status = _env_status(self.client)
         client_available = bool(getattr(self.client, "available", False))
         backpressure = _backpressure_status(self.client)
-        backpressure_degraded = bool(backpressure.get("backoff_active") or backpressure.get("last_db_error_category") == "max_connections")
+        backpressure_degraded = bool(backpressure.get("backoff_active"))
         table_status: dict[str, bool] = {}
         table_errors: dict[str, str] = {}
         schema_check_performed = False
@@ -482,6 +505,7 @@ class MT5PersistentIntelligenceStore:
         db_available = client_available and not backpressure_degraded and not _connection_unavailable(table_errors)
         if use_schema_cache:
             db_available = bool(_LAST_SCHEMA_DB_AVAILABLE and client_available and not backpressure_degraded)
+        current_probe_ok = bool(schema_check_performed and db_available and not _connection_unavailable(table_errors))
         missing_tables = [table for table, ready in table_status.items() if not ready]
         schema_missing_confirmed = bool(schema_check_performed and not backpressure_degraded and not _connection_unavailable(table_errors))
         if missing_tables and schema_missing_confirmed and _schema_missing_write_freeze_enabled():
@@ -548,6 +572,13 @@ class MT5PersistentIntelligenceStore:
         schema_freeze = _schema_missing_write_freeze_status()
         schema_cooldown = _schema_check_cooldown_status()
         db_degraded = bool(backpressure_degraded or not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))))
+        db_health_source = _db_health_source(
+            client_available=client_available,
+            current_probe_ok=current_probe_ok,
+            use_schema_cache=use_schema_cache,
+            backpressure=backpressure,
+            db_degraded=db_degraded,
+        )
         return {
             "ok": True,
             "status": "persistent_intelligence_status_ready",
@@ -558,6 +589,8 @@ class MT5PersistentIntelligenceStore:
             "db_available": db_available,
             "db_degraded": db_degraded,
             "tables_ready": tables_ready,
+            "current_probe_ok": current_probe_ok,
+            "db_health_source": db_health_source,
             "table_count": len(REQUIRED_TABLES),
             "missing_tables": missing_tables,
             "table_status": table_status,
@@ -1116,6 +1149,25 @@ def _healthcheck_recommendation(
     if write_test_event and not (permission_checks.get("insert") and permission_checks.get("upsert")):
         return "verify_supabase_insert_upsert_permissions"
     return "persistent_intelligence_ready"
+
+
+def _db_health_source(
+    *,
+    client_available: bool,
+    current_probe_ok: bool,
+    use_schema_cache: bool,
+    backpressure: dict[str, Any],
+    db_degraded: bool,
+) -> str:
+    if current_probe_ok and not db_degraded:
+        return "current_probe"
+    if use_schema_cache:
+        return "schema_cache"
+    if backpressure.get("backoff_active"):
+        return "active_backpressure"
+    if not client_available:
+        return "env_or_client_unavailable"
+    return "current_probe_failed"
 
 
 def _client_provider(client: Any) -> str:

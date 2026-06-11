@@ -838,6 +838,34 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_stale_max_connections_error_does_not_block_current_green_probe(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+        backpressure = persistent_write_backpressure()
+        backpressure.record_failure(
+            "mt5_decision_events",
+            {"symbol": "BTCUSD"},
+            critical=False,
+            reason="too many clients already",
+            duration_ms=1,
+        )
+        backpressure._backoff_until = 0.0  # simulate expired backoff while preserving diagnostic history
+
+        result = store.healthcheck(write_test_event=False)
+
+        self.assertTrue(result["current_probe_ok"])
+        self.assertEqual(result["db_health_source"], "current_probe")
+        self.assertEqual(result["last_db_error_category"], "max_connections")
+        self.assertIn("last_db_error_at", result)
+        self.assertIn("last_db_error_age_seconds", result)
+        self.assertTrue(result["db_available"])
+        self.assertFalse(result["db_degraded"])
+        self.assertTrue(result["tables_ready"])
+        self.assertGreater(len(client.checked_tables), 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_recent_events_short_circuits_during_schema_missing_freeze(self) -> None:
         client = _CountingMissingTablesClient()
         store = MT5PersistentIntelligenceStore(client=client)

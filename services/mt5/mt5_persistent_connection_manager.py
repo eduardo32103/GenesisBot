@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 
@@ -45,6 +46,8 @@ class PersistentWriteBackpressure:
         self.suppressed_duplicate_events = 0
         self.last_db_error_category = ""
         self.last_db_error = ""
+        self.last_db_error_at = ""
+        self._last_db_error_monotonic = 0.0
         self._backoff_until = 0.0
         self._backoff_seconds = 0.0
 
@@ -68,6 +71,8 @@ class PersistentWriteBackpressure:
             self.suppressed_duplicate_events = 0
             self.last_db_error_category = ""
             self.last_db_error = ""
+            self.last_db_error_at = ""
+            self._last_db_error_monotonic = 0.0
             self._backoff_until = 0.0
             self._backoff_seconds = 0.0
         self._write_slots = threading.BoundedSemaphore(self.pool_max_size)
@@ -145,8 +150,7 @@ class PersistentWriteBackpressure:
             return result
         with self._lock:
             self.failed_writes += 1
-            self.last_db_error_category = category
-            self.last_db_error = reason[:500]
+            self._record_error_locked(category, reason)
             if category in {"max_connections", "pool_exhausted"}:
                 self._backoff_seconds = min(60.0, max(2.0, self._backoff_seconds * 2.0 or 2.0))
                 self._backoff_until = time.monotonic() + self._backoff_seconds
@@ -158,8 +162,7 @@ class PersistentWriteBackpressure:
         with self._lock:
             cleared = len(self._queue)
             self._queue.clear()
-            self.last_db_error_category = "missing_schema"
-            self.last_db_error = str(reason or "schema_missing_write_freeze")[:500]
+            self._record_error_locked("missing_schema", str(reason or "schema_missing_write_freeze"))
             self._backoff_until = 0.0
             self._backoff_seconds = 0.0
             queue_depth = len(self._queue)
@@ -175,8 +178,7 @@ class PersistentWriteBackpressure:
     def record_schema_missing_freeze(self, table: str, row: dict[str, Any], *, critical: bool) -> dict[str, Any]:
         del row
         with self._lock:
-            self.last_db_error_category = "missing_schema"
-            self.last_db_error = "schema_missing_write_freeze"
+            self._record_error_locked("missing_schema", "schema_missing_write_freeze")
             if not critical:
                 self.dropped_noncritical_writes += 1
             queue_depth = len(self._queue)
@@ -198,6 +200,8 @@ class PersistentWriteBackpressure:
             if self.last_db_error_category == "missing_schema":
                 self.last_db_error_category = ""
                 self.last_db_error = ""
+                self.last_db_error_at = ""
+                self._last_db_error_monotonic = 0.0
 
     def queue_or_drop(
         self,
@@ -209,8 +213,7 @@ class PersistentWriteBackpressure:
         error_category: str,
     ) -> dict[str, Any]:
         with self._lock:
-            self.last_db_error_category = error_category or self.last_db_error_category
-            self.last_db_error = str(reason or "")[:500]
+            self._record_error_locked(error_category or self.last_db_error_category, str(reason or ""))
             if self.queue_max_size <= 0 or len(self._queue) >= self.queue_max_size:
                 if critical:
                     return {
@@ -273,6 +276,8 @@ class PersistentWriteBackpressure:
             dropped = self.dropped_noncritical_writes
             suppressed = self.suppressed_duplicate_events
             category = self.last_db_error_category
+            last_error_at = self.last_db_error_at
+            last_error_age = max(0.0, time.monotonic() - self._last_db_error_monotonic) if self._last_db_error_monotonic else None
             backoff_remaining = max(0.0, self._backoff_until - time.monotonic())
         pool = dict(pool_status or {})
         return {
@@ -287,10 +292,18 @@ class PersistentWriteBackpressure:
             "dropped_noncritical_writes": dropped,
             "suppressed_duplicate_events": suppressed,
             "last_db_error_category": category,
+            "last_db_error_at": last_error_at,
+            "last_db_error_age_seconds": round(last_error_age, 3) if last_error_age is not None else None,
             "backoff_active": backoff_remaining > 0,
             "backoff_remaining_seconds": round(backoff_remaining, 3),
             **_safety(),
         }
+
+    def _record_error_locked(self, category: str, reason: str) -> None:
+        self.last_db_error_category = str(category or "").strip()
+        self.last_db_error = str(reason or "")[:500]
+        self.last_db_error_at = datetime.now(timezone.utc).isoformat()
+        self._last_db_error_monotonic = time.monotonic()
 
     def _is_duplicate(self, table: str, row: dict[str, Any], now: float) -> bool:
         key = _dedupe_key(table, row)
