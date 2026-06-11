@@ -53,6 +53,11 @@ _QUEUED_WRITES = 0
 _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE = False
 _SCHEMA_MISSING_TABLES: list[str] = []
 _SCHEMA_MISSING_REASON = ""
+_LAST_SCHEMA_CHECK_AT = ""
+_LAST_SCHEMA_CHECK_MONOTONIC = 0.0
+_LAST_SCHEMA_TABLE_STATUS: dict[str, bool] = {}
+_LAST_SCHEMA_TABLE_ERRORS: dict[str, str] = {}
+_LAST_SCHEMA_DB_AVAILABLE = False
 
 
 class UnavailableDbClient:
@@ -338,6 +343,26 @@ class MT5PersistentIntelligenceStore:
     def recent_events(self, *, limit: int = 10) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 10), 50))
         backpressure = _backpressure_status(self.client)
+        schema_freeze = _schema_missing_write_freeze_status()
+        schema_cooldown = _schema_check_cooldown_status()
+        if schema_freeze.get("writes_frozen"):
+            return {
+                "ok": True,
+                "status": "persistent_intelligence_recent_events_ready",
+                "provider": _client_provider(self.client),
+                "limit": safe_limit,
+                "recent_decisions": [],
+                "recent_risk_events": [],
+                "recent_shadow_events": [],
+                "recent_research_lessons": [],
+                "db_degraded": True,
+                "reason": "schema_missing_write_freeze",
+                "secrets_printed": False,
+                **schema_freeze,
+                **schema_cooldown,
+                **backpressure,
+                **_safety(),
+            }
         if backpressure.get("backoff_active"):
             return {
                 "ok": True,
@@ -412,7 +437,17 @@ class MT5PersistentIntelligenceStore:
         backpressure_degraded = bool(backpressure.get("backoff_active") or backpressure.get("last_db_error_category") == "max_connections")
         table_status: dict[str, bool] = {}
         table_errors: dict[str, str] = {}
-        if client_available and not backpressure_degraded:
+        use_schema_cache = bool(
+            _schema_missing_write_freeze_status().get("writes_frozen")
+            and _schema_check_cooldown_active()
+            and not write_test_event
+        )
+        if use_schema_cache:
+            table_status = dict(_LAST_SCHEMA_TABLE_STATUS) or {table: False for table in REQUIRED_TABLES}
+            table_errors = dict(_LAST_SCHEMA_TABLE_ERRORS)
+            table_errors.setdefault("schema_check_cooldown", "schema_missing_write_freeze")
+        elif client_available and not backpressure_degraded:
+            _mark_schema_check_started()
             for table in REQUIRED_TABLES:
                 try:
                     table_status[table] = bool(self.client.table_ready(table))
@@ -437,11 +472,15 @@ class MT5PersistentIntelligenceStore:
             table_status.setdefault(table, False)
         tables_ready = all(table_status.values()) if table_status else False
         db_available = client_available and not backpressure_degraded and not _connection_unavailable(table_errors)
+        if use_schema_cache:
+            db_available = bool(_LAST_SCHEMA_DB_AVAILABLE and client_available and not backpressure_degraded)
         missing_tables = [table for table, ready in table_status.items() if not ready]
         if missing_tables and _schema_missing_write_freeze_enabled():
             _set_schema_missing_write_freeze(missing_tables, "missing_persistent_intelligence_tables")
         elif db_available and not missing_tables:
             _clear_schema_missing_write_freeze()
+        if not use_schema_cache:
+            _cache_schema_check(table_status, table_errors, db_available)
         permission_checks = {
             "select": bool(db_available and any(table_status.values())),
             "insert": False,
@@ -496,6 +535,7 @@ class MT5PersistentIntelligenceStore:
             recommendation = "backoff_persistent_db_writes"
         backpressure = _backpressure_status(self.client)
         schema_freeze = _schema_missing_write_freeze_status()
+        schema_cooldown = _schema_check_cooldown_status()
         db_degraded = bool(backpressure_degraded or not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))))
         return {
             "ok": True,
@@ -514,6 +554,7 @@ class MT5PersistentIntelligenceStore:
             "permission_checks": permission_checks,
             "last_write_at": _LAST_WRITE_AT,
             **schema_freeze,
+            **schema_cooldown,
             **backpressure,
             "estimated_storage_mode": _client_provider(self.client) if db_available and tables_ready else "local_runtime_only",
             "test_write": test_write,
@@ -780,7 +821,7 @@ class MT5PersistentIntelligenceStore:
 
     def _safe_insert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
-        if _schema_missing_write_freeze_status().get("schema_missing_write_freeze"):
+        if _schema_missing_write_freeze_status().get("writes_frozen"):
             return persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical_write)
         gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
         if gate.get("short_circuit"):
@@ -798,7 +839,7 @@ class MT5PersistentIntelligenceStore:
 
     def _safe_upsert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
-        if _schema_missing_write_freeze_status().get("schema_missing_write_freeze"):
+        if _schema_missing_write_freeze_status().get("writes_frozen"):
             return persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical_write)
         gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
         if gate.get("short_circuit"):
@@ -940,10 +981,16 @@ def persist_candidate_rotation_run(
 
 
 def _reset_persistent_intelligence_counters_for_tests() -> None:
-    global _LAST_WRITE_AT, _FAILED_WRITES, _QUEUED_WRITES
+    global _LAST_WRITE_AT, _FAILED_WRITES, _QUEUED_WRITES, _LAST_SCHEMA_CHECK_AT, _LAST_SCHEMA_CHECK_MONOTONIC
+    global _LAST_SCHEMA_TABLE_STATUS, _LAST_SCHEMA_TABLE_ERRORS, _LAST_SCHEMA_DB_AVAILABLE
     _LAST_WRITE_AT = ""
     _FAILED_WRITES = 0
     _QUEUED_WRITES = 0
+    _LAST_SCHEMA_CHECK_AT = ""
+    _LAST_SCHEMA_CHECK_MONOTONIC = 0.0
+    _LAST_SCHEMA_TABLE_STATUS = {}
+    _LAST_SCHEMA_TABLE_ERRORS = {}
+    _LAST_SCHEMA_DB_AVAILABLE = False
     _clear_schema_missing_write_freeze()
     reset_persistent_connection_state_for_tests()
 
@@ -1191,6 +1238,17 @@ def _schema_missing_write_freeze_enabled() -> bool:
     return str(os.getenv("PERSISTENT_DB_SCHEMA_MISSING_FREEZE") or "true").casefold().strip() not in {"0", "false", "no", "off"}
 
 
+def _disable_writes_when_schema_missing_enabled() -> bool:
+    return str(os.getenv("PERSISTENT_DB_DISABLE_WRITES_WHEN_SCHEMA_MISSING") or "true").casefold().strip() not in {"0", "false", "no", "off"}
+
+
+def _schema_check_cooldown_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("PERSISTENT_DB_SCHEMA_CHECK_COOLDOWN_SEC") or 60.0))
+    except (TypeError, ValueError):
+        return 60.0
+
+
 def _set_schema_missing_write_freeze(missing_tables: list[str], reason: str) -> None:
     global _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE, _SCHEMA_MISSING_TABLES, _SCHEMA_MISSING_REASON
     if not _schema_missing_write_freeze_enabled():
@@ -1209,10 +1267,42 @@ def _clear_schema_missing_write_freeze() -> None:
 
 def _schema_missing_write_freeze_status() -> dict[str, Any]:
     active = bool(_schema_missing_write_freeze_enabled() and _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE)
+    writes_frozen = bool(active and _disable_writes_when_schema_missing_enabled())
     return {
         "schema_missing_write_freeze": active,
+        "writes_frozen": writes_frozen,
         "schema_missing_tables": list(_SCHEMA_MISSING_TABLES) if active else [],
         "schema_missing_reason": _SCHEMA_MISSING_REASON if active else "",
+        **_safety(),
+    }
+
+
+def _mark_schema_check_started() -> None:
+    global _LAST_SCHEMA_CHECK_AT, _LAST_SCHEMA_CHECK_MONOTONIC
+    _LAST_SCHEMA_CHECK_AT = _now()
+    _LAST_SCHEMA_CHECK_MONOTONIC = time.monotonic()
+
+
+def _cache_schema_check(table_status: dict[str, bool], table_errors: dict[str, str], db_available: bool) -> None:
+    global _LAST_SCHEMA_TABLE_STATUS, _LAST_SCHEMA_TABLE_ERRORS, _LAST_SCHEMA_DB_AVAILABLE
+    _LAST_SCHEMA_TABLE_STATUS = dict(table_status)
+    _LAST_SCHEMA_TABLE_ERRORS = dict(table_errors)
+    _LAST_SCHEMA_DB_AVAILABLE = bool(db_available)
+
+
+def _schema_check_cooldown_active() -> bool:
+    if _LAST_SCHEMA_CHECK_MONOTONIC <= 0:
+        return False
+    return (time.monotonic() - _LAST_SCHEMA_CHECK_MONOTONIC) < _schema_check_cooldown_seconds()
+
+
+def _schema_check_cooldown_status() -> dict[str, Any]:
+    elapsed = time.monotonic() - _LAST_SCHEMA_CHECK_MONOTONIC if _LAST_SCHEMA_CHECK_MONOTONIC else 999999.0
+    cooldown = _schema_check_cooldown_seconds()
+    return {
+        "schema_check_cooldown_sec": cooldown,
+        "last_schema_check_at": _LAST_SCHEMA_CHECK_AT,
+        "schema_check_cooldown_active": bool(elapsed < cooldown),
         **_safety(),
     }
 

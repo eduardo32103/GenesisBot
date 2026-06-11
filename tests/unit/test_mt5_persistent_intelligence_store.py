@@ -182,6 +182,35 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_apply_schema_reports_all_connection_attempts_when_waiting(self) -> None:
+        attempts = 0
+
+        def failing_connect(_: str) -> object:
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("max clients reached in session mode")
+
+        with patch("scripts.run_persistent_intelligence_apply_schema.time.sleep", return_value=None):
+            result = run_apply_schema(
+                apply=True,
+                database_url="postgresql://user:SUPERSECRET@example.test:5432/db",
+                connect_factory=failing_connect,
+                wait_for_connection=True,
+                max_connect_attempts=3,
+                connect_backoff_seconds=0.01,
+            )
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["db_available"])
+        self.assertEqual(result["connect_attempts"], 3)
+        self.assertEqual(attempts, 3)
+        self.assertEqual(result["error_category"], "max_connections")
+        self.assertNotIn("SUPERSECRET", serialized)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_healthcheck_checks_tables_and_can_write_safe_test_event(self) -> None:
         client = _FakeClient()
         store = MT5PersistentIntelligenceStore(client=client)
@@ -465,12 +494,38 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         healthcheck = store.healthcheck()
 
         self.assertTrue(healthcheck["schema_missing_write_freeze"])
+        self.assertTrue(healthcheck["writes_frozen"])
+        self.assertEqual(healthcheck["schema_check_cooldown_sec"], 60.0)
+        self.assertTrue(healthcheck["last_schema_check_at"])
         self.assertEqual(set(healthcheck["schema_missing_tables"]), set(REQUIRED_TABLES))
         self.assertEqual(healthcheck["recommendation"], "apply_schema_sql")
         self.assertEqual(healthcheck["queue_depth"], 0)
         self.assertFalse(healthcheck["broker_touched"])
         self.assertFalse(healthcheck["order_executed"])
         self.assertEqual(healthcheck["order_policy"], "journal_only_no_broker")
+
+    def test_schema_missing_write_freeze_reuses_schema_check_cache_during_cooldown(self) -> None:
+        with patch.dict("os.environ", {"PERSISTENT_DB_SCHEMA_CHECK_COOLDOWN_SEC": "60"}):
+            _reset_persistent_intelligence_counters_for_tests()
+            client = _CountingMissingTablesClient()
+            store = MT5PersistentIntelligenceStore(client=client)
+
+            first = store.healthcheck()
+            first_calls = client.table_ready_calls
+            second = store.healthcheck()
+
+        self.assertTrue(first["schema_missing_write_freeze"])
+        self.assertTrue(first["writes_frozen"])
+        self.assertTrue(second["schema_missing_write_freeze"])
+        self.assertTrue(second["writes_frozen"])
+        self.assertTrue(second["schema_check_cooldown_active"])
+        self.assertEqual(second["last_schema_check_at"], first["last_schema_check_at"])
+        self.assertEqual(client.table_ready_calls, first_calls)
+        self.assertIn("schema_check_cooldown", second["table_errors"])
+        self.assertEqual(second["queue_depth"], 0)
+        self.assertFalse(second["broker_touched"])
+        self.assertFalse(second["order_executed"])
+        self.assertEqual(second["order_policy"], "journal_only_no_broker")
 
     def test_schema_missing_write_freeze_drops_noncritical_without_queue_growth(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
@@ -481,6 +536,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertFalse(result["queued"])
         self.assertTrue(result["write"]["schema_missing_write_freeze"])
+        self.assertEqual(result["write"]["reason"], "schema_missing_write_freeze")
         self.assertEqual(result["queue_depth"], 0)
         self.assertEqual(result["dropped_noncritical_writes"], 1)
         self.assertFalse(result["broker_touched"])
@@ -593,6 +649,28 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_recent_events_short_circuits_during_schema_missing_freeze(self) -> None:
+        client = _CountingMissingTablesClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+        store.healthcheck()
+
+        result = store.recent_events(limit=5)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["reason"], "schema_missing_write_freeze")
+        self.assertTrue(result["schema_missing_write_freeze"])
+        self.assertTrue(result["writes_frozen"])
+        self.assertEqual(result["recent_decisions"], [])
+        self.assertEqual(result["recent_risk_events"], [])
+        self.assertEqual(result["recent_shadow_events"], [])
+        self.assertEqual(result["recent_research_lessons"], [])
+        self.assertEqual(client.select_calls, 0)
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_endpoint_is_exposed_and_route_returns_safe_status(self) -> None:
         app = create_app()
         payload = get_genesis_mt5_persistent_intelligence_status()
@@ -660,6 +738,21 @@ class _MissingTablesClient:
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
         raise RuntimeError("relation does not exist")
+
+
+class _CountingMissingTablesClient(_MissingTablesClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.table_ready_calls = 0
+        self.select_calls = 0
+
+    def table_ready(self, table: str) -> bool:
+        self.table_ready_calls += 1
+        return super().table_ready(table)
+
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        self.select_calls += 1
+        return super().select(table, params=params)
 
 
 class _FailingWriteClient:

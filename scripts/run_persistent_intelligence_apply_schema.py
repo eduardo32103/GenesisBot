@@ -5,6 +5,7 @@ import json
 import os
 import ssl
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
@@ -19,12 +20,22 @@ from services.mt5.mt5_persistent_schema import (  # noqa: E402
 )
 
 
+class SchemaConnectionError(RuntimeError):
+    def __init__(self, original: Exception, *, attempts: int) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.attempts = attempts
+
+
 def run_apply_schema(
     *,
     apply: bool = False,
     include_rls: bool = False,
     database_url: str | None = None,
     connect_factory: Callable[[str], Any] | None = None,
+    wait_for_connection: bool = False,
+    max_connect_attempts: int = 10,
+    connect_backoff_seconds: float = 5.0,
 ) -> dict[str, Any]:
     db_url = str(database_url if database_url is not None else os.getenv("DATABASE_URL") or "")
     result: dict[str, Any] = {
@@ -35,6 +46,10 @@ def run_apply_schema(
         "dry_run": not bool(apply),
         "applied": False,
         "include_rls": bool(include_rls),
+        "connect_attempts": 0,
+        "wait_for_connection": bool(wait_for_connection),
+        "max_connect_attempts": int(max_connect_attempts or 1),
+        "connect_backoff_seconds": float(connect_backoff_seconds or 0),
         "tables_before": [],
         "missing_tables_before": list(REQUIRED_TABLES),
         "tables_after": [],
@@ -54,7 +69,14 @@ def run_apply_schema(
 
     connection = None
     try:
-        connection = connect_factory(db_url) if connect_factory else _connect_pg8000(db_url)
+        connection, attempts = _connect_with_attempts(
+            db_url,
+            connect_factory=connect_factory,
+            wait_for_connection=wait_for_connection,
+            max_connect_attempts=max_connect_attempts,
+            connect_backoff_seconds=connect_backoff_seconds,
+        )
+        result["connect_attempts"] = attempts
         result["db_available"] = True
         before = _list_ready_tables(connection)
         result["tables_before"] = before
@@ -79,6 +101,7 @@ def run_apply_schema(
         result["error_category"] = _error_category(exc)
         result["reason"] = _safe_error(exc)
         result["recommendation"] = "verify_database_connection"
+        result["connect_attempts"] = max(1, int(getattr(exc, "attempts", None) or result.get("connect_attempts") or 0))
         return result
     finally:
         if connection is not None:
@@ -90,7 +113,13 @@ def run_apply_schema(
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    result = run_apply_schema(apply=args.apply, include_rls=args.include_rls)
+    result = run_apply_schema(
+        apply=args.apply,
+        include_rls=args.include_rls,
+        wait_for_connection=args.wait_for_connection,
+        max_connect_attempts=args.max_connect_attempts,
+        connect_backoff_seconds=args.connect_backoff_seconds,
+    )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True))
     else:
@@ -110,6 +139,30 @@ def _execute_schema(connection: Any, sql: str) -> None:
         except Exception:
             pass
         raise
+
+
+def _connect_with_attempts(
+    database_url: str,
+    *,
+    connect_factory: Callable[[str], Any] | None,
+    wait_for_connection: bool,
+    max_connect_attempts: int,
+    connect_backoff_seconds: float,
+) -> tuple[Any, int]:
+    attempts = max(1, int(max_connect_attempts or 1)) if wait_for_connection else 1
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            connection = connect_factory(database_url) if connect_factory else _connect_pg8000(database_url)
+            return connection, attempt
+        except Exception as exc:
+            last_error = exc
+            if not wait_for_connection or attempt >= attempts:
+                break
+            time.sleep(max(0.1, float(connect_backoff_seconds or 0.1)))
+    if last_error is not None:
+        raise SchemaConnectionError(last_error, attempts=attempts) from last_error
+    raise RuntimeError("database_connection_unavailable")
 
 
 def _list_ready_tables(connection: Any) -> list[str]:
@@ -170,6 +223,7 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"dry_run={result.get('dry_run')}",
             f"applied={result.get('applied')}",
             f"include_rls={result.get('include_rls')}",
+            f"connect_attempts={result.get('connect_attempts')}",
             f"tables_before={','.join(result.get('tables_before') or [])}",
             f"missing_tables_before={','.join(result.get('missing_tables_before') or [])}",
             f"tables_after={','.join(result.get('tables_after') or [])}",
@@ -189,6 +243,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", help="Apply the idempotent schema. Default is dry-run.")
     parser.add_argument("--no-rls", dest="include_rls", action="store_false", help="Do not include RLS statements. Default.")
     parser.add_argument("--include-rls", dest="include_rls", action="store_true", help="Include optional RLS statements.")
+    parser.add_argument("--wait-for-connection", action="store_true", help="Retry transient connection failures before giving up.")
+    parser.add_argument("--max-connect-attempts", type=int, default=10)
+    parser.add_argument("--connect-backoff-seconds", type=float, default=5.0)
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(include_rls=False)
     return parser.parse_args(argv)
