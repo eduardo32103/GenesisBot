@@ -57,6 +57,8 @@ def _status_from_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "capital_protection": cycle.get("capital_protection") if isinstance(cycle.get("capital_protection"), dict) else {},
         "adaptive_state": adaptive_state,
         "adaptive_governor": cycle.get("adaptive_governor") if isinstance(cycle.get("adaptive_governor"), dict) else {},
+        "risk_governor": cycle.get("risk_governor") if isinstance(cycle.get("risk_governor"), dict) else {},
+        "shadow_hygiene": cycle.get("shadow_hygiene") if isinstance(cycle.get("shadow_hygiene"), dict) else {},
         "safe_to_learn": bool(cycle.get("safe_to_learn")),
         "safe_to_open_new_shadow": bool(cycle.get("safe_to_open_new_shadow")),
         "active_profiles": _rows(cycle.get("active_profiles")),

@@ -666,6 +666,11 @@ def _compact_db_state(status: dict[str, Any]) -> dict[str, Any]:
         "tables_ready": bool(status.get("tables_ready")),
         "db_degraded": bool(status.get("db_degraded") or not status.get("db_available") or not status.get("tables_ready")),
         "recommendation": status.get("recommendation") or "",
+        "missing_tables": status.get("missing_tables") if isinstance(status.get("missing_tables"), list) else [],
+        "queue_depth": int(_float(status.get("queue_depth"))),
+        "queued_writes": int(_float(status.get("queued_writes"))),
+        "failed_writes": int(_float(status.get("failed_writes"))),
+        "backoff_active": bool(status.get("backoff_active")),
     }
 
 
