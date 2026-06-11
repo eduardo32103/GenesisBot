@@ -15,6 +15,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
     RailwayPostgresClient,
     SupabaseRestClient,
     _reset_persistent_intelligence_counters_for_tests,
+    persistent_intelligence_schema_freeze_status,
     persist_adaptive_governor_state,
     persist_decision_event,
     persist_research_lesson,
@@ -855,6 +856,26 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(result["recent_research_lessons"], [])
         self.assertEqual(client.select_calls, 0)
         self.assertEqual(result["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_recent_events_recovers_when_schema_freeze_is_stale_but_tables_are_ready(self) -> None:
+        MT5PersistentIntelligenceStore(client=_MissingTablesClient()).healthcheck()
+        self.assertEqual(persistent_write_backpressure().status()["last_db_error_category"], "missing_schema")
+        store = MT5PersistentIntelligenceStore(
+            client=_FakeClient(selected={"mt5_decision_events": [{"symbol": "BTCUSD", "decision": "NO_TRADE"}]})
+        )
+
+        result = store.recent_events(limit=5)
+        freeze = persistent_intelligence_schema_freeze_status()
+
+        self.assertFalse(result["db_degraded"])
+        self.assertEqual(result.get("reason", ""), "")
+        self.assertEqual(len(result["recent_decisions"]), 1)
+        self.assertFalse(freeze["writes_frozen"])
+        self.assertFalse(freeze["db_degraded"])
+        self.assertEqual(persistent_write_backpressure().status()["last_db_error_category"], "")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")

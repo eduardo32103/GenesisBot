@@ -344,6 +344,11 @@ class MT5PersistentIntelligenceStore:
         safe_limit = max(1, min(int(limit or 10), 50))
         backpressure = _backpressure_status(self.client)
         schema_freeze = _schema_missing_write_freeze_status()
+        if schema_freeze.get("writes_frozen"):
+            _force_next_schema_check()
+            self.healthcheck(write_test_event=False)
+            schema_freeze = _schema_missing_write_freeze_status()
+            backpressure = _backpressure_status(self.client)
         schema_cooldown = _schema_check_cooldown_status()
         if schema_freeze.get("writes_frozen") or backpressure.get("last_db_error_category") == "missing_schema":
             return {
@@ -611,6 +616,51 @@ class MT5PersistentIntelligenceStore:
             }
         )
         return self._safe_upsert("mt5_profile_performance", row, critical=critical)
+
+    def upsert_strategy_registry(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
+        row = _sanitize_row(
+            {
+                "symbol": _symbol(payload.get("symbol")),
+                "timeframe": _timeframe(payload.get("timeframe")),
+                "profile": payload.get("profile"),
+                "family": payload.get("family") or "",
+                "status": payload.get("status") or "",
+                "source": payload.get("source") or "",
+                "created_at": payload.get("created_at") or _now(),
+                "updated_at": payload.get("updated_at") or _now(),
+            }
+        )
+        return self._safe_upsert("mt5_strategy_registry", row, critical=critical)
+
+    def upsert_degradation_registry(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
+        row = _sanitize_row(
+            {
+                "symbol": _symbol(payload.get("symbol")),
+                "timeframe": _timeframe(payload.get("timeframe")),
+                "profile": payload.get("profile"),
+                "degradation_reason": payload.get("degradation_reason") or "",
+                "degraded_at": payload.get("degraded_at") or _now(),
+                "applies_to_paper_shadow": bool(payload.get("applies_to_paper_shadow")),
+                "applies_to_real_trading": False,
+                "registry_version": payload.get("registry_version") or "",
+            }
+        )
+        return self._safe_upsert("mt5_degradation_registry", row, critical=critical)
+
+    def upsert_research_rejection_registry(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
+        row = _sanitize_row(
+            {
+                "symbol": _symbol(payload.get("symbol")),
+                "timeframe": _timeframe(payload.get("timeframe")),
+                "family_pattern": payload.get("family_pattern") or payload.get("pattern") or "",
+                "rejection_reason": payload.get("rejection_reason") or "",
+                "rejection_status": payload.get("rejection_status") or "",
+                "reviewed_at_version": payload.get("reviewed_at_version") or "",
+                "allow_future_research": bool(payload.get("allow_future_research")),
+                "allow_manual_override": bool(payload.get("allow_manual_override") if "allow_manual_override" in payload else True),
+            }
+        )
+        return self._safe_upsert("mt5_research_rejection_registry", row, critical=critical)
 
     def record_shadow_trade(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
@@ -909,6 +959,13 @@ def persistent_intelligence_status(*, write_test_event: bool = False) -> dict[st
 
 def persistent_intelligence_schema_freeze_status() -> dict[str, Any]:
     schema_freeze = _schema_missing_write_freeze_status()
+    if schema_freeze.get("writes_frozen"):
+        try:
+            _force_next_schema_check()
+            MT5PersistentIntelligenceStore().healthcheck(write_test_event=False)
+            schema_freeze = _schema_missing_write_freeze_status()
+        except Exception:
+            schema_freeze = _schema_missing_write_freeze_status()
     return {
         "ok": True,
         "db_degraded": bool(schema_freeze.get("writes_frozen")),
@@ -1284,6 +1341,7 @@ def _clear_schema_missing_write_freeze() -> None:
     _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE = False
     _SCHEMA_MISSING_TABLES = []
     _SCHEMA_MISSING_REASON = ""
+    persistent_write_backpressure().clear_schema_missing()
 
 
 def _schema_missing_write_freeze_status() -> dict[str, Any]:
@@ -1315,6 +1373,11 @@ def _schema_check_cooldown_active() -> bool:
     if _LAST_SCHEMA_CHECK_MONOTONIC <= 0:
         return False
     return (time.monotonic() - _LAST_SCHEMA_CHECK_MONOTONIC) < _schema_check_cooldown_seconds()
+
+
+def _force_next_schema_check() -> None:
+    global _LAST_SCHEMA_CHECK_MONOTONIC
+    _LAST_SCHEMA_CHECK_MONOTONIC = 0.0
 
 
 def _schema_check_cooldown_status() -> dict[str, Any]:

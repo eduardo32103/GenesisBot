@@ -10,6 +10,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
     persistent_intelligence_schema_freeze_status,
     persistent_intelligence_status,
 )
+from services.mt5.mt5_persistent_intelligence_bootstrap import persistent_intelligence_bootstrap_status
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament
@@ -45,6 +46,10 @@ def mt5_persistent_intelligence_status(*, memory: MemoryStore | None = None) -> 
 
 def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = None, limit: int = 10) -> dict[str, Any]:
     return persistent_intelligence_recent_events(limit=limit)
+
+
+def mt5_persistent_intelligence_bootstrap_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return persistent_intelligence_bootstrap_status()
 
 
 def mt5_persistent_db_doctor_status(

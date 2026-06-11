@@ -193,6 +193,12 @@ class PersistentWriteBackpressure:
             **_safety(),
         }
 
+    def clear_schema_missing(self) -> None:
+        with self._lock:
+            if self.last_db_error_category == "missing_schema":
+                self.last_db_error_category = ""
+                self.last_db_error = ""
+
     def queue_or_drop(
         self,
         table: str,
