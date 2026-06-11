@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_autonomous_learning_status import run_autonomous_learning_status
 from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
 from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
 from services.mt5.mt5_persistent_intelligence_store import (
@@ -280,8 +281,21 @@ def mt5_memory_summary(*, memory: MemoryStore | None = None, symbol: str = "", l
 def mt5_learning_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     blocked = _schema_missing_fast_fail("learning_status", symbol=symbol)
     if blocked:
-        return blocked
-    return build_router(memory).learning_status(symbol=symbol)
+        return _legacy_learning_status(blocked, symbol=symbol)
+    return _legacy_learning_status(build_router(memory).learning_status(symbol=symbol), symbol=symbol)
+
+
+def mt5_autonomous_learning_status(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return run_autonomous_learning_status(symbol=symbol or "BTCUSD", timeframe=timeframe)
+
+
+def _legacy_learning_status(result: dict[str, Any], *, symbol: str = "") -> dict[str, Any]:
+    payload = dict(result)
+    payload["legacy_learning_status"] = True
+    payload["autonomous_learning_status_endpoint"] = (
+        f"/api/genesis/mt5/autonomous-learning/status?symbol={symbol or '{symbol}'}&timeframe={{timeframe}}"
+    )
+    return payload
 
 
 def mt5_adaptive_state(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:

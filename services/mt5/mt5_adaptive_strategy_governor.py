@@ -61,6 +61,7 @@ def run_adaptive_strategy_governor(
     load_shadow_snapshot: bool = True,
     load_rotation: bool = True,
     load_intelligence: bool = True,
+    persist_events: bool = True,
 ) -> dict[str, Any]:
     active_limits = {**DEFAULT_LIMITS, **(limits or {})}
     shadow_snapshot = _load_shadow_snapshot(load_shadow_snapshot, closed_trades, open_trades)
@@ -138,7 +139,8 @@ def run_adaptive_strategy_governor(
         "safety_state": _safety_state(),
         **_safety(),
     }
-    _persist_governor_result(result)
+    if persist_events:
+        _persist_governor_result(result)
     return result
 
 

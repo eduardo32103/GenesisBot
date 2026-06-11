@@ -49,6 +49,7 @@ from api.routes.dashboard import (
 from api.routes.genesis import (
     get_genesis_mt5_adaptive_recommendations,
     get_genesis_mt5_adaptive_state,
+    get_genesis_mt5_autonomous_learning_status,
     get_genesis_hedge_plan,
     get_genesis_mt5_auto_forward_status,
     get_genesis_mt5_backtest_latest,
@@ -285,6 +286,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_forward_replay_run_endpoint": "/api/genesis/mt5/forward-replay/run",
         "genesis_mt5_learning_run_endpoint": "/api/genesis/mt5/learning/run",
         "genesis_mt5_learning_status_endpoint": "/api/genesis/mt5/learning/status?symbol={symbol}",
+        "genesis_mt5_autonomous_learning_status_endpoint": "/api/genesis/mt5/autonomous-learning/status?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_memory_summary_endpoint": "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50",
         "genesis_mt5_adaptive_state_endpoint": "/api/genesis/mt5/adaptive-state?symbol={symbol}",
         "genesis_mt5_strategy_profiles_endpoint": "/api/genesis/mt5/strategy-profiles?symbol={symbol}",
@@ -4694,6 +4696,14 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
             payload_data = get_genesis_mt5_learning_status(symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/autonomous-learning/status":
+            query = parse_qs(parsed.query)
+            symbol = (query.get("symbol") or query.get("ticker") or [""])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_autonomous_learning_status(symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

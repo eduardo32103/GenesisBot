@@ -131,6 +131,7 @@ def run_autonomous_learning_orchestrator(
         load_shadow_snapshot=load_shadow_snapshot,
         load_rotation=False,
         load_intelligence=False,
+        persist_events=bool(persist_events and not dry_run),
     )
     adaptive_state = str(adaptive.get("global_state") or "")
     if adaptive_state == "kill_switch":

@@ -163,6 +163,7 @@ class MT5BridgeTests(unittest.TestCase):
         self.assertEqual(app["genesis_mt5_forward_replay_run_endpoint"], "/api/genesis/mt5/forward-replay/run")
         self.assertEqual(app["genesis_mt5_learning_run_endpoint"], "/api/genesis/mt5/learning/run")
         self.assertEqual(app["genesis_mt5_learning_status_endpoint"], "/api/genesis/mt5/learning/status?symbol={symbol}")
+        self.assertEqual(app["genesis_mt5_autonomous_learning_status_endpoint"], "/api/genesis/mt5/autonomous-learning/status?symbol={symbol}&timeframe={timeframe}")
         self.assertEqual(app["genesis_mt5_memory_summary_endpoint"], "/api/genesis/mt5/memory/summary?symbol={symbol}&limit=50")
         self.assertEqual(app["genesis_mt5_adaptive_state_endpoint"], "/api/genesis/mt5/adaptive-state?symbol={symbol}")
         self.assertEqual(app["genesis_mt5_strategy_profiles_endpoint"], "/api/genesis/mt5/strategy-profiles?symbol={symbol}")

@@ -8,6 +8,7 @@ from services.mt5.mt5_bridge import (
     mt5_account_sync,
     mt5_adaptive_recommendations,
     mt5_adaptive_state,
+    mt5_autonomous_learning_status,
     mt5_auto_forward_status,
     mt5_backtest_latest,
     mt5_backtest_optimize,
@@ -270,6 +271,10 @@ def post_genesis_mt5_learning_run(payload: dict[str, Any] | None = None) -> dict
 
 def get_genesis_mt5_learning_status(symbol: str = "") -> dict[str, Any]:
     return mt5_learning_status(symbol=symbol)
+
+
+def get_genesis_mt5_autonomous_learning_status(symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_autonomous_learning_status(symbol=symbol, timeframe=timeframe)
 
 
 def get_genesis_mt5_memory_summary(symbol: str = "", limit: int = 50) -> dict[str, Any]:
