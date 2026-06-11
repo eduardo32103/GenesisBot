@@ -196,18 +196,6 @@ create table if not exists public.mt5_research_lessons (
   recommended_next_research_phase text not null default ''
 );
 
-alter table public.mt5_profile_state enable row level security;
-alter table public.mt5_profile_performance enable row level security;
-alter table public.mt5_shadow_trades enable row level security;
-alter table public.mt5_decision_events enable row level security;
-alter table public.mt5_risk_events enable row level security;
-alter table public.mt5_strategy_registry enable row level security;
-alter table public.mt5_degradation_registry enable row level security;
-alter table public.mt5_research_rejection_registry enable row level security;
-alter table public.mt5_candidate_rotation_runs enable row level security;
-alter table public.mt5_adaptive_governor_state enable row level security;
-alter table public.mt5_research_lessons enable row level security;
-
 create index if not exists idx_mt5_profile_state_symbol_timeframe_profile
   on public.mt5_profile_state(symbol, timeframe, profile);
 create index if not exists idx_mt5_profile_performance_symbol_timeframe_profile
@@ -240,6 +228,27 @@ create index if not exists idx_mt5_research_lessons_timestamp
   on public.mt5_research_lessons(timestamp);
 """
 
+RLS_SCHEMA_SQL = r"""
+alter table public.mt5_profile_state enable row level security;
+alter table public.mt5_profile_performance enable row level security;
+alter table public.mt5_shadow_trades enable row level security;
+alter table public.mt5_decision_events enable row level security;
+alter table public.mt5_risk_events enable row level security;
+alter table public.mt5_strategy_registry enable row level security;
+alter table public.mt5_degradation_registry enable row level security;
+alter table public.mt5_research_rejection_registry enable row level security;
+alter table public.mt5_candidate_rotation_runs enable row level security;
+alter table public.mt5_adaptive_governor_state enable row level security;
+alter table public.mt5_research_lessons enable row level security;
+"""
+
+
+def get_persistent_intelligence_schema_sql(*, include_rls: bool = False) -> str:
+    sql = CREATE_SCHEMA_SQL.strip()
+    if include_rls:
+        sql = f"{sql}\n\n{RLS_SCHEMA_SQL.strip()}"
+    return f"{sql}\n"
+
 
 def persistent_schema_status() -> dict[str, Any]:
     return {
@@ -251,6 +260,7 @@ def persistent_schema_status() -> dict[str, Any]:
         "ddl_applied_by_runtime": False,
         "connection_pooling_runtime_only": True,
         "write_backpressure_runtime_only": True,
+        "default_include_rls": False,
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",

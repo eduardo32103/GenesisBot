@@ -50,6 +50,9 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LAST_WRITE_AT = ""
 _FAILED_WRITES = 0
 _QUEUED_WRITES = 0
+_SCHEMA_MISSING_WRITE_FREEZE_ACTIVE = False
+_SCHEMA_MISSING_TABLES: list[str] = []
+_SCHEMA_MISSING_REASON = ""
 
 
 class UnavailableDbClient:
@@ -435,6 +438,10 @@ class MT5PersistentIntelligenceStore:
         tables_ready = all(table_status.values()) if table_status else False
         db_available = client_available and not backpressure_degraded and not _connection_unavailable(table_errors)
         missing_tables = [table for table, ready in table_status.items() if not ready]
+        if missing_tables and _schema_missing_write_freeze_enabled():
+            _set_schema_missing_write_freeze(missing_tables, "missing_persistent_intelligence_tables")
+        elif db_available and not missing_tables:
+            _clear_schema_missing_write_freeze()
         permission_checks = {
             "select": bool(db_available and any(table_status.values())),
             "insert": False,
@@ -488,6 +495,7 @@ class MT5PersistentIntelligenceStore:
         if backpressure_degraded:
             recommendation = "backoff_persistent_db_writes"
         backpressure = _backpressure_status(self.client)
+        schema_freeze = _schema_missing_write_freeze_status()
         db_degraded = bool(backpressure_degraded or not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))))
         return {
             "ok": True,
@@ -505,6 +513,7 @@ class MT5PersistentIntelligenceStore:
             "table_errors": table_errors,
             "permission_checks": permission_checks,
             "last_write_at": _LAST_WRITE_AT,
+            **schema_freeze,
             **backpressure,
             "estimated_storage_mode": _client_provider(self.client) if db_available and tables_ready else "local_runtime_only",
             "test_write": test_write,
@@ -771,6 +780,8 @@ class MT5PersistentIntelligenceStore:
 
     def _safe_insert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
+        if _schema_missing_write_freeze_status().get("schema_missing_write_freeze"):
+            return persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical_write)
         gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
         if gate.get("short_circuit"):
             return gate["result"]
@@ -787,6 +798,8 @@ class MT5PersistentIntelligenceStore:
 
     def _safe_upsert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
+        if _schema_missing_write_freeze_status().get("schema_missing_write_freeze"):
+            return persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical_write)
         gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
         if gate.get("short_circuit"):
             return gate["result"]
@@ -811,6 +824,8 @@ class MT5PersistentIntelligenceStore:
             return {"ok": True, "db_degraded": False, "rows": rows, **_safety()}
         except Exception as exc:
             category = classify_db_error(exc)
+            if category == "missing_table":
+                _set_schema_missing_write_freeze([table], "missing_persistent_intelligence_tables")
             if category in {"max_connections", "pool_exhausted"}:
                 persistent_write_backpressure().record_failure(table, {"table": table}, critical=False, reason=_safe_error(exc), duration_ms=0)
             return {"ok": False, "db_degraded": True, "rows": [], "reason": _safe_error(exc), "error_category": category, **_backpressure_status(self.client), **_safety()}
@@ -929,6 +944,7 @@ def _reset_persistent_intelligence_counters_for_tests() -> None:
     _LAST_WRITE_AT = ""
     _FAILED_WRITES = 0
     _QUEUED_WRITES = 0
+    _clear_schema_missing_write_freeze()
     reset_persistent_connection_state_for_tests()
 
 
@@ -1101,6 +1117,12 @@ def _write_unavailable(table: str, row: dict[str, Any], reason: str, *, critical
 
 
 def _write_failed(table: str, row: dict[str, Any], exc: Exception, started: float, *, critical: bool) -> dict[str, Any]:
+    category = classify_db_error(exc)
+    if category == "missing_table":
+        _set_schema_missing_write_freeze([table], "missing_persistent_intelligence_tables")
+        result = persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical)
+        result["duration_ms"] = int((time.monotonic() - started) * 1000)
+        return result
     return persistent_write_backpressure().record_failure(
         table,
         row,
@@ -1114,6 +1136,9 @@ def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *
     ok = bool(write_result.get("ok"))
     critical_failed = bool(critical and not ok)
     stats = _backpressure_status(None)
+    critical_reason = ""
+    if critical_failed:
+        critical_reason = "persistent_intelligence_schema_missing" if write_result.get("schema_missing_write_freeze") else "persistent_intelligence_db_degraded"
     return {
         "ok": ok,
         "event_type": event_type,
@@ -1130,7 +1155,7 @@ def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *
         "critical": bool(critical),
         "critical_persistence_failed": critical_failed,
         "decision": "NO_TRADE" if critical_failed else "",
-        "reason": "persistent_intelligence_db_degraded" if critical_failed else "",
+        "reason": critical_reason,
         "secrets_printed": False,
         **_safety(),
     }
@@ -1160,6 +1185,36 @@ def _backpressure_status(client: Any | None) -> dict[str, Any]:
         except Exception:
             pool_status = {}
     return persistent_write_backpressure().status(pool_status=pool_status)
+
+
+def _schema_missing_write_freeze_enabled() -> bool:
+    return str(os.getenv("PERSISTENT_DB_SCHEMA_MISSING_FREEZE") or "true").casefold().strip() not in {"0", "false", "no", "off"}
+
+
+def _set_schema_missing_write_freeze(missing_tables: list[str], reason: str) -> None:
+    global _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE, _SCHEMA_MISSING_TABLES, _SCHEMA_MISSING_REASON
+    if not _schema_missing_write_freeze_enabled():
+        return
+    _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE = True
+    _SCHEMA_MISSING_TABLES = sorted({str(table) for table in missing_tables if str(table or "").strip()})
+    _SCHEMA_MISSING_REASON = str(reason or "missing_persistent_intelligence_tables")
+
+
+def _clear_schema_missing_write_freeze() -> None:
+    global _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE, _SCHEMA_MISSING_TABLES, _SCHEMA_MISSING_REASON
+    _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE = False
+    _SCHEMA_MISSING_TABLES = []
+    _SCHEMA_MISSING_REASON = ""
+
+
+def _schema_missing_write_freeze_status() -> dict[str, Any]:
+    active = bool(_schema_missing_write_freeze_enabled() and _SCHEMA_MISSING_WRITE_FREEZE_ACTIVE)
+    return {
+        "schema_missing_write_freeze": active,
+        "schema_missing_tables": list(_SCHEMA_MISSING_TABLES) if active else [],
+        "schema_missing_reason": _SCHEMA_MISSING_REASON if active else "",
+        **_safety(),
+    }
 
 
 def _safety_rows(rows: list[Any]) -> list[dict[str, Any]]:

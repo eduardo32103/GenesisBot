@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
-from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES
+from scripts.run_persistent_intelligence_apply_schema import run_apply_schema
+from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES, get_persistent_intelligence_schema_sql
 from services.mt5.mt5_persistent_intelligence_store import (
     MT5PersistentIntelligenceStore,
     RailwayPostgresClient,
@@ -149,15 +150,37 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_schema_sql_contains_all_tables_indexes_and_no_destructive_ops(self) -> None:
-        lowered = CREATE_SCHEMA_SQL.casefold()
+        lowered = get_persistent_intelligence_schema_sql().casefold()
 
         for table in REQUIRED_TABLES:
             self.assertIn(f"create table if not exists public.{table}", lowered)
         self.assertIn("create index if not exists", lowered)
-        self.assertIn("enable row level security", lowered)
+        self.assertNotIn("enable row level security", lowered)
+        self.assertIn("enable row level security", get_persistent_intelligence_schema_sql(include_rls=True).casefold())
         self.assertIn("create extension if not exists pgcrypto", lowered)
         for forbidden in ("drop table", "truncate", "delete from"):
             self.assertNotIn(forbidden, lowered)
+
+    def test_apply_schema_dry_run_does_not_execute_schema_writes(self) -> None:
+        connection = _FakeSchemaConnection(existing_tables=[])
+
+        result = run_apply_schema(
+            apply=False,
+            database_url="postgresql://user:SUPERSECRET@example.test:5432/db",
+            connect_factory=lambda _: connection,
+        )
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["db_available"])
+        self.assertTrue(result["schema_sql_ready"])
+        self.assertTrue(result["dry_run"])
+        self.assertFalse(result["applied"])
+        self.assertEqual(connection.schema_execute_count, 0)
+        self.assertNotIn("SUPERSECRET", serialized)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_healthcheck_checks_tables_and_can_write_safe_test_event(self) -> None:
         client = _FakeClient()
@@ -184,7 +207,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
         self.assertTrue(result["pool_enabled"])
-        self.assertEqual(result["queue_max_size"], 500)
+        self.assertEqual(result["queue_max_size"], 100)
         self.assertEqual(result["queue_depth"], 0)
 
     def test_healthcheck_does_not_print_secret_values(self) -> None:
@@ -436,6 +459,55 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(third["order_executed"])
         self.assertEqual(third["order_policy"], "journal_only_no_broker")
 
+    def test_missing_tables_activate_schema_missing_write_freeze(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+
+        healthcheck = store.healthcheck()
+
+        self.assertTrue(healthcheck["schema_missing_write_freeze"])
+        self.assertEqual(set(healthcheck["schema_missing_tables"]), set(REQUIRED_TABLES))
+        self.assertEqual(healthcheck["recommendation"], "apply_schema_sql")
+        self.assertEqual(healthcheck["queue_depth"], 0)
+        self.assertFalse(healthcheck["broker_touched"])
+        self.assertFalse(healthcheck["order_executed"])
+        self.assertEqual(healthcheck["order_policy"], "journal_only_no_broker")
+
+    def test_schema_missing_write_freeze_drops_noncritical_without_queue_growth(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        store.healthcheck()
+
+        result = persist_decision_event(_decision_payload("EURUSD", "H1", "schema_missing"), store=store)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["queued"])
+        self.assertTrue(result["write"]["schema_missing_write_freeze"])
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["dropped_noncritical_writes"], 1)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_schema_missing_write_freeze_returns_no_trade_for_critical_write(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        store.healthcheck()
+
+        result = persist_shadow_trade(
+            {"shadow_trade_id": "paper-schema-missing", "symbol": "BTCUSD", "timeframe": "M30", "status": "open"},
+            critical=True,
+            store=store,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["queued"])
+        self.assertTrue(result["critical_persistence_failed"])
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "persistent_intelligence_schema_missing")
+        self.assertTrue(result["write"]["schema_missing_write_freeze"])
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_critical_queue_full_returns_no_trade_without_unbounded_queue(self) -> None:
         with patch.dict("os.environ", {"PERSISTENT_DB_QUEUE_MAX_SIZE": "0"}):
             _reset_persistent_intelligence_counters_for_tests()
@@ -664,6 +736,50 @@ class _FakePgCursor:
 
     def fetchall(self) -> list[tuple[object, ...]]:
         return []
+
+
+class _FakeSchemaConnection:
+    def __init__(self, *, existing_tables: list[str]) -> None:
+        self.existing_tables = existing_tables
+        self.cursor_obj = _FakeSchemaCursor(self)
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.close_count = 0
+        self.schema_execute_count = 0
+
+    def cursor(self) -> "_FakeSchemaCursor":
+        return self.cursor_obj
+
+    def commit(self) -> None:
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class _FakeSchemaCursor:
+    def __init__(self, connection: _FakeSchemaConnection) -> None:
+        self.connection = connection
+        self.last_select = False
+
+    def execute(self, sql: str, values: tuple[object, ...] | None = None) -> None:
+        del values
+        self.last_select = "information_schema.tables" in sql
+        if not self.last_select:
+            self.connection.schema_execute_count += 1
+            lowered = sql.casefold()
+            if "create table if not exists public." in lowered:
+                table = lowered.split("create table if not exists public.", 1)[1].split(" ", 1)[0].strip()
+                if table not in self.connection.existing_tables:
+                    self.connection.existing_tables.append(table)
+
+    def fetchall(self) -> list[tuple[object]]:
+        if not self.last_select:
+            return []
+        return [(table,) for table in self.connection.existing_tables]
 
 
 def _decision_payload(symbol: str, timeframe: str, reason: str) -> dict[str, object]:

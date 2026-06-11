@@ -39,6 +39,7 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"permission_insert={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('insert')}",
         f"permission_upsert={((result.get('permission_checks') if isinstance(result.get('permission_checks'), dict) else {}) or {}).get('upsert')}",
         f"last_write_at={result.get('last_write_at')}",
+        f"schema_missing_write_freeze={result.get('schema_missing_write_freeze')}",
         f"pool_enabled={result.get('pool_enabled')}",
         f"pool_max_size={result.get('pool_max_size')}",
         f"pool_in_use={result.get('pool_in_use')}",

@@ -8,10 +8,10 @@ from collections import deque
 from typing import Any, Callable
 
 
-DEFAULT_POOL_MAX_SIZE = 2
+DEFAULT_POOL_MAX_SIZE = 1
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_WRITE_TIMEOUT_SECONDS = 5.0
-DEFAULT_QUEUE_MAX_SIZE = 500
+DEFAULT_QUEUE_MAX_SIZE = 100
 DEFAULT_DEDUPE_WINDOW_SECONDS = 60.0
 
 
@@ -149,6 +149,27 @@ class PersistentWriteBackpressure:
         result = self.queue_or_drop(table, row, critical=critical, reason=reason, error_category=category)
         result["duration_ms"] = duration_ms
         return result
+
+    def record_schema_missing_freeze(self, table: str, row: dict[str, Any], *, critical: bool) -> dict[str, Any]:
+        del row
+        with self._lock:
+            self.last_db_error_category = "missing_schema"
+            self.last_db_error = "schema_missing_write_freeze"
+            if not critical:
+                self.dropped_noncritical_writes += 1
+            queue_depth = len(self._queue)
+        return {
+            "ok": False,
+            "table": table,
+            "db_degraded": True,
+            "queued": False,
+            "schema_missing_write_freeze": True,
+            "reason": "schema_missing_write_freeze",
+            "error_category": "missing_schema",
+            "queue_depth": queue_depth,
+            "queue_max_size": self.queue_max_size,
+            **_safety(),
+        }
 
     def queue_or_drop(
         self,
