@@ -20,6 +20,16 @@ from services.mt5.mt5_persistent_schema import (
     TABLE_PRIMARY_KEYS,
     persistent_schema_status,
 )
+from services.mt5.mt5_persistent_connection_manager import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_POOL_MAX_SIZE,
+    DEFAULT_WRITE_TIMEOUT_SECONDS,
+    PersistentDbBackpressureError,
+    classify_db_error,
+    get_postgres_connection_manager,
+    persistent_write_backpressure,
+    reset_persistent_connection_state_for_tests,
+)
 from services.mt5.mt5_research_rejection_registry import research_rejection_registry_status
 
 
@@ -162,19 +172,31 @@ class RailwayPostgresClient:
         self,
         *,
         database_url: str = "",
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        write_timeout_seconds: float = DEFAULT_WRITE_TIMEOUT_SECONDS,
+        pool_max_size: int = DEFAULT_POOL_MAX_SIZE,
         driver_available: bool | None = None,
     ) -> None:
         self.database_url = str(database_url or "")
-        self.timeout_seconds = float(timeout_seconds or 5.0)
+        self.timeout_seconds = float(timeout_seconds or DEFAULT_CONNECT_TIMEOUT_SECONDS)
+        self.write_timeout_seconds = float(write_timeout_seconds or DEFAULT_WRITE_TIMEOUT_SECONDS)
+        self.pool_max_size = max(1, int(pool_max_size or DEFAULT_POOL_MAX_SIZE))
         self.database_url_configured = bool(self.database_url)
         self.driver_available = _postgres_driver_available() if driver_available is None else bool(driver_available)
+        self._connection_manager = get_postgres_connection_manager(
+            database_url=self.database_url,
+            connection_factory=self._connect,
+            pool_max_size=self.pool_max_size,
+            connect_timeout_seconds=self.timeout_seconds,
+        )
 
     @classmethod
     def from_env(cls) -> "RailwayPostgresClient":
         return cls(
             database_url=os.getenv("DATABASE_URL") or "",
-            timeout_seconds=float(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS") or 5.0),
+            timeout_seconds=float(os.getenv("PERSISTENT_DB_CONNECT_TIMEOUT_SEC") or os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS") or DEFAULT_CONNECT_TIMEOUT_SECONDS),
+            write_timeout_seconds=float(os.getenv("PERSISTENT_DB_WRITE_TIMEOUT_SEC") or DEFAULT_WRITE_TIMEOUT_SECONDS),
+            pool_max_size=int(os.getenv("PERSISTENT_DB_POOL_MAX_SIZE") or DEFAULT_POOL_MAX_SIZE),
         )
 
     @property
@@ -254,29 +276,31 @@ class RailwayPostgresClient:
         return self._fetch(sql_text, values)
 
     def _execute(self, sql_text: str, values: list[Any]) -> None:
-        connection = self._connect()
-        try:
+        def operation(connection: Any) -> None:
             cursor = connection.cursor()
-            cursor.execute(sql_text, tuple(values))
-            connection.commit()
-        finally:
             try:
-                connection.close()
+                cursor.execute(sql_text, tuple(values))
+                connection.commit()
             except Exception:
-                pass
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                raise
+
+        self._connection_manager.with_connection(operation)
 
     def _fetch(self, sql_text: str, values: list[Any]) -> list[dict[str, Any]]:
-        connection = self._connect()
-        try:
+        def operation(connection: Any) -> list[dict[str, Any]]:
             cursor = connection.cursor()
             cursor.execute(sql_text, tuple(values))
             columns = [str(column[0]) for column in (cursor.description or [])]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
-        finally:
-            try:
-                connection.close()
-            except Exception:
-                pass
+
+        return self._connection_manager.with_connection(operation)
+
+    def pool_status(self) -> dict[str, Any]:
+        return self._connection_manager.status()
 
     def _connect(self) -> Any:
         if not self.database_url_configured:
@@ -310,6 +334,23 @@ class MT5PersistentIntelligenceStore:
 
     def recent_events(self, *, limit: int = 10) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 10), 50))
+        backpressure = _backpressure_status(self.client)
+        if backpressure.get("backoff_active"):
+            return {
+                "ok": True,
+                "status": "persistent_intelligence_recent_events_ready",
+                "provider": _client_provider(self.client),
+                "limit": safe_limit,
+                "recent_decisions": [],
+                "recent_risk_events": [],
+                "recent_shadow_events": [],
+                "recent_research_lessons": [],
+                "db_degraded": True,
+                "reason": "persistent_db_backoff_active",
+                "secrets_printed": False,
+                **backpressure,
+                **_safety(),
+            }
         decisions = self._safe_select(
             "mt5_decision_events",
             params={
@@ -356,8 +397,7 @@ class MT5PersistentIntelligenceStore:
             "recent_shadow_events": _safety_rows(shadow_events.get("rows") or []),
             "recent_research_lessons": _safety_rows(research_lessons.get("rows") or []),
             "db_degraded": degraded,
-            "failed_writes": _FAILED_WRITES,
-            "queued_writes": _QUEUED_WRITES,
+            **backpressure,
             "secrets_printed": False,
             **_safety(),
         }
@@ -365,19 +405,35 @@ class MT5PersistentIntelligenceStore:
     def healthcheck(self, *, write_test_event: bool = False) -> dict[str, Any]:
         env_status = _env_status(self.client)
         client_available = bool(getattr(self.client, "available", False))
+        backpressure = _backpressure_status(self.client)
+        backpressure_degraded = bool(backpressure.get("backoff_active") or backpressure.get("last_db_error_category") == "max_connections")
         table_status: dict[str, bool] = {}
         table_errors: dict[str, str] = {}
-        if client_available:
+        if client_available and not backpressure_degraded:
             for table in REQUIRED_TABLES:
                 try:
                     table_status[table] = bool(self.client.table_ready(table))
                 except Exception as exc:
                     table_status[table] = False
                     table_errors[table] = _safe_error(exc)
+                    if classify_db_error(exc) in {"max_connections", "pool_exhausted"}:
+                        backpressure_degraded = True
+                        persistent_write_backpressure().record_failure(
+                            table,
+                            {"table": table},
+                            critical=False,
+                            reason=_safe_error(exc),
+                            duration_ms=0,
+                        )
+                        break
         else:
             table_status = {table: False for table in REQUIRED_TABLES}
+            if client_available and backpressure_degraded:
+                table_errors["backpressure"] = "persistent_db_backoff_active"
+        for table in REQUIRED_TABLES:
+            table_status.setdefault(table, False)
         tables_ready = all(table_status.values()) if table_status else False
-        db_available = client_available and not _connection_unavailable(table_errors)
+        db_available = client_available and not backpressure_degraded and not _connection_unavailable(table_errors)
         missing_tables = [table for table, ready in table_status.items() if not ready]
         permission_checks = {
             "select": bool(db_available and any(table_status.values())),
@@ -429,6 +485,10 @@ class MT5PersistentIntelligenceStore:
             write_test_event=write_test_event,
             permission_checks=permission_checks,
         )
+        if backpressure_degraded:
+            recommendation = "backoff_persistent_db_writes"
+        backpressure = _backpressure_status(self.client)
+        db_degraded = bool(backpressure_degraded or not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))))
         return {
             "ok": True,
             "status": "persistent_intelligence_status_ready",
@@ -437,7 +497,7 @@ class MT5PersistentIntelligenceStore:
             "provider": _client_provider(self.client),
             "env": env_status,
             "db_available": db_available,
-            "db_degraded": not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))),
+            "db_degraded": db_degraded,
             "tables_ready": tables_ready,
             "table_count": len(REQUIRED_TABLES),
             "missing_tables": missing_tables,
@@ -445,12 +505,11 @@ class MT5PersistentIntelligenceStore:
             "table_errors": table_errors,
             "permission_checks": permission_checks,
             "last_write_at": _LAST_WRITE_AT,
-            "failed_writes": _FAILED_WRITES,
-            "queued_writes": _QUEUED_WRITES,
+            **backpressure,
             "estimated_storage_mode": _client_provider(self.client) if db_available and tables_ready else "local_runtime_only",
             "test_write": test_write,
             "recommendation": recommendation,
-            "critical_persistence_available": db_available and tables_ready,
+            "critical_persistence_available": db_available and tables_ready and not db_degraded,
             "decision": "NO_TRADE",
             "reason": "persistent_intelligence_db_degraded" if not (db_available and tables_ready) else "persistent_intelligence_ready",
             "schema": persistent_schema_status(),
@@ -458,7 +517,7 @@ class MT5PersistentIntelligenceStore:
             **_safety(),
         }
 
-    def upsert_profile_state(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def upsert_profile_state(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "symbol": _symbol(payload.get("symbol")),
@@ -473,9 +532,9 @@ class MT5PersistentIntelligenceStore:
                 "updated_at": payload.get("updated_at") or _now(),
             }
         )
-        return self._safe_upsert("mt5_profile_state", row)
+        return self._safe_upsert("mt5_profile_state", row, critical=critical)
 
-    def upsert_profile_performance(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def upsert_profile_performance(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "symbol": _symbol(payload.get("symbol")),
@@ -495,9 +554,9 @@ class MT5PersistentIntelligenceStore:
                 "updated_at": payload.get("updated_at") or _now(),
             }
         )
-        return self._safe_upsert("mt5_profile_performance", row)
+        return self._safe_upsert("mt5_profile_performance", row, critical=critical)
 
-    def record_shadow_trade(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def record_shadow_trade(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "shadow_trade_id": payload.get("shadow_trade_id") or payload.get("trade_id"),
@@ -519,9 +578,9 @@ class MT5PersistentIntelligenceStore:
                 "order_policy": "journal_only_no_broker",
             }
         )
-        return self._safe_upsert("mt5_shadow_trades", row)
+        return self._safe_upsert("mt5_shadow_trades", row, critical=critical)
 
-    def record_decision_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def record_decision_event(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "timestamp": payload.get("timestamp") or payload.get("generated_at") or _now(),
@@ -542,9 +601,9 @@ class MT5PersistentIntelligenceStore:
                 "order_policy": "journal_only_no_broker",
             }
         )
-        return self._safe_insert("mt5_decision_events", row)
+        return self._safe_insert("mt5_decision_events", row, critical=critical)
 
-    def record_risk_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def record_risk_event(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "timestamp": payload.get("timestamp") or _now(),
@@ -560,9 +619,9 @@ class MT5PersistentIntelligenceStore:
                 "recommended_action": payload.get("recommended_action") or "",
             }
         )
-        return self._safe_insert("mt5_risk_events", row)
+        return self._safe_insert("mt5_risk_events", row, critical=critical)
 
-    def record_candidate_rotation_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def record_candidate_rotation_run(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "run_id": payload.get("run_id") or f"rotation-{uuid4().hex[:12]}",
@@ -576,9 +635,9 @@ class MT5PersistentIntelligenceStore:
                 "order_policy": "journal_only_no_broker",
             }
         )
-        return self._safe_upsert("mt5_candidate_rotation_runs", row)
+        return self._safe_upsert("mt5_candidate_rotation_runs", row, critical=critical)
 
-    def record_adaptive_governor_state(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def record_adaptive_governor_state(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "timestamp": payload.get("timestamp") or payload.get("generated_at") or _now(),
@@ -594,9 +653,9 @@ class MT5PersistentIntelligenceStore:
                 "order_policy": "journal_only_no_broker",
             }
         )
-        return self._safe_insert("mt5_adaptive_governor_state", row)
+        return self._safe_insert("mt5_adaptive_governor_state", row, critical=critical)
 
-    def record_research_lesson(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def record_research_lesson(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
             {
                 "timestamp": payload.get("timestamp") or _now(),
@@ -610,7 +669,7 @@ class MT5PersistentIntelligenceStore:
                 "recommended_next_research_phase": payload.get("recommended_next_research_phase") or "",
             }
         )
-        return self._safe_insert("mt5_research_lessons", row)
+        return self._safe_insert("mt5_research_lessons", row, critical=critical)
 
     def get_degraded_profiles(self) -> dict[str, Any]:
         result = self._safe_select("mt5_degradation_registry", params={"select": "*", "limit": "500"})
@@ -704,39 +763,57 @@ class MT5PersistentIntelligenceStore:
             "critical_data_deleted": False,
             "summary": summary,
             "write_result": write_result,
+            **_backpressure_status(self.client),
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
         }
 
-    def _safe_insert(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
-        if not self._available():
-            return _write_unavailable(table, _client_unavailable_reason(self.client))
+    def _safe_insert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
+        critical_write = _critical_write(table, row) if critical is None else bool(critical)
+        gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
+        if gate.get("short_circuit"):
+            return gate["result"]
         started = time.monotonic()
         try:
+            if not self._available():
+                return _write_unavailable(table, row, _client_unavailable_reason(self.client), critical=critical_write)
             self.client.insert(table, row)
             return _write_ok(table, started)
         except Exception as exc:
-            return _write_failed(table, exc, started)
+            return _write_failed(table, row, exc, started, critical=critical_write)
+        finally:
+            persistent_write_backpressure().end_write(gate.get("token"))
 
-    def _safe_upsert(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
-        if not self._available():
-            return _write_unavailable(table, _client_unavailable_reason(self.client))
+    def _safe_upsert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
+        critical_write = _critical_write(table, row) if critical is None else bool(critical)
+        gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
+        if gate.get("short_circuit"):
+            return gate["result"]
         started = time.monotonic()
         try:
+            if not self._available():
+                return _write_unavailable(table, row, _client_unavailable_reason(self.client), critical=critical_write)
             self.client.upsert(table, row, on_conflict=TABLE_PRIMARY_KEYS.get(table, ()))
             return _write_ok(table, started)
         except Exception as exc:
-            return _write_failed(table, exc, started)
+            return _write_failed(table, row, exc, started, critical=critical_write)
+        finally:
+            persistent_write_backpressure().end_write(gate.get("token"))
 
     def _safe_select(self, table: str, *, params: dict[str, str]) -> dict[str, Any]:
         if not self._available():
-            return {"ok": False, "db_degraded": True, "rows": [], "reason": _client_unavailable_reason(self.client), **_safety()}
+            return {"ok": False, "db_degraded": True, "rows": [], "reason": _client_unavailable_reason(self.client), **_backpressure_status(self.client), **_safety()}
+        if persistent_write_backpressure().backoff_active():
+            return {"ok": False, "db_degraded": True, "rows": [], "reason": "persistent_db_backoff_active", **_backpressure_status(self.client), **_safety()}
         try:
             rows = self.client.select(table, params=params)
             return {"ok": True, "db_degraded": False, "rows": rows, **_safety()}
         except Exception as exc:
-            return {"ok": False, "db_degraded": True, "rows": [], "reason": _safe_error(exc), **_safety()}
+            category = classify_db_error(exc)
+            if category in {"max_connections", "pool_exhausted"}:
+                persistent_write_backpressure().record_failure(table, {"table": table}, critical=False, reason=_safe_error(exc), duration_ms=0)
+            return {"ok": False, "db_degraded": True, "rows": [], "reason": _safe_error(exc), "error_category": category, **_backpressure_status(self.client), **_safety()}
 
     def _available(self) -> bool:
         return bool(getattr(self.client, "available", False))
@@ -793,7 +870,7 @@ def persist_decision_event(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    result = (store or MT5PersistentIntelligenceStore()).record_decision_event(payload)
+    result = (store or MT5PersistentIntelligenceStore()).record_decision_event(payload, critical=critical)
     return _runtime_persistence_result("decision_event", result, critical=critical)
 
 
@@ -803,7 +880,7 @@ def persist_risk_event(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    result = (store or MT5PersistentIntelligenceStore()).record_risk_event(payload)
+    result = (store or MT5PersistentIntelligenceStore()).record_risk_event(payload, critical=critical)
     return _runtime_persistence_result("risk_event", result, critical=critical)
 
 
@@ -813,7 +890,7 @@ def persist_shadow_trade(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    result = (store or MT5PersistentIntelligenceStore()).record_shadow_trade(payload)
+    result = (store or MT5PersistentIntelligenceStore()).record_shadow_trade(payload, critical=critical)
     return _runtime_persistence_result("shadow_trade", result, critical=critical)
 
 
@@ -823,7 +900,7 @@ def persist_adaptive_governor_state(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    result = (store or MT5PersistentIntelligenceStore()).record_adaptive_governor_state(payload)
+    result = (store or MT5PersistentIntelligenceStore()).record_adaptive_governor_state(payload, critical=critical)
     return _runtime_persistence_result("adaptive_governor_state", result, critical=critical)
 
 
@@ -833,7 +910,7 @@ def persist_research_lesson(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    result = (store or MT5PersistentIntelligenceStore()).record_research_lesson(payload)
+    result = (store or MT5PersistentIntelligenceStore()).record_research_lesson(payload, critical=critical)
     return _runtime_persistence_result("research_lesson", result, critical=critical)
 
 
@@ -843,7 +920,7 @@ def persist_candidate_rotation_run(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    result = (store or MT5PersistentIntelligenceStore()).record_candidate_rotation_run(payload)
+    result = (store or MT5PersistentIntelligenceStore()).record_candidate_rotation_run(payload, critical=critical)
     return _runtime_persistence_result("candidate_rotation_run", result, critical=critical)
 
 
@@ -852,6 +929,7 @@ def _reset_persistent_intelligence_counters_for_tests() -> None:
     _LAST_WRITE_AT = ""
     _FAILED_WRITES = 0
     _QUEUED_WRITES = 0
+    reset_persistent_connection_state_for_tests()
 
 
 def _env_status(client: Any) -> dict[str, Any]:
@@ -998,6 +1076,10 @@ def _connection_unavailable(table_errors: dict[str, str]) -> bool:
         "connection timed out",
         "server closed the connection",
         "postgres_driver_missing",
+        "max clients",
+        "too many clients",
+        "pool_size",
+        "pool exhausted",
     )
     return any(marker in text for marker in connection_markers)
 
@@ -1014,38 +1096,37 @@ def _write_ok(table: str, started: float) -> dict[str, Any]:
     }
 
 
-def _write_unavailable(table: str, reason: str) -> dict[str, Any]:
-    global _QUEUED_WRITES
-    _QUEUED_WRITES += 1
-    return {"ok": False, "table": table, "db_degraded": True, "queued": True, "reason": reason, **_safety()}
+def _write_unavailable(table: str, row: dict[str, Any], reason: str, *, critical: bool) -> dict[str, Any]:
+    return persistent_write_backpressure().record_unavailable(table, row, critical=critical, reason=reason)
 
 
-def _write_failed(table: str, exc: Exception, started: float) -> dict[str, Any]:
-    global _FAILED_WRITES, _QUEUED_WRITES
-    _FAILED_WRITES += 1
-    _QUEUED_WRITES += 1
-    return {
-        "ok": False,
-        "table": table,
-        "db_degraded": True,
-        "queued": True,
-        "reason": _safe_error(exc),
-        "duration_ms": int((time.monotonic() - started) * 1000),
-        **_safety(),
-    }
+def _write_failed(table: str, row: dict[str, Any], exc: Exception, started: float, *, critical: bool) -> dict[str, Any]:
+    return persistent_write_backpressure().record_failure(
+        table,
+        row,
+        critical=critical,
+        reason=_safe_error(exc),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
 
 
 def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *, critical: bool) -> dict[str, Any]:
     ok = bool(write_result.get("ok"))
     critical_failed = bool(critical and not ok)
+    stats = _backpressure_status(None)
     return {
         "ok": ok,
         "event_type": event_type,
         "write": write_result,
         "db_degraded": bool(write_result.get("db_degraded")),
         "queued": bool(write_result.get("queued")),
-        "failed_writes": _FAILED_WRITES,
-        "queued_writes": _QUEUED_WRITES,
+        "failed_writes": stats.get("failed_writes", 0),
+        "queued_writes": stats.get("queued_writes", 0),
+        "queue_depth": stats.get("queue_depth", 0),
+        "queue_max_size": stats.get("queue_max_size", 0),
+        "dropped_noncritical_writes": stats.get("dropped_noncritical_writes", 0),
+        "suppressed_duplicate_events": stats.get("suppressed_duplicate_events", 0),
+        "last_db_error_category": stats.get("last_db_error_category", ""),
         "critical": bool(critical),
         "critical_persistence_failed": critical_failed,
         "decision": "NO_TRADE" if critical_failed else "",
@@ -1053,6 +1134,32 @@ def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *
         "secrets_printed": False,
         **_safety(),
     }
+
+
+def _critical_write(table: str, row: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("decision", "reason", "risk_state", "circuit_breaker", "status", "degradation_reason", "recommended_action", "global_state")
+    ).casefold()
+    if table == "mt5_shadow_trades":
+        return True
+    if table == "mt5_risk_events":
+        return bool(row.get("circuit_breaker") or not row.get("allowed") or any(marker in text for marker in ("kill_switch", "blocked", "circuit")))
+    if table == "mt5_profile_state":
+        return bool(row.get("degradation_reason") or str(row.get("status") or "").casefold() in {"observation_only", "degraded", "paused", "pause_profile"})
+    if table == "mt5_adaptive_governor_state":
+        return "kill_switch" in text
+    return False
+
+
+def _backpressure_status(client: Any | None) -> dict[str, Any]:
+    pool_status = {}
+    if client is not None and hasattr(client, "pool_status"):
+        try:
+            pool_status = client.pool_status()
+        except Exception:
+            pool_status = {}
+    return persistent_write_backpressure().status(pool_status=pool_status)
 
 
 def _safety_rows(rows: list[Any]) -> list[dict[str, Any]]:

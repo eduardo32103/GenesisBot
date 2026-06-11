@@ -18,6 +18,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
     persist_risk_event,
     persist_shadow_trade,
 )
+from services.mt5.mt5_persistent_connection_manager import persistent_write_backpressure
 
 
 class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
@@ -118,6 +119,20 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertNotIn("EURUSD", sql)
         self.assertIn("EURUSD", values)
 
+    def test_railway_postgres_client_reuses_pooled_connection(self) -> None:
+        client = _PooledRailwayClient()
+
+        client.insert("mt5_decision_events", _decision_payload("EURUSD", "H1", "first"))
+        client.insert("mt5_decision_events", _decision_payload("EURUSD", "H1", "second"))
+
+        self.assertEqual(client.connection_count, 1)
+        self.assertEqual(len(client.connections), 1)
+        self.assertEqual(client.connections[0].close_count, 0)
+        status = client.pool_status()
+        self.assertTrue(status["pool_enabled"])
+        self.assertEqual(status["pool_max_size"], 2)
+        self.assertEqual(status["pool_idle"], 1)
+
     def test_missing_tables_degrades_safely_with_apply_schema_recommendation(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
 
@@ -168,6 +183,9 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+        self.assertTrue(result["pool_enabled"])
+        self.assertEqual(result["queue_max_size"], 500)
+        self.assertEqual(result["queue_depth"], 0)
 
     def test_healthcheck_does_not_print_secret_values(self) -> None:
         result = MT5PersistentIntelligenceStore(client=_MissingTablesClient(secret="SUPERSECRET")).healthcheck()
@@ -374,12 +392,86 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertTrue(result["queued"])
         self.assertEqual(result["failed_writes"], 1)
         self.assertEqual(result["queued_writes"], 1)
+        self.assertEqual(result["queue_depth"], 1)
         self.assertTrue(result["critical_persistence_failed"])
         self.assertEqual(result["decision"], "NO_TRADE")
         self.assertEqual(result["reason"], "persistent_intelligence_db_degraded")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_max_connections_error_marks_db_degraded_and_backoff(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MaxConnectionsClient())
+
+        result = persist_decision_event(_decision_payload("BTCUSD", "M30", "max_clients"), store=store)
+        healthcheck = store.healthcheck()
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["last_db_error_category"], "max_connections")
+        self.assertTrue(healthcheck["db_degraded"])
+        self.assertEqual(healthcheck["last_db_error_category"], "max_connections")
+        self.assertEqual(healthcheck["recommendation"], "backoff_persistent_db_writes")
+        self.assertFalse(healthcheck["broker_touched"])
+        self.assertFalse(healthcheck["order_executed"])
+        self.assertEqual(healthcheck["order_policy"], "journal_only_no_broker")
+
+    def test_queue_max_size_limits_noncritical_writes_and_drops_overflow(self) -> None:
+        with patch.dict("os.environ", {"PERSISTENT_DB_QUEUE_MAX_SIZE": "2"}):
+            _reset_persistent_intelligence_counters_for_tests()
+            store = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
+
+            persist_decision_event(_decision_payload("EURUSD", "H1", "one"), store=store)
+            persist_decision_event(_decision_payload("EURUSD", "H1", "two"), store=store)
+            third = persist_decision_event(_decision_payload("EURUSD", "H1", "three"), store=store)
+            stats = persistent_write_backpressure().status()
+
+        self.assertFalse(third["ok"])
+        self.assertFalse(third["queued"])
+        self.assertEqual(stats["queue_depth"], 2)
+        self.assertEqual(stats["queued_writes"], 2)
+        self.assertEqual(stats["dropped_noncritical_writes"], 1)
+        self.assertEqual(third["dropped_noncritical_writes"], 1)
+        self.assertFalse(third["broker_touched"])
+        self.assertFalse(third["order_executed"])
+        self.assertEqual(third["order_policy"], "journal_only_no_broker")
+
+    def test_critical_queue_full_returns_no_trade_without_unbounded_queue(self) -> None:
+        with patch.dict("os.environ", {"PERSISTENT_DB_QUEUE_MAX_SIZE": "0"}):
+            _reset_persistent_intelligence_counters_for_tests()
+            store = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
+
+            result = persist_shadow_trade(
+                {"shadow_trade_id": "paper-critical-1", "symbol": "BTCUSD", "timeframe": "M30", "status": "open"},
+                critical=True,
+                store=store,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["queued"])
+        self.assertTrue(result["critical_persistence_failed"])
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_duplicate_no_trade_events_are_coalesced(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+        payload = _decision_payload("US500", "H1", "risk_governor_block:recent_edge_negative")
+
+        first = persist_decision_event(payload, store=store)
+        second = persist_decision_event(payload, store=store)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(client.inserted), 1)
+        self.assertTrue(second["write"]["suppressed_duplicate"])
+        self.assertEqual(second["suppressed_duplicate_events"], 1)
+        self.assertFalse(second["broker_touched"])
+        self.assertFalse(second["order_executed"])
+        self.assertEqual(second["order_policy"], "journal_only_no_broker")
 
     def test_recent_events_returns_compact_safety_summary(self) -> None:
         client = _FakeClient(
@@ -403,6 +495,28 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(len(result["recent_shadow_events"]), 1)
         self.assertEqual(len(result["recent_research_lessons"]), 1)
         self.assertFalse(result["recent_decisions"][0]["broker_touched"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_recent_events_returns_empty_safe_summary_during_db_backoff(self) -> None:
+        client = _FakeClient(selected={"mt5_decision_events": [{"symbol": "BTCUSD"}]})
+        store = MT5PersistentIntelligenceStore(client=client)
+        persistent_write_backpressure().record_failure(
+            "mt5_decision_events",
+            {"symbol": "BTCUSD"},
+            critical=False,
+            reason="max clients reached in session mode",
+            duration_ms=1,
+        )
+
+        result = store.recent_events(limit=5)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["reason"], "persistent_db_backoff_active")
+        self.assertEqual(result["recent_decisions"], [])
+        self.assertEqual(client.select_calls, 0)
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
@@ -436,6 +550,7 @@ class _FakeClient:
         self.inserted: list[dict[str, object]] = []
         self.upserted: list[dict[str, object]] = []
         self.checked_tables: list[str] = []
+        self.select_calls = 0
 
     def table_ready(self, table: str) -> bool:
         self.checked_tables.append(table)
@@ -450,6 +565,7 @@ class _FakeClient:
         return {"ok": True}
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        self.select_calls += 1
         return [dict(row) for row in self.selected.get(table, [])]
 
 
@@ -490,6 +606,77 @@ class _FailingWriteClient:
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
         return []
+
+
+class _MaxConnectionsClient(_FailingWriteClient):
+    def insert(self, table: str, payload: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("max clients reached in session mode / max clients limited to pool_size: 15")
+
+    def upsert(self, table: str, payload: dict[str, object], *, on_conflict: tuple[str, ...]) -> dict[str, object]:
+        raise RuntimeError("max clients reached in session mode / max clients limited to pool_size: 15")
+
+
+class _PooledRailwayClient(RailwayPostgresClient):
+    def __init__(self) -> None:
+        self.connection_count = 0
+        self.connections: list[_FakePgConnection] = []
+        super().__init__(
+            database_url="postgresql://user:pass@example.test:5432/db",
+            driver_available=True,
+            pool_max_size=2,
+        )
+
+    def _connect(self) -> "_FakePgConnection":
+        self.connection_count += 1
+        connection = _FakePgConnection()
+        self.connections.append(connection)
+        return connection
+
+
+class _FakePgConnection:
+    def __init__(self) -> None:
+        self.close_count = 0
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.cursor_obj = _FakePgCursor()
+
+    def cursor(self) -> "_FakePgCursor":
+        return self.cursor_obj
+
+    def commit(self) -> None:
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class _FakePgCursor:
+    description: list[tuple[str]] = []
+
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+    def execute(self, sql: str, values: tuple[object, ...]) -> None:
+        self.executed.append((sql, values))
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return []
+
+
+def _decision_payload(symbol: str, timeframe: str, reason: str) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "decision": "NO_TRADE",
+        "reason": reason,
+        "profile": "unit_profile",
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
 
 
 if __name__ == "__main__":

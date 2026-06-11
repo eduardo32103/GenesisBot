@@ -249,6 +249,8 @@ def persistent_schema_status() -> dict[str, Any]:
         "table_count": len(REQUIRED_TABLES),
         "ddl_available": True,
         "ddl_applied_by_runtime": False,
+        "connection_pooling_runtime_only": True,
+        "write_backpressure_runtime_only": True,
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
