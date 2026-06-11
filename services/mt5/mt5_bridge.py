@@ -4,7 +4,12 @@ from typing import Any
 
 from services.genesis.memory_store import MemoryStore
 from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
-from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_recent_events, persistent_intelligence_status
+from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
+from services.mt5.mt5_persistent_intelligence_store import (
+    persistent_intelligence_recent_events,
+    persistent_intelligence_schema_freeze_status,
+    persistent_intelligence_status,
+)
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament
@@ -42,12 +47,74 @@ def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = No
     return persistent_intelligence_recent_events(limit=limit)
 
 
+def mt5_persistent_db_doctor_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return run_persistent_db_doctor()
+
+
 def mt5_capital_protection_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    blocked = _schema_missing_fast_fail("capital_protection")
+    if blocked:
+        return blocked
     return run_capital_protection_governor()
 
 
 def mt5_strategy_tournament_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    blocked = _schema_missing_fast_fail("strategy_tournament")
+    if blocked:
+        return blocked
     return run_strategy_tournament()
+
+
+def _schema_missing_fast_fail(endpoint: str, *, symbol: str = "") -> dict[str, Any]:
+    freeze = persistent_intelligence_schema_freeze_status()
+    if not freeze.get("writes_frozen"):
+        return {}
+    base = {
+        "ok": True,
+        **freeze,
+        "status": f"mt5_{endpoint}_paused_by_db_schema_missing",
+        "provider": "railway_postgres",
+        "symbol": str(symbol or ""),
+        "db_degraded": True,
+        "schema_missing_write_freeze": True,
+        "writes_frozen": True,
+        "learning_state": "paused_by_db_schema_missing",
+        "decision": "NO_TRADE",
+        "reason": "persistent_intelligence_schema_missing",
+        "recommended_action": "apply_schema_sql",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "secrets_printed": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+    if endpoint == "capital_protection":
+        base.update(
+            {
+                "capital_state": "paused_by_db_schema_missing",
+                "safe_to_trade": False,
+                "circuit_breakers": [
+                    {
+                        "name": "persistent_intelligence_schema_missing",
+                        "active": True,
+                        "severity": "critical",
+                        "reason": "persistent_intelligence_schema_missing",
+                    }
+                ],
+            }
+        )
+    if endpoint == "strategy_tournament":
+        base.update(
+            {
+                "recommended_action": "skip_tournament_until_schema_ready",
+                "top_candidate": {},
+                "ranked_candidates": [],
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+            }
+        )
+    return base
 
 
 def mt5_ui_summary(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -181,6 +248,9 @@ def mt5_forward_replay_run(payload: dict[str, Any] | None = None, *, memory: Mem
 
 
 def mt5_learning_run(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    blocked = _schema_missing_fast_fail("learning_run")
+    if blocked:
+        return blocked
     return build_router(memory).learning_run(payload)
 
 
@@ -189,6 +259,9 @@ def mt5_memory_summary(*, memory: MemoryStore | None = None, symbol: str = "", l
 
 
 def mt5_learning_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
+    blocked = _schema_missing_fast_fail("learning_status", symbol=symbol)
+    if blocked:
+        return blocked
     return build_router(memory).learning_status(symbol=symbol)
 
 

@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
+from scripts.run_persistent_db_connection_diagnostics import run_connection_diagnostics
 from scripts.run_persistent_intelligence_apply_schema import run_apply_schema
+from services.mt5.mt5_bridge import mt5_capital_protection_status, mt5_learning_status, mt5_strategy_tournament_status
 from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES, get_persistent_intelligence_schema_sql
 from services.mt5.mt5_persistent_intelligence_store import (
     MT5PersistentIntelligenceStore,
@@ -207,6 +209,74 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(attempts, 3)
         self.assertEqual(result["error_category"], "max_connections")
         self.assertNotIn("SUPERSECRET", serialized)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_apply_schema_can_prefer_database_public_url_without_printing_secret(self) -> None:
+        connection = _FakeSchemaConnection(existing_tables=[])
+        public_url = "postgresql://public_user:PUBLICSECRET@public.example.test:5432/railway"
+        private_url = "postgresql://private_user:PRIVATESECRET@private.example.test:5432/railway"
+        captured: list[str] = []
+
+        with patch.dict("os.environ", {"DATABASE_URL": private_url, "DATABASE_PUBLIC_URL": public_url}, clear=True):
+            result = run_apply_schema(
+                apply=False,
+                prefer_public_url=True,
+                connect_factory=lambda target: captured.append(target) or connection,
+            )
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["DATABASE_URL_PRESENT"])
+        self.assertTrue(result["DATABASE_PUBLIC_URL_PRESENT"])
+        self.assertEqual(result["connection_source"], "DATABASE_PUBLIC_URL")
+        self.assertEqual(captured, [public_url])
+        self.assertNotIn(public_url, serialized)
+        self.assertNotIn(private_url, serialized)
+        self.assertNotIn("PUBLICSECRET", serialized)
+        self.assertNotIn("PRIVATESECRET", serialized)
+        self.assertFalse(result["secrets_printed"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_connection_diagnostics_reports_env_presence_without_printing_secrets(self) -> None:
+        public_url = "postgresql://public_user:PUBLICSECRET@public.example.test:5432/railway"
+        private_url = "postgresql://private_user:PRIVATESECRET@private.example.test:5432/railway"
+
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": private_url,
+                "DATABASE_PUBLIC_URL": public_url,
+                "PGHOST": "db.example.test",
+                "PGUSER": "pg_user",
+                "PGPASSWORD": "PGSECRET",
+                "PGDATABASE": "railway",
+            },
+            clear=True,
+        ):
+            result = run_connection_diagnostics(
+                prefer_public_url=True,
+                connect_factory=lambda _: (_ for _ in ()).throw(RuntimeError(f"could not connect with {public_url} PGSECRET")),
+            )
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["DATABASE_URL_PRESENT"])
+        self.assertTrue(result["DATABASE_PUBLIC_URL_PRESENT"])
+        self.assertTrue(result["PGHOST_PRESENT"])
+        self.assertTrue(result["PGUSER_PRESENT"])
+        self.assertTrue(result["PGPASSWORD_PRESENT"])
+        self.assertTrue(result["can_parse_url"])
+        self.assertFalse(result["can_connect"])
+        self.assertNotIn(public_url, serialized)
+        self.assertNotIn(private_url, serialized)
+        self.assertNotIn("PUBLICSECRET", serialized)
+        self.assertNotIn("PRIVATESECRET", serialized)
+        self.assertNotIn("PGSECRET", serialized)
+        self.assertFalse(result["secrets_printed"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
@@ -543,6 +613,24 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_schema_missing_write_freeze_keeps_queue_depth_zero_across_repeated_noncritical_writes(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        store.healthcheck()
+
+        results = [
+            persist_decision_event(_decision_payload("EURUSD", "H1", f"schema_missing_{idx}"), store=store)
+            for idx in range(5)
+        ]
+        stats = persistent_write_backpressure().status()
+
+        self.assertTrue(all(not result["queued"] for result in results))
+        self.assertEqual(stats["queue_depth"], 0)
+        self.assertEqual(stats["last_db_error_category"], "missing_schema")
+        self.assertGreaterEqual(stats["dropped_noncritical_writes"], 5)
+        self.assertFalse(results[-1]["broker_touched"])
+        self.assertFalse(results[-1]["order_executed"])
+        self.assertEqual(results[-1]["order_policy"], "journal_only_no_broker")
+
     def test_schema_missing_write_freeze_returns_no_trade_for_critical_write(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
         store.healthcheck()
@@ -670,6 +758,26 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_learning_and_tournament_endpoints_fast_fail_during_schema_missing_freeze(self) -> None:
+        MT5PersistentIntelligenceStore(client=_MissingTablesClient()).healthcheck()
+
+        learning = mt5_learning_status(symbol="BTCUSD")
+        tournament = mt5_strategy_tournament_status()
+        capital = mt5_capital_protection_status()
+
+        self.assertEqual(learning["learning_state"], "paused_by_db_schema_missing")
+        self.assertEqual(learning["decision"], "NO_TRADE")
+        self.assertEqual(learning["reason"], "persistent_intelligence_schema_missing")
+        self.assertEqual(tournament["status"], "mt5_strategy_tournament_paused_by_db_schema_missing")
+        self.assertEqual(tournament["ranked_candidates"], [])
+        self.assertEqual(capital["capital_state"], "paused_by_db_schema_missing")
+        self.assertFalse(capital["safe_to_trade"])
+        for result in (learning, tournament, capital):
+            self.assertTrue(result["writes_frozen"])
+            self.assertFalse(result["broker_touched"])
+            self.assertFalse(result["order_executed"])
+            self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_endpoint_is_exposed_and_route_returns_safe_status(self) -> None:
         app = create_app()

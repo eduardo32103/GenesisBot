@@ -139,6 +139,10 @@ class PersistentWriteBackpressure:
         duration_ms: int,
     ) -> dict[str, Any]:
         category = classify_db_error(reason)
+        if category in {"missing_schema", "missing_table"}:
+            result = self.record_schema_missing_freeze(table, row, critical=critical)
+            result["duration_ms"] = duration_ms
+            return result
         with self._lock:
             self.failed_writes += 1
             self.last_db_error_category = category
@@ -149,6 +153,24 @@ class PersistentWriteBackpressure:
         result = self.queue_or_drop(table, row, critical=critical, reason=reason, error_category=category)
         result["duration_ms"] = duration_ms
         return result
+
+    def activate_schema_missing_freeze(self, *, reason: str = "schema_missing_write_freeze") -> dict[str, Any]:
+        with self._lock:
+            cleared = len(self._queue)
+            self._queue.clear()
+            self.last_db_error_category = "missing_schema"
+            self.last_db_error = str(reason or "schema_missing_write_freeze")[:500]
+            self._backoff_until = 0.0
+            self._backoff_seconds = 0.0
+            queue_depth = len(self._queue)
+        return {
+            "ok": True,
+            "schema_missing_write_freeze": True,
+            "cleared_queued_writes": cleared,
+            "queue_depth": queue_depth,
+            "queue_max_size": self.queue_max_size,
+            **_safety(),
+        }
 
     def record_schema_missing_freeze(self, table: str, row: dict[str, Any], *, critical: bool) -> dict[str, Any]:
         del row
@@ -423,8 +445,8 @@ def classify_db_error(error: object) -> str:
         return "auth_or_permission"
     if any(marker in text for marker in connection_markers):
         return "connection_unavailable"
-    if "relation does not exist" in text or "undefined table" in text:
-        return "missing_table"
+    if "relation does not exist" in text or "undefined table" in text or "missing_schema" in text:
+        return "missing_schema"
     if "database_env_not_configured" in text or "not_configured" in text:
         return "not_configured"
     return "write_failed"

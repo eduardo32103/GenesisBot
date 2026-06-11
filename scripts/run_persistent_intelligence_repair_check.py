@@ -15,7 +15,7 @@ from scripts.run_persistent_intelligence_apply_schema import run_apply_schema  #
 from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore  # noqa: E402
 
 
-APPLY_COMMAND = "python scripts/run_persistent_intelligence_apply_schema.py --apply --no-rls --wait-for-connection --max-connect-attempts 10"
+APPLY_COMMAND = "python scripts/run_persistent_intelligence_apply_schema.py --apply --no-rls --prefer-public-url --wait-for-connection --max-connect-attempts 10 --connect-backoff-seconds 5 --statement-timeout-ms 30000"
 
 
 def run_repair_check(
@@ -25,6 +25,9 @@ def run_repair_check(
     wait_for_connection: bool = True,
     max_connect_attempts: int = 10,
     connect_backoff_seconds: float = 5.0,
+    use_public_url: bool = False,
+    prefer_public_url: bool = False,
+    statement_timeout_ms: int = 30000,
 ) -> dict[str, Any]:
     healthcheck = MT5PersistentIntelligenceStore().healthcheck(write_test_event=False)
     missing_tables = list(healthcheck.get("missing_tables") or [])
@@ -48,6 +51,9 @@ def run_repair_check(
             wait_for_connection=wait_for_connection,
             max_connect_attempts=max_connect_attempts,
             connect_backoff_seconds=connect_backoff_seconds,
+            use_public_url=use_public_url,
+            prefer_public_url=prefer_public_url,
+            statement_timeout_ms=statement_timeout_ms,
         )
         apply_result["attempted"] = True
     post_apply_healthcheck: dict[str, Any] = {}
@@ -76,6 +82,9 @@ def run_repair_check(
         "last_db_error_category": last_category,
         "recommended_actions": recommendations,
         "apply_command": APPLY_COMMAND,
+        "use_public_url": bool(use_public_url),
+        "prefer_public_url": bool(prefer_public_url),
+        "statement_timeout_ms": int(statement_timeout_ms or 30000),
         "apply_result": apply_result,
         "post_apply_healthcheck": post_apply_healthcheck,
         "secrets_printed": False,
@@ -91,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
         wait_for_connection=args.wait_for_connection,
         max_connect_attempts=args.max_connect_attempts,
         connect_backoff_seconds=args.connect_backoff_seconds,
+        use_public_url=args.use_public_url,
+        prefer_public_url=args.prefer_public_url,
+        statement_timeout_ms=args.statement_timeout_ms,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True))
@@ -123,6 +135,9 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"last_db_error_category={result.get('last_db_error_category')}",
             f"recommended_actions={json.dumps(result.get('recommended_actions') or [], ensure_ascii=True)}",
             f"apply_command={result.get('apply_command')}",
+            f"use_public_url={result.get('use_public_url')}",
+            f"prefer_public_url={result.get('prefer_public_url')}",
+            f"statement_timeout_ms={result.get('statement_timeout_ms')}",
             f"apply_attempted={(result.get('apply_result') or {}).get('attempted')}",
             f"apply_applied={(result.get('apply_result') or {}).get('applied')}",
             f"secrets_printed={result.get('secrets_printed')}",
@@ -143,6 +158,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--no-wait-for-connection", dest="wait_for_connection", action="store_false")
     parser.add_argument("--max-connect-attempts", type=int, default=10)
     parser.add_argument("--connect-backoff-seconds", type=float, default=5.0)
+    parser.add_argument("--use-public-url", action="store_true")
+    parser.add_argument("--prefer-public-url", action="store_true")
+    parser.add_argument("--statement-timeout-ms", type=int, default=30000)
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(include_rls=False, apply_schema=False)
     return parser.parse_args(argv)

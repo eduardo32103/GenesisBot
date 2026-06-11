@@ -1,0 +1,47 @@
+name: Genesis CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  critical-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Critical MT5 tests
+        run: |
+          python -m unittest tests.unit.test_mt5_persistent_intelligence_store
+          python -m unittest tests.unit.test_mt5_persistent_db_doctor
+          python -m unittest tests.unit.test_mt5_autonomous_learning_orchestrator
+          python -m unittest tests.unit.test_mt5_capital_protection_governor
+          python -m unittest tests.unit.test_mt5_strategy_tournament
+          python -m unittest tests.unit.test_mt5_adaptive_strategy_governor
+          python -m unittest tests.unit.test_mt5_adaptive_strategy_governor_enforcement
+          python -m unittest tests.unit.test_mt5_shadow_trade_hygiene
+          python -m unittest tests.unit.test_mt5_risk_recovery
+
+      - name: Dashboard syntax
+        run: node --check app/dashboard/app.js
+
+      - name: Whitespace check
+        run: git diff --check
