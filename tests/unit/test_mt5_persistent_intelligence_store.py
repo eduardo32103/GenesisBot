@@ -7,7 +7,7 @@ from unittest.mock import patch
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
 from scripts.run_persistent_db_connection_diagnostics import run_connection_diagnostics
-from scripts.run_persistent_intelligence_apply_schema import _sql_statements, run_apply_schema
+from scripts.run_persistent_intelligence_apply_schema import _set_statement_timeout, _sql_statements, run_apply_schema
 from services.mt5.mt5_bridge import mt5_capital_protection_status, mt5_learning_status, mt5_strategy_tournament_status
 from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES, get_persistent_intelligence_schema_sql
 from services.mt5.mt5_persistent_intelligence_store import (
@@ -249,6 +249,18 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_statement_timeout_failure_rolls_back_aborted_transaction(self) -> None:
+        connection = _FailingSchemaConnection(
+            existing_tables=[],
+            fail_on="set statement_timeout",
+            error=RuntimeError("syntax error at or near timeout"),
+        )
+
+        _set_statement_timeout(connection, 30000)
+
+        self.assertEqual(connection.rollback_count, 1)
+        self.assertEqual(connection.commit_count, 0)
 
     def test_apply_schema_reports_all_connection_attempts_when_waiting(self) -> None:
         attempts = 0

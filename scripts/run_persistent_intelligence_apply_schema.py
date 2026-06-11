@@ -331,9 +331,14 @@ def _target_redaction_values(target: dict[str, str]) -> tuple[str, ...]:
 def _set_statement_timeout(connection: Any, statement_timeout_ms: int) -> None:
     try:
         cursor = connection.cursor()
-        cursor.execute("set statement_timeout to %s", (max(1000, int(statement_timeout_ms or 30000)),))
+        timeout_ms = max(1000, int(statement_timeout_ms or 30000))
+        cursor.execute(f"set statement_timeout to {timeout_ms}")
+        connection.commit()
     except Exception:
-        pass
+        try:
+            connection.rollback()
+        except Exception:
+            pass
 
 
 def _list_ready_tables(connection: Any) -> list[str]:
