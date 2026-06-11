@@ -4747,7 +4747,22 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/genesis/mt5/persistent-intelligence/db-doctor":
-            payload_data = get_genesis_mt5_persistent_db_doctor_status()
+            query = parse_qs(parsed.query)
+            repair = _truthy((query.get("repair") or [""])[0])
+            apply_schema = _truthy((query.get("apply_schema") or query.get("apply-schema") or [""])[0])
+            wait_for_connection = _truthy((query.get("wait_for_connection") or query.get("wait-for-connection") or [""])[0])
+            verbose_sanitized = _truthy((query.get("verbose_sanitized") or query.get("verbose-sanitized") or [""])[0])
+            try:
+                max_connect_attempts = max(1, min(10, int((query.get("max_connect_attempts") or query.get("max-connect-attempts") or ["3"])[0] or 3)))
+            except (TypeError, ValueError):
+                max_connect_attempts = 3
+            payload_data = get_genesis_mt5_persistent_db_doctor_status(
+                repair=repair,
+                apply_schema=apply_schema,
+                wait_for_connection=wait_for_connection,
+                max_connect_attempts=max_connect_attempts,
+                verbose_sanitized=verbose_sanitized,
+            )
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

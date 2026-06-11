@@ -52,6 +52,9 @@ class MT5PersistentDbDoctorTests(unittest.TestCase):
             "include_rls": False,
             "connection_source": "DATABASE_PUBLIC_URL",
             "connect_attempts": 1,
+            "statement_count": 29,
+            "statements_applied": 29,
+            "statements_failed": 0,
             "tables_ready": True,
             "missing_tables_after": [],
             "recommendation": "persistent_intelligence_ready",
@@ -69,6 +72,52 @@ class MT5PersistentDbDoctorTests(unittest.TestCase):
         self.assertTrue(result["apply_result"]["attempted"])
         self.assertTrue(result["apply_result"]["applied"])
         self.assertEqual(result["apply_result"]["connection_source"], "DATABASE_PUBLIC_URL")
+        self.assertEqual(result["apply_result"]["statement_count"], 29)
+        self.assertEqual(result["apply_result"]["statements_applied"], 29)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_doctor_preserves_sanitized_schema_apply_failure_details(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        apply_payload = {
+            "ok": False,
+            "provider": "railway_postgres",
+            "db_available": True,
+            "dry_run": False,
+            "applied": False,
+            "include_rls": False,
+            "connection_source": "DATABASE_URL",
+            "connect_attempts": 1,
+            "statement_count": 29,
+            "statements_applied": 0,
+            "statements_failed": 1,
+            "first_failed_statement_index": 1,
+            "first_failed_statement_kind": "create_extension",
+            "first_failed_error_sanitized": "permission denied to create extension pgcrypto",
+            "apply_failed_reason": "permission denied to create extension pgcrypto",
+            "error_category": "extension_permission_error",
+            "tables_ready": False,
+            "missing_tables_after": ["mt5_profile_state"],
+            "recommendation": "review_pgcrypto_extension_permissions",
+            "secrets_printed": False,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+
+        with patch("services.mt5.mt5_persistent_db_doctor.run_connection_diagnostics", return_value=_diagnostics(can_connect=True)), patch(
+            "services.mt5.mt5_persistent_db_doctor.run_apply_schema", return_value=apply_payload
+        ):
+            result = run_persistent_db_doctor(store=store, repair=True, verbose_sanitized=True)
+
+        self.assertTrue(result["apply_result"]["attempted"])
+        self.assertFalse(result["apply_result"]["applied"])
+        self.assertEqual(result["apply_result"]["first_failed_statement_kind"], "create_extension")
+        self.assertEqual(result["apply_result"]["error_category"], "extension_permission_error")
+        self.assertEqual(result["apply_result"]["apply_failed_reason"], "permission denied to create extension pgcrypto")
+        self.assertEqual(result["recommendation"], "apply_schema_failed_review_statement_error")
+        self.assertEqual(result["decision"], "NO_TRADE")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
@@ -148,6 +197,36 @@ class MT5PersistentDbDoctorTests(unittest.TestCase):
         self.assertFalse(payload["broker_touched"])
         self.assertFalse(payload["order_executed"])
         self.assertEqual(payload["order_policy"], "journal_only_no_broker")
+
+    def test_db_doctor_endpoint_accepts_explicit_repair_flags(self) -> None:
+        payload = {
+            "ok": True,
+            "repair_requested": True,
+            "apply_schema_requested": True,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        with patch("api.routes.genesis.mt5_persistent_db_doctor_status", return_value=payload) as doctor:
+            result = get_genesis_mt5_persistent_db_doctor_status(
+                repair=True,
+                apply_schema=True,
+                wait_for_connection=True,
+                max_connect_attempts=7,
+                verbose_sanitized=True,
+            )
+
+        self.assertTrue(result["repair_requested"])
+        doctor.assert_called_once_with(
+            repair=True,
+            apply_schema=True,
+            wait_for_connection=True,
+            max_connect_attempts=7,
+            verbose_sanitized=True,
+        )
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
 
 class _MissingTablesClient:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -27,6 +28,25 @@ class SchemaConnectionError(RuntimeError):
         self.attempts = attempts
 
 
+class SchemaApplyError(RuntimeError):
+    def __init__(
+        self,
+        original: Exception,
+        *,
+        statement_index: int,
+        statement_kind: str,
+        applied_count: int,
+        redaction_values: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.statement_index = int(statement_index)
+        self.statement_kind = str(statement_kind or "unknown")
+        self.applied_count = int(applied_count)
+        self.error_category = _statement_error_category(self.statement_kind, original)
+        self.sanitized_error = _safe_error(original, extra_secrets=redaction_values)
+
+
 def run_apply_schema(
     *,
     apply: bool = False,
@@ -39,6 +59,7 @@ def run_apply_schema(
     use_public_url: bool = False,
     prefer_public_url: bool = False,
     statement_timeout_ms: int = 30000,
+    verbose_sanitized: bool = False,
 ) -> dict[str, Any]:
     env_presence = _database_env_presence()
     target = _resolve_connection_target(
@@ -49,11 +70,14 @@ def run_apply_schema(
     result: dict[str, Any] = {
         "ok": True,
         "provider": "railway_postgres" if target else "none",
+        "selected_provider": "railway_postgres" if target else "none",
         "db_available": False,
+        "can_connect": False,
         "schema_sql_ready": False,
         "dry_run": not bool(apply),
         "applied": False,
         "include_rls": bool(include_rls),
+        "verbose_sanitized": bool(verbose_sanitized),
         "use_public_url": bool(use_public_url),
         "prefer_public_url": bool(prefer_public_url),
         "statement_timeout_ms": int(statement_timeout_ms or 30000),
@@ -69,12 +93,22 @@ def run_apply_schema(
         "tables_after": [],
         "missing_tables_after": list(REQUIRED_TABLES),
         "tables_ready": False,
+        "statement_count": 0,
+        "statements_applied": 0,
+        "statements_failed": 0,
+        "first_failed_statement_index": 0,
+        "first_failed_statement_kind": "",
+        "first_failed_error_sanitized": "",
+        "apply_failed_reason": "",
+        "error_category": "",
         "recommendation": "configure_database_env" if not target else "dry_run_review_schema_then_apply",
         "secrets_printed": False,
         **_safety(),
     }
     sql = get_persistent_intelligence_schema_sql(include_rls=include_rls)
     result["schema_sql_ready"] = _schema_sql_is_safe(sql)
+    statements = _sql_statements(sql)
+    result["statement_count"] = len(statements)
     if not target or not result["schema_sql_ready"]:
         if not result["schema_sql_ready"]:
             result["ok"] = False
@@ -93,13 +127,15 @@ def run_apply_schema(
         )
         result["connect_attempts"] = attempts
         result["db_available"] = True
+        result["can_connect"] = True
         if connect_factory is None:
             _set_statement_timeout(connection, statement_timeout_ms)
         before = _list_ready_tables(connection)
         result["tables_before"] = before
         result["missing_tables_before"] = _missing_tables(before)
         if apply:
-            _execute_schema(connection, sql)
+            apply_stats = _execute_schema(connection, statements, redaction_values=_target_redaction_values(target))
+            result.update(apply_stats)
             result["applied"] = True
         after = _list_ready_tables(connection)
         result["tables_after"] = after
@@ -109,15 +145,42 @@ def run_apply_schema(
             result["recommendation"] = "persistent_intelligence_ready"
         elif apply:
             result["recommendation"] = "verify_schema_apply_permissions"
+            result["apply_failed_reason"] = "tables_missing_after_schema_apply"
         else:
             result["recommendation"] = "run_apply_schema_with_apply"
         return result
-    except Exception as exc:
+    except SchemaApplyError as exc:
         result["ok"] = False
-        result["db_available"] = False
+        result["db_available"] = True
+        result["can_connect"] = True
+        result["applied"] = False
+        result["statements_applied"] = exc.applied_count
+        result["statements_failed"] = 1
+        result["first_failed_statement_index"] = exc.statement_index
+        result["first_failed_statement_kind"] = exc.statement_kind
+        result["first_failed_error_sanitized"] = exc.sanitized_error
+        result["error_category"] = exc.error_category
+        result["reason"] = exc.sanitized_error
+        result["apply_failed_reason"] = exc.sanitized_error
+        result["recommendation"] = "review_pgcrypto_extension_permissions" if exc.error_category == "extension_permission_error" else "repair_schema_statement_or_permissions"
+        if connection is not None:
+            try:
+                after = _list_ready_tables(connection)
+                result["tables_after"] = after
+                result["missing_tables_after"] = _missing_tables(after)
+                result["tables_ready"] = not result["missing_tables_after"]
+            except Exception:
+                pass
+        return result
+    except Exception as exc:
+        connected_before_error = bool(connection is not None or result.get("db_available"))
+        result["ok"] = False
+        result["db_available"] = connected_before_error
+        result["can_connect"] = connected_before_error
         result["error_category"] = _error_category(exc)
-        result["reason"] = _safe_error(exc)
-        result["recommendation"] = "verify_database_connection"
+        result["reason"] = _safe_error(exc, extra_secrets=_target_redaction_values(target))
+        result["apply_failed_reason"] = _safe_error(exc, extra_secrets=_target_redaction_values(target)) if connected_before_error and apply else ""
+        result["recommendation"] = "review_database_table_probe_or_permissions" if connected_before_error else "verify_database_connection"
         result["connect_attempts"] = max(1, int(getattr(exc, "attempts", None) or result.get("connect_attempts") or 0))
         return result
     finally:
@@ -139,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         use_public_url=args.use_public_url,
         prefer_public_url=args.prefer_public_url,
         statement_timeout_ms=args.statement_timeout_ms,
+        verbose_sanitized=args.verbose_sanitized,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True))
@@ -147,18 +211,33 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if result.get("ok", True) else 1
 
 
-def _execute_schema(connection: Any, sql: str) -> None:
+def _execute_schema(connection: Any, sql_or_statements: str | list[str], *, redaction_values: tuple[str, ...] = ()) -> dict[str, int]:
+    statements = _sql_statements(sql_or_statements) if isinstance(sql_or_statements, str) else list(sql_or_statements)
     cursor = connection.cursor()
-    try:
-        for statement in _sql_statements(sql):
-            cursor.execute(statement)
-        connection.commit()
-    except Exception:
+    applied = 0
+    for index, statement in enumerate(statements, start=1):
+        statement_kind = _statement_kind(statement)
         try:
-            connection.rollback()
-        except Exception:
-            pass
-        raise
+            cursor.execute(statement)
+            connection.commit()
+            applied += 1
+        except Exception as exc:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            raise SchemaApplyError(
+                exc,
+                statement_index=index,
+                statement_kind=statement_kind,
+                applied_count=applied,
+                redaction_values=redaction_values,
+            ) from exc
+    return {
+        "statement_count": len(statements),
+        "statements_applied": applied,
+        "statements_failed": 0,
+    }
 
 
 def _connect_with_attempts(
@@ -234,6 +313,21 @@ def _connect_target(target: dict[str, str], *, statement_timeout_ms: int) -> Any
     return _connect_pg8000(str(target.get("url") or ""))
 
 
+def _target_redaction_values(target: dict[str, str]) -> tuple[str, ...]:
+    values: list[str] = []
+    for key in ("url", "connect_arg"):
+        value = str(target.get(key) or "")
+        if value and value not in values and value != "PGHOST_ENV":
+            values.append(value)
+        if value.startswith(("postgres://", "postgresql://")):
+            parsed = urlparse(value)
+            if parsed.username:
+                values.append(unquote(parsed.username))
+            if parsed.password:
+                values.append(unquote(parsed.password))
+    return tuple(value for value in values if value)
+
+
 def _set_statement_timeout(connection: Any, statement_timeout_ms: int) -> None:
     try:
         cursor = connection.cursor()
@@ -268,7 +362,109 @@ def _schema_sql_is_safe(sql: str) -> bool:
 
 
 def _sql_statements(sql: str) -> list[str]:
-    return [part.strip() for part in sql.split(";") if part.strip()]
+    statements: list[str] = []
+    buffer: list[str] = []
+    quote: str | None = None
+    dollar_tag = ""
+    i = 0
+    while i < len(sql):
+        char = sql[i]
+        next_char = sql[i + 1] if i + 1 < len(sql) else ""
+        if dollar_tag:
+            if sql.startswith(dollar_tag, i):
+                buffer.append(dollar_tag)
+                i += len(dollar_tag)
+                dollar_tag = ""
+                continue
+            buffer.append(char)
+            i += 1
+            continue
+        if quote == "'":
+            buffer.append(char)
+            if char == "'" and next_char == "'":
+                buffer.append(next_char)
+                i += 2
+                continue
+            if char == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            buffer.append(char)
+            if char == '"' and next_char == '"':
+                buffer.append(next_char)
+                i += 2
+                continue
+            if char == '"':
+                quote = None
+            i += 1
+            continue
+        if char == "-" and next_char == "-":
+            i = sql.find("\n", i + 2)
+            if i == -1:
+                break
+            buffer.append("\n")
+            i += 1
+            continue
+        if char == "/" and next_char == "*":
+            end = sql.find("*/", i + 2)
+            i = len(sql) if end == -1 else end + 2
+            buffer.append(" ")
+            continue
+        if char == "'":
+            quote = "'"
+            buffer.append(char)
+            i += 1
+            continue
+        if char == '"':
+            quote = '"'
+            buffer.append(char)
+            i += 1
+            continue
+        if char == "$":
+            match = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$", sql[i:])
+            if match:
+                dollar_tag = match.group(0)
+                buffer.append(dollar_tag)
+                i += len(dollar_tag)
+                continue
+        if char == ";":
+            statement = "".join(buffer).strip()
+            if statement:
+                statements.append(statement)
+            buffer = []
+            i += 1
+            continue
+        buffer.append(char)
+        i += 1
+    statement = "".join(buffer).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _statement_kind(statement: str) -> str:
+    normalized = re.sub(r"\s+", " ", statement.strip().casefold())
+    if normalized.startswith("create extension"):
+        return "create_extension"
+    if normalized.startswith("create table"):
+        return "create_table"
+    if normalized.startswith("create index"):
+        return "create_index"
+    if normalized.startswith("alter table"):
+        return "alter_table"
+    if normalized.startswith("set "):
+        return "set"
+    return (normalized.split(" ", 1)[0] if normalized else "unknown") or "unknown"
+
+
+def _statement_error_category(statement_kind: str, exc: object) -> str:
+    text = str(exc or "").casefold()
+    if statement_kind == "create_extension" and any(token in text for token in ("permission", "denied", "privilege", "not owner")):
+        return "extension_permission_error"
+    if statement_kind == "create_extension":
+        return "extension_apply_error"
+    return _error_category(exc)
 
 
 def _connect_pg8000(database_url: str) -> Any:
@@ -312,11 +508,14 @@ def _human_summary(result: dict[str, Any]) -> str:
         [
             "MT5 Persistent Intelligence Apply Schema",
             f"provider={result.get('provider')}",
+            f"selected_provider={result.get('selected_provider')}",
             f"db_available={result.get('db_available')}",
+            f"can_connect={result.get('can_connect')}",
             f"schema_sql_ready={result.get('schema_sql_ready')}",
             f"dry_run={result.get('dry_run')}",
             f"applied={result.get('applied')}",
             f"include_rls={result.get('include_rls')}",
+            f"verbose_sanitized={result.get('verbose_sanitized')}",
             f"use_public_url={result.get('use_public_url')}",
             f"prefer_public_url={result.get('prefer_public_url')}",
             f"connection_source={result.get('connection_source')}",
@@ -324,6 +523,14 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"DATABASE_PUBLIC_URL_PRESENT={result.get('DATABASE_PUBLIC_URL_PRESENT')}",
             f"PGHOST_PRESENT={result.get('PGHOST_PRESENT')}",
             f"connect_attempts={result.get('connect_attempts')}",
+            f"statement_count={result.get('statement_count')}",
+            f"statements_applied={result.get('statements_applied')}",
+            f"statements_failed={result.get('statements_failed')}",
+            f"first_failed_statement_index={result.get('first_failed_statement_index')}",
+            f"first_failed_statement_kind={result.get('first_failed_statement_kind')}",
+            f"first_failed_error_sanitized={result.get('first_failed_error_sanitized')}",
+            f"apply_failed_reason={result.get('apply_failed_reason')}",
+            f"error_category={result.get('error_category')}",
             f"tables_before={','.join(result.get('tables_before') or [])}",
             f"missing_tables_before={','.join(result.get('missing_tables_before') or [])}",
             f"tables_after={','.join(result.get('tables_after') or [])}",
@@ -349,17 +556,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--use-public-url", action="store_true", help="Use DATABASE_PUBLIC_URL only.")
     parser.add_argument("--prefer-public-url", action="store_true", help="Prefer DATABASE_PUBLIC_URL when present, otherwise fall back.")
     parser.add_argument("--statement-timeout-ms", type=int, default=30000)
+    parser.add_argument("--verbose-sanitized", action="store_true", help="Show detailed sanitized apply diagnostics without SQL or secrets.")
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(include_rls=False)
     return parser.parse_args(argv)
 
 
-def _safe_error(exc: object) -> str:
+def _safe_error(exc: object, *, extra_secrets: tuple[str, ...] = ()) -> str:
     text = str(exc or exc.__class__.__name__)
     for value in (
         os.getenv("DATABASE_URL"),
         os.getenv("DATABASE_PUBLIC_URL"),
         os.getenv("PGPASSWORD"),
+        *extra_secrets,
     ):
         if value:
             text = text.replace(value, "[redacted]")

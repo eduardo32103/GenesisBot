@@ -44,6 +44,13 @@ def run_connection_diagnostics(
         "connection_source": target.get("source") if target else "none",
         "can_parse_url": _can_parse_url(target),
         "can_connect": False,
+        "current_database_available": False,
+        "current_schema_available": False,
+        "current_user_available": False,
+        "has_public_schema_privilege": False,
+        "can_create_table_probe": False,
+        "privilege_probe_error_category": "",
+        "privilege_probe_error_sanitized": "",
         "error_category": "",
         "error_message_sanitized": "",
         "connect_attempts": 0,
@@ -69,6 +76,7 @@ def run_connection_diagnostics(
         )
         result["connect_attempts"] = attempts
         result["can_connect"] = True
+        result.update(_run_privilege_probes(connection))
         return result
     except Exception as exc:
         result["ok"] = False
@@ -110,6 +118,71 @@ def _can_parse_url(target: dict[str, str]) -> bool:
     return bool(parsed.scheme and parsed.hostname)
 
 
+def _run_privilege_probes(connection: Any) -> dict[str, Any]:
+    result = {
+        "current_database_available": False,
+        "current_schema_available": False,
+        "current_user_available": False,
+        "has_public_schema_privilege": False,
+        "can_create_table_probe": False,
+        "privilege_probe_error_category": "",
+        "privilege_probe_error_sanitized": "",
+    }
+    errors: list[Exception] = []
+    try:
+        row = _fetch_probe_value(connection, "select current_database()")
+        result["current_database_available"] = bool(row)
+    except Exception as exc:
+        errors.append(exc)
+    try:
+        row = _fetch_probe_value(connection, "select current_schema()")
+        result["current_schema_available"] = bool(row)
+    except Exception as exc:
+        errors.append(exc)
+    try:
+        row = _fetch_probe_value(connection, "select current_user")
+        result["current_user_available"] = bool(row)
+    except Exception as exc:
+        errors.append(exc)
+    try:
+        row = _fetch_probe_value(connection, "select has_schema_privilege(current_user, 'public', 'CREATE')")
+        result["has_public_schema_privilege"] = bool(row)
+    except Exception as exc:
+        errors.append(exc)
+    try:
+        cursor = connection.cursor()
+        cursor.execute("create temp table genesis_persistent_db_doctor_probe (id integer) on commit drop")
+        result["can_create_table_probe"] = True
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+    except Exception as exc:
+        errors.append(exc)
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+    if errors:
+        first_error = errors[0]
+        result["privilege_probe_error_category"] = _error_category(first_error)
+        result["privilege_probe_error_sanitized"] = _safe_error(first_error)
+    return result
+
+
+def _fetch_probe_value(connection: Any, sql: str) -> Any:
+    cursor = connection.cursor()
+    cursor.execute(sql)
+    if hasattr(cursor, "fetchone"):
+        row = cursor.fetchone()
+    else:
+        rows = cursor.fetchall()
+        row = rows[0] if rows else None
+    if not row:
+        return None
+    return row[0] if isinstance(row, (tuple, list)) else row
+
+
 def _human_summary(result: dict[str, Any]) -> str:
     return "\n".join(
         [
@@ -124,6 +197,13 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"can_parse_url={result.get('can_parse_url')}",
             f"can_connect={result.get('can_connect')}",
             f"connect_attempts={result.get('connect_attempts')}",
+            f"current_database_available={result.get('current_database_available')}",
+            f"current_schema_available={result.get('current_schema_available')}",
+            f"current_user_available={result.get('current_user_available')}",
+            f"has_public_schema_privilege={result.get('has_public_schema_privilege')}",
+            f"can_create_table_probe={result.get('can_create_table_probe')}",
+            f"privilege_probe_error_category={result.get('privilege_probe_error_category')}",
+            f"privilege_probe_error_sanitized={result.get('privilege_probe_error_sanitized')}",
             f"error_category={result.get('error_category')}",
             f"error_message_sanitized={result.get('error_message_sanitized')}",
             f"secrets_printed={result.get('secrets_printed')}",

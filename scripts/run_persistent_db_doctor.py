@@ -22,7 +22,9 @@ def main(argv: list[str] | None = None) -> int:
         connect_backoff_seconds=args.connect_backoff_seconds,
         prefer_public_url=args.prefer_public_url,
         use_public_url=args.use_public_url,
+        include_rls=args.include_rls,
         statement_timeout_ms=args.statement_timeout_ms,
+        verbose_sanitized=args.verbose_sanitized,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True))
@@ -51,8 +53,19 @@ def _human_summary(result: dict[str, object]) -> str:
             f"DATABASE_PUBLIC_URL_PRESENT={diagnostics.get('DATABASE_PUBLIC_URL_PRESENT')}",
             f"PGHOST_PRESENT={diagnostics.get('PGHOST_PRESENT')}",
             f"can_connect={diagnostics.get('can_connect')}",
+            f"current_database_available={diagnostics.get('current_database_available')}",
+            f"current_schema_available={diagnostics.get('current_schema_available')}",
+            f"current_user_available={diagnostics.get('current_user_available')}",
+            f"has_public_schema_privilege={diagnostics.get('has_public_schema_privilege')}",
+            f"can_create_table_probe={diagnostics.get('can_create_table_probe')}",
             f"apply_attempted={apply_result.get('attempted')}",
             f"apply_applied={apply_result.get('applied')}",
+            f"statement_count={apply_result.get('statement_count')}",
+            f"statements_applied={apply_result.get('statements_applied')}",
+            f"statements_failed={apply_result.get('statements_failed')}",
+            f"first_failed_statement_kind={apply_result.get('first_failed_statement_kind')}",
+            f"first_failed_error_sanitized={apply_result.get('first_failed_error_sanitized')}",
+            f"apply_failed_reason={apply_result.get('apply_failed_reason')}",
             f"auto_apply_schema_enabled={result.get('auto_apply_schema_enabled')}",
             f"recommendation={result.get('recommendation')}",
             f"decision={result.get('decision')}",
@@ -69,13 +82,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Genesis Persistent DB Doctor safely.")
     parser.add_argument("--apply-schema", action="store_true")
     parser.add_argument("--repair", action="store_true")
+    parser.add_argument("--no-rls", dest="include_rls", action="store_false", help="Do not include RLS statements. Default.")
+    parser.add_argument("--include-rls", dest="include_rls", action="store_true", help="Include optional RLS statements.")
     parser.add_argument("--wait-for-connection", action="store_true")
     parser.add_argument("--max-connect-attempts", type=int, default=10)
     parser.add_argument("--connect-backoff-seconds", type=float, default=5.0)
     parser.add_argument("--prefer-public-url", action="store_true", default=True)
     parser.add_argument("--use-public-url", action="store_true")
     parser.add_argument("--statement-timeout-ms", type=int, default=30000)
+    parser.add_argument("--verbose-sanitized", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.set_defaults(include_rls=False)
     return parser.parse_args(argv)
 
 

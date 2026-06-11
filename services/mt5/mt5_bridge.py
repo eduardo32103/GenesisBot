@@ -47,8 +47,22 @@ def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = No
     return persistent_intelligence_recent_events(limit=limit)
 
 
-def mt5_persistent_db_doctor_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
-    return run_persistent_db_doctor()
+def mt5_persistent_db_doctor_status(
+    *,
+    memory: MemoryStore | None = None,
+    repair: bool = False,
+    apply_schema: bool = False,
+    wait_for_connection: bool = False,
+    max_connect_attempts: int = 10,
+    verbose_sanitized: bool = False,
+) -> dict[str, Any]:
+    return run_persistent_db_doctor(
+        repair=repair,
+        apply_schema=apply_schema,
+        wait_for_connection=wait_for_connection,
+        max_connect_attempts=max_connect_attempts,
+        verbose_sanitized=verbose_sanitized,
+    )
 
 
 def mt5_capital_protection_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:

@@ -25,7 +25,9 @@ def run_persistent_db_doctor(
     connect_backoff_seconds: float = 5.0,
     prefer_public_url: bool = True,
     use_public_url: bool = False,
+    include_rls: bool = False,
     statement_timeout_ms: int = 30000,
+    verbose_sanitized: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
     active_store = store or MT5PersistentIntelligenceStore()
@@ -45,13 +47,14 @@ def run_persistent_db_doctor(
     if should_apply:
         apply_result = run_apply_schema(
             apply=True,
-            include_rls=False,
+            include_rls=include_rls,
             wait_for_connection=wait_for_connection,
             max_connect_attempts=max_connect_attempts,
             connect_backoff_seconds=connect_backoff_seconds,
             use_public_url=use_public_url,
             prefer_public_url=prefer_public_url,
             statement_timeout_ms=statement_timeout_ms,
+            verbose_sanitized=verbose_sanitized,
         )
         apply_result["attempted"] = True
         post_healthcheck = MT5PersistentIntelligenceStore().healthcheck(write_test_event=False)
@@ -81,6 +84,8 @@ def run_persistent_db_doctor(
         "auto_apply_schema_enabled": _auto_apply_enabled(),
         "apply_schema_requested": bool(apply_schema),
         "repair_requested": bool(repair),
+        "include_rls": bool(include_rls),
+        "verbose_sanitized": bool(verbose_sanitized),
         "diagnostics": _compact_diagnostics(diagnostics),
         "apply_result": _compact_apply_result(apply_result),
         "post_apply_healthcheck": _compact_healthcheck(post_healthcheck),
@@ -151,10 +156,10 @@ def _recommendation(
     category = str(healthcheck.get("last_db_error_category") or diagnostics.get("error_category") or "")
     if category == "max_connections":
         return "restart_db_and_app_then_apply_schema"
-    if apply_result.get("attempted") and not apply_result.get("applied"):
-        return "apply_schema_failed_review_connection_diagnostics"
     if not diagnostics.get("can_connect") and str(diagnostics.get("error_category") or "") == "missing_database_env":
         return "repair_database_connection_env"
+    if apply_result.get("attempted") and not apply_result.get("applied"):
+        return "apply_schema_failed_review_statement_error" if apply_result.get("first_failed_statement_kind") else "apply_schema_failed_review_connection_diagnostics"
     if healthcheck.get("missing_tables"):
         return "apply_schema_sql" if not repair_requested else "retry_schema_apply_with_public_url_or_query_console"
     if not diagnostics.get("can_connect"):
@@ -174,6 +179,13 @@ def _compact_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
         "can_parse_url",
         "can_connect",
         "connect_attempts",
+        "current_database_available",
+        "current_schema_available",
+        "current_user_available",
+        "has_public_schema_privilege",
+        "can_create_table_probe",
+        "privilege_probe_error_category",
+        "privilege_probe_error_sanitized",
         "error_category",
         "error_message_sanitized",
         "secrets_printed",
@@ -194,6 +206,14 @@ def _compact_apply_result(payload: dict[str, Any]) -> dict[str, Any]:
         "include_rls",
         "connection_source",
         "connect_attempts",
+        "statement_count",
+        "statements_applied",
+        "statements_failed",
+        "first_failed_statement_index",
+        "first_failed_statement_kind",
+        "first_failed_error_sanitized",
+        "apply_failed_reason",
+        "error_category",
         "tables_ready",
         "missing_tables_after",
         "recommendation",

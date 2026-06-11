@@ -107,8 +107,21 @@ def get_genesis_mt5_persistent_intelligence_recent_events(limit: int = 10) -> di
     return mt5_persistent_intelligence_recent_events(limit=limit)
 
 
-def get_genesis_mt5_persistent_db_doctor_status() -> dict[str, Any]:
-    return mt5_persistent_db_doctor_status()
+def get_genesis_mt5_persistent_db_doctor_status(
+    *,
+    repair: bool = False,
+    apply_schema: bool = False,
+    wait_for_connection: bool = False,
+    max_connect_attempts: int = 10,
+    verbose_sanitized: bool = False,
+) -> dict[str, Any]:
+    return mt5_persistent_db_doctor_status(
+        repair=repair,
+        apply_schema=apply_schema,
+        wait_for_connection=wait_for_connection,
+        max_connect_attempts=max_connect_attempts,
+        verbose_sanitized=verbose_sanitized,
+    )
 
 
 def get_genesis_mt5_capital_protection_status() -> dict[str, Any]:

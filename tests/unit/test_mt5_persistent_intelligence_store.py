@@ -7,7 +7,7 @@ from unittest.mock import patch
 from api.main import create_app
 from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
 from scripts.run_persistent_db_connection_diagnostics import run_connection_diagnostics
-from scripts.run_persistent_intelligence_apply_schema import run_apply_schema
+from scripts.run_persistent_intelligence_apply_schema import _sql_statements, run_apply_schema
 from services.mt5.mt5_bridge import mt5_capital_protection_status, mt5_learning_status, mt5_strategy_tournament_status
 from services.mt5.mt5_persistent_schema import CREATE_SCHEMA_SQL, REQUIRED_TABLES, get_persistent_intelligence_schema_sql
 from services.mt5.mt5_persistent_intelligence_store import (
@@ -184,6 +184,72 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_sql_splitter_ignores_comment_only_and_preserves_semicolons_in_strings(self) -> None:
+        statements = _sql_statements(
+            """
+            -- leading comment only;
+            create table if not exists public.example (value text default 'a;b');
+            /* block comment ; */
+            create index if not exists idx_example on public.example(value);
+            """
+        )
+
+        self.assertEqual(len(statements), 2)
+        self.assertIn("'a;b'", statements[0])
+        self.assertTrue(statements[0].casefold().startswith("create table"))
+        self.assertTrue(statements[1].casefold().startswith("create index"))
+
+    def test_apply_schema_executes_statement_by_statement_and_commits_each_statement(self) -> None:
+        connection = _FakeSchemaConnection(existing_tables=[])
+
+        result = run_apply_schema(
+            apply=True,
+            database_url="postgresql://user:SUPERSECRET@example.test:5432/db",
+            connect_factory=lambda _: connection,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["applied"])
+        self.assertTrue(result["tables_ready"])
+        self.assertGreater(result["statement_count"], len(REQUIRED_TABLES))
+        self.assertEqual(connection.schema_execute_count, result["statement_count"])
+        self.assertEqual(connection.commit_count, result["statement_count"])
+        self.assertEqual(result["statements_applied"], result["statement_count"])
+        self.assertEqual(result["statements_failed"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_apply_schema_failure_reports_first_failed_statement_kind(self) -> None:
+        connection = _FailingSchemaConnection(
+            existing_tables=[],
+            fail_on="create extension",
+            error=RuntimeError("permission denied to create extension pgcrypto for SUPERSECRET"),
+        )
+
+        result = run_apply_schema(
+            apply=True,
+            database_url="postgresql://user:SUPERSECRET@example.test:5432/db",
+            connect_factory=lambda _: connection,
+            verbose_sanitized=True,
+        )
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["db_available"])
+        self.assertTrue(result["can_connect"])
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["statements_applied"], 0)
+        self.assertEqual(result["statements_failed"], 1)
+        self.assertEqual(result["first_failed_statement_index"], 1)
+        self.assertEqual(result["first_failed_statement_kind"], "create_extension")
+        self.assertEqual(result["error_category"], "extension_permission_error")
+        self.assertIn("permission denied", result["first_failed_error_sanitized"])
+        self.assertNotIn("SUPERSECRET", serialized)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_apply_schema_reports_all_connection_attempts_when_waiting(self) -> None:
         attempts = 0
 
@@ -276,6 +342,28 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertNotIn("PUBLICSECRET", serialized)
         self.assertNotIn("PRIVATESECRET", serialized)
         self.assertNotIn("PGSECRET", serialized)
+        self.assertFalse(result["secrets_printed"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_connection_diagnostics_reports_privilege_probes_without_printing_secrets(self) -> None:
+        private_url = "postgresql://private_user:PRIVATESECRET@private.example.test:5432/railway"
+
+        with patch.dict("os.environ", {"DATABASE_URL": private_url}, clear=True):
+            result = run_connection_diagnostics(connect_factory=lambda _: _FakeDiagnosticsConnection())
+
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["DATABASE_URL_PRESENT"])
+        self.assertTrue(result["can_connect"])
+        self.assertTrue(result["current_database_available"])
+        self.assertTrue(result["current_schema_available"])
+        self.assertTrue(result["current_user_available"])
+        self.assertTrue(result["has_public_schema_privilege"])
+        self.assertTrue(result["can_create_table_probe"])
+        self.assertNotIn(private_url, serialized)
+        self.assertNotIn("PRIVATESECRET", serialized)
         self.assertFalse(result["secrets_printed"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -981,6 +1069,64 @@ class _FakeSchemaCursor:
         if not self.last_select:
             return []
         return [(table,) for table in self.connection.existing_tables]
+
+
+class _FailingSchemaConnection(_FakeSchemaConnection):
+    def __init__(self, *, existing_tables: list[str], fail_on: str, error: Exception) -> None:
+        super().__init__(existing_tables=existing_tables)
+        self.fail_on = fail_on.casefold()
+        self.error = error
+        self.cursor_obj = _FailingSchemaCursor(self)
+
+
+class _FailingSchemaCursor(_FakeSchemaCursor):
+    def execute(self, sql: str, values: tuple[object, ...] | None = None) -> None:
+        if self.connection.fail_on in sql.casefold():
+            raise self.connection.error
+        super().execute(sql, values)
+
+
+class _FakeDiagnosticsConnection:
+    def __init__(self) -> None:
+        self.cursor_obj = _FakeDiagnosticsCursor()
+        self.rollback_count = 0
+        self.close_count = 0
+
+    def cursor(self) -> "_FakeDiagnosticsCursor":
+        return self.cursor_obj
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class _FakeDiagnosticsCursor:
+    def __init__(self) -> None:
+        self.last_row: tuple[object, ...] | None = None
+
+    def execute(self, sql: str, values: tuple[object, ...] | None = None) -> None:
+        del values
+        lowered = sql.casefold()
+        if "current_database" in lowered:
+            self.last_row = ("railway",)
+        elif "current_schema" in lowered:
+            self.last_row = ("public",)
+        elif "current_user" in lowered:
+            self.last_row = ("genesis",)
+        elif "has_schema_privilege" in lowered:
+            self.last_row = (True,)
+        elif "create temp table" in lowered:
+            self.last_row = None
+        else:
+            self.last_row = None
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return self.last_row
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return [self.last_row] if self.last_row else []
 
 
 def _decision_payload(symbol: str, timeframe: str, reason: str) -> dict[str, object]:
