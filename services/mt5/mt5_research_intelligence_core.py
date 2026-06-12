@@ -133,6 +133,7 @@ def run_research_intelligence_core(
     rotation_result: dict[str, Any] | None = None,
     expansion_result: dict[str, Any] | None = None,
     discovery_result: dict[str, Any] | None = None,
+    persist_lessons: bool = True,
 ) -> dict[str, Any]:
     started = time.monotonic()
     paths = [Path(path) for path in result_paths or []]
@@ -202,7 +203,12 @@ def run_research_intelligence_core(
         "duration_ms": int((time.monotonic() - started) * 1000),
         **_safety(),
     }
-    _persist_research_intelligence_lessons(result)
+    if persist_lessons:
+        _persist_research_intelligence_lessons(result)
+    else:
+        result["persistent_intelligence_research_lessons"] = []
+        result["research_lessons_persisted"] = False
+        result["research_lessons_persist_reason"] = "persist_lessons_disabled"
     return result
 
 
