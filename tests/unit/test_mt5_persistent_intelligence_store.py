@@ -855,6 +855,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
 
         self.assertTrue(result["current_probe_ok"])
         self.assertEqual(result["db_health_source"], "current_probe")
+        self.assertTrue(result["stale_error_ignored"])
         self.assertEqual(result["last_db_error_category"], "max_connections")
         self.assertIn("last_db_error_at", result)
         self.assertIn("last_db_error_age_seconds", result)
@@ -862,6 +863,30 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["db_degraded"])
         self.assertTrue(result["tables_ready"])
         self.assertGreater(len(client.checked_tables), 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_stale_missing_schema_error_does_not_block_current_green_probe(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+        persistent_write_backpressure().record_schema_missing_freeze(
+            "mt5_profile_state",
+            {"symbol": "BTCUSD"},
+            critical=False,
+        )
+
+        result = store.healthcheck(write_test_event=False)
+
+        self.assertTrue(result["current_probe_ok"])
+        self.assertEqual(result["db_health_source"], "current_probe")
+        self.assertTrue(result["stale_error_ignored"])
+        self.assertEqual(result["last_db_error_category"], "")
+        self.assertTrue(result["db_available"])
+        self.assertFalse(result["db_degraded"])
+        self.assertTrue(result["tables_ready"])
+        self.assertEqual(result["missing_tables"], [])
+        self.assertEqual(result["recommendation"], "persistent_intelligence_ready")
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")

@@ -32,6 +32,7 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"tables_ready={result.get('tables_ready')}",
         f"current_probe_ok={result.get('current_probe_ok')}",
         f"db_health_source={result.get('db_health_source')}",
+        f"stale_error_ignored={result.get('stale_error_ignored')}",
         f"table_count={result.get('table_count')}",
         f"missing_tables={','.join(result.get('missing_tables') or [])}",
         f"missing_tables_count={len(result.get('missing_tables') or [])}",

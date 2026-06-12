@@ -58,6 +58,7 @@ _LAST_SCHEMA_CHECK_MONOTONIC = 0.0
 _LAST_SCHEMA_TABLE_STATUS: dict[str, bool] = {}
 _LAST_SCHEMA_TABLE_ERRORS: dict[str, str] = {}
 _LAST_SCHEMA_DB_AVAILABLE = False
+_LAST_SCHEMA_CLIENT_SIGNATURE = ""
 
 
 class UnavailableDbClient:
@@ -462,6 +463,7 @@ class MT5PersistentIntelligenceStore:
         env_status = _env_status(self.client)
         client_available = bool(getattr(self.client, "available", False))
         backpressure = _backpressure_status(self.client)
+        pre_probe_error_category = str(backpressure.get("last_db_error_category") or "")
         backpressure_degraded = bool(backpressure.get("backoff_active"))
         table_status: dict[str, bool] = {}
         table_errors: dict[str, str] = {}
@@ -469,6 +471,7 @@ class MT5PersistentIntelligenceStore:
         use_schema_cache = bool(
             _schema_missing_write_freeze_status().get("writes_frozen")
             and _schema_check_cooldown_active()
+            and _LAST_SCHEMA_CLIENT_SIGNATURE == _client_signature(self.client)
             and not write_test_event
         )
         if use_schema_cache:
@@ -513,7 +516,7 @@ class MT5PersistentIntelligenceStore:
         elif db_available and not missing_tables:
             _clear_schema_missing_write_freeze()
         if not use_schema_cache:
-            _cache_schema_check(table_status, table_errors, db_available)
+            _cache_schema_check(table_status, table_errors, db_available, self.client)
         permission_checks = {
             "select": bool(db_available and any(table_status.values())),
             "insert": False,
@@ -572,6 +575,14 @@ class MT5PersistentIntelligenceStore:
         schema_freeze = _schema_missing_write_freeze_status()
         schema_cooldown = _schema_check_cooldown_status()
         db_degraded = bool(backpressure_degraded or not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))))
+        stale_error_ignored = _stale_db_error_ignored(
+            pre_probe_error_category=pre_probe_error_category,
+            current_probe_ok=current_probe_ok,
+            db_available=db_available,
+            tables_ready=tables_ready,
+            db_degraded=db_degraded,
+            backpressure=backpressure,
+        )
         db_health_source = _db_health_source(
             client_available=client_available,
             current_probe_ok=current_probe_ok,
@@ -591,6 +602,7 @@ class MT5PersistentIntelligenceStore:
             "tables_ready": tables_ready,
             "current_probe_ok": current_probe_ok,
             "db_health_source": db_health_source,
+            "stale_error_ignored": stale_error_ignored,
             "table_count": len(REQUIRED_TABLES),
             "missing_tables": missing_tables,
             "table_status": table_status,
@@ -1092,7 +1104,7 @@ def persist_candidate_rotation_run(
 
 def _reset_persistent_intelligence_counters_for_tests() -> None:
     global _LAST_WRITE_AT, _FAILED_WRITES, _QUEUED_WRITES, _LAST_SCHEMA_CHECK_AT, _LAST_SCHEMA_CHECK_MONOTONIC
-    global _LAST_SCHEMA_TABLE_STATUS, _LAST_SCHEMA_TABLE_ERRORS, _LAST_SCHEMA_DB_AVAILABLE
+    global _LAST_SCHEMA_TABLE_STATUS, _LAST_SCHEMA_TABLE_ERRORS, _LAST_SCHEMA_DB_AVAILABLE, _LAST_SCHEMA_CLIENT_SIGNATURE
     _LAST_WRITE_AT = ""
     _FAILED_WRITES = 0
     _QUEUED_WRITES = 0
@@ -1101,6 +1113,7 @@ def _reset_persistent_intelligence_counters_for_tests() -> None:
     _LAST_SCHEMA_TABLE_STATUS = {}
     _LAST_SCHEMA_TABLE_ERRORS = {}
     _LAST_SCHEMA_DB_AVAILABLE = False
+    _LAST_SCHEMA_CLIENT_SIGNATURE = ""
     _clear_schema_missing_write_freeze()
     reset_persistent_connection_state_for_tests()
 
@@ -1168,6 +1181,27 @@ def _db_health_source(
     if not client_available:
         return "env_or_client_unavailable"
     return "current_probe_failed"
+
+
+def _stale_db_error_ignored(
+    *,
+    pre_probe_error_category: str,
+    current_probe_ok: bool,
+    db_available: bool,
+    tables_ready: bool,
+    db_degraded: bool,
+    backpressure: dict[str, Any],
+) -> bool:
+    stale_categories = {"max_connections", "pool_exhausted", "missing_schema", "missing_table"}
+    category = str(pre_probe_error_category or backpressure.get("last_db_error_category") or "")
+    return bool(
+        category in stale_categories
+        and current_probe_ok
+        and db_available
+        and tables_ready
+        and not db_degraded
+        and not backpressure.get("backoff_active")
+    )
 
 
 def _client_provider(client: Any) -> str:
@@ -1414,11 +1448,16 @@ def _mark_schema_check_started() -> None:
     _LAST_SCHEMA_CHECK_MONOTONIC = time.monotonic()
 
 
-def _cache_schema_check(table_status: dict[str, bool], table_errors: dict[str, str], db_available: bool) -> None:
-    global _LAST_SCHEMA_TABLE_STATUS, _LAST_SCHEMA_TABLE_ERRORS, _LAST_SCHEMA_DB_AVAILABLE
+def _cache_schema_check(table_status: dict[str, bool], table_errors: dict[str, str], db_available: bool, client: Any) -> None:
+    global _LAST_SCHEMA_TABLE_STATUS, _LAST_SCHEMA_TABLE_ERRORS, _LAST_SCHEMA_DB_AVAILABLE, _LAST_SCHEMA_CLIENT_SIGNATURE
     _LAST_SCHEMA_TABLE_STATUS = dict(table_status)
     _LAST_SCHEMA_TABLE_ERRORS = dict(table_errors)
     _LAST_SCHEMA_DB_AVAILABLE = bool(db_available)
+    _LAST_SCHEMA_CLIENT_SIGNATURE = _client_signature(client)
+
+
+def _client_signature(client: Any) -> str:
+    return f"{client.__class__.__module__}.{client.__class__.__qualname__}:{id(client)}"
 
 
 def _schema_check_cooldown_active() -> bool:
