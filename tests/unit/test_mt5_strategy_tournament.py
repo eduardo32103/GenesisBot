@@ -155,6 +155,45 @@ class MT5StrategyTournamentTests(unittest.TestCase):
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["paper_forward_onboarding_started"])
 
+    def test_btc_h1_unresolved_deep_validation_failure_is_rejected_not_top(self) -> None:
+        result = run_strategy_tournament(
+            profile_performance=[
+                {
+                    **_profile("BTCUSD", "H1", "btcusd_h1_tournament_edge_candidate_paper_review_v1", trades=8, win_rate=75, pf=19.72, expectancy=55.12),
+                    "source_family": "tournament_edge",
+                    "source_identity_resolved": False,
+                    "source_identity_status": "unresolved_unknown_profile_from_tournament_shadow_grouping",
+                    "deep_validation_failed": True,
+                    "recent_closed": 12,
+                    "recent_profit_factor": 0.7726,
+                    "monte_carlo_stressed_pf": 0.4443,
+                    "remove_best_5_pf": 0.4948,
+                    "single_trade_dependency": True,
+                    "fragile_regime_dependency": True,
+                },
+                _profile("US500", "H1", "us500_h1_clean_candidate", trades=45, win_rate=50, pf=1.25, expectancy=0.12),
+            ],
+            persistent_status=_persistent_ready(),
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            load_rotation=False,
+            persist_events=False,
+        )
+
+        self.assertEqual(result["top_candidate"]["profile"], "us500_h1_clean_candidate")
+        rejected = [row for row in result["rejected_candidates"] if row["profile"].startswith("btcusd_h1_tournament")][0]
+        self.assertTrue(rejected["strict_validation_rejected"])
+        self.assertTrue(rejected["rejected_by_research_registry"])
+        self.assertIn("source_identity_unresolved", rejected["tournament_rejection_reasons"])
+        self.assertIn("deep_validation_failed", rejected["tournament_rejection_reasons"])
+        self.assertIn("trades_forward_below_20", rejected["tournament_rejection_reasons"])
+        self.assertIn("recent_closed_below_20", rejected["tournament_rejection_reasons"])
+        self.assertIn("remove_best_5_pf_below_1", rejected["tournament_rejection_reasons"])
+        self.assertIn("single_trade_dependency", rejected["tournament_rejection_reasons"])
+        self.assertFalse(rejected["candidate_activated"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
     def test_script_runs_without_activation(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

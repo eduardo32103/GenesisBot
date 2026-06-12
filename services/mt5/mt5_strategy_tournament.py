@@ -21,6 +21,7 @@ DEFAULT_WEIGHTS = {
     "stale_data_penalty": 15.0,
     "registry_penalty": 1000.0,
     "sibling_risk_penalty": 1000.0,
+    "strict_rejection_penalty": 1000.0,
 }
 
 
@@ -72,7 +73,13 @@ def run_strategy_tournament(
     top_candidate = eligible[0] if eligible else None
     paused = [row for row in evaluated if row["recommended_action"] == "pause_profile"]
     degraded = [row for row in evaluated if row["recommended_action"] == "degrade_profile" or row.get("degraded_by_registry")]
-    rejected = [row for row in evaluated if row.get("rejected_by_research_registry") or row.get("sibling_risk")]
+    rejected = [
+        row
+        for row in evaluated
+        if row.get("rejected_by_research_registry")
+        or row.get("sibling_risk")
+        or row.get("strict_validation_rejected")
+    ]
     recommended_action = _overall_action(top_candidate, paused, degraded, persistent.get("status") if isinstance(persistent.get("status"), dict) else {})
     result = {
         "ok": True,
@@ -86,12 +93,14 @@ def run_strategy_tournament(
         "paused_profiles": paused,
         "degraded_profiles": degraded,
         "rejected_profiles": rejected,
+        "rejected_candidates": rejected,
         "recommended_action": recommended_action,
         "switching_rules": [
             "pf_below_0_9_and_expectancy_non_positive_after_5_trades_degrades",
             "three_consecutive_losses_pause_profile",
             "recent_win_rate_below_35_after_8_trades_degrades",
             "blocked_registry_rejection_sibling_or_db_degraded_never_rotates",
+            "source_identity_unresolved_low_sample_or_dependency_risk_never_rotates",
             "paper_review_only_no_automatic_promotion",
         ],
         "candidate_activated": False,
@@ -226,6 +235,7 @@ def _evaluate_profile(
     timeframe = _timeframe(row.get("timeframe"))
     profile = str(row.get("profile") or "")
     trades = int(row.get("trades_forward") or row.get("total_closed") or 0)
+    recent_closed = int(_float(row.get("recent_closed") if row.get("recent_closed") is not None else trades))
     win_rate = _float(row.get("win_rate"))
     recent_win_rate = _float(row.get("recent_win_rate") or row.get("win_rate"))
     pf = _float(row.get("profit_factor") or row.get("total_pf"))
@@ -234,11 +244,33 @@ def _evaluate_profile(
     drawdown = _float(row.get("max_drawdown") or row.get("max_drawdown_pct"))
     consecutive_losses = int(_float(row.get("consecutive_losses")))
     mc_pf = _float(row.get("monte_carlo_stressed_pf"))
+    remove_best_5_pf = _optional_float(row.get("remove_best_5_pf"))
+    single_trade_dependency = _optional_bool(row.get("single_trade_dependency"))
+    fragile_regime_dependency = _optional_bool(row.get("fragile_regime_dependency"))
+    source_identity_status = str(row.get("source_identity_status") or "")
+    source_identity_resolved = _source_identity_resolved(row, profile)
+    deep_validation_failed = _deep_validation_failed(row)
+    source_family = str(row.get("source_family") or row.get("family") or _infer_family(profile))
     degraded = bool(row.get("degraded_by_registry") or forward_profile_degradation(symbol, timeframe, profile))
-    rejected = bool(row.get("rejected_by_research_registry") or research_rejection(symbol, timeframe, profile, _infer_family(profile)))
+    rejection = research_rejection(symbol, timeframe, profile, source_family)
+    rejected = bool(row.get("rejected_by_research_registry") or rejection)
     sibling = bool(row.get("sibling_risk"))
     db_degraded = bool(persistent_status.get("db_degraded"))
     stale = _stale_profile(row, decisions, risk_events, research_lessons)
+    tournament_rejection_reasons = _tournament_rejection_reasons(
+        profile=profile,
+        source_identity_status=source_identity_status,
+        source_identity_resolved=source_identity_resolved,
+        deep_validation_failed=deep_validation_failed,
+        trades=trades,
+        recent_closed=recent_closed,
+        source_family_rejected=bool(rejection),
+        single_trade_dependency=single_trade_dependency,
+        fragile_regime_dependency=fragile_regime_dependency,
+        remove_best_5_pf=remove_best_5_pf,
+        mc_pf=mc_pf if row.get("monte_carlo_stressed_pf") is not None else None,
+    )
+    strict_rejected = bool(tournament_rejection_reasons)
     action = _profile_action(
         trades=trades,
         pf=pf,
@@ -249,6 +281,7 @@ def _evaluate_profile(
         rejected=rejected,
         sibling=sibling,
         db_degraded=db_degraded,
+        strict_rejected=strict_rejected,
     )
     confidence_score = round(min(trades / 30.0, 1.0) * 35.0 + min(max(pf, 0.0), 2.5) / 2.5 * 45.0 + (20.0 if expectancy > 0 else 0.0), 6)
     risk_score = round(drawdown * 8.0 + consecutive_losses * 12.0 + (30.0 if mc_pf and mc_pf < 1.05 else 0.0), 6)
@@ -267,13 +300,20 @@ def _evaluate_profile(
         score -= float(weights["registry_penalty"])
     if sibling:
         score -= float(weights["sibling_risk_penalty"])
+    if strict_rejected:
+        score -= float(weights["strict_rejection_penalty"])
     if expectancy <= 0:
         score -= 25.0
     return {
         "symbol": symbol,
         "timeframe": timeframe,
         "profile": profile,
+        "source_family": source_family,
+        "source_identity_status": source_identity_status,
+        "source_identity_resolved": source_identity_resolved,
+        "deep_validation_failed": deep_validation_failed,
         "trades_forward": trades,
+        "recent_closed": recent_closed,
         "win_rate": round(win_rate, 6),
         "profit_factor": round(pf, 6),
         "expectancy": round(expectancy, 8),
@@ -281,11 +321,18 @@ def _evaluate_profile(
         "consecutive_losses": consecutive_losses,
         "recent_win_rate": round(recent_win_rate, 6),
         "recent_profit_factor": round(recent_pf, 6),
+        "monte_carlo_stressed_pf": round(mc_pf, 6),
+        "remove_best_5_pf": remove_best_5_pf,
+        "single_trade_dependency": single_trade_dependency,
+        "fragile_regime_dependency": fragile_regime_dependency,
         "confidence_score": confidence_score,
         "risk_score": risk_score,
         "tournament_score": round(score, 6),
         "rank": 0,
         "recommended_action": action,
+        "tournament_rejection_reasons": tournament_rejection_reasons,
+        "strict_validation_rejected": strict_rejected,
+        "research_rejection_reason": str(rejection.get("rejection_reason") or ""),
         "degraded_by_registry": degraded,
         "rejected_by_research_registry": rejected,
         "sibling_risk": sibling,
@@ -308,6 +355,7 @@ def _profile_action(
     rejected: bool,
     sibling: bool,
     db_degraded: bool,
+    strict_rejected: bool,
 ) -> str:
     if db_degraded:
         return "continue_research"
@@ -319,7 +367,9 @@ def _profile_action(
         return "pause_profile"
     if trades >= 8 and recent_win_rate < 35.0:
         return "degrade_profile"
-    if trades >= 15 and pf >= 1.15 and expectancy > 0:
+    if strict_rejected:
+        return "continue_research"
+    if trades >= 20 and pf >= 1.15 and expectancy > 0:
         return "allow_paper_probe"
     return "keep_observing"
 
@@ -342,8 +392,68 @@ def _blocked(row: dict[str, Any]) -> bool:
         or row.get("rejected_by_research_registry")
         or row.get("sibling_risk")
         or row.get("db_degraded")
+        or row.get("strict_validation_rejected")
         or row.get("recommended_action") in {"pause_profile", "degrade_profile", "kill_switch", "continue_research"}
     )
+
+
+def _tournament_rejection_reasons(
+    *,
+    profile: str,
+    source_identity_status: str,
+    source_identity_resolved: bool,
+    deep_validation_failed: bool,
+    trades: int,
+    recent_closed: int,
+    source_family_rejected: bool,
+    single_trade_dependency: bool | None,
+    fragile_regime_dependency: bool | None,
+    remove_best_5_pf: float | None,
+    mc_pf: float | None,
+) -> list[str]:
+    reasons: list[str] = []
+    if str(profile or "").casefold() in {"", "unknown", "unknown_profile", "none", "null"}:
+        reasons.append("profile_unknown_profile")
+    if (source_identity_status and "unresolved" in source_identity_status.casefold()) or not source_identity_resolved:
+        reasons.append("source_identity_unresolved")
+    if deep_validation_failed:
+        reasons.append("deep_validation_failed")
+    if trades < 20:
+        reasons.append("trades_forward_below_20")
+    if recent_closed < 20:
+        reasons.append("recent_closed_below_20")
+    if source_family_rejected:
+        reasons.append("source_family_rejected_by_registry")
+    if single_trade_dependency is True:
+        reasons.append("single_trade_dependency")
+    if fragile_regime_dependency is True:
+        reasons.append("fragile_regime_dependency")
+    if remove_best_5_pf is not None and remove_best_5_pf < 1.0:
+        reasons.append("remove_best_5_pf_below_1")
+    if mc_pf is not None and mc_pf < 1.05:
+        reasons.append("monte_carlo_stressed_pf_below_1_05")
+    return reasons
+
+
+def _source_identity_resolved(row: dict[str, Any], profile: str) -> bool:
+    value = row.get("source_identity_resolved")
+    if isinstance(value, bool):
+        return value
+    status = str(row.get("source_identity_status") or "").casefold()
+    if "unresolved" in status:
+        return False
+    if str(profile or "").casefold() in {"", "unknown", "unknown_profile", "none", "null"}:
+        return False
+    return True
+
+
+def _deep_validation_failed(row: dict[str, Any]) -> bool:
+    if bool(row.get("deep_validation_failed")):
+        return True
+    if row.get("paper_observation_ready") is False:
+        return True
+    status = str(row.get("candidate_status") or row.get("validation_status") or "").casefold()
+    return "deep_validation" in status and ("failed" in status or "gate_failed" in status)
 
 
 def _persist_tournament(result: dict[str, Any]) -> None:
@@ -410,6 +520,9 @@ def _row_from_trades(key: tuple[str, str, str], trades: list[dict[str, Any]]) ->
         "consecutive_losses": _consecutive_losses(trades),
         "recent_win_rate": round(len(recent_wins) / len(recent) * 100.0, 6) if recent else 0.0,
         "recent_profit_factor": _profit_factor(sum(recent_wins), abs(sum(recent_losses))),
+        "recent_closed": len(recent),
+        "source_identity_resolved": key[2].casefold() not in {"unknown", "unknown_profile", "none", "null"},
+        "source_identity_status": "unresolved_unknown_profile_from_shadow_grouping" if key[2].casefold() == "unknown_profile" else "resolved_from_shadow_profile",
     }
 
 
@@ -418,7 +531,12 @@ def _normalize_performance_row(row: dict[str, Any]) -> dict[str, Any]:
         "symbol": _symbol(row.get("symbol")),
         "timeframe": _timeframe(row.get("timeframe")),
         "profile": str(row.get("profile") or row.get("strategy_profile") or row.get("family") or ""),
+        "source_family": str(row.get("source_family") or row.get("family") or ""),
+        "source_identity_status": str(row.get("source_identity_status") or ""),
+        "source_identity_resolved": row.get("source_identity_resolved"),
+        "deep_validation_failed": bool(row.get("deep_validation_failed")),
         "trades_forward": int(_float(row.get("trades_forward") or row.get("total_closed") or row.get("closed") or row.get("recent_closed"))),
+        "recent_closed": int(_float(row.get("recent_closed") or row.get("trades_forward") or row.get("total_closed") or row.get("closed"))),
         "win_rate": _float(row.get("win_rate") or row.get("recent_win_rate")),
         "profit_factor": _float(row.get("profit_factor") or row.get("total_pf")),
         "expectancy": _float(row.get("expectancy")),
@@ -427,6 +545,9 @@ def _normalize_performance_row(row: dict[str, Any]) -> dict[str, Any]:
         "recent_win_rate": _float(row.get("recent_win_rate") or row.get("win_rate")),
         "recent_profit_factor": _float(row.get("recent_profit_factor") or row.get("recent_pf")),
         "monte_carlo_stressed_pf": _float(row.get("monte_carlo_stressed_pf")),
+        "remove_best_5_pf": row.get("remove_best_5_pf"),
+        "single_trade_dependency": row.get("single_trade_dependency"),
+        "fragile_regime_dependency": row.get("fragile_regime_dependency"),
         "degraded_by_registry": bool(row.get("degraded_by_registry")),
         "rejected_by_research_registry": bool(row.get("rejected_by_research_registry")),
         "sibling_risk": bool(row.get("sibling_risk")),
@@ -513,6 +634,20 @@ def _float(value: object) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    return _float(value)
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return None
+    return str(value).strip().casefold() in {"1", "true", "yes", "y"}
 
 
 def _safety() -> dict[str, Any]:

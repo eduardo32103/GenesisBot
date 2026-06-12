@@ -13,7 +13,7 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
         status = research_rejection_registry_status()
 
         self.assertTrue(status["ok"])
-        self.assertEqual(status["count"], 7)
+        self.assertEqual(status["count"], 9)
         self.assertFalse(status["broker_touched"])
         self.assertFalse(status["order_executed"])
         self.assertEqual(status["order_policy"], "journal_only_no_broker")
@@ -40,6 +40,8 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
     def test_xau_btc_h1_and_btc_m30_rejected_families_match(self) -> None:
         xau = research_rejection("XAUUSD.b", "M15", "xau_m15_session_baseline", "recent_session_open_continuation")
         btc_h1 = research_rejection("BTCUSD", "H1", "btc_h1_ema_reclaim_volatility_guard", "recent_ema_reclaim")
+        btc_h1_tournament = research_rejection("BTCUSD", "H1", "btcusd_h1_tournament_edge_candidate_paper_review_v1")
+        btc_h1_liquidity = research_rejection("BTCUSD", "H1", "btcusd_h1_recent_liquidity_sweep_baseline_source_1_deep_validation")
         btc_m30_london = research_rejection("BTCUSD", "M30", "btc_m30_london_us_breakout_strict_trailing")
         btc_m30_fakeout = research_rejection("BTCUSD", "M30", "profile", "opening_range_fakeout")
 
@@ -47,6 +49,14 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
         self.assertEqual(
             btc_h1["rejection_reason"],
             "btc_h1_ema_reclaim_failed_pf_mc_remove_best_and_dependency_gates",
+        )
+        self.assertEqual(
+            btc_h1_tournament["rejection_reason"],
+            "source_identity_unresolved_and_deep_validation_failed",
+        )
+        self.assertEqual(
+            btc_h1_liquidity["rejection_reason"],
+            "monte_carlo_fragility_single_trade_dependency",
         )
         self.assertEqual(
             btc_m30_london["rejection_reason"],
@@ -96,6 +106,7 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
             research_rejection("US500", "M30", "us500_m30_failed_breakout_reversal_clean", "recent_failed_breakout_reversal"),
             {},
         )
+        self.assertEqual(research_rejection("BTCUSD", "M30", "btcusd_m30_recent_liquidity_sweep"), {})
 
 
 if __name__ == "__main__":

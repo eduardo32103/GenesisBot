@@ -76,7 +76,9 @@ def _profile_line(row: dict[str, Any]) -> str:
         f"expectancy={row.get('expectancy')} drawdown={row.get('max_drawdown')} "
         f"losses={row.get('consecutive_losses')} score={row.get('tournament_score')} "
         f"action={row.get('recommended_action')} degraded={row.get('degraded_by_registry')} "
-        f"rejected={row.get('rejected_by_research_registry')} sibling_risk={row.get('sibling_risk')}"
+        f"rejected={row.get('rejected_by_research_registry')} sibling_risk={row.get('sibling_risk')} "
+        f"strict_rejected={row.get('strict_validation_rejected')} "
+        f"reasons={','.join(row.get('tournament_rejection_reasons') or []) or 'none'}"
     )
 
 

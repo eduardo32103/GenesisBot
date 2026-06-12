@@ -138,7 +138,9 @@ class MT5BtcH1CandidateDeepValidationTests(unittest.TestCase):
         lesson = store.lessons[0]
         self.assertEqual(lesson["symbol"], "BTCUSD")
         self.assertEqual(lesson["timeframe"], "H1")
-        self.assertEqual(lesson["lesson_type"], "paper_candidate_deep_validation")
+        self.assertEqual(lesson["lesson_type"], "deep_validation_failure")
+        self.assertEqual(lesson["failure_pattern"], "small_sample_false_positive_monte_carlo_fragility")
+        self.assertEqual(lesson["recommended_next_research_phase"], "search_high_sample_low_dependency_candidates")
         self.assertLessEqual(len(lesson["summary"]), 500)
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -167,7 +169,7 @@ def _clean_row() -> dict[str, object]:
     return {
         "symbol": "BTCUSD",
         "timeframe": "H1",
-        "profile": CANDIDATE_PROFILE,
+        "profile": "btcusd_h1_clean_deep_validation_candidate",
         "family": "tournament_edge",
         "total_closed": 72,
         "win_rate": 58.3,

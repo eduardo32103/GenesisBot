@@ -63,6 +63,63 @@ class MT5PaperCandidateReviewTests(unittest.TestCase):
         self.assertFalse(result["review_to_observation_ready"])
         self.assertFalse(result["candidate_activated"])
 
+    def test_unresolved_deep_validation_failure_blocks_observation_review(self) -> None:
+        result = review_paper_candidate(
+            {
+                **_btc_candidate(),
+                "trades_forward": 30,
+                "source_identity_resolved": False,
+                "source_identity_status": "unresolved_unknown_profile_from_tournament_shadow_grouping",
+                "deep_validation_failed": True,
+                "monte_carlo_stressed_pf": 0.4443,
+                "remove_best_5_pf": 0.4948,
+                "single_trade_dependency": True,
+            },
+            capital_state="normal",
+            adaptive_state="watch",
+            risk_allowed=True,
+            persist_review=False,
+        )
+
+        reasons = [gate["rejection_reason"] for gate in result["review_to_observation_gates"] if not gate["passed"]]
+        self.assertIn("source_identity_unresolved", reasons)
+        self.assertIn("deep_validation_failed", reasons)
+        self.assertIn("registry_rejection_or_sibling_risk", reasons)
+        self.assertFalse(result["review_to_observation_ready"])
+        self.assertEqual(result["reason"], "source_identity_unresolved")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
+    def test_resolved_clean_candidate_can_reach_review_ready_but_not_activate(self) -> None:
+        result = review_paper_candidate(
+            {
+                "symbol": "GBPUSD",
+                "timeframe": "H1",
+                "profile": "gbpusd_h1_clean_candidate",
+                "family": "trend_pullback",
+                "trades_forward": 30,
+                "source_identity_resolved": True,
+                "win_rate": 55.0,
+                "profit_factor": 1.4,
+                "recent_profit_factor": 1.25,
+                "expectancy": 0.12,
+                "max_drawdown": 2.0,
+                "monte_carlo_stressed_pf": 1.08,
+                "remove_best_5_pf": 1.02,
+                "single_trade_dependency": False,
+            },
+            capital_state="normal",
+            adaptive_state="watch",
+            risk_allowed=True,
+            persist_review=False,
+        )
+
+        self.assertTrue(result["review_to_observation_ready"])
+        self.assertEqual(result["reason"], "paper_candidate_review_no_activation")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["applies_to_real_trading"])
+
     def test_active_context_review_reports_missing_active_profile_but_can_create_review_context(self) -> None:
         result = review_paper_candidate(_btc_candidate(), persist_review=False)
         active = result["active_context_review"]

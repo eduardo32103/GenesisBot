@@ -49,7 +49,9 @@ def review_paper_candidate(
         adaptive_state=adaptive_state,
         risk_allowed=risk_allowed,
     )
-    min_sample_gate = gates[0] if gates else {}
+    min_sample_gate = next((gate for gate in gates if gate.get("name") == "min_trades_forward"), gates[0] if gates else {})
+    first_failed_gate = next((gate for gate in gates if not gate.get("passed")), {})
+    review_ready = all(bool(gate.get("passed")) for gate in gates)
     can_create_review = bool(symbol and timeframe and profile_after)
     persist_result: dict[str, Any] = {"attempted": False, "ok": False, "reason": "persist_review_disabled"}
     if persist_review and can_create_review:
@@ -65,7 +67,7 @@ def review_paper_candidate(
         "review_version": PAPER_CANDIDATE_REVIEW_VERSION,
         "mode": "paper_review_only",
         "decision": "NO_TRADE",
-        "reason": "paper_candidate_review_no_activation",
+        "reason": str(first_failed_gate.get("rejection_reason") or "paper_candidate_review_no_activation"),
         "symbol": symbol,
         "timeframe": timeframe,
         "candidate_profile_before": profile_before,
@@ -80,7 +82,7 @@ def review_paper_candidate(
         "persistent_review_write_ok": bool(persist_result.get("ok")),
         "min_sample_gate": min_sample_gate,
         "review_to_observation_gates": gates,
-        "review_to_observation_ready": all(bool(gate.get("passed")) for gate in gates),
+        "review_to_observation_ready": review_ready,
         "degraded_by_registry": degraded,
         "rejected_by_research_registry": rejected,
         "sibling_risk": sibling,
@@ -182,7 +184,16 @@ def _review_to_observation_gates(
     single_trade_dependency = metrics.get("single_trade_dependency")
     monte_carlo_failure = bool(metrics.get("monte_carlo_failure"))
     mc_pf = metrics.get("monte_carlo_stressed_pf")
+    source_identity_resolved = bool(metrics.get("source_identity_resolved"))
+    deep_validation_failed = bool(metrics.get("deep_validation_failed"))
     gates = [
+        _gate(
+            "source_identity_resolved",
+            source_identity_resolved,
+            "source_identity_unresolved",
+            metrics.get("source_identity_status") or source_identity_resolved,
+            True,
+        ),
         _gate(
             "min_trades_forward",
             trades >= MIN_TRADES_FORWARD_FOR_OBSERVATION,
@@ -190,6 +201,7 @@ def _review_to_observation_gates(
             trades,
             MIN_TRADES_FORWARD_FOR_OBSERVATION,
         ),
+        _gate("deep_validation_failure_absent", not deep_validation_failed, "deep_validation_failed", deep_validation_failed, False),
         _gate("recent_profit_factor", recent_pf >= 1.15, "recent_profit_factor_below_1_15", recent_pf, 1.15),
         _gate("expectancy_positive", expectancy > 0, "expectancy_not_positive", expectancy, ">0"),
         _gate("win_rate_or_pf_compensation", win_rate >= 45.0 or (profit_factor >= 1.5 and expectancy > 0), "win_rate_not_compensated", win_rate, ">=45_or_pf_expectancy_compensation"),
@@ -219,6 +231,7 @@ def _gate(name: str, passed: bool, reason: str, current: object, required: objec
 def _candidate_metrics(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
         "trades_forward": int(_number(candidate.get("trades_forward") or candidate.get("total_closed") or candidate.get("closed") or 0)),
+        "recent_closed": int(_number(candidate.get("recent_closed") or candidate.get("trades_forward") or candidate.get("total_closed") or candidate.get("closed") or 0)),
         "win_rate": round(_number(candidate.get("win_rate") or candidate.get("recent_win_rate")), 6),
         "profit_factor": round(_number(candidate.get("profit_factor") or candidate.get("total_pf")), 6),
         "recent_profit_factor": round(_number(candidate.get("recent_profit_factor") or candidate.get("recent_pf") or candidate.get("profit_factor") or candidate.get("total_pf")), 6),
@@ -228,7 +241,36 @@ def _candidate_metrics(candidate: dict[str, Any]) -> dict[str, Any]:
         "remove_best_5_pf": _optional_number(candidate.get("remove_best_5_pf")),
         "single_trade_dependency": candidate.get("single_trade_dependency") if isinstance(candidate.get("single_trade_dependency"), bool) else None,
         "monte_carlo_failure": bool(candidate.get("monte_carlo_failure")),
+        "source_identity_resolved": _source_identity_resolved(candidate),
+        "source_identity_status": str(candidate.get("source_identity_status") or ""),
+        "deep_validation_failed": _deep_validation_failed(candidate),
     }
+
+
+def _source_identity_resolved(candidate: dict[str, Any]) -> bool:
+    value = candidate.get("source_identity_resolved")
+    if isinstance(value, bool):
+        return value
+    if str(value).strip().casefold() in {"true", "1", "yes", "y"}:
+        return True
+    if str(value).strip().casefold() in {"false", "0", "no", "n"}:
+        return False
+    status = str(candidate.get("source_identity_status") or "").casefold()
+    if "unresolved" in status:
+        return False
+    raw_profile = str(candidate.get("profile") or candidate.get("strategy_profile") or "").strip().casefold()
+    if raw_profile in {"", "unknown", "unknown_profile", "none", "null"}:
+        return False
+    return False
+
+
+def _deep_validation_failed(candidate: dict[str, Any]) -> bool:
+    if bool(candidate.get("deep_validation_failed")):
+        return True
+    if candidate.get("paper_observation_ready") is False:
+        return True
+    status = str(candidate.get("candidate_status") or candidate.get("validation_status") or "").casefold()
+    return "deep_validation" in status and ("failed" in status or "gate_failed" in status)
 
 
 def _matching_active_profile(rows: list[dict[str, Any]], *, symbol: str, timeframe: str) -> dict[str, Any]:

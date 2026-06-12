@@ -5,7 +5,7 @@ from fnmatch import fnmatchcase
 from typing import Any
 
 
-RESEARCH_REJECTION_REGISTRY_VERSION = "2026-06-09.mt5_research_rejection_registry.v3"
+RESEARCH_REJECTION_REGISTRY_VERSION = "2026-06-12.mt5_research_rejection_registry.v4"
 
 _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -49,6 +49,36 @@ _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
         ),
         "rejection_status": "rejected_after_hardening",
         "rejection_reason": "btc_h1_ema_reclaim_failed_pf_mc_remove_best_and_dependency_gates",
+        "applies_to_paper_forward_candidate": True,
+        "applies_to_real_trading": False,
+        "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,
+        "allow_future_research": False,
+        "allow_manual_override": True,
+    },
+    {
+        "symbol": "BTCUSD",
+        "timeframe": "H1",
+        "family_profile_patterns": (
+            "*tournament_edge_candidate*",
+            "*btcusd_h1_tournament_edge_candidate_paper_review_v1*",
+        ),
+        "rejection_status": "rejected_after_deep_validation",
+        "rejection_reason": "source_identity_unresolved_and_deep_validation_failed",
+        "applies_to_paper_forward_candidate": True,
+        "applies_to_real_trading": False,
+        "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,
+        "allow_future_research": False,
+        "allow_manual_override": True,
+    },
+    {
+        "symbol": "BTCUSD",
+        "timeframe": "H1",
+        "family_profile_patterns": (
+            "*recent_liquidity_sweep*",
+            "*btcusd_h1_recent_liquidity_sweep*",
+        ),
+        "rejection_status": "rejected_after_deep_validation",
+        "rejection_reason": "monte_carlo_fragility_single_trade_dependency",
         "applies_to_paper_forward_candidate": True,
         "applies_to_real_trading": False,
         "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,

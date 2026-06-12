@@ -894,22 +894,27 @@ def _research_lesson(result: dict[str, Any]) -> dict[str, Any]:
     if not rejections:
         rejections = ["no_rejection"]
     summary = (
-        f"BTCUSD H1 paper candidate deep validation: source_status={result.get('source_identity_status')}; "
-        f"best={best.get('target_name') or 'none'}; recommendation={result.get('recommendation')}; "
+        "BTCUSD H1 tournament candidate failed deep validation despite high tournament PF/winrate; "
+        f"source_status={result.get('source_identity_status')}; best={best.get('target_name') or 'none'}; "
         f"rejections={','.join(rejections[:6])}."
     )
     return {
-        "family": "btc_h1_tournament_edge_candidate",
+        "family": "BTCUSD H1 tournament_edge / recent_liquidity_sweep",
         "symbol": SYMBOL,
         "timeframe": TIMEFRAME,
-        "lesson_type": "paper_candidate_deep_validation",
-        "failure_pattern": rejections[0],
+        "lesson_type": "deep_validation_failure",
+        "failure_pattern": "small_sample_false_positive_monte_carlo_fragility",
         "summary": summary[:500],
         "avoid_next": [
-            "do_not_activate_btc_h1_candidate_without_source_identity_and_20_recent_closed_trades",
-            "do_not_promote_unknown_profile_tournament_edge_to_runtime",
+            "unknown_profile_tournament_candidates",
+            "trades_forward_below_20",
+            "recent_pf_below_1_15",
+            "monte_carlo_fragility",
+            "remove_best_dependency",
+            "single_trade_dependency",
+            "fragile_regime_dependency",
         ],
-        "recommended_next_research_phase": "continue_research" if result.get("recommendation") == "continue_research" else "human_paper_observation_review",
+        "recommended_next_research_phase": "search_high_sample_low_dependency_candidates",
         **_safety(),
     }
 
