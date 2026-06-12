@@ -26,6 +26,7 @@ class MT5AutonomousLearningStatusTests(unittest.TestCase):
         self.assertEqual(calls[0]["load_rotation"], False)
         self.assertEqual(calls[0]["run_trade_learning"], False)
         self.assertEqual(calls[0]["persist_events"], False)
+        self.assertTrue(result["status_endpoints_write_free"])
         self.assertFalse(result["loop_started"])
         self.assertFalse(result["paper_rotation_applied"])
         self.assertFalse(result["candidate_activated"])

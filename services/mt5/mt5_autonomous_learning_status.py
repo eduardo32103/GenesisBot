@@ -73,6 +73,7 @@ def _status_from_cycle(cycle: dict[str, Any]) -> dict[str, Any]:
         "recommended_next_action": _recommended_next_action(cycle, learning_state),
         "orchestrator_status": cycle.get("status") or "",
         "orchestrator_read_only": True,
+        "status_endpoints_write_free": True,
         "loop_started": False,
         "paper_rotation_apply_requested": False,
         "mutations_allowed": False,

@@ -3,9 +3,11 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
 from api.main import create_app
 from scripts.run_strategy_tournament import main as tournament_main
+from services.mt5.mt5_bridge import mt5_strategy_tournament_status
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament, strategy_tournament_enforcement
 
 
@@ -175,6 +177,38 @@ class MT5StrategyTournamentTests(unittest.TestCase):
             app["genesis_mt5_strategy_tournament_status_endpoint"],
             "/api/genesis/mt5/strategy-tournament/status",
         )
+
+    def test_status_endpoint_runs_tournament_read_only_without_rotation_writes(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_tournament(**kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "status": "strategy_tournament_ready",
+                "top_candidate": None,
+                "ranked_profiles": [],
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+
+        with patch("services.mt5.mt5_bridge._schema_missing_fast_fail", return_value={}), patch(
+            "services.mt5.mt5_bridge.run_strategy_tournament", side_effect=fake_tournament
+        ):
+            result = mt5_strategy_tournament_status()
+
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0]["persist_events"])
+        self.assertFalse(calls[0]["load_rotation"])
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
 
 def _profile(

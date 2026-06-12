@@ -3,9 +3,11 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
 from api.main import create_app
 from scripts.run_capital_protection_governor import main as capital_main
+from services.mt5.mt5_bridge import mt5_capital_protection_status
 from services.mt5.mt5_capital_protection_governor import (
     capital_protection_enforcement,
     run_capital_protection_governor,
@@ -161,6 +163,37 @@ class MT5CapitalProtectionGovernorTests(unittest.TestCase):
             app["genesis_mt5_capital_protection_status_endpoint"],
             "/api/genesis/mt5/capital-protection/status",
         )
+
+    def test_status_endpoint_runs_governor_read_only_without_risk_event_writes(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_governor(**kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "status": "capital_protection_governor_ready",
+                "capital_state": "normal",
+                "safe_to_trade": True,
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+
+        with patch("services.mt5.mt5_bridge._schema_missing_fast_fail", return_value={}), patch(
+            "services.mt5.mt5_bridge.run_capital_protection_governor", side_effect=fake_governor
+        ):
+            result = mt5_capital_protection_status()
+
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0]["persist_events"])
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
 
 def _trade(symbol: str, timeframe: str, profile: str, pnl_pct: float, status: str) -> dict[str, object]:

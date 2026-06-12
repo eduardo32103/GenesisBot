@@ -364,6 +364,7 @@ class MT5PersistentIntelligenceStore:
                 "db_degraded": True,
                 "reason": "schema_missing_write_freeze",
                 "secrets_printed": False,
+                "status_endpoints_write_free": True,
                 **schema_freeze,
                 **schema_cooldown,
                 **backpressure,
@@ -382,6 +383,7 @@ class MT5PersistentIntelligenceStore:
                 "db_degraded": True,
                 "reason": "persistent_db_backoff_active",
                 "secrets_printed": False,
+                "status_endpoints_write_free": True,
                 **backpressure,
                 **_safety(),
             }
@@ -433,6 +435,7 @@ class MT5PersistentIntelligenceStore:
             "db_degraded": degraded,
             **backpressure,
             "secrets_printed": False,
+            "status_endpoints_write_free": True,
             **_safety(),
         }
 
@@ -620,6 +623,7 @@ class MT5PersistentIntelligenceStore:
             "reason": "persistent_intelligence_db_degraded" if not (db_available and tables_ready) else "persistent_intelligence_ready",
             "schema": persistent_schema_status(),
             "secrets_printed": False,
+            "status_endpoints_write_free": True,
             **_safety(),
         }
 

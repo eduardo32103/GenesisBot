@@ -42,11 +42,11 @@ def mt5_risk_recovery(*, memory: MemoryStore | None = None, symbol: str = "ETHUS
 
 
 def mt5_persistent_intelligence_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
-    return persistent_intelligence_status(write_test_event=False)
+    return _status_write_free(persistent_intelligence_status(write_test_event=False))
 
 
 def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = None, limit: int = 10) -> dict[str, Any]:
-    return persistent_intelligence_recent_events(limit=limit)
+    return _status_write_free(persistent_intelligence_recent_events(limit=limit))
 
 
 def mt5_persistent_intelligence_bootstrap_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
@@ -75,14 +75,23 @@ def mt5_capital_protection_status(*, memory: MemoryStore | None = None) -> dict[
     blocked = _schema_missing_fast_fail("capital_protection")
     if blocked:
         return blocked
-    return run_capital_protection_governor()
+    return _status_write_free(
+        run_capital_protection_governor(
+            persist_events=False,
+        )
+    )
 
 
 def mt5_strategy_tournament_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:
     blocked = _schema_missing_fast_fail("strategy_tournament")
     if blocked:
         return blocked
-    return run_strategy_tournament()
+    return _status_write_free(
+        run_strategy_tournament(
+            load_rotation=False,
+            persist_events=False,
+        )
+    )
 
 
 def _schema_missing_fast_fail(endpoint: str, *, symbol: str = "") -> dict[str, Any]:
@@ -104,6 +113,7 @@ def _schema_missing_fast_fail(endpoint: str, *, symbol: str = "") -> dict[str, A
         "recommended_action": "apply_schema_sql",
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
+        "status_endpoints_write_free": True,
         "secrets_printed": False,
         "broker_touched": False,
         "order_executed": False,
@@ -135,6 +145,15 @@ def _schema_missing_fast_fail(endpoint: str, *, symbol: str = "") -> dict[str, A
             }
         )
     return base
+
+
+def _status_write_free(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload or {})
+    result["status_endpoints_write_free"] = True
+    result.setdefault("broker_touched", False)
+    result.setdefault("order_executed", False)
+    result.setdefault("order_policy", "journal_only_no_broker")
+    return result
 
 
 def mt5_ui_summary(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
@@ -281,12 +300,12 @@ def mt5_memory_summary(*, memory: MemoryStore | None = None, symbol: str = "", l
 def mt5_learning_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     blocked = _schema_missing_fast_fail("learning_status", symbol=symbol)
     if blocked:
-        return _legacy_learning_status(blocked, symbol=symbol)
-    return _legacy_learning_status(build_router(memory).learning_status(symbol=symbol), symbol=symbol)
+        return _status_write_free(_legacy_learning_status(blocked, symbol=symbol))
+    return _status_write_free(_legacy_learning_status(build_router(memory).learning_status(symbol=symbol), symbol=symbol))
 
 
 def mt5_autonomous_learning_status(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
-    return run_autonomous_learning_status(symbol=symbol or "BTCUSD", timeframe=timeframe)
+    return _status_write_free(run_autonomous_learning_status(symbol=symbol or "BTCUSD", timeframe=timeframe))
 
 
 def _legacy_learning_status(result: dict[str, Any], *, symbol: str = "") -> dict[str, Any]:

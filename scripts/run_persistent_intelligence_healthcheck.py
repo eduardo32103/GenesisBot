@@ -60,6 +60,7 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"last_db_error_category={result.get('last_db_error_category')}",
         f"last_db_error_at={result.get('last_db_error_at')}",
         f"last_db_error_age_seconds={result.get('last_db_error_age_seconds')}",
+        f"status_endpoints_write_free={result.get('status_endpoints_write_free')}",
         f"estimated_storage_mode={result.get('estimated_storage_mode')}",
         f"recommendation={result.get('recommendation')}",
         f"secrets_printed={result.get('secrets_printed')}",

@@ -490,6 +490,33 @@ def _dedupe_key(table: str, row: dict[str, Any]) -> tuple[Any, ...] | None:
             row.get("lesson_type") or "",
             row.get("failure_pattern") or "",
         )
+    if table == "mt5_risk_events":
+        return (
+            table,
+            row.get("symbol") or "",
+            row.get("timeframe") or "",
+            row.get("risk_state") or "",
+            row.get("reason") or "",
+            row.get("circuit_breaker") or "",
+            row.get("recommended_action") or "",
+        )
+    if table == "mt5_candidate_rotation_runs":
+        candidate = row.get("recommended_candidate")
+        if isinstance(candidate, dict):
+            candidate_key = (
+                candidate.get("symbol") or "",
+                candidate.get("timeframe") or "",
+                candidate.get("profile") or candidate.get("family") or "",
+            )
+        else:
+            candidate_key = (str(candidate or "")[:200], "", "")
+        return (
+            table,
+            row.get("recommendation") or "",
+            *candidate_key,
+            bool(row.get("candidate_activated")),
+            bool(row.get("paper_forward_onboarding_started")),
+        )
     if table == "mt5_adaptive_governor_state":
         return (
             table,

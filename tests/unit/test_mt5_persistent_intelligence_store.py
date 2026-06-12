@@ -17,6 +17,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
     _reset_persistent_intelligence_counters_for_tests,
     persistent_intelligence_schema_freeze_status,
     persist_adaptive_governor_state,
+    persist_candidate_rotation_run,
     persist_decision_event,
     persist_research_lesson,
     persist_risk_event,
@@ -410,6 +411,23 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(result["queue_max_size"], 100)
         self.assertEqual(result["queue_depth"], 0)
 
+    def test_healthcheck_status_mode_does_not_write_without_explicit_test_event(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.healthcheck(write_test_event=False)
+
+        self.assertTrue(result["db_available"])
+        self.assertFalse(result["db_degraded"])
+        self.assertTrue(result["tables_ready"])
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertFalse(result["test_write"]["attempted"])
+        self.assertEqual(client.inserted, [])
+        self.assertEqual(client.upserted, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_healthcheck_does_not_print_secret_values(self) -> None:
         result = MT5PersistentIntelligenceStore(client=_MissingTablesClient(secret="SUPERSECRET")).healthcheck()
         serialized = json.dumps(result, sort_keys=True)
@@ -790,6 +808,53 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(second["order_executed"])
         self.assertEqual(second["order_policy"], "journal_only_no_broker")
 
+    def test_duplicate_risk_events_are_coalesced(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+        payload = {
+            "symbol": "BTCUSD",
+            "timeframe": "H1",
+            "risk_state": "blocked",
+            "allowed": False,
+            "reason": "risk_governor_block",
+            "circuit_breaker": "risk_governor",
+            "recommended_action": "NO_TRADE",
+        }
+
+        first = persist_risk_event(payload, store=store)
+        second = persist_risk_event(payload, store=store)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(client.inserted), 1)
+        self.assertTrue(second["write"]["suppressed_duplicate"])
+        self.assertEqual(second["suppressed_duplicate_events"], 1)
+        self.assertFalse(second["broker_touched"])
+        self.assertFalse(second["order_executed"])
+        self.assertEqual(second["order_policy"], "journal_only_no_broker")
+
+    def test_duplicate_candidate_rotation_runs_are_coalesced(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+        payload = {
+            "recommendation": "continue_research",
+            "recommended_candidate": {"symbol": "BTCUSD", "timeframe": "H1", "profile": "btc_h1_review"},
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+        }
+
+        first = persist_candidate_rotation_run(payload, store=store)
+        second = persist_candidate_rotation_run(payload, store=store)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(client.upserted), 1)
+        self.assertTrue(second["write"]["suppressed_duplicate"])
+        self.assertEqual(second["suppressed_duplicate_events"], 1)
+        self.assertFalse(second["broker_touched"])
+        self.assertFalse(second["order_executed"])
+        self.assertEqual(second["order_policy"], "journal_only_no_broker")
+
     def test_recent_events_returns_compact_safety_summary(self) -> None:
         client = _FakeClient(
             selected={
@@ -812,6 +877,9 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(len(result["recent_shadow_events"]), 1)
         self.assertEqual(len(result["recent_research_lessons"]), 1)
         self.assertFalse(result["recent_decisions"][0]["broker_touched"])
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertEqual(client.inserted, [])
+        self.assertEqual(client.upserted, [])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
@@ -862,6 +930,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertTrue(result["db_available"])
         self.assertFalse(result["db_degraded"])
         self.assertTrue(result["tables_ready"])
+        self.assertTrue(result["status_endpoints_write_free"])
         self.assertGreater(len(client.checked_tables), 0)
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
