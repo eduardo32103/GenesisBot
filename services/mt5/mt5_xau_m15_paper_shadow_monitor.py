@@ -6,11 +6,12 @@ from typing import Any
 from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore
 from services.mt5.mt5_risk_governor import assess_runtime_risk
 from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, get_snapshot, update_open_shadow_trade
-from services.mt5.mt5_xau_m15_paper_observation_readiness import BROKER_SYMBOL, CANDIDATE_PROFILE, SYMBOL, TIMEFRAME
+from services.mt5.mt5_xau_m15_paper_observation_readiness import BROKER_SYMBOL, CANDIDATE_PROFILE, MIN_BARS_COUNT, SYMBOL, TIMEFRAME
 
 
-MONITOR_VERSION = "2026-06-14.mt5_xau_m15_paper_shadow_monitor.v1"
+MONITOR_VERSION = "2026-06-14.mt5_xau_m15_paper_shadow_monitor.v2"
 MAX_RUNTIME_AGE_MINUTES = 45.0
+DB_QUEUE_DEPTH_LIMIT = 3
 
 
 def run_xau_m15_paper_shadow_monitor(
@@ -19,6 +20,8 @@ def run_xau_m15_paper_shadow_monitor(
     store: MT5PersistentIntelligenceStore | Any | None = None,
     runtime_snapshot: dict[str, Any] | None = None,
     db_state: dict[str, Any] | None = None,
+    capital_state: dict[str, Any] | None = None,
+    adaptive_state: dict[str, Any] | None = None,
     risk_state: dict[str, Any] | None = None,
     persist_events: bool = True,
     max_runtime_age_minutes: float = MAX_RUNTIME_AGE_MINUTES,
@@ -31,6 +34,16 @@ def run_xau_m15_paper_shadow_monitor(
         persistent_open = _persistent_open_shadow_trades(store)
         persistent_open_count = len(persistent_open)
         if persistent_open_count > 1:
+            safety_analysis = _safety_exit_analysis(
+                snapshot=snapshot,
+                metrics={},
+                db=_db_state(store, db_state),
+                capital=_capital_state(capital_state),
+                adaptive=_adaptive_state(adaptive_state),
+                risk=_risk_state(snapshot, {}, risk_state),
+                open_shadow_count=persistent_open_count,
+                max_runtime_age_minutes=max_runtime_age_minutes,
+            )
             return _base_result(
                 monitor_state="blocked_multiple_open_shadows",
                 open_shadow_count=persistent_open_count,
@@ -40,6 +53,7 @@ def run_xau_m15_paper_shadow_monitor(
                 shadow_status_after="blocked",
                 runtime_snapshot=snapshot,
                 shadow_source="persistent_intelligence_fallback",
+                safety_analysis=safety_analysis,
             )
         if persistent_open_count == 1:
             open_trade = persistent_open[0]
@@ -55,18 +69,28 @@ def run_xau_m15_paper_shadow_monitor(
             shadow_status_after="none",
             runtime_snapshot=snapshot,
             shadow_source="none",
+            safety_analysis=_empty_safety_analysis(reason_detail="no_open_shadow"),
         )
 
     metrics = _trade_metrics(open_trade, snapshot)
     db = _db_state(store, db_state)
+    capital = _capital_state(capital_state)
+    adaptive = _adaptive_state(adaptive_state)
     risk = _risk_state(snapshot, open_trade, risk_state)
-    exit_signal, exit_reason, apply_blocked = _exit_decision(
-        trade=open_trade,
+    safety_analysis = _safety_exit_analysis(
         snapshot=snapshot,
         metrics=metrics,
         db=db,
+        capital=capital,
+        adaptive=adaptive,
         risk=risk,
+        open_shadow_count=1,
         max_runtime_age_minutes=max_runtime_age_minutes,
+    )
+    exit_signal, exit_reason, apply_blocked = _exit_decision(
+        trade=open_trade,
+        metrics=metrics,
+        safety_analysis=safety_analysis,
     )
     updated_trade = _updated_trade(open_trade, metrics, exit_reason if exit_signal else "")
     paper_close_applied = False
@@ -86,7 +110,7 @@ def run_xau_m15_paper_shadow_monitor(
 
     monitor_state = "exit_applied" if paper_close_applied else "exit_pending" if exit_signal else "open_monitoring"
     if apply_blocked:
-        monitor_state = "apply_blocked_stale_runtime"
+        monitor_state = "apply_blocked_missing_current_price"
 
     return {
         **_base_result(
@@ -98,6 +122,7 @@ def run_xau_m15_paper_shadow_monitor(
             shadow_status_after=shadow_status_after,
             runtime_snapshot=snapshot,
             shadow_source=shadow_source,
+            safety_analysis=safety_analysis,
         ),
         "shadow_trade_id": open_trade.get("shadow_trade_id") or "",
         "side": metrics["side"],
@@ -112,6 +137,8 @@ def run_xau_m15_paper_shadow_monitor(
         "bars_since_entry": metrics["bars_since_entry"],
         "persistent_open_shadow_count": persistent_open_count,
         "db_state": _public_db_state(db),
+        "capital_state": capital,
+        "adaptive_state": adaptive,
         "risk_state": risk,
         "apply_paper_close_requested": bool(apply_paper_close),
         "apply_blocked": bool(apply_blocked),
@@ -129,7 +156,9 @@ def _base_result(
     shadow_status_after: str,
     runtime_snapshot: dict[str, Any],
     shadow_source: str,
+    safety_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    safety = safety_analysis or _empty_safety_analysis(reason_detail="")
     return {
         "ok": True,
         "status": "xau_m15_paper_shadow_monitor_ready",
@@ -159,6 +188,7 @@ def _base_result(
         "tick_available": isinstance(runtime_snapshot.get("last_tick"), dict),
         "exit_signal": bool(exit_signal),
         "exit_reason": exit_reason,
+        **safety,
         "paper_close_applied": bool(paper_close_applied),
         "shadow_status_after": shadow_status_after,
         "candidate_activated": False,
@@ -291,14 +321,9 @@ def _trade_metrics(trade: dict[str, Any], snapshot: dict[str, Any]) -> dict[str,
 def _exit_decision(
     *,
     trade: dict[str, Any],
-    snapshot: dict[str, Any],
     metrics: dict[str, Any],
-    db: dict[str, Any],
-    risk: dict[str, Any],
-    max_runtime_age_minutes: float,
+    safety_analysis: dict[str, Any],
 ) -> tuple[bool, str, bool]:
-    if _runtime_stale(snapshot, max_age_minutes=max_runtime_age_minutes) or not metrics.get("current_price"):
-        return True, "stale_runtime_context", True
     side = metrics["side"]
     price = float(metrics["current_price"])
     stop = float(metrics["stop_loss"])
@@ -316,9 +341,294 @@ def _exit_decision(
     max_hold_bars = int(_number(trade.get("max_hold_bars")) or 0)
     if max_hold_bars > 0 and int(metrics.get("bars_since_entry") or 0) >= max_hold_bars:
         return True, "max_hold_bars", False
-    if not _db_healthy(db) or not _risk_allows(risk):
+    if safety_analysis.get("should_close_paper"):
+        if not metrics.get("current_price"):
+            return True, "safety_exit", True
         return True, "safety_exit", False
+    if safety_analysis.get("should_watch_only"):
+        return False, "caution_watch", False
     return False, "", False
+
+
+def _safety_exit_analysis(
+    *,
+    snapshot: dict[str, Any],
+    metrics: dict[str, Any],
+    db: dict[str, Any],
+    capital: dict[str, Any],
+    adaptive: dict[str, Any],
+    risk: dict[str, Any],
+    open_shadow_count: int,
+    max_runtime_age_minutes: float,
+) -> dict[str, Any]:
+    db_state = _db_safety_state(db)
+    capital_state = _capital_safety_state(capital)
+    adaptive_state = _adaptive_safety_state(adaptive)
+    risk_state = _risk_safety_state(risk)
+    runtime_state = _runtime_safety_state(snapshot, metrics, max_runtime_age_minutes=max_runtime_age_minutes)
+    open_shadow_state = _open_shadow_safety_state(open_shadow_count)
+
+    critical_sources: list[str] = []
+    unknown_sources: list[str] = []
+    caution_sources: list[str] = []
+    for state in (db_state, capital_state, runtime_state, open_shadow_state):
+        critical_sources.extend(state["critical_reasons"])
+    critical_sources.extend(adaptive_state["critical_reasons"])
+    caution_sources.extend(adaptive_state["caution_reasons"])
+    critical_sources.extend(risk_state["critical_reasons"])
+    unknown_sources.extend(risk_state["unknown_reasons"])
+    if metrics and float(metrics.get("r_multiple") or 0.0) < 0 and not critical_sources and not unknown_sources:
+        caution_sources.append("small_unrealized_loss_without_critical_breaker")
+
+    if critical_sources:
+        category = "critical_safety_exit"
+        reason_detail = _reason_detail(critical_sources)
+        should_close = True
+        should_watch = False
+        close_decision_reason = f"close_paper:critical_safety_exit:{reason_detail}"
+        triggered = True
+        sources = critical_sources
+    elif unknown_sources:
+        category = "unknown_safety_exit"
+        reason_detail = "missing_safety_exit_detail"
+        should_close = True
+        should_watch = False
+        close_decision_reason = "close_paper:unknown_safety_exit:missing_safety_exit_detail"
+        triggered = True
+        sources = unknown_sources
+    elif caution_sources:
+        category = "caution_watch"
+        reason_detail = _reason_detail(caution_sources)
+        should_close = False
+        should_watch = True
+        close_decision_reason = f"watch_only:caution_watch:{reason_detail}"
+        triggered = False
+        sources = caution_sources
+    else:
+        category = "none"
+        reason_detail = "no_safety_exit"
+        should_close = False
+        should_watch = False
+        close_decision_reason = "no_close:no_safety_exit"
+        triggered = False
+        sources = []
+
+    return {
+        "safety_exit_triggered": bool(triggered),
+        "safety_exit_category": category,
+        "safety_exit_reason_detail": reason_detail,
+        "safety_exit_sources": sources,
+        "db_safety_state": _strip_internal_reasons(db_state),
+        "capital_safety_state": _strip_internal_reasons(capital_state),
+        "adaptive_safety_state": _strip_internal_reasons(adaptive_state),
+        "risk_safety_state": _strip_internal_reasons(risk_state),
+        "runtime_safety_state": _strip_internal_reasons(runtime_state),
+        "open_shadow_safety_state": _strip_internal_reasons(open_shadow_state),
+        "should_close_paper": bool(should_close),
+        "should_watch_only": bool(should_watch),
+        "close_decision_reason": close_decision_reason,
+    }
+
+
+def _empty_safety_analysis(*, reason_detail: str) -> dict[str, Any]:
+    detail = reason_detail or "no_safety_exit"
+    return {
+        "safety_exit_triggered": False,
+        "safety_exit_category": "none",
+        "safety_exit_reason_detail": detail,
+        "safety_exit_sources": [],
+        "db_safety_state": {"status": "not_evaluated"},
+        "capital_safety_state": {"status": "not_evaluated"},
+        "adaptive_safety_state": {"status": "not_evaluated"},
+        "risk_safety_state": {"status": "not_evaluated"},
+        "runtime_safety_state": {"status": "not_evaluated"},
+        "open_shadow_safety_state": {"status": detail},
+        "should_close_paper": False,
+        "should_watch_only": False,
+        "close_decision_reason": f"no_close:{detail}",
+    }
+
+
+def _db_safety_state(db: dict[str, Any]) -> dict[str, Any]:
+    queue_depth = int(_number(db.get("queue_depth")) or 0)
+    reasons: list[str] = []
+    if db.get("db_available") is False:
+        reasons.append("db_unavailable")
+    if db.get("db_degraded") is True:
+        reasons.append("db_degraded")
+    if db.get("tables_ready") is False:
+        reasons.append("tables_not_ready")
+    if queue_depth > DB_QUEUE_DEPTH_LIMIT:
+        reasons.append("queue_depth_high")
+    return {
+        "status": "critical" if reasons else "ok",
+        "db_available": bool(db.get("db_available")),
+        "db_degraded": bool(db.get("db_degraded")),
+        "tables_ready": bool(db.get("tables_ready")),
+        "queue_depth": queue_depth,
+        "queue_depth_limit": DB_QUEUE_DEPTH_LIMIT,
+        "recommendation": db.get("recommendation") or "",
+        "critical_reasons": reasons,
+        "caution_reasons": [],
+        "unknown_reasons": [],
+    }
+
+
+def _capital_safety_state(capital: dict[str, Any]) -> dict[str, Any]:
+    state = _state_text(capital, "capital_state", "state", "status", "global_state")
+    reason = str(capital.get("reason") or capital.get("recommended_action") or "").strip()
+    critical: list[str] = []
+    if state in {"kill_switch", "blocked", "capital_kill_switch"}:
+        critical.append("capital_state_kill_switch")
+    if "max_open_shadow_trades" in reason:
+        critical.append("max_open_shadow_trades")
+    if "max_profile_exposure" in reason:
+        critical.append("max_profile_exposure")
+    return {
+        "status": "critical" if critical else "ok",
+        "state": state or "not_provided",
+        "reason": reason,
+        "critical_reasons": critical,
+        "caution_reasons": [],
+        "unknown_reasons": [],
+    }
+
+
+def _adaptive_safety_state(adaptive: dict[str, Any]) -> dict[str, Any]:
+    state = _state_text(adaptive, "adaptive_state", "global_state", "state", "status")
+    reason = str(adaptive.get("reason") or adaptive.get("recommended_next_action") or "").strip()
+    critical: list[str] = []
+    caution: list[str] = []
+    if state in {"kill_switch", "blocked", "halted"}:
+        critical.append("adaptive_state_blocked")
+    elif state == "watch":
+        caution.append("adaptive_state_watch")
+    return {
+        "status": "critical" if critical else "watch" if caution else "ok",
+        "state": state or "not_provided",
+        "reason": reason,
+        "critical_reasons": critical,
+        "caution_reasons": caution,
+        "unknown_reasons": [],
+    }
+
+
+def _risk_safety_state(risk: dict[str, Any]) -> dict[str, Any]:
+    allowed = _risk_allows(risk)
+    reason = str(risk.get("reason") or risk.get("risk_governor_reason") or "").strip()
+    critical: list[str] = []
+    unknown: list[str] = []
+    if not allowed:
+        if _generic_safety_reason(reason):
+            unknown.append("risk_governor_block_without_detail")
+        else:
+            critical.append(f"risk_governor_explicit_block:{reason}")
+    return {
+        "status": "critical" if critical else "unknown" if unknown else "ok",
+        "allowed": bool(allowed),
+        "risk_state": risk.get("risk_state") or risk.get("state") or "",
+        "reason": reason,
+        "critical_reasons": critical,
+        "caution_reasons": [],
+        "unknown_reasons": unknown,
+    }
+
+
+def _runtime_safety_state(snapshot: dict[str, Any], metrics: dict[str, Any], *, max_runtime_age_minutes: float) -> dict[str, Any]:
+    tick = _tick(snapshot)
+    tick_available = isinstance(tick, dict) and bool(tick)
+    bars_count = int(_number(snapshot.get("bars_count")) or 0)
+    last_at = _parse_time(snapshot.get("last_tick_at") or snapshot.get("updated_at"))
+    tick_age = None
+    if last_at is not None:
+        tick_age = round((datetime.now(timezone.utc) - last_at).total_seconds() / 60.0, 3)
+    context = str(snapshot.get("runtime_snapshot_context") or "").strip()
+    complete = bool(snapshot.get("runtime_snapshot_complete"))
+    critical: list[str] = []
+    if not bool(snapshot.get("runtime_snapshot_available")):
+        critical.append("runtime_context_unavailable")
+    if snapshot.get("runtime_snapshot_recent") is False:
+        critical.append("runtime_context_stale")
+    if context != "bar_context" or not complete:
+        critical.append("runtime_context_incomplete")
+    if not tick_available:
+        critical.append("no_tick")
+    if bars_count < MIN_BARS_COUNT:
+        critical.append("no_bars_or_insufficient_bars")
+    if last_at is None:
+        critical.append("missing_tick_timestamp")
+    elif tick_age is not None and tick_age > float(max_runtime_age_minutes):
+        critical.append("runtime_context_stale")
+    return {
+        "status": "critical" if critical else "ok",
+        "runtime_context_available": bool(snapshot.get("runtime_snapshot_available")),
+        "runtime_context_recent": bool(snapshot.get("runtime_snapshot_recent")),
+        "runtime_snapshot_context": context,
+        "runtime_snapshot_complete": complete,
+        "tick_available": tick_available,
+        "bars_count": bars_count,
+        "min_bars_count": MIN_BARS_COUNT,
+        "latest_tick_age_minutes": tick_age,
+        "current_price_available": bool(metrics.get("current_price")),
+        "critical_reasons": _dedupe(critical),
+        "caution_reasons": [],
+        "unknown_reasons": [],
+    }
+
+
+def _open_shadow_safety_state(open_shadow_count: int) -> dict[str, Any]:
+    critical = ["multiple_open_shadows"] if int(open_shadow_count or 0) > 1 else []
+    return {
+        "status": "critical" if critical else "ok",
+        "open_shadow_count": int(open_shadow_count or 0),
+        "critical_reasons": critical,
+        "caution_reasons": [],
+        "unknown_reasons": [],
+    }
+
+
+def _capital_state(injected: dict[str, Any] | None) -> dict[str, Any]:
+    return dict(injected or {"capital_state": "normal", "reason": "not_provided"})
+
+
+def _adaptive_state(injected: dict[str, Any] | None) -> dict[str, Any]:
+    return dict(injected or {"adaptive_state": "normal", "reason": "not_provided"})
+
+
+def _state_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        text = str(payload.get(key) or "").casefold().strip()
+        if text:
+            return text
+    return ""
+
+
+def _generic_safety_reason(reason: str) -> bool:
+    clean = str(reason or "").casefold().strip()
+    return clean in {"", "safety_exit", "unknown", "risk_block", "risk_governor_block"}
+
+
+def _reason_detail(reasons: list[str]) -> str:
+    return ",".join(_dedupe([str(reason) for reason in reasons if str(reason or "").strip()])) or "missing_safety_exit_detail"
+
+
+def _strip_internal_reasons(state: dict[str, Any]) -> dict[str, Any]:
+    public = dict(state)
+    public.pop("critical_reasons", None)
+    public.pop("caution_reasons", None)
+    public.pop("unknown_reasons", None)
+    return public
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def _updated_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: str) -> dict[str, Any]:

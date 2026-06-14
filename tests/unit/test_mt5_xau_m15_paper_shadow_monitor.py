@@ -23,6 +23,9 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertEqual(result["open_shadow_count"], 0)
         self.assertFalse(result["exit_signal"])
         self.assertEqual(result["exit_reason"], "no_open_shadow")
+        self.assertEqual(result["safety_exit_category"], "none")
+        self.assertFalse(result["should_close_paper"])
+        self.assertFalse(result["should_watch_only"])
         self.assertFalse(result["paper_close_applied"])
         self.assertFalse((get_snapshot("XAUUSD", "M15") or {}).get("open_shadow_trade"))
         self.assertFalse(result["broker_touched"])
@@ -85,6 +88,8 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertEqual(result["shadow_source"], "persistent_intelligence_fallback")
         self.assertEqual(result["open_shadow_count"], 2)
         self.assertEqual(result["exit_reason"], "multiple_open_shadows_persisted")
+        self.assertEqual(result["safety_exit_category"], "critical_safety_exit")
+        self.assertIn("multiple_open_shadows", result["safety_exit_reason_detail"])
         self.assertFalse(result["paper_close_applied"])
 
     def test_stop_loss_hit_produces_exit_signal(self) -> None:
@@ -110,7 +115,7 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertFalse(result["paper_close_applied"])
         self.assertGreater(result["unrealized_pnl"], 0)
 
-    def test_stale_runtime_blocks_apply(self) -> None:
+    def test_stale_runtime_is_critical_safety_exit_and_apply_closes_when_price_available(self) -> None:
         stale_time = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
         snapshot = {
             "symbol": "XAUUSD",
@@ -119,8 +124,9 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
             "runtime_snapshot_available": True,
             "runtime_snapshot_recent": False,
             "runtime_snapshot_context": "bar_context",
+            "runtime_snapshot_complete": True,
             "last_tick_at": stale_time,
-            "last_tick": {"bid": 94.0, "ask": 94.2, "last": 94.1, "timeframe": "M15"},
+            "last_tick": {"bid": 100.0, "ask": 100.2, "last": 100.1, "timeframe": "M15"},
             "bars_count": 120,
             "open_shadow_trade": _shadow(entry=100.0, stop=95.0, target=110.0),
         }
@@ -133,11 +139,76 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
             persist_events=False,
         )
 
-        self.assertEqual(result["monitor_state"], "apply_blocked_stale_runtime")
+        self.assertEqual(result["monitor_state"], "exit_applied")
         self.assertTrue(result["exit_signal"])
-        self.assertEqual(result["exit_reason"], "stale_runtime_context")
-        self.assertTrue(result["apply_blocked"])
+        self.assertEqual(result["exit_reason"], "safety_exit")
+        self.assertEqual(result["safety_exit_category"], "critical_safety_exit")
+        self.assertIn("runtime_context_stale", result["safety_exit_reason_detail"])
+        self.assertTrue(result["should_close_paper"])
+        self.assertFalse(result["apply_blocked"])
+        self.assertTrue(result["paper_close_applied"])
+
+    def test_small_loss_with_healthy_runtime_and_adaptive_watch_does_not_close(self) -> None:
+        _seed_runtime(price=99.87)
+        _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            db_state=_db(),
+            adaptive_state={"adaptive_state": "watch", "reason": "monitor_small_unrealized_loss"},
+            risk_state=_risk(),
+            persist_events=False,
+        )
+
+        self.assertEqual(result["monitor_state"], "open_monitoring")
+        self.assertFalse(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "caution_watch")
+        self.assertEqual(result["safety_exit_category"], "caution_watch")
+        self.assertIn("adaptive_state_watch", result["safety_exit_reason_detail"])
+        self.assertFalse(result["should_close_paper"])
+        self.assertTrue(result["should_watch_only"])
         self.assertFalse(result["paper_close_applied"])
+
+    def test_db_degraded_is_critical_safety_exit_and_apply_closes_paper_only(self) -> None:
+        _seed_runtime(price=100.0)
+        _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            db_state={**_db(), "db_degraded": True},
+            risk_state=_risk(),
+            persist_events=False,
+        )
+
+        self.assertEqual(result["monitor_state"], "exit_applied")
+        self.assertTrue(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "safety_exit")
+        self.assertEqual(result["safety_exit_category"], "critical_safety_exit")
+        self.assertIn("db_degraded", result["safety_exit_reason_detail"])
+        self.assertTrue(result["should_close_paper"])
+        self.assertFalse(result["should_watch_only"])
+        self.assertTrue(result["paper_close_applied"])
+
+    def test_unknown_safety_exit_closes_but_reports_missing_detail(self) -> None:
+        _seed_runtime(price=100.0)
+        _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            db_state=_db(),
+            risk_state={"allowed": False, "risk_state": "unknown", "reason": "safety_exit"},
+            persist_events=False,
+        )
+
+        self.assertEqual(result["monitor_state"], "exit_applied")
+        self.assertTrue(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "safety_exit")
+        self.assertEqual(result["safety_exit_category"], "unknown_safety_exit")
+        self.assertEqual(result["safety_exit_reason_detail"], "missing_safety_exit_detail")
+        self.assertIn("risk_governor_block_without_detail", result["safety_exit_sources"])
+        self.assertTrue(result["should_close_paper"])
+        self.assertFalse(result["should_watch_only"])
+        self.assertTrue(result["paper_close_applied"])
 
     def test_dry_run_never_closes(self) -> None:
         _seed_runtime(price=111.0)
