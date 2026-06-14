@@ -86,6 +86,8 @@ from api.routes.genesis import (
     get_genesis_mt5_strategy_tournament_status,
     get_genesis_mt5_strategy_profiles,
     get_genesis_mt5_ui_summary,
+    get_genesis_mt5_xau_m15_paper_observation_cycle,
+    get_genesis_mt5_xau_m15_paper_observation_readiness,
     get_genesis_portfolio_hedge,
     get_genesis_trading_context,
     post_genesis_mt5_account_sync,
@@ -269,6 +271,8 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_shadow_trade_close_endpoint": "/api/genesis/mt5/shadow-trades/close",
         "genesis_mt5_debug_storage_endpoint": "/api/genesis/mt5/debug/storage?symbol={symbol}",
         "genesis_mt5_runtime_snapshot_inventory_endpoint": "/api/genesis/mt5/runtime-snapshot/inventory?symbol={symbol}&broker_symbol={broker_symbol}&timeframe={timeframe}",
+        "genesis_mt5_xau_m15_paper_observation_readiness_endpoint": "/api/genesis/mt5/xau-m15/paper-observation/readiness",
+        "genesis_mt5_xau_m15_paper_observation_cycle_endpoint": "/api/genesis/mt5/xau-m15/paper-observation/cycle",
         "genesis_mt5_auto_forward_status_endpoint": "/api/genesis/mt5/auto-forward-status?symbol={symbol}",
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
         "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
@@ -4652,6 +4656,16 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             broker_symbol = (query.get("broker_symbol") or query.get("broker-symbol") or ["XAUUSD.b"])[0]
             timeframe = (query.get("timeframe") or query.get("tf") or ["M15"])[0]
             payload_data = get_genesis_mt5_runtime_snapshot_inventory(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/xau-m15/paper-observation/readiness":
+            payload_data = get_genesis_mt5_xau_m15_paper_observation_readiness()
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/xau-m15/paper-observation/cycle":
+            payload_data = get_genesis_mt5_xau_m15_paper_observation_cycle()
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

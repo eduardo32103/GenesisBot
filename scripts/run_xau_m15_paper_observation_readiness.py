@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -17,7 +18,7 @@ from services.mt5.mt5_xau_m15_paper_observation_readiness import (  # noqa: E402
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    result = run_xau_m15_paper_observation_readiness()
+    result = _fetch_remote(args) if args.base_url else run_xau_m15_paper_observation_readiness()
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True, default=str))
     else:
@@ -88,8 +89,31 @@ def _comma(values: list[Any]) -> str:
     return ",".join(str(value) for value in values) if values else "none"
 
 
+def _fetch_remote(args: argparse.Namespace) -> dict[str, Any]:
+    base = str(args.base_url or "").rstrip("/")
+    url = f"{base}/api/genesis/mt5/xau-m15/paper-observation/readiness"
+    with urlopen(url, timeout=max(1.0, float(args.timeout_seconds or 10.0))) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict):
+        payload["readiness_source"] = "remote_live_http_process"
+        return payload
+    return {
+        "ok": False,
+        "status": "xau_m15_readiness_invalid_remote_payload",
+        "readiness_source": "remote_live_http_process",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "paper_shadow_created": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check XAUUSD M15 paper observation readiness.")
+    parser.add_argument("--base-url", default="", help="Optional live Genesis base URL to inspect the web process memory.")
+    parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 

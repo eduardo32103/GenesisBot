@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
+from api.main import create_app
+from api.routes.genesis import (
+    get_genesis_mt5_xau_m15_paper_observation_cycle,
+    get_genesis_mt5_xau_m15_paper_observation_readiness,
+)
 from services.mt5.instrument_resolver import normalize_mt5_symbol
 from services.mt5.mt5_bridge import mt5_bars
 from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, runtime_snapshot_inventory, update_bars, update_tick
@@ -14,6 +20,18 @@ from services.mt5.mt5_xau_m15_paper_observation_readiness import (
 
 
 class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
+    def test_create_app_exposes_xau_m15_live_http_endpoints(self) -> None:
+        app = create_app()
+
+        self.assertEqual(
+            app["genesis_mt5_xau_m15_paper_observation_readiness_endpoint"],
+            "/api/genesis/mt5/xau-m15/paper-observation/readiness",
+        )
+        self.assertEqual(
+            app["genesis_mt5_xau_m15_paper_observation_cycle_endpoint"],
+            "/api/genesis/mt5/xau-m15/paper-observation/cycle",
+        )
+
     def test_missing_runtime_blocks(self) -> None:
         result = run_xau_m15_paper_observation_readiness(
             db_state=_db(),
@@ -274,6 +292,66 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertFalse(result["paper_shadow_created"])
         self.assertFalse(result["broker_touched"])
 
+    def test_http_readiness_uses_live_runtime_snapshot_and_returns_ready(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        mt5_bars(_bars_payload("XAUUSD.b", "M15", _bars(120)))
+
+        with _patched_live_readiness_dependencies():
+            result = get_genesis_mt5_xau_m15_paper_observation_readiness()
+
+        self.assertTrue(result["candidate_found"])
+        self.assertEqual(result["candidate_status"], "paper_observation_review")
+        self.assertTrue(result["runtime_context_available"])
+        self.assertTrue(result["runtime_context_recent"])
+        self.assertEqual(result["runtime_snapshot_context"], "bar_context")
+        self.assertEqual(result["symbol_alias_used"], "XAUUSD")
+        self.assertTrue(result["latest_tick_at"])
+        self.assertTrue(result["latest_bars_at"])
+        self.assertTrue(result["bars_available"])
+        self.assertGreaterEqual(result["bars_count"], 100)
+        self.assertTrue(result["tick_available"])
+        self.assertTrue(result["tick_merged_into_bar_context"])
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_http_readiness_blocks_when_no_live_m15_bars(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        with _patched_live_readiness_dependencies():
+            result = get_genesis_mt5_xau_m15_paper_observation_readiness()
+
+        self.assertEqual(result["readiness_state"], "blocked")
+        self.assertIn("m15_bars_available", result["failed_gates"])
+        self.assertIn("m15_bars_count", result["failed_gates"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["broker_touched"])
+
+    def test_http_cycle_endpoint_default_is_dry_run_and_creates_no_shadow(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        mt5_bars(_bars_payload("XAUUSD.b", "M15", _bars(120)))
+
+        with _patched_live_readiness_dependencies():
+            result = get_genesis_mt5_xau_m15_paper_observation_cycle()
+
+        self.assertEqual(result["mode"], "dry_run")
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["shadow_trade_id"], "")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["applies_to_real_trading"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_dry_run_observation_creates_no_shadow(self) -> None:
         readiness = run_xau_m15_paper_observation_readiness(
             db_state=_db(),
@@ -343,6 +421,28 @@ def _strategy() -> dict[str, object]:
         "family": "volatility_compression_breakout",
         "status": "paper_observation_review",
     }
+
+
+class _FakeStore:
+    def healthcheck(self, write_test_event: bool = False) -> dict[str, object]:
+        return _db()
+
+    def _safe_select(self, table: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        if table == "mt5_profile_state":
+            return {"rows": [_profile()]}
+        if table == "mt5_strategy_registry":
+            return {"rows": [_strategy()]}
+        return {"rows": []}
+
+
+def _patched_live_readiness_dependencies():
+    return patch.multiple(
+        "services.mt5.mt5_xau_m15_paper_observation_readiness",
+        MT5PersistentIntelligenceStore=lambda: _FakeStore(),
+        run_capital_protection_governor=lambda **kwargs: _capital(),
+        run_adaptive_strategy_governor=lambda **kwargs: _adaptive(),
+        assess_runtime_risk=lambda *args, **kwargs: _risk(),
+    )
 
 
 def _snapshot() -> dict[str, object]:

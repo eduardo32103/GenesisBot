@@ -16,6 +16,10 @@ from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_runtime_snapshot import runtime_snapshot_inventory
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament
+from services.mt5.mt5_xau_m15_paper_observation_readiness import (
+    run_xau_m15_paper_observation_cycle,
+    run_xau_m15_paper_observation_readiness,
+)
 
 
 def build_router(memory: MemoryStore | None = None) -> MT5SignalRouter:
@@ -217,6 +221,22 @@ def mt5_runtime_snapshot_inventory(
     timeframe: str = "M15",
 ) -> dict[str, Any]:
     return runtime_snapshot_inventory(lookup_symbols=[symbol, broker_symbol], lookup_timeframe=timeframe)
+
+
+def mt5_xau_m15_paper_observation_readiness(
+    *,
+    memory: MemoryStore | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    return run_xau_m15_paper_observation_readiness(store=store)
+
+
+def mt5_xau_m15_paper_observation_cycle(
+    *,
+    memory: MemoryStore | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    return run_xau_m15_paper_observation_cycle(store=store, paper_shadow_once=False)
 
 
 def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:

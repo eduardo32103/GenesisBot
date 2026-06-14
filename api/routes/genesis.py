@@ -59,6 +59,8 @@ from services.mt5.mt5_bridge import (
     mt5_strategy_profiles,
     mt5_tick,
     mt5_ui_summary,
+    mt5_xau_m15_paper_observation_cycle,
+    mt5_xau_m15_paper_observation_readiness,
 )
 
 
@@ -189,6 +191,14 @@ def get_genesis_mt5_debug_storage(symbol: str = "", limit: int = 20) -> dict[str
 
 def get_genesis_mt5_runtime_snapshot_inventory(symbol: str = "XAUUSD", broker_symbol: str = "XAUUSD.b", timeframe: str = "M15") -> dict[str, Any]:
     return mt5_runtime_snapshot_inventory(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
+
+
+def get_genesis_mt5_xau_m15_paper_observation_readiness() -> dict[str, Any]:
+    return mt5_xau_m15_paper_observation_readiness()
+
+
+def get_genesis_mt5_xau_m15_paper_observation_cycle() -> dict[str, Any]:
+    return mt5_xau_m15_paper_observation_cycle()
 
 
 def get_genesis_mt5_instrument(symbol: str = "") -> dict[str, Any]:
