@@ -309,7 +309,7 @@ def _normalize_tick(clean: str, normalized: str, tick: dict[str, Any], *, timefr
 
 
 def _canonical_snapshot_symbol(clean: str, normalized: str) -> str:
-    if normalized in {"BTCUSD", "ETHUSD"}:
+    if normalized in {"BTCUSD", "ETHUSD", "XAUUSD"}:
         return normalized
     return clean or normalized
 

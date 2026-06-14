@@ -46,6 +46,20 @@ def resolve_instrument(value: dict[str, Any] | str | None) -> dict[str, Any]:
             warning="",
         )
 
+    if _looks_like_xauusd(compact_alnum, compact_root, description, currency_base, currency_profit):
+        return _payload(
+            original_symbol=original_symbol,
+            normalized_symbol="XAUUSD",
+            underlying="XAU",
+            instrument_type="metal_spot",
+            is_spot_crypto=False,
+            description=description,
+            path=path,
+            currency_base=currency_base,
+            currency_profit=currency_profit,
+            warning="",
+        )
+
     if original_symbol == "BTC" or any(token in desc_l for token in ("grayscale", "trust", "etf", "fund", "mini trust")):
         return _payload(
             original_symbol=original_symbol or "BTC",
@@ -86,6 +100,8 @@ def symbol_aliases(value: dict[str, Any] | str | None) -> set[str]:
         return {"BTCUSD", "BTCUSD.", "BTCUSDM", "BTCUSDm".upper(), "BTCUSDT", "BTC-USD", "XBTUSD"}
     if normalized == "ETHUSD":
         return {"ETHUSD", "ETHUSD.", "ETHUSDM", "ETHUSDm".upper(), "ETHUSDT", "ETH-USD"}
+    if normalized == "XAUUSD":
+        return {"XAUUSD", "XAUUSD.", "XAUUSD.B", "XAUUSD#", "XAUUSDM", "GOLD", "GOLD.B"}
     if normalized == "BTC_PROXY":
         return {"BTC", "BTC_PROXY"}
     return {item for item in {normalized, original} if item}
@@ -139,6 +155,15 @@ def _looks_like_spot_eth(symbol: str, compact_root: str, description: str, curre
     return "ethereum vs. usd" in desc_l or "ethereum vs usd" in desc_l
 
 
+def _looks_like_xauusd(compact_alnum: str, compact_root: str, description: str, currency_base: str, currency_profit: str) -> bool:
+    if compact_alnum in {"XAUUSD", "GOLD"} or compact_root.startswith("XAUUSD") or compact_root.startswith("GOLD"):
+        return True
+    if currency_base in {"XAU", "GOLD"} and currency_profit == "USD":
+        return True
+    desc_l = description.casefold()
+    return "gold" in desc_l and ("usd" in desc_l or "dollar" in desc_l)
+
+
 def _payload(
     *,
     original_symbol: str,
@@ -173,6 +198,10 @@ def symbol_aliases_from_normalized(normalized_symbol: str) -> set[str]:
     normalized = _symbol(normalized_symbol)
     if normalized == "BTCUSD":
         return {"BTCUSD", "BTCUSD.", "BTCUSDM", "BTCUSDT", "BTC-USD", "XBTUSD"}
+    if normalized == "ETHUSD":
+        return {"ETHUSD", "ETHUSD.", "ETHUSDM", "ETHUSDT", "ETH-USD"}
+    if normalized == "XAUUSD":
+        return {"XAUUSD", "XAUUSD.", "XAUUSD.B", "XAUUSD#", "XAUUSDM", "GOLD", "GOLD.B"}
     if normalized == "BTC_PROXY":
         return {"BTC", "BTC_PROXY"}
     return {normalized} if normalized else set()

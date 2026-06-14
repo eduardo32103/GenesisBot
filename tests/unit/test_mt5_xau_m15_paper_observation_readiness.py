@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from services.mt5.instrument_resolver import normalize_mt5_symbol
+from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_bars, update_tick
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     CANDIDATE_PROFILE,
     run_xau_m15_paper_observation_cycle,
@@ -136,6 +138,53 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertFalse(result["paper_forward_onboarding_started"])
         self.assertFalse(result["order_executed"])
 
+    def test_xauusd_b_m15_runtime_snapshot_is_read_by_logical_symbol(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        self.assertEqual(normalize_mt5_symbol("XAUUSD.b"), "XAUUSD")
+        update_bars(
+            "XAUUSD.b",
+            "M15",
+            _bars(120),
+            tick={"bid": 2350.0, "ask": 2350.25, "last": 2350.12, "spread": 0.25, "timeframe": "M15"},
+            min_bars=100,
+        )
+        update_tick(
+            "XAUUSD.b",
+            {"bid": 2350.1, "ask": 2350.35, "last": 2350.2, "spread": 0.25, "timeframe": "M15"},
+        )
+
+        result = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+
+        self.assertEqual(result["symbol"], "XAUUSD")
+        self.assertEqual(result["broker_symbol"], "XAUUSD.b")
+        self.assertEqual(result["timeframe"], "M15")
+        self.assertEqual(result["symbol_alias_used"], "XAUUSD")
+        self.assertTrue(result["runtime_context_available"])
+        self.assertTrue(result["runtime_context_recent"])
+        self.assertTrue(result["runtime_snapshot_complete"])
+        self.assertEqual(result["runtime_snapshot_context"], "bar_context")
+        self.assertTrue(result["bars_available"])
+        self.assertGreaterEqual(result["bars_count"], 100)
+        self.assertTrue(result["tick_available"])
+        self.assertTrue(result["tick_merged_into_bar_context"])
+        self.assertTrue(result["latest_tick_at"])
+        self.assertTrue(result["latest_bars_at"])
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_dry_run_observation_creates_no_shadow(self) -> None:
         readiness = run_xau_m15_paper_observation_readiness(
             db_state=_db(),
@@ -229,6 +278,26 @@ def _snapshot() -> dict[str, object]:
         "market_regime": "trend",
         "latest_performance_summary": {"closed": 0, "profit_factor": 1.2, "expectancy": 0.01},
     }
+
+
+def _bars(count: int) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    base = 2350.0
+    start = datetime(2026, 6, 12, tzinfo=timezone.utc)
+    for idx in range(count):
+        price = base + (idx * 0.05)
+        rows.append(
+            {
+                "time": (start + timedelta(minutes=15 * idx)).isoformat(),
+                "open": price,
+                "high": price + 0.8,
+                "low": price - 0.7,
+                "close": price + 0.2,
+                "volume": 100 + idx,
+                "tick_volume": 100 + idx,
+            }
+        )
+    return rows
 
 
 def _capital() -> dict[str, object]:

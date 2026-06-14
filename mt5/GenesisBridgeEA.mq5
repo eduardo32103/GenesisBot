@@ -4,7 +4,7 @@
 //| No real trading by default.                                      |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "11.9"
+#property version   "12.0"
 #property description "Genesis MT5 Bridge EA. Journal/demo bridge with kill switch enabled by default."
 
 input string GenesisBaseUrl = "https://genesisbot-production.up.railway.app";
@@ -22,12 +22,13 @@ input bool KillSwitch = false;
 input bool EnableTickPost = true;
 input bool SendBarsEnabled = true;
 input int BarsCount = 100;
+input string BarsTimeframes = "M15,M30";
 input int BarsEverySeconds = 300;
 input bool EnableSignalPost = false;
 input bool EnableAccountSync = true;
 input bool EnableDecisionPoll = true;
 
-string EA_VERSION = "GenesisBridgeEA_v11_9_FORCE_TICK";
+string EA_VERSION = "GenesisBridgeEA_v12_0_MULTI_TF_BARS";
 string lastDecision = "WAIT";
 string lastConfidence = "low";
 string lastReason = "waiting";
@@ -41,6 +42,8 @@ datetime lastPoll = 0;
 datetime lastTickSent = 0;
 datetime lastBarsSent = 0;
 datetime lastBarsBarTime = 0;
+datetime lastBarsSentBySlot[8];
+datetime lastBarsBarTimeBySlot[8];
 datetime lastJournalEvent = 0;
 int lastSignalHttpCode = 0;
 int lastTickHttpCode = 0;
@@ -239,6 +242,7 @@ bool SendTick()
    lastTickStatus = HttpStatusText(lastTickHttpCode);
    lastTickError = "";
    Print("MT5 SendTick HTTP=", lastTickHttpCode);
+   Print("MT5 SendTick symbol=", _Symbol, " HTTP=", lastTickHttpCode);
    Print("MT5 SendTick response=", ShortText(response, 350));
    if(lastTickHttpCode < 200 || lastTickHttpCode >= 300)
    {
@@ -261,27 +265,82 @@ bool MaybeSendBars()
       return false;
    }
 
+   string configured = CompactText(BarsTimeframes);
+   if(StringLen(configured) <= 0)
+      return MaybeSendBarsForTimeframe(_Period);
+
+   bool requested = false;
+   bool allOk = true;
+   if(TimeframeRequested(configured, "M1"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_M1) && allOk;
+   }
+   if(TimeframeRequested(configured, "M5"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_M5) && allOk;
+   }
+   if(TimeframeRequested(configured, "M15"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_M15) && allOk;
+   }
+   if(TimeframeRequested(configured, "M30"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_M30) && allOk;
+   }
+   if(TimeframeRequested(configured, "H1"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_H1) && allOk;
+   }
+   if(TimeframeRequested(configured, "H4"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_H4) && allOk;
+   }
+   if(TimeframeRequested(configured, "D1"))
+   {
+      requested = true;
+      allOk = MaybeSendBarsForTimeframe(PERIOD_D1) && allOk;
+   }
+
+   if(!requested)
+      return MaybeSendBarsForTimeframe(_Period);
+
+   return allOk;
+}
+
+bool MaybeSendBarsForTimeframe(ENUM_TIMEFRAMES period)
+{
    datetime now = TimeCurrent();
-   datetime currentBarTime = iTime(_Symbol, _Period, 0);
+   datetime currentBarTime = iTime(_Symbol, period, 0);
+   int slot = BarsTimeframeSlot(period);
    bool intervalDue = true;
-   if(BarsEverySeconds > 0 && lastBarsSent > 0)
-      intervalDue = (now - lastBarsSent) >= BarsEverySeconds;
-   bool newBarDue = (currentBarTime > 0 && currentBarTime != lastBarsBarTime);
+   if(BarsEverySeconds > 0 && lastBarsSentBySlot[slot] > 0)
+      intervalDue = (now - lastBarsSentBySlot[slot]) >= BarsEverySeconds;
+   bool newBarDue = (currentBarTime > 0 && currentBarTime != lastBarsBarTimeBySlot[slot]);
 
    if(!intervalDue && !newBarDue)
       return true;
 
-   bool sent = SendBars();
+   bool sent = SendBars(period);
    if(sent)
    {
+      lastBarsSentBySlot[slot] = now;
       lastBarsSent = now;
       if(currentBarTime > 0)
+      {
+         lastBarsBarTimeBySlot[slot] = currentBarTime;
          lastBarsBarTime = currentBarTime;
+      }
    }
    return sent;
 }
 
-bool SendBars()
+bool SendBars(ENUM_TIMEFRAMES period)
 {
    int requested = BarsCount;
    if(requested < 100)
@@ -291,13 +350,14 @@ bool SendBars()
 
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   int copied = CopyRates(_Symbol, _Period, 0, requested, rates);
-   Print("MT5 SendBars start symbol=", _Symbol, " tf=", TimeframeText(), " bars=", copied);
+   string tf = TimeframeToText(period);
+   int copied = CopyRates(_Symbol, period, 0, requested, rates);
+   Print("MT5 SendBars start symbol=", _Symbol, " timeframe=", tf, " bars=", copied);
    if(copied < 100)
    {
       lastBarsHttpCode = -2;
       lastBarsStatus = "insufficient_bars";
-      lastBarsError = "CopyRates returned " + IntegerToString(copied);
+      lastBarsError = "CopyRates returned " + IntegerToString(copied) + " for " + tf;
       Print("MT5 SendBars local error=", lastBarsError);
       return false;
    }
@@ -314,7 +374,7 @@ bool SendBars()
 
    string payload = "{";
    payload += "\"symbol\":\"" + EscapeJson(_Symbol) + "\",";
-   payload += "\"timeframe\":\"" + TimeframeText() + "\",";
+   payload += "\"timeframe\":\"" + tf + "\",";
    payload += "\"bars_count\":" + IntegerToString(copied) + ",";
    payload += "\"bid\":" + DoubleToString(bid, _Digits) + ",";
    payload += "\"ask\":" + DoubleToString(ask, _Digits) + ",";
@@ -346,7 +406,7 @@ bool SendBars()
    lastBarsHttpCode = PostJson("/api/genesis/mt5/bars", payload, response);
    lastBarsStatus = HttpStatusText(lastBarsHttpCode);
    lastBarsError = "";
-   Print("MT5 SendBars HTTP=", lastBarsHttpCode);
+   Print("MT5 SendBars symbol=", _Symbol, " timeframe=", tf, " bars=", copied, " HTTP=", lastBarsHttpCode);
    Print("MT5 SendBars response=", ShortText(response, 350));
    Print("MT5 SendBars response status=", JsonString(response, "status", "unknown"));
    if(lastBarsHttpCode < 200 || lastBarsHttpCode >= 300)
@@ -580,7 +640,40 @@ void DrawPanel(string decision, string reason)
 bool IsAllowedSymbol(string symbol)
 {
    string list = "," + AllowedSymbols + ",";
-   return StringFind(list, "," + symbol + ",") >= 0;
+   string needle = "," + symbol + ",";
+   StringToUpper(list);
+   StringToUpper(needle);
+   return StringFind(list, needle) >= 0;
+}
+
+bool TimeframeRequested(string configured, string token)
+{
+   string list = "," + configured + ",";
+   StringToUpper(list);
+   StringReplace(list, " ", "");
+   StringReplace(list, ";", ",");
+   StringReplace(list, "|", ",");
+   StringReplace(list, "/", ",");
+   return StringFind(list, "," + token + ",") >= 0;
+}
+
+int BarsTimeframeSlot(ENUM_TIMEFRAMES period)
+{
+   if(period == PERIOD_M15)
+      return 0;
+   if(period == PERIOD_M30)
+      return 1;
+   if(period == PERIOD_H1)
+      return 2;
+   if(period == PERIOD_M5)
+      return 3;
+   if(period == PERIOD_M1)
+      return 4;
+   if(period == PERIOD_H4)
+      return 5;
+   if(period == PERIOD_D1)
+      return 6;
+   return 7;
 }
 
 double CurrentSpreadPoints()
@@ -635,16 +728,21 @@ string TradeModeText()
 
 string TimeframeText()
 {
-   if(_Period == PERIOD_M1) return "M1";
-   if(_Period == PERIOD_M5) return "M5";
-   if(_Period == PERIOD_M15) return "M15";
-   if(_Period == PERIOD_M30) return "M30";
-   if(_Period == PERIOD_H1) return "H1";
-   if(_Period == PERIOD_H4) return "H4";
-   if(_Period == PERIOD_D1) return "D1";
-   if(_Period == PERIOD_W1) return "W1";
-   if(_Period == PERIOD_MN1) return "MN1";
-   return IntegerToString((int)_Period);
+   return TimeframeToText(_Period);
+}
+
+string TimeframeToText(ENUM_TIMEFRAMES period)
+{
+   if(period == PERIOD_M1) return "M1";
+   if(period == PERIOD_M5) return "M5";
+   if(period == PERIOD_M15) return "M15";
+   if(period == PERIOD_M30) return "M30";
+   if(period == PERIOD_H1) return "H1";
+   if(period == PERIOD_H4) return "H4";
+   if(period == PERIOD_D1) return "D1";
+   if(period == PERIOD_W1) return "W1";
+   if(period == PERIOD_MN1) return "MN1";
+   return IntegerToString((int)period);
 }
 
 string TimeLabel(datetime value)
@@ -669,6 +767,16 @@ string ShortText(string value, int maxLen)
    if(StringLen(clean) <= maxLen)
       return clean;
    return StringSubstr(clean, 0, maxLen);
+}
+
+string CompactText(string value)
+{
+   string clean = value;
+   StringReplace(clean, " ", "");
+   StringReplace(clean, "\t", "");
+   StringReplace(clean, "\r", "");
+   StringReplace(clean, "\n", "");
+   return clean;
 }
 
 string BoolJson(bool value)

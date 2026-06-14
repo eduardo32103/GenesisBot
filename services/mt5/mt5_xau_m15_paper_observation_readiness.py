@@ -45,8 +45,10 @@ def run_xau_m15_paper_observation_readiness(
     profile_rows = _candidate_rows(active_store, "mt5_profile_state", profile_state_rows)
     strategy_rows = _candidate_rows(active_store, "mt5_strategy_registry", strategy_registry_rows)
     candidate = _candidate_state(profile_rows, strategy_rows)
-    snapshot = runtime_snapshot if runtime_snapshot is not None else get_snapshot(SYMBOL, TIMEFRAME) or {}
-    generic_snapshot = generic_runtime_snapshot if generic_runtime_snapshot is not None else get_snapshot(SYMBOL) or {}
+    snapshot, generic_snapshot, symbol_alias_used = _runtime_snapshots(
+        runtime_snapshot=runtime_snapshot,
+        generic_runtime_snapshot=generic_runtime_snapshot,
+    )
     runtime = run_runtime_context_diagnostics(
         symbol=SYMBOL,
         timeframe=TIMEFRAME,
@@ -90,6 +92,10 @@ def run_xau_m15_paper_observation_readiness(
         "runtime_snapshot_complete": bool(runtime.get("runtime_snapshot_complete")),
         "runtime_snapshot_context": runtime.get("runtime_snapshot_context") or "",
         "runtime_context_missing_fields": runtime.get("runtime_context_missing_fields") or [],
+        "runtime_snapshot_source": runtime.get("snapshot_source") or "",
+        "symbol_alias_used": symbol_alias_used,
+        "latest_tick_at": runtime.get("last_tick_at") or "",
+        "latest_bars_at": runtime.get("bars_last_at") or "",
         "bars_available": bool(runtime.get("latest_bars_available")),
         "bars_count": int(_number(runtime.get("bars_count")) or 0),
         "m15_bars_status": "ready" if gates["m15_bars_count"]["passed"] else "missing_or_insufficient",
@@ -188,6 +194,42 @@ def _candidate_rows(store: Any, table: str, injected: list[dict[str, Any]] | Non
     except Exception:
         return []
     return [dict(row) for row in (result.get("rows") or []) if isinstance(row, dict)]
+
+
+def _runtime_snapshots(
+    *,
+    runtime_snapshot: dict[str, Any] | None,
+    generic_runtime_snapshot: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    if runtime_snapshot is not None:
+        return dict(runtime_snapshot), dict(generic_runtime_snapshot or {}), "injected"
+
+    aliases = (SYMBOL, BROKER_SYMBOL, BROKER_SYMBOL.upper(), "XAUUSD.B", "GOLD")
+    selected_alias = ""
+    selected_snapshot: dict[str, Any] = {}
+    for alias in aliases:
+        candidate = get_snapshot(alias, TIMEFRAME) or {}
+        if candidate:
+            selected_alias = alias
+            selected_snapshot = dict(candidate)
+            break
+
+    if generic_runtime_snapshot is not None:
+        selected_generic = dict(generic_runtime_snapshot)
+    else:
+        selected_generic = {}
+        generic_aliases = (selected_alias,) + aliases if selected_alias else aliases
+        for alias in generic_aliases:
+            if not alias:
+                continue
+            candidate = get_snapshot(alias) or {}
+            if candidate:
+                selected_generic = dict(candidate)
+                if not selected_alias:
+                    selected_alias = alias
+                break
+
+    return selected_snapshot, selected_generic, selected_alias or "none"
 
 
 def _candidate_state(profile_rows: list[dict[str, Any]], strategy_rows: list[dict[str, Any]]) -> dict[str, Any]:
