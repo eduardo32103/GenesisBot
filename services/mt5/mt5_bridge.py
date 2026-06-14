@@ -16,6 +16,7 @@ from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_runtime_snapshot import runtime_snapshot_inventory
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament
+from services.mt5.mt5_xau_m15_paper_shadow_monitor import run_xau_m15_paper_shadow_monitor
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     run_xau_m15_paper_observation_cycle,
     run_xau_m15_paper_observation_readiness,
@@ -247,6 +248,18 @@ def mt5_xau_m15_paper_observation_shadow_once(
     store: Any | None = None,
 ) -> dict[str, Any]:
     return run_xau_m15_paper_observation_shadow_once(payload=payload, store=store)
+
+
+def mt5_xau_m15_paper_shadow_monitor(
+    payload: dict[str, Any] | None = None,
+    *,
+    memory: MemoryStore | None = None,
+    store: Any | None = None,
+    apply_paper_close: bool = False,
+) -> dict[str, Any]:
+    body = payload or {}
+    requested_apply = bool(apply_paper_close or body.get("apply_paper_close") is True)
+    return run_xau_m15_paper_shadow_monitor(apply_paper_close=requested_apply, store=store)
 
 
 def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:

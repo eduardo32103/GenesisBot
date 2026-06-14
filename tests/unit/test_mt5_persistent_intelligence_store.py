@@ -471,10 +471,14 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
             {
                 "shadow_trade_id": "paper-test-1",
                 "symbol": "BTCUSD",
+                "broker_symbol": "BTCUSD.raw",
                 "timeframe": "M30",
                 "strategy_profile": "BTCUSD_PAPER_EXPLORATION_V1",
+                "source": "paper_observation_shadow_once",
                 "side": "buy",
                 "entry_price": 100000,
+                "stop_loss": 99000,
+                "take_profit": 102000,
                 "payload": {"raw_ticks": list(range(1000))},
                 "broker_touched": True,
                 "order_executed": True,
@@ -485,6 +489,11 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         row = client.upserted[-1]["payload"]
         self.assertEqual(row["shadow_trade_id"], "paper-test-1")
+        self.assertEqual(row["broker_symbol"], "BTCUSD.RAW")
+        self.assertEqual(row["strategy_profile"], "BTCUSD_PAPER_EXPLORATION_V1")
+        self.assertEqual(row["source"], "paper_observation_shadow_once")
+        self.assertEqual(row["stop_loss"], 99000.0)
+        self.assertEqual(row["take_profit"], 102000.0)
         self.assertNotIn("payload", row)
         self.assertFalse(row["broker_touched"])
         self.assertFalse(row["order_executed"])

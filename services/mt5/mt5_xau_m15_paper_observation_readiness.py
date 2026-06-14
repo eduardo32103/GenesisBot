@@ -211,6 +211,7 @@ def run_xau_m15_paper_observation_shadow_once(
 
     trade = _build_paper_observation_shadow_trade(readiness)
     update_open_shadow_trade(SYMBOL, trade, timeframe=TIMEFRAME)
+    persist_result = _persist_open_shadow_trade(readiness_kwargs.get("store"), trade)
     return {
         "ok": True,
         "status": "xau_m15_paper_observation_shadow_once_created",
@@ -228,6 +229,8 @@ def run_xau_m15_paper_observation_shadow_once(
         "paper_shadow_created": True,
         "shadow_trade_id": trade["shadow_trade_id"],
         "shadow_trade": trade,
+        "persistent_shadow_write": persist_result,
+        "persistent_shadow_write_ok": bool(persist_result.get("ok")),
         "open_shadow_count_before": open_count_before,
         "open_shadow_count_after": 1,
         "candidate_activated": False,
@@ -629,6 +632,17 @@ def _runtime_spread(readiness: dict[str, Any]) -> float:
     spread_state = readiness.get("spread_state") if isinstance(readiness.get("spread_state"), dict) else {}
     spread = _number(spread_state.get("runtime_spread") or spread_state.get("estimated_spread_price"))
     return float(spread or 0.0)
+
+
+def _persist_open_shadow_trade(store: Any | None, trade: dict[str, Any]) -> dict[str, Any]:
+    active_store = store or MT5PersistentIntelligenceStore()
+    if not hasattr(active_store, "record_shadow_trade"):
+        return {"ok": True, "skipped": True, "reason": "store_has_no_record_shadow_trade", **_safety()}
+    try:
+        result = active_store.record_shadow_trade(trade, critical=False)
+    except Exception as exc:
+        return {"ok": False, "reason": type(exc).__name__, **_safety()}
+    return dict(result or {"ok": False, "reason": "empty_record_shadow_trade_result", **_safety()})
 
 
 def _truthy(value: object) -> bool:

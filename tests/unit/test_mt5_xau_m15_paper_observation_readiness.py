@@ -480,6 +480,7 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         snapshot = get_snapshot("XAUUSD", "M15") or {}
         trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
         self.assertTrue(result["paper_shadow_created"])
+        self.assertTrue(result["persistent_shadow_write_ok"])
         self.assertEqual(result["open_shadow_count_before"], 0)
         self.assertEqual(result["open_shadow_count_after"], 1)
         self.assertEqual(result["shadow_trade_id"], trade.get("shadow_trade_id"))
@@ -546,6 +547,9 @@ def _strategy() -> dict[str, object]:
 
 
 class _FakeStore:
+    def __init__(self) -> None:
+        self.recorded_shadow_trades: list[dict[str, object]] = []
+
     def healthcheck(self, write_test_event: bool = False) -> dict[str, object]:
         return _db()
 
@@ -555,6 +559,10 @@ class _FakeStore:
         if table == "mt5_strategy_registry":
             return {"rows": [_strategy()]}
         return {"rows": []}
+
+    def record_shadow_trade(self, payload: dict[str, object], *, critical: bool | None = None) -> dict[str, object]:
+        self.recorded_shadow_trades.append(dict(payload))
+        return {"ok": True, "table": "mt5_shadow_trades", "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
 
 
 def _patched_live_readiness_dependencies():

@@ -69,10 +69,15 @@ create table if not exists public.mt5_profile_performance (
 create table if not exists public.mt5_shadow_trades (
   shadow_trade_id text primary key,
   symbol text not null,
+  broker_symbol text not null default '',
   timeframe text not null default '',
   profile text not null default '',
+  strategy_profile text not null default '',
+  source text not null default '',
   side text not null default '',
   entry_price double precision,
+  stop_loss double precision,
+  take_profit double precision,
   exit_price double precision,
   pnl double precision,
   pnl_pct double precision,
@@ -85,6 +90,12 @@ create table if not exists public.mt5_shadow_trades (
   order_executed boolean not null default false,
   order_policy text not null default 'journal_only_no_broker'
 );
+
+alter table if exists public.mt5_shadow_trades add column if not exists broker_symbol text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists strategy_profile text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists source text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists stop_loss double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists take_profit double precision;
 
 create table if not exists public.mt5_decision_events (
   id uuid primary key default gen_random_uuid(),
