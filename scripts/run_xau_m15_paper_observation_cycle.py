@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -50,6 +50,8 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"bars_count={readiness.get('bars_count')}",
             f"paper_shadow_created={result.get('paper_shadow_created')}",
             f"shadow_trade_id={result.get('shadow_trade_id')}",
+            f"open_shadow_count_before={result.get('open_shadow_count_before')}",
+            f"open_shadow_count_after={result.get('open_shadow_count_after')}",
             f"candidate_activated={result.get('candidate_activated')}",
             f"paper_forward_onboarding_started={result.get('paper_forward_onboarding_started')}",
             f"broker_touched={result.get('broker_touched')}",
@@ -65,11 +67,29 @@ def _json_line(value: dict[str, Any]) -> str:
 
 def _fetch_remote(args: argparse.Namespace) -> dict[str, Any]:
     base = str(args.base_url or "").rstrip("/")
-    url = f"{base}/api/genesis/mt5/xau-m15/paper-observation/cycle"
-    with urlopen(url, timeout=max(1.0, float(args.timeout_seconds or 10.0))) as response:
+    if args.paper_shadow_once:
+        url = f"{base}/api/genesis/mt5/xau-m15/paper-observation/shadow-once"
+        body = json.dumps(
+            {
+                "confirm_paper_shadow_only": True,
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+            }
+        ).encode("utf-8")
+        request = Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"},
+            method="POST",
+        )
+    else:
+        url = f"{base}/api/genesis/mt5/xau-m15/paper-observation/cycle"
+        request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    with urlopen(request, timeout=max(1.0, float(args.timeout_seconds or 10.0))) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if isinstance(payload, dict):
         payload["cycle_source"] = "remote_live_http_process"
+        payload["paper_shadow_once_requested"] = bool(args.paper_shadow_once)
         return payload
     return {
         "ok": False,
@@ -87,8 +107,8 @@ def _fetch_remote(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Dry-run one XAUUSD M15 paper observation cycle.")
-    parser.add_argument("--paper-shadow-once", action="store_true", help="Future explicit mode; currently blocked pending human approval.")
+    parser = argparse.ArgumentParser(description="Run one XAUUSD M15 paper observation cycle, dry-run by default.")
+    parser.add_argument("--paper-shadow-once", action="store_true", help="With --base-url, POST an explicit confirmed paper-only shadow-once request.")
     parser.add_argument("--base-url", default="", help="Optional live Genesis base URL to inspect the web process memory.")
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--json", action="store_true")

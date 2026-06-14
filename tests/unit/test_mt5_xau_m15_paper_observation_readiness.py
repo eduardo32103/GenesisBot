@@ -2,20 +2,30 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from api.main import create_app
 from api.routes.genesis import (
     get_genesis_mt5_xau_m15_paper_observation_cycle,
     get_genesis_mt5_xau_m15_paper_observation_readiness,
+    post_genesis_mt5_xau_m15_paper_observation_shadow_once,
 )
 from services.mt5.instrument_resolver import normalize_mt5_symbol
 from services.mt5.mt5_bridge import mt5_bars
-from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, runtime_snapshot_inventory, update_bars, update_tick
+from services.mt5.mt5_runtime_snapshot import (
+    get_snapshot,
+    reset_runtime_snapshots_for_tests,
+    runtime_snapshot_inventory,
+    update_bars,
+    update_open_shadow_trade,
+    update_tick,
+)
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     CANDIDATE_PROFILE,
     run_xau_m15_paper_observation_cycle,
     run_xau_m15_paper_observation_readiness,
+    run_xau_m15_paper_observation_shadow_once,
 )
 
 
@@ -30,6 +40,10 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertEqual(
             app["genesis_mt5_xau_m15_paper_observation_cycle_endpoint"],
             "/api/genesis/mt5/xau-m15/paper-observation/cycle",
+        )
+        self.assertEqual(
+            app["genesis_mt5_xau_m15_paper_observation_shadow_once_endpoint"],
+            "/api/genesis/mt5/xau-m15/paper-observation/shadow-once",
         )
 
     def test_missing_runtime_blocks(self) -> None:
@@ -351,6 +365,7 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+        self.assertFalse((get_snapshot("XAUUSD", "M15") or {}).get("open_shadow_trade"))
 
     def test_dry_run_observation_creates_no_shadow(self) -> None:
         readiness = run_xau_m15_paper_observation_readiness(
@@ -388,6 +403,113 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertEqual(result["recommendation"], "do_not_start_paper_shadow_yet")
         self.assertFalse(result["candidate_activated"])
         self.assertFalse(result["order_executed"])
+
+    def test_shadow_once_without_confirmation_fails(self) -> None:
+        result = post_genesis_mt5_xau_m15_paper_observation_shadow_once({"symbol": "XAUUSD", "timeframe": "M15"})
+
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "rejected_missing_confirmation")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["shadow_trade_id"], "")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_shadow_once_with_readiness_false_fails(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        with _patched_live_readiness_dependencies():
+            result = post_genesis_mt5_xau_m15_paper_observation_shadow_once(
+                {"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15"}
+            )
+
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "blocked_by_readiness_gate:readiness_state")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["shadow_trade_id"], "")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_shadow_once_with_existing_shadow_fails_without_closing_it(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        mt5_bars(_bars_payload("XAUUSD.b", "M15", _bars(120)))
+        update_open_shadow_trade(
+            "XAUUSD",
+            {
+                "shadow_trade_id": "existing-xau-shadow",
+                "symbol": "XAUUSD",
+                "broker_symbol": "XAUUSD.b",
+                "timeframe": "M15",
+                "status": "open",
+                "source": "unit_test_existing_shadow",
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            },
+            timeframe="M15",
+        )
+
+        with _patched_live_readiness_dependencies():
+            result = post_genesis_mt5_xau_m15_paper_observation_shadow_once(
+                {"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15"}
+            )
+
+        self.assertEqual(result["reason"], "blocked_existing_open_shadow")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["open_shadow_count_before"], 1)
+        self.assertEqual((get_snapshot("XAUUSD", "M15") or {}).get("open_shadow_trade", {}).get("shadow_trade_id"), "existing-xau-shadow")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_shadow_once_with_readiness_true_creates_exactly_one_paper_shadow(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        mt5_bars(_bars_payload("XAUUSD.b", "M15", _bars(120)))
+
+        with _patched_live_readiness_dependencies():
+            result = post_genesis_mt5_xau_m15_paper_observation_shadow_once(
+                {"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15"}
+            )
+
+        snapshot = get_snapshot("XAUUSD", "M15") or {}
+        trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(result["open_shadow_count_before"], 0)
+        self.assertEqual(result["open_shadow_count_after"], 1)
+        self.assertEqual(result["shadow_trade_id"], trade.get("shadow_trade_id"))
+        self.assertEqual(trade.get("symbol"), "XAUUSD")
+        self.assertEqual(trade.get("broker_symbol"), "XAUUSD.b")
+        self.assertEqual(trade.get("timeframe"), "M15")
+        self.assertEqual(trade.get("candidate_profile"), CANDIDATE_PROFILE)
+        self.assertEqual(trade.get("status"), "open")
+        self.assertEqual(trade.get("source"), "paper_observation_shadow_once")
+        self.assertFalse(trade.get("broker_touched"))
+        self.assertFalse(trade.get("order_executed"))
+        self.assertEqual(trade.get("order_policy"), "journal_only_no_broker")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["applies_to_real_trading"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+        with _patched_live_readiness_dependencies():
+            duplicate = run_xau_m15_paper_observation_shadow_once(
+                payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15"}
+            )
+        self.assertEqual(duplicate["reason"], "blocked_existing_open_shadow")
+        self.assertFalse(duplicate["paper_shadow_created"])
+        self.assertEqual((get_snapshot("XAUUSD", "M15") or {}).get("open_shadow_trade", {}).get("shadow_trade_id"), result["shadow_trade_id"])
+
+    def test_shadow_once_service_adds_no_order_send_reference(self) -> None:
+        service_text = Path("services/mt5/mt5_xau_m15_paper_observation_readiness.py").read_text(encoding="utf-8")
+        self.assertNotIn("order_send", service_text)
 
 
 def _db() -> dict[str, object]:

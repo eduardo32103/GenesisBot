@@ -61,6 +61,7 @@ from services.mt5.mt5_bridge import (
     mt5_ui_summary,
     mt5_xau_m15_paper_observation_cycle,
     mt5_xau_m15_paper_observation_readiness,
+    mt5_xau_m15_paper_observation_shadow_once,
 )
 
 
@@ -199,6 +200,10 @@ def get_genesis_mt5_xau_m15_paper_observation_readiness() -> dict[str, Any]:
 
 def get_genesis_mt5_xau_m15_paper_observation_cycle() -> dict[str, Any]:
     return mt5_xau_m15_paper_observation_cycle()
+
+
+def post_genesis_mt5_xau_m15_paper_observation_shadow_once(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_xau_m15_paper_observation_shadow_once(payload)
 
 
 def get_genesis_mt5_instrument(symbol: str = "") -> dict[str, Any]:

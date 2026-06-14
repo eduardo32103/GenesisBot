@@ -105,6 +105,7 @@ from api.routes.genesis import (
     post_genesis_mt5_shadow_trade_close,
     post_genesis_mt5_shadow_trades_close_expired,
     post_genesis_mt5_tick,
+    post_genesis_mt5_xau_m15_paper_observation_shadow_once,
     post_genesis_mt5_replay_run,
     post_genesis_tradingview_webhook,
 )
@@ -273,6 +274,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_runtime_snapshot_inventory_endpoint": "/api/genesis/mt5/runtime-snapshot/inventory?symbol={symbol}&broker_symbol={broker_symbol}&timeframe={timeframe}",
         "genesis_mt5_xau_m15_paper_observation_readiness_endpoint": "/api/genesis/mt5/xau-m15/paper-observation/readiness",
         "genesis_mt5_xau_m15_paper_observation_cycle_endpoint": "/api/genesis/mt5/xau-m15/paper-observation/cycle",
+        "genesis_mt5_xau_m15_paper_observation_shadow_once_endpoint": "/api/genesis/mt5/xau-m15/paper-observation/shadow-once",
         "genesis_mt5_auto_forward_status_endpoint": "/api/genesis/mt5/auto-forward-status?symbol={symbol}",
         "genesis_mt5_account_sync_endpoint": "/api/genesis/mt5/account-sync",
         "genesis_mt5_signal_endpoint": "/api/genesis/mt5/signal",
@@ -4158,6 +4160,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/bars":
             result = post_genesis_mt5_bars(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/xau-m15/paper-observation/shadow-once":
+            result = post_genesis_mt5_xau_m15_paper_observation_shadow_once(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

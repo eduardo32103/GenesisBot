@@ -19,6 +19,7 @@ from services.mt5.mt5_strategy_tournament import run_strategy_tournament
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     run_xau_m15_paper_observation_cycle,
     run_xau_m15_paper_observation_readiness,
+    run_xau_m15_paper_observation_shadow_once,
 )
 
 
@@ -237,6 +238,15 @@ def mt5_xau_m15_paper_observation_cycle(
     store: Any | None = None,
 ) -> dict[str, Any]:
     return run_xau_m15_paper_observation_cycle(store=store, paper_shadow_once=False)
+
+
+def mt5_xau_m15_paper_observation_shadow_once(
+    payload: dict[str, Any] | None = None,
+    *,
+    memory: MemoryStore | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    return run_xau_m15_paper_observation_shadow_once(payload=payload, store=store)
 
 
 def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from services.mt5.mt5_adaptive_strategy_governor import run_adaptive_strategy_governor
@@ -8,7 +10,7 @@ from services.mt5.mt5_capital_protection_governor import run_capital_protection_
 from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore
 from services.mt5.mt5_risk_governor import assess_runtime_risk
 from services.mt5.mt5_runtime_context_diagnostics import run_runtime_context_diagnostics
-from services.mt5.mt5_runtime_snapshot import get_snapshot
+from services.mt5.mt5_runtime_snapshot import get_snapshot, update_open_shadow_trade
 from services.mt5.mt5_symbol_cost_model import build_symbol_cost_model
 
 
@@ -159,6 +161,75 @@ def run_xau_m15_paper_observation_cycle(
         "readiness": readiness,
         "paper_shadow_created": False,
         "shadow_trade_id": "",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def run_xau_m15_paper_observation_shadow_once(
+    *,
+    payload: dict[str, Any] | None = None,
+    readiness_result: dict[str, Any] | None = None,
+    **readiness_kwargs: Any,
+) -> dict[str, Any]:
+    body = dict(payload or {})
+    if not _truthy(body.get("confirm_paper_shadow_only")):
+        return _shadow_once_rejected(
+            reason="rejected_missing_confirmation",
+            payload=body,
+            readiness=readiness_result or {},
+            paper_shadow_once_requested=True,
+        )
+    if _requested_symbol(body.get("symbol")) != SYMBOL or _timeframe(body.get("timeframe")) != TIMEFRAME:
+        return _shadow_once_rejected(
+            reason="rejected_invalid_symbol_or_timeframe",
+            payload=body,
+            readiness=readiness_result or {},
+            paper_shadow_once_requested=True,
+        )
+
+    readiness = readiness_result or run_xau_m15_paper_observation_readiness(**readiness_kwargs)
+    open_count_before = int(_number(readiness.get("open_shadow_count")) or 0)
+    if open_count_before > 0:
+        return _shadow_once_rejected(
+            reason="blocked_existing_open_shadow",
+            payload=body,
+            readiness=readiness,
+            paper_shadow_once_requested=True,
+            open_shadow_count_before=open_count_before,
+        )
+    failed_gate = _shadow_once_gate_failure(readiness)
+    if failed_gate:
+        return _shadow_once_rejected(
+            reason=f"blocked_by_readiness_gate:{failed_gate}",
+            payload=body,
+            readiness=readiness,
+            paper_shadow_once_requested=True,
+        )
+
+    trade = _build_paper_observation_shadow_trade(readiness)
+    update_open_shadow_trade(SYMBOL, trade, timeframe=TIMEFRAME)
+    return {
+        "ok": True,
+        "status": "xau_m15_paper_observation_shadow_once_created",
+        "mode": "paper_shadow_once",
+        "decision": "NO_TRADE",
+        "reason": "paper_observation_shadow_once_created",
+        "symbol": SYMBOL,
+        "broker_symbol": BROKER_SYMBOL,
+        "timeframe": TIMEFRAME,
+        "candidate_profile": CANDIDATE_PROFILE,
+        "paper_shadow_once_requested": True,
+        "readiness_state": readiness.get("readiness_state") or "blocked",
+        "recommendation": "paper_observation_shadow_opened_for_one_cycle",
+        "readiness": readiness,
+        "paper_shadow_created": True,
+        "shadow_trade_id": trade["shadow_trade_id"],
+        "shadow_trade": trade,
+        "open_shadow_count_before": open_count_before,
+        "open_shadow_count_after": 1,
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
@@ -428,6 +499,146 @@ def _hypothetical_signal(readiness: dict[str, Any]) -> dict[str, Any]:
         "paper_shadow_created": False,
         **_safety(),
     }
+
+
+def _shadow_once_rejected(
+    *,
+    reason: str,
+    payload: dict[str, Any],
+    readiness: dict[str, Any],
+    paper_shadow_once_requested: bool,
+    open_shadow_count_before: int | None = None,
+) -> dict[str, Any]:
+    count = open_shadow_count_before
+    if count is None:
+        count = int(_number(readiness.get("open_shadow_count")) or 0) if isinstance(readiness, dict) else 0
+    return {
+        "ok": True,
+        "status": "xau_m15_paper_observation_shadow_once_rejected",
+        "mode": "paper_shadow_once",
+        "decision": "NO_TRADE",
+        "reason": reason,
+        "symbol": SYMBOL,
+        "broker_symbol": BROKER_SYMBOL,
+        "timeframe": TIMEFRAME,
+        "candidate_profile": CANDIDATE_PROFILE,
+        "paper_shadow_once_requested": bool(paper_shadow_once_requested),
+        "requested_symbol": str(payload.get("symbol") or ""),
+        "requested_timeframe": str(payload.get("timeframe") or ""),
+        "readiness_state": readiness.get("readiness_state") if isinstance(readiness, dict) else "blocked",
+        "recommendation": readiness.get("recommendation") if isinstance(readiness, dict) else "resolve_readiness_gates",
+        "readiness": readiness if isinstance(readiness, dict) else {},
+        "paper_shadow_created": False,
+        "shadow_trade_id": "",
+        "open_shadow_count_before": count,
+        "open_shadow_count_after": count,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _shadow_once_gate_failure(readiness: dict[str, Any]) -> str:
+    required: list[tuple[str, bool]] = [
+        ("persistent_db_healthy", _db_healthy(readiness.get("db_state") if isinstance(readiness.get("db_state"), dict) else {})),
+        ("candidate_found", bool(readiness.get("candidate_found"))),
+        ("candidate_status_review", str(readiness.get("candidate_status") or "") == "paper_observation_review"),
+        ("readiness_state", str(readiness.get("readiness_state") or "") == "ready_for_one_cycle_paper_observation"),
+        ("runtime_context_available", bool(readiness.get("runtime_context_available"))),
+        ("runtime_context_recent", bool(readiness.get("runtime_context_recent"))),
+        ("m15_bars_count", int(_number(readiness.get("bars_count")) or 0) >= MIN_BARS_COUNT),
+        ("latest_tick_available", bool(readiness.get("tick_available"))),
+        ("capital_allows_observation", bool(readiness.get("capital_allows_observation"))),
+        ("adaptive_allows_observation", bool(readiness.get("adaptive_allows_observation"))),
+        ("risk_allows_observation", bool(readiness.get("risk_allows_observation"))),
+        ("order_policy", str(readiness.get("order_policy") or "") == "journal_only_no_broker"),
+    ]
+    for name, passed in required:
+        if not passed:
+            return name
+    return ""
+
+
+def _build_paper_observation_shadow_trade(readiness: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    price = _latest_runtime_price(readiness)
+    side = "buy"
+    spread = _runtime_spread(readiness)
+    stop_distance = max((price or 1.0) * 0.004, spread * 4.0 if spread else 0.0, 0.000001)
+    entry = price or 0.0
+    stop = round(entry - stop_distance, 6) if entry else 0.0
+    target = round(entry + stop_distance * 1.2, 6) if entry else 0.0
+    shadow_trade_id = f"xau-m15-paper-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    return {
+        "shadow_trade_id": shadow_trade_id,
+        "symbol": SYMBOL,
+        "broker_symbol": BROKER_SYMBOL,
+        "normalized_symbol": SYMBOL,
+        "timeframe": TIMEFRAME,
+        "candidate_profile": CANDIDATE_PROFILE,
+        "strategy_profile": CANDIDATE_PROFILE,
+        "profile": CANDIDATE_PROFILE,
+        "family": FAMILY,
+        "mode": MODE,
+        "side": side,
+        "action": side.upper(),
+        "entry_price": entry,
+        "entry": entry,
+        "stop_loss": stop,
+        "take_profit": target,
+        "risk_reward": 1.2,
+        "initial_risk": abs(entry - stop) if entry and stop else 0.0,
+        "status": "open",
+        "lifecycle_status": "open",
+        "source": "paper_observation_shadow_once",
+        "opened_at": now,
+        "updated_at": now,
+        "last_price": entry,
+        "unrealized_pnl": 0.0,
+        "unrealized_pnl_pct": 0.0,
+        "r_multiple": 0.0,
+        "max_favorable_excursion": 0.0,
+        "max_adverse_excursion": 0.0,
+        "paper_observation": True,
+        "paper_forward_candidate": False,
+        "paper_exploration": False,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        "readiness_state_at_open": readiness.get("readiness_state") or "",
+        "runtime_snapshot_context": readiness.get("runtime_snapshot_context") or "",
+        "bars_count": int(_number(readiness.get("bars_count")) or 0),
+        "reason": "explicit_confirmed_paper_observation_shadow_once",
+        **_safety(),
+    }
+
+
+def _latest_runtime_price(readiness: dict[str, Any]) -> float | None:
+    for alias in (SYMBOL, BROKER_SYMBOL):
+        snapshot = get_snapshot(alias, TIMEFRAME) or {}
+        tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+        price = _number(tick.get("last") or tick.get("price") or snapshot.get("last") or snapshot.get("last_price") or snapshot.get("close"))
+        if price is not None:
+            return price
+    spread = readiness.get("spread_state") if isinstance(readiness.get("spread_state"), dict) else {}
+    return _number(spread.get("last_price") or spread.get("price"))
+
+
+def _runtime_spread(readiness: dict[str, Any]) -> float:
+    spread_state = readiness.get("spread_state") if isinstance(readiness.get("spread_state"), dict) else {}
+    spread = _number(spread_state.get("runtime_spread") or spread_state.get("estimated_spread_price"))
+    return float(spread or 0.0)
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "on"}
+
+
+def _requested_symbol(value: object) -> str:
+    return str(value or "").upper().strip()
 
 
 def _gate(passed: bool, actual: Any, required: Any) -> dict[str, Any]:
