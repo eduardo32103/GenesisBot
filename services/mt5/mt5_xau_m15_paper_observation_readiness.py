@@ -53,7 +53,7 @@ def run_xau_m15_paper_observation_readiness(
         symbol=SYMBOL,
         timeframe=TIMEFRAME,
         snapshot=snapshot,
-        generic_snapshot=generic_snapshot,
+        generic_snapshot=_generic_snapshot_for_timeframe(generic_snapshot, TIMEFRAME),
     )
     open_trades = [trade for trade in (open_shadow_trades or _open_shadow_from_snapshot(snapshot, generic_snapshot)) if isinstance(trade, dict)]
     spread = _spread_state(snapshot, generic_snapshot)
@@ -230,6 +230,16 @@ def _runtime_snapshots(
                 break
 
     return selected_snapshot, selected_generic, selected_alias or "none"
+
+
+def _generic_snapshot_for_timeframe(generic_snapshot: dict[str, Any], timeframe: str) -> dict[str, Any]:
+    if not generic_snapshot:
+        return {}
+    snapshot_timeframe = _timeframe(generic_snapshot.get("timeframe"))
+    requested = _timeframe(timeframe)
+    if snapshot_timeframe and requested and snapshot_timeframe != requested:
+        return {}
+    return dict(generic_snapshot)
 
 
 def _candidate_state(profile_rows: list[dict[str, Any]], strategy_rows: list[dict[str, Any]]) -> dict[str, Any]:

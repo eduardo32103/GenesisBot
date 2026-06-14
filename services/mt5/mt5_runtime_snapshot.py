@@ -50,7 +50,7 @@ def update_bars(
     with _LOCK:
         current = _update_bars_locked(clean, normalized, context, enriched_tick, timestamp, timeframe="")
         if clean_timeframe:
-            _update_bars_locked(clean, normalized, context, enriched_tick, timestamp, timeframe=clean_timeframe)
+            current = _update_bars_locked(clean, normalized, context, enriched_tick, timestamp, timeframe=clean_timeframe)
         return deepcopy(current)
 
 
@@ -155,6 +155,84 @@ def snapshot_status(symbol: str = "") -> dict[str, Any]:
             "snapshot_count": len(_SNAPSHOTS),
             "latest_snapshot": deepcopy(next(iter(_SNAPSHOTS.values()), None)),
         }
+
+
+def snapshot_storage_key(symbol: str, timeframe: str = "") -> str:
+    clean = _symbol(symbol)
+    normalized = normalize_mt5_symbol(clean)
+    return _snapshot_key(normalized or clean, timeframe)
+
+
+def runtime_snapshot_inventory(*, lookup_symbols: list[str] | None = None, lookup_timeframe: str = "M15") -> dict[str, Any]:
+    aliases = lookup_symbols or ["XAUUSD", "XAUUSD.b"]
+    clean_lookup_timeframe = _timeframe(lookup_timeframe)
+    with _LOCK:
+        snapshots = {key: deepcopy(value) for key, value in _SNAPSHOTS.items()}
+
+    symbols_seen: set[str] = set()
+    timeframes_seen_by_symbol: dict[str, set[str]] = {}
+    latest_tick_by_symbol: dict[str, dict[str, Any]] = {}
+    bars_count_by_symbol_timeframe: dict[str, int] = {}
+    latest_bars_at_by_symbol_timeframe: dict[str, str] = {}
+    alias_map_used: dict[str, str] = {}
+
+    for key, snapshot in snapshots.items():
+        normalized = str(snapshot.get("normalized_symbol") or "").upper().strip()
+        symbol = normalized or str(snapshot.get("symbol") or "").upper().strip() or key.split(":", 1)[0]
+        timeframe = _timeframe(snapshot.get("timeframe") or (key.split(":", 1)[1] if ":" in key else ""))
+        symbols_seen.add(symbol)
+        if timeframe:
+            timeframes_seen_by_symbol.setdefault(symbol, set()).add(timeframe)
+        if isinstance(snapshot.get("last_tick"), dict):
+            latest_tick_by_symbol[f"{symbol}:{timeframe or 'GENERIC'}"] = _tick_summary(snapshot.get("last_tick") or {}, snapshot)
+        if int(_number(snapshot.get("bars_count")) or 0) > 0:
+            item_key = f"{symbol}:{timeframe or 'GENERIC'}"
+            bars_count_by_symbol_timeframe[item_key] = int(_number(snapshot.get("bars_count")) or 0)
+            latest_bars_at_by_symbol_timeframe[item_key] = str(snapshot.get("bars_last_at") or snapshot.get("last_bars_at") or "")
+
+    lookup_results = {
+        alias: {
+            "normalized_symbol": normalize_mt5_symbol(alias),
+            "generic_storage_key": snapshot_storage_key(alias),
+            "timeframe_storage_key": snapshot_storage_key(alias, clean_lookup_timeframe),
+            "generic_found": snapshot_storage_key(alias) in snapshots,
+            "timeframe_found": snapshot_storage_key(alias, clean_lookup_timeframe) in snapshots,
+            "bars_count": int(_number((snapshots.get(snapshot_storage_key(alias, clean_lookup_timeframe)) or {}).get("bars_count")) or 0),
+            "latest_tick_available": isinstance((snapshots.get(snapshot_storage_key(alias, clean_lookup_timeframe)) or {}).get("last_tick"), dict),
+            "latest_bars_at": str((snapshots.get(snapshot_storage_key(alias, clean_lookup_timeframe)) or {}).get("bars_last_at") or ""),
+            "runtime_snapshot_context": str((snapshots.get(snapshot_storage_key(alias, clean_lookup_timeframe)) or {}).get("runtime_snapshot_context") or ""),
+            "tick_merged_into_bar_context": bool((snapshots.get(snapshot_storage_key(alias, clean_lookup_timeframe)) or {}).get("tick_merged_into_bar_context")),
+        }
+        for alias in aliases
+    }
+    for alias in aliases:
+        alias_map_used[alias] = normalize_mt5_symbol(alias)
+
+    primary_lookup = lookup_results.get(aliases[0]) if aliases else {}
+    broker_lookup = lookup_results.get(aliases[1]) if len(aliases) > 1 else lookup_results.get("XAUUSD.b", {})
+
+    return {
+        "ok": True,
+        "status": "runtime_snapshot_inventory_ready",
+        "snapshot_keys": sorted(snapshots.keys()),
+        "snapshot_count": len(snapshots),
+        "symbols_seen": sorted(symbols_seen),
+        "timeframes_seen_by_symbol": {symbol: sorted(values) for symbol, values in sorted(timeframes_seen_by_symbol.items())},
+        "latest_tick_by_symbol": latest_tick_by_symbol,
+        "bars_count_by_symbol_timeframe": bars_count_by_symbol_timeframe,
+        "latest_bars_at_by_symbol_timeframe": latest_bars_at_by_symbol_timeframe,
+        "alias_map_used": alias_map_used,
+        "lookup_timeframe": clean_lookup_timeframe,
+        "lookup_results": lookup_results,
+        "xauusd_lookup_result": primary_lookup or lookup_results.get("XAUUSD") or {},
+        "xauusd_b_lookup_result": broker_lookup or lookup_results.get("XAUUSD.b") or {},
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "paper_shadow_created": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
 
 
 def _symbol(value: object) -> str:
@@ -278,7 +356,7 @@ def _update_bars_locked(
     current["last_bars_at"] = timestamp
     current["bars_last_at"] = timestamp
     current["snapshot_context_source"] = "bar_context" if current["runtime_snapshot_context"] == "bar_context" else current["runtime_snapshot_context"]
-    current["tick_merged_into_bar_context"] = False
+    current["tick_merged_into_bar_context"] = _tick_has_price(enriched_tick)
     current["updated_at"] = timestamp
     return current
 
@@ -373,6 +451,29 @@ def _merge_tick_into_bar_context(previous_tick: dict[str, Any], tick: dict[str, 
     merged["runtime_snapshot_context"] = "bar_context"
     merged["tick_merged_into_bar_context"] = True
     return merged
+
+
+def _tick_has_price(tick: dict[str, Any]) -> bool:
+    return bool(
+        tick
+        and (
+            _number(tick.get("last") or tick.get("price")) is not None
+            or _number(tick.get("bid")) is not None
+            or _number(tick.get("ask")) is not None
+        )
+    )
+
+
+def _tick_summary(tick: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "last": _number(tick.get("last") or tick.get("price")),
+        "bid": _number(tick.get("bid")),
+        "ask": _number(tick.get("ask")),
+        "spread": _number(tick.get("spread")),
+        "timeframe": _timeframe(tick.get("timeframe") or snapshot.get("timeframe")),
+        "last_tick_at": str(snapshot.get("last_tick_at") or ""),
+        "tick_merged_into_bar_context": bool(snapshot.get("tick_merged_into_bar_context")),
+    }
 
 
 def _is_recent(value: object, *, max_age_minutes: float) -> bool:

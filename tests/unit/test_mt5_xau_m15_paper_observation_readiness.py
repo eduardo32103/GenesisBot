@@ -4,7 +4,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from services.mt5.instrument_resolver import normalize_mt5_symbol
-from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_bars, update_tick
+from services.mt5.mt5_bridge import mt5_bars
+from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, runtime_snapshot_inventory, update_bars, update_tick
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     CANDIDATE_PROFILE,
     run_xau_m15_paper_observation_cycle,
@@ -185,6 +186,94 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_bars_endpoint_stores_xauusd_b_m15_as_xauusd_m15_with_diagnostics(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        response = mt5_bars(_bars_payload("XAUUSD.b", "M15", _bars(120)))
+        snapshot = get_snapshot("XAUUSD", "M15") or {}
+        inventory = runtime_snapshot_inventory(lookup_symbols=["XAUUSD", "XAUUSD.b"], lookup_timeframe="M15")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["status"], "mt5_bars_recorded_fast_path")
+        self.assertEqual(response["raw_symbol_received"], "XAUUSD.b")
+        self.assertEqual(response["normalized_symbol"], "XAUUSD")
+        self.assertEqual(response["timeframe_received"], "M15")
+        self.assertEqual(response["bars_received_count"], 120)
+        self.assertEqual(response["bars_stored_count"], 120)
+        self.assertEqual(response["storage_key"], "XAUUSD:M15")
+        self.assertEqual(response["response_status"], "mt5_bars_recorded_fast_path")
+        self.assertEqual(snapshot["normalized_symbol"], "XAUUSD")
+        self.assertEqual(snapshot["timeframe"], "M15")
+        self.assertEqual(snapshot["bars_count"], 120)
+        self.assertTrue(snapshot["tick_merged_into_bar_context"])
+        self.assertIn("XAUUSD:M15", inventory["snapshot_keys"])
+        self.assertEqual(inventory["xauusd_lookup_result"]["bars_count"], 120)
+        self.assertTrue(inventory["xauusd_b_lookup_result"]["timeframe_found"])
+        self.assertFalse(response["broker_touched"])
+        self.assertFalse(response["order_executed"])
+        self.assertEqual(response["order_policy"], "journal_only_no_broker")
+
+    def test_m15_and_m30_runtime_snapshots_do_not_overwrite_each_other(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        m15 = mt5_bars(_bars_payload("XAUUSD.b", "M15", _bars(120)))
+        m30 = mt5_bars(_bars_payload("XAUUSD.b", "M30", _bars(150)))
+        m15_snapshot = get_snapshot("XAUUSD", "M15") or {}
+        m30_snapshot = get_snapshot("XAUUSD", "M30") or {}
+        inventory = runtime_snapshot_inventory(lookup_symbols=["XAUUSD", "XAUUSD.b"], lookup_timeframe="M15")
+
+        self.assertEqual(m15["storage_key"], "XAUUSD:M15")
+        self.assertEqual(m30["storage_key"], "XAUUSD:M30")
+        self.assertEqual(m15_snapshot["timeframe"], "M15")
+        self.assertEqual(m15_snapshot["bars_count"], 120)
+        self.assertEqual(m30_snapshot["timeframe"], "M30")
+        self.assertEqual(m30_snapshot["bars_count"], 150)
+        self.assertEqual(inventory["timeframes_seen_by_symbol"]["XAUUSD"], ["M15", "M30"])
+
+    def test_readiness_blocks_when_only_m30_bars_exist(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        mt5_bars(_bars_payload("XAUUSD.b", "M30", _bars(120)))
+        result = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+
+        self.assertEqual(result["readiness_state"], "blocked")
+        self.assertIn("m15_bars_available", result["failed_gates"])
+        self.assertIn("m15_bars_count", result["failed_gates"])
+        self.assertEqual(result["bars_count"], 0)
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["candidate_activated"])
+
+    def test_readiness_blocks_when_only_tick_exists_without_m15_bars(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+
+        update_tick("XAUUSD.b", {"bid": 2350.1, "ask": 2350.35, "last": 2350.2, "spread": 0.25, "timeframe": "M15"})
+        result = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+
+        self.assertTrue(result["runtime_context_available"])
+        self.assertFalse(result["runtime_snapshot_complete"])
+        self.assertIn("m15_bars_available", result["failed_gates"])
+        self.assertIn("m15_bars_count", result["failed_gates"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["broker_touched"])
+
     def test_dry_run_observation_creates_no_shadow(self) -> None:
         readiness = run_xau_m15_paper_observation_readiness(
             db_state=_db(),
@@ -298,6 +387,23 @@ def _bars(count: int) -> list[dict[str, object]]:
             }
         )
     return rows
+
+
+def _bars_payload(symbol: str, timeframe: str, bars: list[dict[str, object]], *, spread: float = 0.25) -> dict[str, object]:
+    last = float(bars[-1]["close"])
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "bars": bars,
+        "bid": last - spread / 2.0,
+        "ask": last + spread / 2.0,
+        "last": last,
+        "spread": spread,
+        "source": "unit_test_xau_m15",
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
 
 
 def _capital() -> dict[str, object]:

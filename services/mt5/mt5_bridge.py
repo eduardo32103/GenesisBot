@@ -13,6 +13,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
 )
 from services.mt5.mt5_persistent_intelligence_bootstrap import persistent_intelligence_bootstrap_status
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
+from services.mt5.mt5_runtime_snapshot import runtime_snapshot_inventory
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament
 
@@ -206,6 +207,16 @@ def mt5_shadow_trade_close(payload: dict[str, Any] | None = None, *, memory: Mem
 
 def mt5_debug_storage(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 20) -> dict[str, Any]:
     return build_router(memory).debug_storage(symbol=symbol, limit=limit)
+
+
+def mt5_runtime_snapshot_inventory(
+    *,
+    memory: MemoryStore | None = None,
+    symbol: str = "XAUUSD",
+    broker_symbol: str = "XAUUSD.b",
+    timeframe: str = "M15",
+) -> dict[str, Any]:
+    return runtime_snapshot_inventory(lookup_symbols=[symbol, broker_symbol], lookup_timeframe=timeframe)
 
 
 def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:

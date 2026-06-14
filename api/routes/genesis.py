@@ -44,6 +44,7 @@ from services.mt5.mt5_bridge import (
     mt5_promoted_profile,
     mt5_risk_recovery,
     mt5_risk_state,
+    mt5_runtime_snapshot_inventory,
     mt5_replay_results,
     mt5_replay_reset,
     mt5_replay_run,
@@ -184,6 +185,10 @@ def post_genesis_mt5_shadow_trade_close(payload: dict[str, Any] | None = None) -
 
 def get_genesis_mt5_debug_storage(symbol: str = "", limit: int = 20) -> dict[str, Any]:
     return mt5_debug_storage(symbol=symbol, limit=limit)
+
+
+def get_genesis_mt5_runtime_snapshot_inventory(symbol: str = "XAUUSD", broker_symbol: str = "XAUUSD.b", timeframe: str = "M15") -> dict[str, Any]:
+    return mt5_runtime_snapshot_inventory(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
 
 
 def get_genesis_mt5_instrument(symbol: str = "") -> dict[str, Any]:

@@ -42,6 +42,7 @@ from services.mt5.mt5_runtime_snapshot import (
     append_closed_shadow_trade,
     get_snapshot,
     runtime_snapshot_recent,
+    snapshot_storage_key,
     snapshot_status,
     update_account_sync,
     update_adaptive_state,
@@ -1577,16 +1578,26 @@ def _fast_tick(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
 def _fast_bars(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None = None) -> dict[str, Any]:
     raw_payload = payload or {}
     clean = sanitize_payload(raw_payload)
+    raw_symbol = str(raw_payload.get("symbol") or raw_payload.get("ticker") or "").strip() if isinstance(raw_payload, dict) else ""
     symbol = str(clean.get("symbol") or clean.get("ticker") or "").upper().strip()
     timeframe = _fast_timeframe(clean, symbol)
     bars = _extract_bars(raw_payload)
+    normalized_symbol = _normalized_symbol(symbol)
+    storage_key = snapshot_storage_key(symbol, timeframe) if symbol and timeframe else ""
     if not symbol or not timeframe or not bars:
         return {
             "ok": False,
             "status": "bars_missing_symbol_timeframe_or_data",
+            "raw_symbol_received": raw_symbol,
+            "normalized_symbol": normalized_symbol,
+            "timeframe_received": timeframe,
             "symbol": symbol,
             "timeframe": timeframe,
+            "bars_received_count": len(bars),
+            "bars_stored_count": 0,
+            "storage_key": storage_key,
             "bars_loaded": len(bars),
+            "response_status": "bars_missing_symbol_timeframe_or_data",
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -1599,6 +1610,7 @@ def _fast_bars(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
     }
     min_bars = int(_maybe_float(clean.get("min_bars") or clean.get("min_bars_required")) or 100)
     snapshot = update_bars(symbol, timeframe, bars, tick=tick, min_bars=min_bars)
+    stored_count = int(snapshot.get("bars_count") or 0)
     queued = enqueue_mt5_event(
         "mt5_bars",
         symbol,
@@ -1617,8 +1629,15 @@ def _fast_bars(payload: dict[str, Any] | None, *, config: MT5BridgeConfig | None
     return {
         "ok": True,
         "status": "mt5_bars_recorded_fast_path",
+        "response_status": "mt5_bars_recorded_fast_path",
+        "raw_symbol_received": raw_symbol,
+        "normalized_symbol": snapshot.get("normalized_symbol") or normalized_symbol,
+        "timeframe_received": timeframe,
+        "bars_received_count": len(bars),
+        "bars_stored_count": stored_count,
+        "storage_key": storage_key,
+        "latest_bar_time": snapshot.get("last_bar_time") or "",
         "symbol": snapshot.get("symbol") or symbol,
-        "normalized_symbol": snapshot.get("normalized_symbol") or _normalized_symbol(symbol),
         "timeframe": snapshot.get("timeframe") or timeframe,
         "bars_loaded": int(snapshot.get("bars_count") or len(bars)),
         "min_bars_required": int(snapshot.get("min_bars_required") or min_bars),
