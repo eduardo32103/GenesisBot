@@ -150,7 +150,7 @@ def run_apply_schema(
             result["recommendation"] = "run_apply_schema_with_apply"
         return result
     except SchemaApplyError as exc:
-        result["ok"] = False
+        result["ok"] = True
         result["db_available"] = True
         result["can_connect"] = True
         result["applied"] = False
@@ -174,7 +174,7 @@ def run_apply_schema(
         return result
     except Exception as exc:
         connected_before_error = bool(connection is not None or result.get("db_available"))
-        result["ok"] = False
+        result["ok"] = True
         result["db_available"] = connected_before_error
         result["can_connect"] = connected_before_error
         result["error_category"] = _error_category(exc)

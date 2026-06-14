@@ -423,6 +423,7 @@ class MT5PersistentIntelligenceStore:
             bool(result.get("db_degraded"))
             for result in (decisions, risk_events, shadow_events, research_lessons)
         )
+        backpressure = _backpressure_status(self.client)
         return {
             "ok": True,
             "status": "persistent_intelligence_recent_events_ready",
@@ -493,13 +494,7 @@ class MT5PersistentIntelligenceStore:
                     table_errors[table] = _safe_error(exc)
                     if classify_db_error(exc) in {"max_connections", "pool_exhausted"}:
                         backpressure_degraded = True
-                        persistent_write_backpressure().record_failure(
-                            table,
-                            {"table": table},
-                            critical=False,
-                            reason=_safe_error(exc),
-                            duration_ms=0,
-                        )
+                        persistent_write_backpressure().record_probe_failure(_safe_error(exc), duration_ms=0)
                         break
         else:
             table_status = {table: False for table in REQUIRED_TABLES}
@@ -575,6 +570,13 @@ class MT5PersistentIntelligenceStore:
         elif backpressure_degraded:
             recommendation = "backoff_persistent_db_writes"
         backpressure = _backpressure_status(self.client)
+        if (
+            not backpressure_degraded
+            and db_available
+            and tables_ready
+            and int(backpressure.get("queue_depth") or 0) > 0
+        ):
+            recommendation = "drain_persistent_db_queue_before_new_shadow"
         schema_freeze = _schema_missing_write_freeze_status()
         schema_cooldown = _schema_check_cooldown_status()
         db_degraded = bool(backpressure_degraded or not (db_available and tables_ready and (not write_test_event or bool(test_write.get("ok")))))
@@ -929,21 +931,68 @@ class MT5PersistentIntelligenceStore:
             "order_policy": "journal_only_no_broker",
         }
 
+    def drain_queued_writes(
+        self,
+        *,
+        max_items: int = 50,
+        drop_failed_noncritical: bool = True,
+    ) -> dict[str, Any]:
+        before = _backpressure_status(self.client)
+        health = self.healthcheck(write_test_event=False)
+        healthy = bool(health.get("db_available") and health.get("tables_ready") and not health.get("db_degraded"))
+        if not healthy:
+            return {
+                "ok": False,
+                "status": "persistent_intelligence_queue_drain_blocked",
+                "provider": _client_provider(self.client),
+                "reason": "persistent_intelligence_not_healthy",
+                "drain_attempted": False,
+                "before": before,
+                "healthcheck": health,
+                **_backpressure_status(self.client),
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "decision": "NO_TRADE",
+                **_safety(),
+            }
+        drain = persistent_write_backpressure().drain_queue(
+            self._write_queued_item,
+            max_items=max_items,
+            drop_failed_noncritical=drop_failed_noncritical,
+        )
+        after_health = self.healthcheck(write_test_event=False)
+        critical_retained = int(drain.get("critical_writes_retained") or 0)
+        return {
+            "ok": bool(drain.get("ok")),
+            "status": "persistent_intelligence_queue_drain_ready",
+            "provider": _client_provider(self.client),
+            "drain_attempted": True,
+            "before": before,
+            "drain": drain,
+            "healthcheck": after_health,
+            **_backpressure_status(self.client),
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+            "decision": "NO_TRADE" if critical_retained else "",
+            "reason": "critical_persistence_queue_retained" if critical_retained else "persistent_intelligence_queue_drained",
+            **_safety(),
+        }
+
     def _safe_insert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
         if _schema_missing_write_freeze_status().get("writes_frozen"):
             return persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical_write)
-        gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
+        gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write, operation="insert")
         if gate.get("short_circuit"):
             return gate["result"]
         started = time.monotonic()
         try:
             if not self._available():
-                return _write_unavailable(table, row, _client_unavailable_reason(self.client), critical=critical_write)
+                return _write_unavailable(table, row, _client_unavailable_reason(self.client), critical=critical_write, operation="insert")
             self.client.insert(table, row)
             return _write_ok(table, started)
         except Exception as exc:
-            return _write_failed(table, row, exc, started, critical=critical_write)
+            return _write_failed(table, row, exc, started, critical=critical_write, operation="insert")
         finally:
             persistent_write_backpressure().end_write(gate.get("token"))
 
@@ -951,17 +1000,17 @@ class MT5PersistentIntelligenceStore:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
         if _schema_missing_write_freeze_status().get("writes_frozen"):
             return persistent_write_backpressure().record_schema_missing_freeze(table, row, critical=critical_write)
-        gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write)
+        gate = persistent_write_backpressure().begin_write(table, row, critical=critical_write, operation="upsert")
         if gate.get("short_circuit"):
             return gate["result"]
         started = time.monotonic()
         try:
             if not self._available():
-                return _write_unavailable(table, row, _client_unavailable_reason(self.client), critical=critical_write)
+                return _write_unavailable(table, row, _client_unavailable_reason(self.client), critical=critical_write, operation="upsert")
             self.client.upsert(table, row, on_conflict=TABLE_PRIMARY_KEYS.get(table, ()))
             return _write_ok(table, started)
         except Exception as exc:
-            return _write_failed(table, row, exc, started, critical=critical_write)
+            return _write_failed(table, row, exc, started, critical=critical_write, operation="upsert")
         finally:
             persistent_write_backpressure().end_write(gate.get("token"))
 
@@ -978,11 +1027,25 @@ class MT5PersistentIntelligenceStore:
             if category in {"missing_schema", "missing_table"}:
                 _set_schema_missing_write_freeze([table], "missing_persistent_intelligence_tables")
             if category in {"max_connections", "pool_exhausted"}:
-                persistent_write_backpressure().record_failure(table, {"table": table}, critical=False, reason=_safe_error(exc), duration_ms=0)
+                persistent_write_backpressure().record_probe_failure(_safe_error(exc), duration_ms=0)
             return {"ok": False, "db_degraded": True, "rows": [], "reason": _safe_error(exc), "error_category": category, **_backpressure_status(self.client), **_safety()}
 
     def _available(self) -> bool:
         return bool(getattr(self.client, "available", False))
+
+    def _write_queued_item(self, item: dict[str, Any]) -> None:
+        table = str(item.get("table") or "").strip()
+        row = item.get("row") if isinstance(item.get("row"), dict) else {}
+        if not table or not row:
+            raise RuntimeError("queued_write_missing_table_or_row")
+        if not self._available():
+            raise RuntimeError(_client_unavailable_reason(self.client))
+        if str(item.get("operation") or "insert").casefold() == "upsert":
+            self.client.upsert(table, row, on_conflict=TABLE_PRIMARY_KEYS.get(table, ()))
+        else:
+            self.client.insert(table, row)
+        global _LAST_WRITE_AT
+        _LAST_WRITE_AT = _now()
 
 
 def detect_persistent_db_client() -> Any:
@@ -1009,6 +1072,13 @@ def detect_persistent_db_client() -> Any:
 
 def persistent_intelligence_status(*, write_test_event: bool = False) -> dict[str, Any]:
     return MT5PersistentIntelligenceStore().healthcheck(write_test_event=write_test_event)
+
+
+def persistent_intelligence_queue_drain(*, max_items: int = 50, drop_failed_noncritical: bool = True) -> dict[str, Any]:
+    return MT5PersistentIntelligenceStore().drain_queued_writes(
+        max_items=max_items,
+        drop_failed_noncritical=drop_failed_noncritical,
+    )
 
 
 def persistent_intelligence_schema_freeze_status() -> dict[str, Any]:
@@ -1331,11 +1401,11 @@ def _write_ok(table: str, started: float) -> dict[str, Any]:
     }
 
 
-def _write_unavailable(table: str, row: dict[str, Any], reason: str, *, critical: bool) -> dict[str, Any]:
-    return persistent_write_backpressure().record_unavailable(table, row, critical=critical, reason=reason)
+def _write_unavailable(table: str, row: dict[str, Any], reason: str, *, critical: bool, operation: str = "insert") -> dict[str, Any]:
+    return persistent_write_backpressure().record_unavailable(table, row, critical=critical, operation=operation, reason=reason)
 
 
-def _write_failed(table: str, row: dict[str, Any], exc: Exception, started: float, *, critical: bool) -> dict[str, Any]:
+def _write_failed(table: str, row: dict[str, Any], exc: Exception, started: float, *, critical: bool, operation: str = "insert") -> dict[str, Any]:
     category = classify_db_error(exc)
     if category in {"missing_schema", "missing_table"}:
         _set_schema_missing_write_freeze([table], "missing_persistent_intelligence_tables")
@@ -1346,6 +1416,7 @@ def _write_failed(table: str, row: dict[str, Any], exc: Exception, started: floa
         table,
         row,
         critical=critical,
+        operation=operation,
         reason=_safe_error(exc),
         duration_ms=int((time.monotonic() - started) * 1000),
     )

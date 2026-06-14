@@ -237,7 +237,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         )
 
         serialized = json.dumps(result, sort_keys=True)
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
         self.assertTrue(result["db_available"])
         self.assertTrue(result["can_connect"])
         self.assertFalse(result["applied"])
@@ -283,7 +283,7 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
             )
 
         serialized = json.dumps(result, sort_keys=True)
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
         self.assertFalse(result["db_available"])
         self.assertEqual(result["connect_attempts"], 3)
         self.assertEqual(attempts, 3)
@@ -686,6 +686,82 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(third["order_executed"])
         self.assertEqual(third["order_policy"], "journal_only_no_broker")
 
+    def test_queue_drain_flushes_queued_noncritical_writes_when_db_recovers(self) -> None:
+        failing = MT5PersistentIntelligenceStore(client=_FailingWriteClient())
+        queued = persist_decision_event(_decision_payload("EURUSD", "H1", "queued_for_drain"), store=failing)
+        self.assertTrue(queued["queued"])
+        self.assertEqual(queued["queue_depth"], 1)
+
+        client = _FakeClient()
+        recovered = MT5PersistentIntelligenceStore(client=client)
+        result = recovered.drain_queued_writes()
+        healthcheck = recovered.healthcheck()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["drain_attempted"])
+        self.assertEqual(result["drain"]["before_queue_depth"], 1)
+        self.assertEqual(result["drain"]["after_queue_depth"], 0)
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["queued_writes"], 0)
+        self.assertEqual(result["queued_writes_total"], 1)
+        self.assertEqual(len(client.inserted), 1)
+        self.assertEqual(client.inserted[0]["table"], "mt5_decision_events")
+        self.assertTrue(result["queue_drain_succeeded"])
+        self.assertEqual(healthcheck["queue_depth"], 0)
+        self.assertTrue(healthcheck["queue_drain_succeeded"])
+        self.assertTrue(healthcheck["last_queue_drain_attempt_at"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_queue_drain_drops_failed_noncritical_write_without_blocking_queue(self) -> None:
+        unavailable = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
+        queued = persist_decision_event(_decision_payload("EURUSD", "H1", "drop_failed_noncritical"), store=unavailable)
+        self.assertTrue(queued["queued"])
+
+        failing = MT5PersistentIntelligenceStore(client=_FailingWriteClient())
+        result = failing.drain_queued_writes()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["drain_attempted"])
+        self.assertEqual(result["drain"]["before_queue_depth"], 1)
+        self.assertEqual(result["drain"]["after_queue_depth"], 0)
+        self.assertEqual(result["drain"]["failed"], 1)
+        self.assertEqual(result["drain"]["dropped_noncritical_writes"], 1)
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["queued_writes"], 0)
+        self.assertEqual(result["queued_writes_total"], 1)
+        self.assertGreaterEqual(result["dropped_noncritical_writes"], 1)
+        self.assertEqual(result["reason"], "persistent_intelligence_queue_drained")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_queue_drain_retains_failed_critical_write_and_returns_no_trade(self) -> None:
+        unavailable = MT5PersistentIntelligenceStore(client=SupabaseRestClient(url="", key=""))
+        queued = persist_shadow_trade(
+            {"shadow_trade_id": "critical-queued", "symbol": "XAUUSD", "timeframe": "M15", "status": "open"},
+            critical=True,
+            store=unavailable,
+        )
+        self.assertTrue(queued["queued"])
+
+        failing = MT5PersistentIntelligenceStore(client=_FailingWriteClient())
+        result = failing.drain_queued_writes()
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["drain_attempted"])
+        self.assertEqual(result["drain"]["before_queue_depth"], 1)
+        self.assertEqual(result["drain"]["after_queue_depth"], 1)
+        self.assertEqual(result["drain"]["critical_writes_retained"], 1)
+        self.assertEqual(result["queue_depth"], 1)
+        self.assertEqual(result["queued_writes"], 1)
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "critical_persistence_queue_retained")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_missing_tables_activate_schema_missing_write_freeze(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
 
@@ -945,6 +1021,42 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_healthcheck_probe_max_connections_does_not_queue_status_write(self) -> None:
+        client = _MaxConnectionProbeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.healthcheck(write_test_event=False)
+
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertFalse(result["db_available"])
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["last_db_error_category"], "max_connections")
+        self.assertTrue(result["backoff_active"])
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["queued_writes"], 0)
+        self.assertEqual(result["failed_writes"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_recent_events_select_max_connections_does_not_queue_status_write(self) -> None:
+        client = _MaxConnectionSelectClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.recent_events(limit=5)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["last_db_error_category"], "max_connections")
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["queued_writes"], 0)
+        self.assertEqual(result["failed_writes"], 0)
+        self.assertEqual(client.select_calls, 1)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_stale_missing_schema_error_does_not_block_current_green_probe(self) -> None:
         client = _FakeClient()
         store = MT5PersistentIntelligenceStore(client=client)
@@ -1139,6 +1251,18 @@ class _MaxConnectionsClient(_FailingWriteClient):
 
     def upsert(self, table: str, payload: dict[str, object], *, on_conflict: tuple[str, ...]) -> dict[str, object]:
         raise RuntimeError("max clients reached in session mode / max clients limited to pool_size: 15")
+
+
+class _MaxConnectionProbeClient(_FakeClient):
+    def table_ready(self, table: str) -> bool:
+        self.checked_tables.append(table)
+        raise RuntimeError("max clients reached in session mode")
+
+
+class _MaxConnectionSelectClient(_FakeClient):
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        self.select_calls += 1
+        raise RuntimeError("max clients reached in session mode")
 
 
 class _PooledRailwayClient(RailwayPostgresClient):

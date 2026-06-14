@@ -50,6 +50,9 @@ class PersistentWriteBackpressure:
         self._last_db_error_monotonic = 0.0
         self._backoff_until = 0.0
         self._backoff_seconds = 0.0
+        self.last_queue_drain_attempt_at = ""
+        self.queue_drain_succeeded = False
+        self.queue_drain_failed_count = 0
 
     @classmethod
     def from_env(cls) -> "PersistentWriteBackpressure":
@@ -75,9 +78,12 @@ class PersistentWriteBackpressure:
             self._last_db_error_monotonic = 0.0
             self._backoff_until = 0.0
             self._backoff_seconds = 0.0
+            self.last_queue_drain_attempt_at = ""
+            self.queue_drain_succeeded = False
+            self.queue_drain_failed_count = 0
         self._write_slots = threading.BoundedSemaphore(self.pool_max_size)
 
-    def begin_write(self, table: str, row: dict[str, Any], *, critical: bool = False) -> dict[str, Any]:
+    def begin_write(self, table: str, row: dict[str, Any], *, critical: bool = False, operation: str = "insert") -> dict[str, Any]:
         now = time.monotonic()
         if not critical and self._is_duplicate(table, row, now):
             with self._lock:
@@ -102,6 +108,7 @@ class PersistentWriteBackpressure:
                     table,
                     row,
                     critical=critical,
+                    operation=operation,
                     reason="persistent_db_backoff_active",
                     error_category=self.last_db_error_category or "backoff",
                 ),
@@ -113,6 +120,7 @@ class PersistentWriteBackpressure:
                     table,
                     row,
                     critical=critical,
+                    operation=operation,
                     reason="persistent_db_write_semaphore_timeout",
                     error_category="pool_exhausted",
                 ),
@@ -131,8 +139,8 @@ class PersistentWriteBackpressure:
         except ValueError:
             pass
 
-    def record_unavailable(self, table: str, row: dict[str, Any], *, critical: bool, reason: str) -> dict[str, Any]:
-        return self.queue_or_drop(table, row, critical=critical, reason=reason, error_category=classify_db_error(reason))
+    def record_unavailable(self, table: str, row: dict[str, Any], *, critical: bool, reason: str, operation: str = "insert") -> dict[str, Any]:
+        return self.queue_or_drop(table, row, critical=critical, operation=operation, reason=reason, error_category=classify_db_error(reason))
 
     def record_failure(
         self,
@@ -142,6 +150,7 @@ class PersistentWriteBackpressure:
         critical: bool,
         reason: str,
         duration_ms: int,
+        operation: str = "insert",
     ) -> dict[str, Any]:
         category = classify_db_error(reason)
         if category in {"missing_schema", "missing_table"}:
@@ -154,9 +163,30 @@ class PersistentWriteBackpressure:
             if category in {"max_connections", "pool_exhausted"}:
                 self._backoff_seconds = min(60.0, max(2.0, self._backoff_seconds * 2.0 or 2.0))
                 self._backoff_until = time.monotonic() + self._backoff_seconds
-        result = self.queue_or_drop(table, row, critical=critical, reason=reason, error_category=category)
+        result = self.queue_or_drop(table, row, critical=critical, operation=operation, reason=reason, error_category=category)
         result["duration_ms"] = duration_ms
         return result
+
+    def record_probe_failure(self, reason: str, *, duration_ms: int = 0) -> dict[str, Any]:
+        category = classify_db_error(reason)
+        with self._lock:
+            self._record_error_locked(category, str(reason or ""))
+            if category in {"max_connections", "pool_exhausted"}:
+                self._backoff_seconds = min(60.0, max(2.0, self._backoff_seconds * 2.0 or 2.0))
+                self._backoff_until = time.monotonic() + self._backoff_seconds
+            queue_depth = len(self._queue)
+        return {
+            "ok": False,
+            "db_degraded": True,
+            "queued": False,
+            "status_probe_only": True,
+            "reason": str(reason or "")[:500],
+            "error_category": category,
+            "duration_ms": int(duration_ms or 0),
+            "queue_depth": queue_depth,
+            "queue_max_size": self.queue_max_size,
+            **_safety(),
+        }
 
     def activate_schema_missing_freeze(self, *, reason: str = "schema_missing_write_freeze") -> dict[str, Any]:
         with self._lock:
@@ -209,6 +239,7 @@ class PersistentWriteBackpressure:
         row: dict[str, Any],
         *,
         critical: bool,
+        operation: str = "insert",
         reason: str,
         error_category: str,
     ) -> dict[str, Any]:
@@ -248,6 +279,7 @@ class PersistentWriteBackpressure:
                     "reason": str(reason or "")[:500],
                     "error_category": error_category,
                     "queued_at": _now_monotonic(),
+                    "operation": _operation(operation),
                     "row": _compact_queued_row(row),
                 }
             )
@@ -272,7 +304,7 @@ class PersistentWriteBackpressure:
             queue_depth = len(self._queue)
             in_use = self._in_use
             failed = self.failed_writes
-            queued = self.queued_writes
+            queued_total = self.queued_writes
             dropped = self.dropped_noncritical_writes
             suppressed = self.suppressed_duplicate_events
             category = self.last_db_error_category
@@ -288,7 +320,8 @@ class PersistentWriteBackpressure:
             "queue_depth": queue_depth,
             "queue_max_size": self.queue_max_size,
             "failed_writes": failed,
-            "queued_writes": queued,
+            "queued_writes": queue_depth,
+            "queued_writes_total": queued_total,
             "dropped_noncritical_writes": dropped,
             "suppressed_duplicate_events": suppressed,
             "last_db_error_category": category,
@@ -296,6 +329,87 @@ class PersistentWriteBackpressure:
             "last_db_error_age_seconds": round(last_error_age, 3) if last_error_age is not None else None,
             "backoff_active": backoff_remaining > 0,
             "backoff_remaining_seconds": round(backoff_remaining, 3),
+            "last_queue_drain_attempt_at": self.last_queue_drain_attempt_at,
+            "queue_drain_succeeded": bool(self.queue_drain_succeeded),
+            "queue_drain_failed_count": int(self.queue_drain_failed_count),
+            **_safety(),
+        }
+
+    def drain_queue(
+        self,
+        writer: Callable[[dict[str, Any]], Any],
+        *,
+        max_items: int = 50,
+        drop_failed_noncritical: bool = True,
+    ) -> dict[str, Any]:
+        safe_max = max(1, int(max_items or 50))
+        attempted = 0
+        succeeded = 0
+        failed = 0
+        dropped = 0
+        kept_critical = 0
+        errors: list[dict[str, Any]] = []
+        with self._lock:
+            before_depth = len(self._queue)
+            self.last_queue_drain_attempt_at = datetime.now(timezone.utc).isoformat()
+            self.queue_drain_succeeded = False
+
+        while attempted < safe_max:
+            with self._lock:
+                if not self._queue:
+                    break
+                item = self._queue.popleft()
+            attempted += 1
+            try:
+                writer(dict(item))
+            except Exception as exc:
+                failed += 1
+                category = classify_db_error(exc)
+                message = str(exc or "")[:200]
+                errors.append(
+                    {
+                        "table": item.get("table") or "",
+                        "critical": bool(item.get("critical")),
+                        "error_category": category,
+                        "reason": message,
+                    }
+                )
+                with self._lock:
+                    self.queue_drain_failed_count += 1
+                    self._record_error_locked(category, message)
+                    if bool(item.get("critical")):
+                        self._queue.appendleft(item)
+                        kept_critical += 1
+                    elif drop_failed_noncritical:
+                        self.dropped_noncritical_writes += 1
+                        dropped += 1
+                    else:
+                        self._queue.append(item)
+                if bool(item.get("critical")):
+                    break
+            else:
+                succeeded += 1
+
+        with self._lock:
+            after_depth = len(self._queue)
+            queue_empty = after_depth == 0
+            self.queue_drain_succeeded = bool(queue_empty and kept_critical == 0)
+            if queue_empty:
+                self._backoff_until = 0.0
+                self._backoff_seconds = 0.0
+        return {
+            "ok": bool(after_depth == 0 and kept_critical == 0),
+            "before_queue_depth": before_depth,
+            "after_queue_depth": after_depth,
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": failed,
+            "dropped_noncritical_writes": dropped,
+            "critical_writes_retained": kept_critical,
+            "queue_drain_succeeded": bool(after_depth == 0 and kept_critical == 0),
+            "queue_drain_failed_count": int(self.queue_drain_failed_count),
+            "last_queue_drain_attempt_at": self.last_queue_drain_attempt_at,
+            "errors": errors[:5],
             **_safety(),
         }
 
@@ -538,6 +652,11 @@ def _compact_queued_row(row: dict[str, Any]) -> dict[str, Any]:
         else:
             compact[key] = "[compact_payload]"
     return compact
+
+
+def _operation(value: object) -> str:
+    clean = str(value or "insert").casefold().strip()
+    return "upsert" if clean == "upsert" else "insert"
 
 
 def _env_int(name: str, default: int) -> int:
