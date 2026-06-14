@@ -1,41 +1,61 @@
 # Genesis Agent Task Board
 
-This board is the shared operating surface for Codex agents. The Coordinator
-Agent owns ordering. Agents move cards only after reporting safety output and
-validation results.
+This board is the shared operating surface for Codex subagents. The Coordinator
+Agent owns ordering, file ownership, and merge sequencing. Every card must pass
+through Safety Sentinel review before push or deploy.
 
 ## Urgent
 
-1. DB Doctor: repair Persistent Intelligence schema until `tables_ready=true`.
-2. DB Doctor: ensure `writes_frozen` prevents queue growth.
-3. Safety Sentinel: verify no broker or `order_send` path.
-4. Coordinator: do not allow learning loop until DB green.
+1. Shadow Lifecycle Agent: close or monitor the active XAUUSD M15 paper shadow.
+2. Paper Observation Agent: explain the exact `safety_exit` detail before any new shadow.
+3. Safety Sentinel Agent: block any new XAUUSD M15 shadow until the open shadow cause and exit state are known.
+4. DB Doctor Agent: keep Persistent Intelligence green and queue depth stable.
 
 ## Active
 
-1. Build Agent OS docs and gates.
-2. Add DB Doctor endpoint/script.
-3. Prepare one-cycle Autonomous Learning after DB green.
+1. Coordinator Agent: maintain the autonomous Codex subagent operating system.
+2. Shadow Lifecycle Agent: keep XAUUSD M15 monitor restart-safe through runtime and Persistent Intelligence fallback.
+3. Dashboard Reporter Agent: expose paper observation and shadow lifecycle status without writes.
+
+## Queued
+
+1. Runtime Bridge Agent: verify XAUUSD.b M15 feed continuity after deploy.
+2. Strategy Tournament Agent: review candidates only after the current paper shadow is resolved.
+3. Research Factory Agent: continue volatility compression research only after safety and DB stay green.
+4. Deep Validation Agent: design the next non-correlated validation batch after current observation data is complete.
 
 ## Blocked
 
-1. Autonomous paper loop blocked until `db_degraded=false`.
-2. Strategy research blocked until DB stable.
-
-## Review
-
-- Persistent DB Doctor.
-- Safety contract.
-- Agent gate.
+1. Opening a new XAUUSD M15 paper shadow is blocked until the existing shadow is closed or explained.
+2. Paper rotation application is blocked without explicit human approval.
+3. Autonomous loops are blocked unless DB, Capital Protection, Adaptive Governor, and RiskGovernor all allow one controlled cycle.
+4. Any real trading path is blocked.
 
 ## Done
 
-- RiskGovernor.
-- Adaptive Strategy Governor.
-- Capital Protection Governor.
-- Strategy Tournament.
-- Persistent Store base.
-- Backpressure base.
+1. Persistent Intelligence schema and DB Doctor foundation.
+2. Capital Protection Governor.
+3. Strategy Tournament baseline.
+4. XAUUSD M15 volatility compression deep validation.
+5. XAUUSD M15 paper observation candidate registry.
+6. Runtime XAUUSD.b M15 context and readiness endpoints.
+7. XAUUSD M15 one-shot paper shadow endpoint.
+8. XAUUSD M15 paper shadow lifecycle monitor and restart-safe DB fallback.
+
+## Rejected
+
+1. ETHUSD M30 volatility breakout cluster: degraded or blocked by sibling risk.
+2. XAUUSD M15 session-open continuation: failed Monte Carlo and remove-best robustness.
+3. BTCUSD H1 EMA reclaim: failed robustness and dependency gates.
+4. BTCUSD M30 London-US breakout / opening range fakeout: failed deep validation.
+5. EURUSD H1 session VWAP reclaim: proxy false positive after costs.
+6. USTEC M30/H1 trend pullback: proxy false positive after Monte Carlo failure.
+
+## Next Recommended Task
+
+Safety Sentinel and Shadow Lifecycle should review the current XAUUSD M15 paper
+shadow state, explain `safety_exit`, and confirm no new shadow is created until
+the current observation is closed or safely carried forward.
 
 ## Card Template
 
