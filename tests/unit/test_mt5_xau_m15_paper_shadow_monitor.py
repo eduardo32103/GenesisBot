@@ -90,6 +90,8 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertEqual(result["exit_reason"], "multiple_open_shadows_persisted")
         self.assertEqual(result["safety_exit_category"], "critical_safety_exit")
         self.assertIn("multiple_open_shadows", result["safety_exit_reason_detail"])
+        self.assertTrue(result["should_close_paper"])
+        self.assertFalse(result["should_watch_only"])
         self.assertFalse(result["paper_close_applied"])
 
     def test_stop_loss_hit_produces_exit_signal(self) -> None:
@@ -169,6 +171,36 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertTrue(result["should_watch_only"])
         self.assertFalse(result["paper_close_applied"])
 
+    def test_single_current_shadow_risk_max_open_trades_is_entry_block_only(self) -> None:
+        _seed_runtime(price=100.0)
+        _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            db_state=_db(),
+            risk_state={
+                "allowed": False,
+                "risk_state": "caution",
+                "reason": "max_open_trades_reached",
+                "max_open_trades": 1,
+            },
+            persist_events=False,
+        )
+        snapshot = get_snapshot("XAUUSD", "M15") or {}
+
+        self.assertEqual(result["monitor_state"], "open_monitoring")
+        self.assertFalse(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "caution_watch")
+        self.assertEqual(result["safety_exit_category"], "entry_block_only")
+        self.assertEqual(result["risk_block_type"], "entry_block")
+        self.assertTrue(result["risk_block_applies_to_current_shadow"])
+        self.assertEqual(result["max_open_trades_limit"], 1)
+        self.assertFalse(result["should_close_paper"])
+        self.assertTrue(result["should_watch_only"])
+        self.assertEqual(result["close_decision_reason"], "watch_only:entry_block_current_shadow")
+        self.assertFalse(result["paper_close_applied"])
+        self.assertEqual((snapshot.get("open_shadow_trade") or {}).get("shadow_trade_id"), "xau-monitor-test")
+
     def test_db_degraded_is_critical_safety_exit_and_apply_closes_paper_only(self) -> None:
         _seed_runtime(price=100.0)
         _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
@@ -184,6 +216,7 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertTrue(result["exit_signal"])
         self.assertEqual(result["exit_reason"], "safety_exit")
         self.assertEqual(result["safety_exit_category"], "critical_safety_exit")
+        self.assertEqual(result["risk_block_type"], "none")
         self.assertIn("db_degraded", result["safety_exit_reason_detail"])
         self.assertTrue(result["should_close_paper"])
         self.assertFalse(result["should_watch_only"])

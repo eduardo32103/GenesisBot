@@ -42,6 +42,7 @@ def run_xau_m15_paper_shadow_monitor(
                 adaptive=_adaptive_state(adaptive_state),
                 risk=_risk_state(snapshot, {}, risk_state),
                 open_shadow_count=persistent_open_count,
+                current_shadow_trade_id="",
                 max_runtime_age_minutes=max_runtime_age_minutes,
             )
             return _base_result(
@@ -85,6 +86,7 @@ def run_xau_m15_paper_shadow_monitor(
         adaptive=adaptive,
         risk=risk,
         open_shadow_count=1,
+        current_shadow_trade_id=str(open_trade.get("shadow_trade_id") or ""),
         max_runtime_age_minutes=max_runtime_age_minutes,
     )
     exit_signal, exit_reason, apply_blocked = _exit_decision(
@@ -359,12 +361,17 @@ def _safety_exit_analysis(
     adaptive: dict[str, Any],
     risk: dict[str, Any],
     open_shadow_count: int,
+    current_shadow_trade_id: str,
     max_runtime_age_minutes: float,
 ) -> dict[str, Any]:
     db_state = _db_safety_state(db)
     capital_state = _capital_safety_state(capital)
     adaptive_state = _adaptive_safety_state(adaptive)
-    risk_state = _risk_safety_state(risk)
+    risk_state = _risk_safety_state(
+        risk,
+        open_shadow_count=open_shadow_count,
+        current_shadow_trade_id=current_shadow_trade_id,
+    )
     runtime_state = _runtime_safety_state(snapshot, metrics, max_runtime_age_minutes=max_runtime_age_minutes)
     open_shadow_state = _open_shadow_safety_state(open_shadow_count)
 
@@ -376,6 +383,7 @@ def _safety_exit_analysis(
     critical_sources.extend(adaptive_state["critical_reasons"])
     caution_sources.extend(adaptive_state["caution_reasons"])
     critical_sources.extend(risk_state["critical_reasons"])
+    caution_sources.extend(risk_state["caution_reasons"])
     unknown_sources.extend(risk_state["unknown_reasons"])
     if metrics and float(metrics.get("r_multiple") or 0.0) < 0 and not critical_sources and not unknown_sources:
         caution_sources.append("small_unrealized_loss_without_critical_breaker")
@@ -396,6 +404,14 @@ def _safety_exit_analysis(
         close_decision_reason = "close_paper:unknown_safety_exit:missing_safety_exit_detail"
         triggered = True
         sources = unknown_sources
+    elif risk_state["risk_block_type"] == "entry_block" and risk_state["risk_block_applies_to_current_shadow"]:
+        category = "entry_block_only"
+        reason_detail = _reason_detail(caution_sources)
+        should_close = False
+        should_watch = True
+        close_decision_reason = "watch_only:entry_block_current_shadow"
+        triggered = False
+        sources = caution_sources
     elif caution_sources:
         category = "caution_watch"
         reason_detail = _reason_detail(caution_sources)
@@ -418,6 +434,9 @@ def _safety_exit_analysis(
         "safety_exit_category": category,
         "safety_exit_reason_detail": reason_detail,
         "safety_exit_sources": sources,
+        "risk_block_type": risk_state["risk_block_type"],
+        "risk_block_applies_to_current_shadow": bool(risk_state["risk_block_applies_to_current_shadow"]),
+        "max_open_trades_limit": int(risk_state["max_open_trades_limit"]),
         "db_safety_state": _strip_internal_reasons(db_state),
         "capital_safety_state": _strip_internal_reasons(capital_state),
         "adaptive_safety_state": _strip_internal_reasons(adaptive_state),
@@ -437,6 +456,9 @@ def _empty_safety_analysis(*, reason_detail: str) -> dict[str, Any]:
         "safety_exit_category": "none",
         "safety_exit_reason_detail": detail,
         "safety_exit_sources": [],
+        "risk_block_type": "none",
+        "risk_block_applies_to_current_shadow": False,
+        "max_open_trades_limit": 1,
         "db_safety_state": {"status": "not_evaluated"},
         "capital_safety_state": {"status": "not_evaluated"},
         "adaptive_safety_state": {"status": "not_evaluated"},
@@ -513,23 +535,49 @@ def _adaptive_safety_state(adaptive: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _risk_safety_state(risk: dict[str, Any]) -> dict[str, Any]:
+def _risk_safety_state(
+    risk: dict[str, Any],
+    *,
+    open_shadow_count: int,
+    current_shadow_trade_id: str,
+) -> dict[str, Any]:
     allowed = _risk_allows(risk)
     reason = str(risk.get("reason") or risk.get("risk_governor_reason") or "").strip()
+    limit = int(_number(risk.get("max_open_trades") or risk.get("max_open_trades_limit")) or 1)
     critical: list[str] = []
+    caution: list[str] = []
     unknown: list[str] = []
+    risk_block_type = "none"
+    applies_to_current_shadow = False
     if not allowed:
-        if _generic_safety_reason(reason):
+        if reason == "max_open_trades_reached":
+            if int(open_shadow_count or 0) == 1 and current_shadow_trade_id:
+                risk_block_type = "entry_block"
+                applies_to_current_shadow = True
+                caution.append("entry_block_current_shadow")
+            elif int(open_shadow_count or 0) > limit:
+                risk_block_type = "exit_block"
+                critical.append("risk_governor_max_open_trades_over_limit")
+            else:
+                risk_block_type = "entry_block"
+                caution.append("entry_block_no_current_shadow_match")
+        elif _generic_safety_reason(reason):
+            risk_block_type = "exit_block"
             unknown.append("risk_governor_block_without_detail")
         else:
+            risk_block_type = "exit_block"
             critical.append(f"risk_governor_explicit_block:{reason}")
     return {
-        "status": "critical" if critical else "unknown" if unknown else "ok",
+        "status": "critical" if critical else "unknown" if unknown else "watch" if caution else "ok",
         "allowed": bool(allowed),
         "risk_state": risk.get("risk_state") or risk.get("state") or "",
         "reason": reason,
+        "risk_block_type": risk_block_type,
+        "risk_block_applies_to_current_shadow": bool(applies_to_current_shadow),
+        "open_shadow_count": int(open_shadow_count or 0),
+        "max_open_trades_limit": limit,
         "critical_reasons": critical,
-        "caution_reasons": [],
+        "caution_reasons": caution,
         "unknown_reasons": unknown,
     }
 
