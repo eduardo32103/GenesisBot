@@ -29,6 +29,11 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=dry_run,
         paper_only_confirmed=args.paper_only_confirmed,
         once=args.once,
+        exit_policy=args.exit_policy,
+        time_stop_bars=args.time_stop_bars,
+        max_hold_minutes=args.max_hold_minutes,
+        min_r_to_arm_trailing=args.min_r_to_arm_trailing,
+        giveback_r=args.giveback_r,
         state_file=args.state_file,
         results_file=args.results_file,
         timeout_seconds=args.timeout_seconds,
@@ -50,6 +55,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", default=None, help="Force dry-run mode. Default unless --paper-only-confirmed is present.")
     parser.add_argument("--paper-only-confirmed", action="store_true", help="Required to open or close paper shadows.")
     parser.add_argument("--once", action="store_true", help="Run exactly one step.")
+    parser.add_argument("--exit-policy", choices=["default", "fast_observation"], default="default")
+    parser.add_argument("--time-stop-bars", type=int, default=2)
+    parser.add_argument("--max-hold-minutes", type=float, default=None)
+    parser.add_argument("--min-r-to-arm-trailing", type=float, default=0.25)
+    parser.add_argument("--giveback-r", type=float, default=0.15)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     parser.add_argument("--results-file", default=str(DEFAULT_RESULTS_FILE))
@@ -66,6 +76,7 @@ def _human_summary(result: dict[str, Any]) -> str:
             "MT5 XAUUSD M15 Paper Observation Batch Runner",
             f"status={result.get('status')}",
             f"mode={result.get('mode')}",
+            f"exit_policy={result.get('exit_policy')}",
             f"client_source={result.get('client_source')}",
             f"runner_state={result.get('runner_state')}",
             f"cycle_number={last.get('cycle_number')}",

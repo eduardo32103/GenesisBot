@@ -81,6 +81,7 @@ from api.routes.genesis import (
     get_genesis_mt5_risk_state,
     get_genesis_mt5_runtime_snapshot_inventory,
     get_genesis_mt5_shadow_trades,
+    get_genesis_mt5_shadow_trades_history,
     get_genesis_mt5_shadow_trades_open,
     get_genesis_mt5_status,
     get_genesis_mt5_strategy_tournament_status,
@@ -270,6 +271,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_no_trade_report_endpoint": "/api/genesis/mt5/no-trade-report?symbol={symbol}&limit=50",
         "genesis_mt5_shadow_trades_endpoint": "/api/genesis/mt5/shadow-trades?symbol={symbol}",
         "genesis_mt5_shadow_trades_open_endpoint": "/api/genesis/mt5/shadow-trades/open?symbol={symbol}",
+        "genesis_mt5_shadow_trades_history_endpoint": "/api/genesis/mt5/shadow-trades/history?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_shadow_trades_close_expired_endpoint": "/api/genesis/mt5/shadow-trades/close-expired",
         "genesis_mt5_shadow_trade_close_endpoint": "/api/genesis/mt5/shadow-trades/close",
         "genesis_mt5_debug_storage_endpoint": "/api/genesis/mt5/debug/storage?symbol={symbol}",
@@ -4638,6 +4640,19 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 limit = 100
             symbol = (query.get("symbol") or query.get("ticker") or ["BTCUSD"])[0]
             payload_data = get_genesis_mt5_shadow_trades_open(limit=limit, symbol=symbol)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/shadow-trades/history":
+            query = parse_qs(parsed.query)
+            raw_limit = (query.get("limit") or ["20"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 20
+            symbol = (query.get("symbol") or query.get("ticker") or ["XAUUSD"])[0]
+            timeframe = (query.get("timeframe") or [""])[0]
+            payload_data = get_genesis_mt5_shadow_trades_history(limit=limit, symbol=symbol, timeframe=timeframe)
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

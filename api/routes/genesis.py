@@ -53,6 +53,7 @@ from services.mt5.mt5_bridge import (
     mt5_shadow_trade_close,
     mt5_shadow_trades,
     mt5_shadow_trades_close_expired,
+    mt5_shadow_trades_history,
     mt5_shadow_trades_open,
     mt5_status,
     mt5_strategy_tournament_status,
@@ -177,6 +178,10 @@ def get_genesis_mt5_shadow_trades(limit: int = 100, symbol: str = "") -> dict[st
 
 def get_genesis_mt5_shadow_trades_open(limit: int = 100, symbol: str = "") -> dict[str, Any]:
     return mt5_shadow_trades_open(limit=limit, symbol=symbol)
+
+
+def get_genesis_mt5_shadow_trades_history(limit: int = 20, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
+    return mt5_shadow_trades_history(limit=limit, symbol=symbol, timeframe=timeframe)
 
 
 def post_genesis_mt5_shadow_trades_close_expired(payload: dict[str, Any] | None = None) -> dict[str, Any]:

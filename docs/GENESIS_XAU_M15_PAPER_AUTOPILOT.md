@@ -11,6 +11,20 @@ This phase runs XAUUSD M15 as a controlled paper-only batch process:
 
 No real trading is allowed in this mode.
 
+## Reconciliation First
+
+Before opening a new paper shadow, the runner checks the local state file. If it has
+`current_open_shadow_id` or `pending_reconciliation_shadow_id`, or if
+`trades_opened > trades_closed`, the runner reconciles first:
+
+- If live `open_count=1` and the ID matches, it monitors that shadow.
+- If live `open_count>1`, it stops with `stopped_by_duplicate_shadow`.
+- If live `open_count=0`, it queries the read-only history endpoint:
+  `/api/genesis/mt5/shadow-trades/history?symbol=XAUUSD&timeframe=M15&limit=20`.
+- If the closed ID is found, it imports the compact closed trade and updates stats.
+- If no closed record is found, it stops with
+  `stopped_by_orphaned_shadow_missing_close_record` and does not invent PnL.
+
 ## Safety Contract
 
 - `broker_touched=false`
@@ -54,6 +68,12 @@ Controlled worker or one-off batch, never inside dashboard polling:
 python scripts/run_xau_m15_paper_observation_batch_runner.py --base-url https://genesisbot-production.up.railway.app --target-trades 20 --max-cycles 200 --interval-seconds 60 --paper-only-confirmed
 ```
 
+Fast paper observation, one step only:
+
+```powershell
+python scripts/run_xau_m15_paper_observation_batch_runner.py --base-url https://genesisbot-production.up.railway.app --once --paper-only-confirmed --exit-policy fast_observation --time-stop-bars 2 --target-trades 3 --max-cycles 5
+```
+
 ## Gates Before Opening
 
 - Persistent Intelligence healthy.
@@ -80,8 +100,23 @@ The runner only applies a paper close when all are true:
   - `trailing_defensive_exit`
   - `critical_safety_exit`
   - `safety_exit`
+  - `paper_timebox_exit`
+  - `paper_stagnation_exit`
+  - `paper_fast_trailing_exit`
 
 The runner does not close for entry-block-only conditions. `max_open_trades_reached` blocks new entries, but does not close the current single monitored shadow.
+
+## Fast Observation Policy
+
+`--exit-policy fast_observation` is paper-only and requires
+`--paper-only-confirmed`.
+
+- `paper_timebox_exit`: `bars_since_entry >= --time-stop-bars` and `r_multiple <= 0.05`.
+- `paper_stagnation_exit`: optional `--max-hold-minutes` is reached and absolute R is near flat.
+- `paper_fast_trailing_exit`: R reached `--min-r-to-arm-trailing` and gives back `--giveback-r`.
+
+It never applies to real trading, never touches broker, and never closes
+`entry_block_only` or `caution_watch` unless the explicit fast policy condition is met.
 
 ## Restart Safety
 

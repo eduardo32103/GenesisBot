@@ -9,6 +9,7 @@ from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
 from services.mt5.mt5_persistent_intelligence_store import (
     persistent_intelligence_recent_events,
     persistent_intelligence_schema_freeze_status,
+    persistent_intelligence_shadow_trade_history,
     persistent_intelligence_status,
 )
 from services.mt5.mt5_persistent_intelligence_bootstrap import persistent_intelligence_bootstrap_status
@@ -203,6 +204,11 @@ def mt5_shadow_trades_open(*, memory: MemoryStore | None = None, symbol: str = "
     return build_router(memory).shadow_trades_open(symbol=symbol, limit=limit)
 
 
+def mt5_shadow_trades_history(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "", limit: int = 20) -> dict[str, Any]:
+    del memory
+    return persistent_intelligence_shadow_trade_history(symbol=symbol, timeframe=timeframe, limit=limit)
+
+
 def mt5_shadow_trades_close_expired(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
     return build_router(memory).shadow_trades_close_expired(payload)
 
@@ -259,7 +265,15 @@ def mt5_xau_m15_paper_shadow_monitor(
 ) -> dict[str, Any]:
     body = payload or {}
     requested_apply = bool(apply_paper_close or body.get("apply_paper_close") is True)
-    return run_xau_m15_paper_shadow_monitor(apply_paper_close=requested_apply, store=store)
+    return run_xau_m15_paper_shadow_monitor(
+        apply_paper_close=requested_apply,
+        store=store,
+        exit_policy=str(body.get("exit_policy") or "default"),
+        time_stop_bars=int(_maybe_float(body.get("time_stop_bars")) or 2),
+        max_hold_minutes=_maybe_float(body.get("max_hold_minutes")),
+        min_r_to_arm_trailing=float(_maybe_float(body.get("min_r_to_arm_trailing")) or 0.25),
+        giveback_r=float(_maybe_float(body.get("giveback_r")) or 0.15),
+    )
 
 
 def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -268,6 +282,15 @@ def mt5_instrument(*, memory: MemoryStore | None = None, symbol: str = "", paylo
 
 def mt5_auto_forward_status(*, memory: MemoryStore | None = None, symbol: str = "") -> dict[str, Any]:
     return build_router(memory).auto_forward_status(symbol=symbol)
+
+
+def _maybe_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def mt5_account_sync(payload: dict[str, Any] | None, *, memory: MemoryStore | None = None) -> dict[str, Any]:

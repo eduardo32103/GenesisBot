@@ -969,6 +969,30 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_shadow_trade_history_is_read_only_and_splits_open_closed(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_shadow_trades": [
+                    {"shadow_trade_id": "open-1", "symbol": "XAUUSD", "timeframe": "M15", "status": "open"},
+                    {"shadow_trade_id": "closed-1", "symbol": "XAUUSD", "timeframe": "M15", "status": "closed", "closed_at": "2026-06-16T09:30:00+00:00", "pnl": 1.5},
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="XAUUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertEqual(result["open_count"], 1)
+        self.assertEqual(result["closed_count"], 1)
+        self.assertEqual(result["closed_trades"][0]["shadow_trade_id"], "closed-1")
+        self.assertEqual(client.inserted, [])
+        self.assertEqual(client.upserted, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_recent_events_returns_empty_safe_summary_during_db_backoff(self) -> None:
         client = _FakeClient(selected={"mt5_decision_events": [{"symbol": "BTCUSD"}]})
         store = MT5PersistentIntelligenceStore(client=client)

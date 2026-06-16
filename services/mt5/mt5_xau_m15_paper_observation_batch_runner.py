@@ -8,7 +8,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from services.mt5.mt5_bridge import mt5_shadow_trades_open, mt5_xau_m15_paper_observation_readiness
+from services.mt5.mt5_bridge import mt5_shadow_trades_history, mt5_shadow_trades_open, mt5_xau_m15_paper_observation_readiness
 from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_status
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     BROKER_SYMBOL,
@@ -21,6 +21,7 @@ from services.mt5.mt5_xau_m15_paper_shadow_monitor import run_xau_m15_paper_shad
 
 
 RUNNER_VERSION = "2026-06-16.xau_m15_paper_observation_batch_runner.v1"
+STATE_SCHEMA_VERSION = "2026-06-16.xau_m15_paper_batch_state.v2"
 DEFAULT_STATE_FILE = Path("data/research_outputs/xau_m15_paper_batch_state.json")
 DEFAULT_RESULTS_FILE = Path("data/research_outputs/xau_m15_paper_batch_results.json")
 ALLOWED_CLOSE_REASONS = {
@@ -29,6 +30,9 @@ ALLOWED_CLOSE_REASONS = {
     "trailing_defensive_exit",
     "critical_safety_exit",
     "safety_exit",
+    "paper_timebox_exit",
+    "paper_stagnation_exit",
+    "paper_fast_trailing_exit",
 }
 
 
@@ -41,11 +45,30 @@ class LocalPaperObservationClient:
     def open_shadow_trades(self) -> dict[str, Any]:
         return mt5_shadow_trades_open(symbol=SYMBOL, limit=10)
 
+    def shadow_trade_history(self) -> dict[str, Any]:
+        return mt5_shadow_trades_history(symbol=SYMBOL, timeframe=TIMEFRAME, limit=20)
+
     def readiness(self) -> dict[str, Any]:
         return mt5_xau_m15_paper_observation_readiness()
 
-    def monitor(self, *, apply_paper_close: bool = False) -> dict[str, Any]:
-        return run_xau_m15_paper_shadow_monitor(apply_paper_close=apply_paper_close)
+    def monitor(
+        self,
+        *,
+        apply_paper_close: bool = False,
+        exit_policy: str = "default",
+        time_stop_bars: int = 2,
+        max_hold_minutes: float | None = None,
+        min_r_to_arm_trailing: float = 0.25,
+        giveback_r: float = 0.15,
+    ) -> dict[str, Any]:
+        return run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=apply_paper_close,
+            exit_policy=exit_policy,
+            time_stop_bars=time_stop_bars,
+            max_hold_minutes=max_hold_minutes,
+            min_r_to_arm_trailing=min_r_to_arm_trailing,
+            giveback_r=giveback_r,
+        )
 
     def open_shadow_once(self) -> dict[str, Any]:
         return run_xau_m15_paper_observation_shadow_once(
@@ -70,12 +93,34 @@ class HttpPaperObservationClient:
     def open_shadow_trades(self) -> dict[str, Any]:
         return self._get(f"/api/genesis/mt5/shadow-trades/open?{urlencode({'symbol': SYMBOL})}")
 
+    def shadow_trade_history(self) -> dict[str, Any]:
+        return self._get(f"/api/genesis/mt5/shadow-trades/history?{urlencode({'symbol': SYMBOL, 'timeframe': TIMEFRAME, 'limit': 20})}")
+
     def readiness(self) -> dict[str, Any]:
         return self._get("/api/genesis/mt5/xau-m15/paper-observation/readiness")
 
-    def monitor(self, *, apply_paper_close: bool = False) -> dict[str, Any]:
-        if apply_paper_close:
-            return self._post("/api/genesis/mt5/xau-m15/paper-shadow/monitor", {"apply_paper_close": True})
+    def monitor(
+        self,
+        *,
+        apply_paper_close: bool = False,
+        exit_policy: str = "default",
+        time_stop_bars: int = 2,
+        max_hold_minutes: float | None = None,
+        min_r_to_arm_trailing: float = 0.25,
+        giveback_r: float = 0.15,
+    ) -> dict[str, Any]:
+        policy = _exit_policy(exit_policy)
+        if apply_paper_close or policy != "default":
+            body = {
+                "apply_paper_close": bool(apply_paper_close),
+                "exit_policy": policy,
+                "time_stop_bars": int(time_stop_bars or 0),
+                "min_r_to_arm_trailing": float(min_r_to_arm_trailing or 0.0),
+                "giveback_r": float(giveback_r or 0.0),
+            }
+            if max_hold_minutes is not None:
+                body["max_hold_minutes"] = float(max_hold_minutes)
+            return self._post("/api/genesis/mt5/xau-m15/paper-shadow/monitor", body)
         return self._get("/api/genesis/mt5/xau-m15/paper-shadow/monitor")
 
     def open_shadow_once(self) -> dict[str, Any]:
@@ -121,6 +166,11 @@ def run_xau_m15_paper_observation_batch_runner(
     dry_run: bool = True,
     paper_only_confirmed: bool = False,
     once: bool = False,
+    exit_policy: str = "default",
+    time_stop_bars: int = 2,
+    max_hold_minutes: float | None = None,
+    min_r_to_arm_trailing: float = 0.25,
+    giveback_r: float = 0.15,
     state_file: str | Path | None = DEFAULT_STATE_FILE,
     results_file: str | Path | None = DEFAULT_RESULTS_FILE,
     sleep_fn: Callable[[float], None] | None = None,
@@ -152,6 +202,11 @@ def run_xau_m15_paper_observation_batch_runner(
             target_trades=target_trades,
             dry_run=dry_run,
             paper_only_confirmed=paper_only_confirmed,
+            exit_policy=exit_policy,
+            time_stop_bars=time_stop_bars,
+            max_hold_minutes=max_hold_minutes,
+            min_r_to_arm_trailing=min_r_to_arm_trailing,
+            giveback_r=giveback_r,
         )
         cycle_outputs.append(step)
         _merge_step_state(state, step)
@@ -171,14 +226,30 @@ def run_xau_m15_paper_observation_batch_runner(
     final = cycle_outputs[-1]
     stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=cycle_outputs)
     if not dry_run:
-        _write_json(state_path, _public_state(state, stats))
-        _write_json(results_path, {"runner_version": RUNNER_VERSION, "trades": trades, "stats": stats, "updated_at": _now(), **_safety()})
+        _write_json(state_path, _public_state(state, stats, trades))
+        _write_json(
+            results_path,
+            {
+                "schema_version": STATE_SCHEMA_VERSION,
+                "runner_version": RUNNER_VERSION,
+                "trades": trades,
+                "batch_stats": stats,
+                "stats": stats,
+                "updated_at": _now(),
+                **_safety(),
+            },
+        )
 
     return {
         "ok": True,
         "status": "xau_m15_paper_observation_batch_runner_ready",
         "runner_version": RUNNER_VERSION,
         "mode": "dry_run" if dry_run else "paper_only_confirmed" if paper_only_confirmed else "blocked_missing_confirmation",
+        "exit_policy": _exit_policy(exit_policy),
+        "time_stop_bars": int(time_stop_bars or 0),
+        "max_hold_minutes": max_hold_minutes,
+        "min_r_to_arm_trailing": float(min_r_to_arm_trailing or 0.0),
+        "giveback_r": float(giveback_r or 0.0),
         "client_source": getattr(active_client, "source", "injected"),
         "symbol": SYMBOL,
         "broker_symbol": BROKER_SYMBOL,
@@ -211,6 +282,11 @@ def run_xau_m15_paper_observation_batch_step(
     target_trades: int,
     dry_run: bool,
     paper_only_confirmed: bool,
+    exit_policy: str = "default",
+    time_stop_bars: int = 2,
+    max_hold_minutes: float | None = None,
+    min_r_to_arm_trailing: float = 0.25,
+    giveback_r: float = 0.15,
 ) -> dict[str, Any]:
     stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=[])
     if int(stats.get("trades_closed") or 0) >= int(target_trades or 0) > 0:
@@ -219,7 +295,15 @@ def run_xau_m15_paper_observation_batch_step(
     db = _safe_call(client.persistent_status)
     open_payload = _safe_call(client.open_shadow_trades)
     readiness = _safe_call(client.readiness)
-    monitor = _safe_call(client.monitor, apply_paper_close=False)
+    monitor = _safe_call(
+        client.monitor,
+        apply_paper_close=False,
+        exit_policy=exit_policy,
+        time_stop_bars=time_stop_bars,
+        max_hold_minutes=max_hold_minutes,
+        min_r_to_arm_trailing=min_r_to_arm_trailing,
+        giveback_r=giveback_r,
+    )
     payloads = [db, open_payload, readiness, monitor]
     if _unsafe_payload(payloads):
         return _result(
@@ -267,6 +351,77 @@ def run_xau_m15_paper_observation_batch_step(
             terminal=True,
         )
 
+    pending_id = _pending_reconciliation_shadow_id(state, trades, stats)
+    if pending_id:
+        if open_count == 1 and current_shadow_id and current_shadow_id != pending_id:
+            return _result(
+                "stopped_by_duplicate_shadow",
+                cycle_number,
+                stats,
+                db_state=_public_db(db),
+                readiness=readiness,
+                open_payload=open_payload,
+                monitor=monitor,
+                open_shadow_count=open_count,
+                current_shadow_id=current_shadow_id,
+                stop_reason="pending_reconciliation_shadow_mismatch",
+                anomaly_type="pending_reconciliation_shadow_mismatch",
+                orphan_shadow_trade_id=pending_id,
+                terminal=True,
+            )
+        if open_count == 0:
+            history = _safe_call(client.shadow_trade_history)
+            if _unsafe_payload([history]):
+                return _result(
+                    "stopped_by_safety",
+                    cycle_number,
+                    stats,
+                    db_state=_public_db(db),
+                    readiness=readiness,
+                    open_payload=open_payload,
+                    monitor=monitor,
+                    history=history,
+                    stop_reason="history_safety_flag_detected",
+                    terminal=True,
+                )
+            closed = _find_closed_shadow_trade(history, pending_id)
+            if closed:
+                imported = _closed_trade_from_history(closed)
+                stats_after = compute_xau_m15_paper_batch_stats([*trades, imported], state={**state, "current_open_shadow_id": ""}, cycle_outputs=[])
+                return _result(
+                    "reconciled_closed_shadow",
+                    cycle_number,
+                    stats_after,
+                    db_state=_public_db(db),
+                    readiness=readiness,
+                    open_payload=open_payload,
+                    monitor=monitor,
+                    history=history,
+                    open_shadow_count=0,
+                    current_shadow_id="",
+                    closed_trade=imported,
+                    reconciled_shadow_trade_id=pending_id,
+                    next_action="recheck_gates_for_next_shadow",
+                )
+            return _result(
+                "stopped_by_orphaned_shadow_missing_close_record",
+                cycle_number,
+                stats,
+                db_state=_public_db(db),
+                readiness=readiness,
+                open_payload=open_payload,
+                monitor=monitor,
+                history=history,
+                open_shadow_count=0,
+                current_shadow_id="",
+                stop_reason="opened_shadow_missing_close_record",
+                anomaly="opened_shadow_missing_close_record",
+                anomaly_type="opened_shadow_missing_close_record",
+                orphan_shadow_trade_id=pending_id,
+                next_action="inspect_shadow_lifecycle_before_next_open",
+                terminal=True,
+            )
+
     if open_count == 1:
         return _handle_existing_shadow(
             client=client,
@@ -279,6 +434,11 @@ def run_xau_m15_paper_observation_batch_step(
             current_shadow_id=current_shadow_id,
             dry_run=dry_run,
             paper_only_confirmed=paper_only_confirmed,
+            exit_policy=exit_policy,
+            time_stop_bars=time_stop_bars,
+            max_hold_minutes=max_hold_minutes,
+            min_r_to_arm_trailing=min_r_to_arm_trailing,
+            giveback_r=giveback_r,
         )
 
     orphan = _orphan_reason(state, open_payload, monitor)
@@ -371,6 +531,11 @@ def _handle_existing_shadow(
     current_shadow_id: str,
     dry_run: bool,
     paper_only_confirmed: bool,
+    exit_policy: str = "default",
+    time_stop_bars: int = 2,
+    max_hold_minutes: float | None = None,
+    min_r_to_arm_trailing: float = 0.25,
+    giveback_r: float = 0.15,
 ) -> dict[str, Any]:
     should_watch = bool(monitor.get("should_watch_only")) or str(monitor.get("safety_exit_category") or "") in {"entry_block_only", "caution_watch"}
     should_close = bool(monitor.get("should_close_paper"))
@@ -417,7 +582,15 @@ def _handle_existing_shadow(
             current_shadow_id=current_shadow_id,
             next_action="would_close_paper_shadow_after_confirmation",
         )
-    close_result = _safe_call(client.monitor, apply_paper_close=True)
+    close_result = _safe_call(
+        client.monitor,
+        apply_paper_close=True,
+        exit_policy=exit_policy,
+        time_stop_bars=time_stop_bars,
+        max_hold_minutes=max_hold_minutes,
+        min_r_to_arm_trailing=min_r_to_arm_trailing,
+        giveback_r=giveback_r,
+    )
     if _unsafe_payload([close_result]):
         return _result("stopped_by_safety", cycle_number, stats, stop_reason="close_shadow_safety_flag_detected", terminal=True, monitor=close_result)
     applied = bool(close_result.get("paper_close_applied"))
@@ -496,6 +669,7 @@ def _result(
     readiness: dict[str, Any] | None = None,
     open_payload: dict[str, Any] | None = None,
     monitor: dict[str, Any] | None = None,
+    history: dict[str, Any] | None = None,
     open_result: dict[str, Any] | None = None,
     open_shadow_count: int | None = None,
     current_shadow_id: str = "",
@@ -504,6 +678,9 @@ def _result(
     closed_trade: dict[str, Any] | None = None,
     stop_reason: str = "",
     anomaly: str = "",
+    anomaly_type: str = "",
+    orphan_shadow_trade_id: str = "",
+    reconciled_shadow_trade_id: str = "",
     next_action: str = "",
     terminal: bool = False,
     watch_only_cycle: bool = False,
@@ -531,11 +708,15 @@ def _result(
         "readiness": ready,
         "open_shadow_payload": open_payload or {},
         "monitor": mon,
+        "history": history or {},
         "open_result": open_result or {},
         "closed_trade": closed_trade or {},
         "batch_stats": batch_stats,
         "stop_reason": stop_reason,
         "anomaly": anomaly,
+        "anomaly_type": anomaly_type,
+        "orphan_shadow_trade_id": orphan_shadow_trade_id,
+        "reconciled_shadow_trade_id": reconciled_shadow_trade_id,
         "terminal": bool(terminal),
         "watch_only_cycle": bool(watch_only_cycle),
         "no_action_cycle": bool(no_action_cycle),
@@ -596,6 +777,62 @@ def _orphan_reason(state: dict[str, Any], open_payload: dict[str, Any], monitor:
     if _open_count(open_payload) == 0 and _open_count(monitor) == 0:
         return "orphaned_or_runtime_lost"
     return ""
+
+
+def _pending_reconciliation_shadow_id(state: dict[str, Any], trades: list[dict[str, Any]], stats: dict[str, Any]) -> str:
+    current = str(state.get("current_open_shadow_id") or state.get("pending_reconciliation_shadow_id") or "").strip()
+    if current:
+        return current
+    opened = int(_num(state.get("trades_opened")) or _num(stats.get("trades_opened")) or 0)
+    closed = len({str(trade.get("shadow_trade_id") or "") for trade in trades if trade.get("shadow_trade_id") and (trade.get("exit_reason") or str(trade.get("status") or "").casefold() == "closed")})
+    if opened > closed:
+        return str(state.get("last_shadow_trade_id") or "").strip()
+    return ""
+
+
+def _find_closed_shadow_trade(history: dict[str, Any], shadow_trade_id: str) -> dict[str, Any]:
+    rows: list[Any] = []
+    for key in ("closed_trades", "trades", "items"):
+        value = history.get(key)
+        if isinstance(value, list):
+            rows.extend(value)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("shadow_trade_id") or "") != str(shadow_trade_id or ""):
+            continue
+        if str(row.get("status") or "").casefold() == "closed" or bool(row.get("closed_at")):
+            return dict(row)
+    return {}
+
+
+def _closed_trade_from_history(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "shadow_trade_id": row.get("shadow_trade_id") or "",
+        "symbol": row.get("symbol") or SYMBOL,
+        "broker_symbol": row.get("broker_symbol") or BROKER_SYMBOL,
+        "timeframe": row.get("timeframe") or TIMEFRAME,
+        "strategy_profile": row.get("strategy_profile") or row.get("profile") or CANDIDATE_PROFILE,
+        "side": row.get("side") or "",
+        "entry_price": _num(row.get("entry_price")) or 0.0,
+        "exit_price": _num(row.get("exit_price")) or 0.0,
+        "last_price": _num(row.get("exit_price")) or 0.0,
+        "stop_loss": _num(row.get("stop_loss")) or 0.0,
+        "take_profit": _num(row.get("take_profit")) or 0.0,
+        "pnl": _num(row.get("pnl")) or 0.0,
+        "pnl_pct": _num(row.get("pnl_pct")) or 0.0,
+        "r_multiple": _num(row.get("r_multiple")) or 0.0,
+        "opened_at": row.get("opened_at") or "",
+        "closed_at": row.get("closed_at") or _now(),
+        "age_minutes": _num(row.get("age_minutes")) or 0.0,
+        "bars_since_entry": int(_num(row.get("bars_since_entry")) or 0),
+        "exit_reason": row.get("exit_reason") or "persisted_close",
+        "safety_exit_category": row.get("safety_exit_category") or "",
+        "safety_exit_reason_detail": row.get("safety_exit_reason_detail") or "",
+        "close_decision_reason": row.get("close_decision_reason") or "imported_from_shadow_trade_history",
+        "status": "closed",
+        **_safety(),
+    }
 
 
 def _unsafe_payload(payloads: list[dict[str, Any]]) -> bool:
@@ -663,6 +900,7 @@ def _closed_trade_from_monitor(monitor: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_step_state(state: dict[str, Any], step: dict[str, Any]) -> None:
+    state["schema_version"] = STATE_SCHEMA_VERSION
     state["runner_version"] = RUNNER_VERSION
     state["updated_at"] = _now()
     state["cycles_completed"] = int(_num(state.get("cycles_completed")) or 0) + 1
@@ -672,8 +910,16 @@ def _merge_step_state(state: dict[str, Any], step: dict[str, Any]) -> None:
         state["last_shadow_trade_id"] = step.get("shadow_trade_id") or ""
     if step.get("paper_close_applied"):
         state["current_open_shadow_id"] = ""
+        state["pending_reconciliation_shadow_id"] = ""
         if step.get("shadow_trade_id"):
             state["last_shadow_trade_id"] = step.get("shadow_trade_id")
+    if step.get("runner_state") == "reconciled_closed_shadow":
+        state["current_open_shadow_id"] = ""
+        state["pending_reconciliation_shadow_id"] = ""
+        if step.get("reconciled_shadow_trade_id"):
+            state["last_shadow_trade_id"] = step.get("reconciled_shadow_trade_id")
+    if step.get("runner_state") == "stopped_by_orphaned_shadow_missing_close_record":
+        state["pending_reconciliation_shadow_id"] = step.get("orphan_shadow_trade_id") or state.get("current_open_shadow_id") or ""
     for key in ("watch_only_cycles", "no_action_cycles", "blocked_cycles"):
         if step.get(key[:-1] if key.endswith("s") else key):
             state[key] = int(_num(state.get(key)) or 0) + 1
@@ -683,8 +929,19 @@ def _merge_step_state(state: dict[str, Any], step: dict[str, Any]) -> None:
             anomalies.append({"at": _now(), "reason": step.get("anomaly"), "shadow_trade_id": state.get("current_open_shadow_id") or ""})
 
 
-def _public_state(state: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
-    return {**state, "stats": stats, "candidate_activated": False, "paper_forward_onboarding_started": False, **_safety()}
+def _public_state(state: dict[str, Any], stats: dict[str, Any], trades: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {
+        **state,
+        "schema_version": STATE_SCHEMA_VERSION,
+        "pending_reconciliation_shadow_id": state.get("pending_reconciliation_shadow_id") or "",
+        "anomalies": state.get("anomalies") if isinstance(state.get("anomalies"), list) else [],
+        "trades": trades or [],
+        "batch_stats": stats,
+        "stats": stats,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        **_safety(),
+    }
 
 
 def _load_state(path: Path | None) -> dict[str, Any]:
@@ -784,6 +1041,11 @@ def _num(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _exit_policy(value: object) -> str:
+    clean = str(value or "default").casefold().strip()
+    return "fast_observation" if clean == "fast_observation" else "default"
 
 
 def _now() -> str:

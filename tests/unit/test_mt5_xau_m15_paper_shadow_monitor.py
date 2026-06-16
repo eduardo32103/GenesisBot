@@ -282,6 +282,53 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_fast_observation_timebox_closes_paper_only_shadow(self) -> None:
+        _seed_runtime(price=100.0)
+        trade = _shadow(entry=100.0, stop=95.0, target=110.0)
+        trade["opened_at"] = (datetime.now(timezone.utc) - timedelta(minutes=75)).isoformat()
+        update_open_shadow_trade("XAUUSD", trade, timeframe="M15")
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            exit_policy="fast_observation",
+            time_stop_bars=2,
+            db_state=_db(),
+            risk_state=_risk(),
+            persist_events=False,
+        )
+
+        self.assertEqual(result["monitor_state"], "exit_applied")
+        self.assertTrue(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "paper_timebox_exit")
+        self.assertTrue(result["paper_close_applied"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_fast_observation_giveback_closes_paper_only_shadow(self) -> None:
+        _seed_runtime(price=101.0)
+        trade = _shadow(entry=100.0, stop=95.0, target=110.0)
+        trade["max_favorable_excursion"] = 3.0
+        update_open_shadow_trade("XAUUSD", trade, timeframe="M15")
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            exit_policy="fast_observation",
+            min_r_to_arm_trailing=0.25,
+            giveback_r=0.15,
+            db_state=_db(),
+            risk_state=_risk(),
+            persist_events=False,
+        )
+
+        self.assertEqual(result["monitor_state"], "exit_applied")
+        self.assertTrue(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "paper_fast_trailing_exit")
+        self.assertTrue(result["paper_close_applied"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_monitor_service_adds_no_forbidden_execution_reference(self) -> None:
         service_text = Path("services/mt5/mt5_xau_m15_paper_shadow_monitor.py").read_text(encoding="utf-8")
         self.assertNotIn("order_send", service_text)

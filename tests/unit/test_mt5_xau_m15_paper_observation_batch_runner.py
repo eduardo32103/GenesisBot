@@ -157,7 +157,8 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
             paper_only_confirmed=True,
         )
 
-        self.assertEqual(result["anomaly"], "orphaned_or_runtime_lost")
+        self.assertEqual(result["anomaly"], "opened_shadow_missing_close_record")
+        self.assertEqual(result["anomaly_type"], "opened_shadow_missing_close_record")
         self.assertEqual(result["closed_trade"], {})
         self.assertEqual(client.open_calls, 0)
 
@@ -235,8 +236,121 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["runner_state"], "stopped_by_target_trades")
         self.assertEqual(client.open_calls, 0)
 
+    def test_pending_state_live_open_same_id_monitors_existing(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_open())
+        state = {"current_open_shadow_id": "existing-shadow", "trades_opened": 1}
 
-def _step(client: "_FakeClient", *, dry_run: bool = False, paper_only_confirmed: bool = False) -> dict[str, object]:
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=[],
+            cycle_number=1,
+            target_trades=20,
+            dry_run=False,
+            paper_only_confirmed=True,
+        )
+
+        self.assertEqual(result["runner_state"], "shadow_open_monitoring")
+        self.assertEqual(client.open_calls, 0)
+
+    def test_pending_state_open_count_zero_history_closed_imports_result(self) -> None:
+        closed = _history_closed("pending-shadow", pnl=8.0, r=0.8)
+        client = _FakeClient(history=[closed])
+        state = {"current_open_shadow_id": "pending-shadow", "last_shadow_trade_id": "pending-shadow", "trades_opened": 1}
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=[],
+            cycle_number=1,
+            target_trades=20,
+            dry_run=False,
+            paper_only_confirmed=True,
+        )
+
+        self.assertEqual(result["runner_state"], "reconciled_closed_shadow")
+        self.assertEqual(result["reconciled_shadow_trade_id"], "pending-shadow")
+        self.assertEqual(result["closed_trade"]["pnl"], 8.0)
+        self.assertEqual(result["batch_stats"]["trades_closed"], 1)
+        self.assertEqual(result["batch_stats"]["wins"], 1)
+        self.assertEqual(client.open_calls, 0)
+
+    def test_pending_state_open_count_zero_history_missing_stops_orphan(self) -> None:
+        client = _FakeClient(history=[])
+        state = {"current_open_shadow_id": "missing-shadow", "last_shadow_trade_id": "missing-shadow", "trades_opened": 1}
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=[],
+            cycle_number=1,
+            target_trades=20,
+            dry_run=False,
+            paper_only_confirmed=True,
+        )
+
+        self.assertEqual(result["runner_state"], "stopped_by_orphaned_shadow_missing_close_record")
+        self.assertEqual(result["anomaly_type"], "opened_shadow_missing_close_record")
+        self.assertEqual(result["orphan_shadow_trade_id"], "missing-shadow")
+        self.assertEqual(result["closed_trade"], {})
+        self.assertEqual(client.open_calls, 0)
+
+    def test_no_new_shadow_opened_while_pending_reconciliation_exists(self) -> None:
+        client = _FakeClient(history=[])
+        state = {"pending_reconciliation_shadow_id": "pending-shadow", "trades_opened": 1}
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=[],
+            cycle_number=1,
+            target_trades=20,
+            dry_run=False,
+            paper_only_confirmed=True,
+        )
+
+        self.assertEqual(result["runner_state"], "stopped_by_orphaned_shadow_missing_close_record")
+        self.assertEqual(client.open_calls, 0)
+
+    def test_fast_observation_closes_timebox_exit(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_close("paper_timebox_exit", pnl=0.2, r=0.02, bars_since_entry=2))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, exit_policy="fast_observation", time_stop_bars=2)
+
+        self.assertEqual(result["runner_state"], "close_applied")
+        self.assertEqual(result["closed_trade"]["exit_reason"], "paper_timebox_exit")
+        self.assertEqual(client.close_calls, 1)
+
+    def test_fast_observation_closes_fast_trailing_exit(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_close("paper_fast_trailing_exit", pnl=2.0, r=0.2))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, exit_policy="fast_observation")
+
+        self.assertEqual(result["runner_state"], "close_applied")
+        self.assertEqual(result["closed_trade"]["exit_reason"], "paper_fast_trailing_exit")
+        self.assertEqual(client.close_calls, 1)
+
+    def test_history_endpoint_payload_is_read_only(self) -> None:
+        client = _FakeClient(history=[_history_closed("closed-shadow", pnl=2.0, r=0.2)])
+
+        history = client.shadow_trade_history()
+
+        self.assertTrue(history["ok"])
+        self.assertTrue(history["status_endpoints_write_free"])
+        self.assertEqual(history["closed_count"], 1)
+        self.assertFalse(history["broker_touched"])
+        self.assertFalse(history["order_executed"])
+        self.assertEqual(history["order_policy"], "journal_only_no_broker")
+
+
+def _step(
+    client: "_FakeClient",
+    *,
+    dry_run: bool = False,
+    paper_only_confirmed: bool = False,
+    exit_policy: str = "default",
+    time_stop_bars: int = 2,
+) -> dict[str, object]:
     return run_xau_m15_paper_observation_batch_step(
         client=client,
         state={},
@@ -245,6 +359,8 @@ def _step(client: "_FakeClient", *, dry_run: bool = False, paper_only_confirmed:
         target_trades=20,
         dry_run=dry_run,
         paper_only_confirmed=paper_only_confirmed,
+        exit_policy=exit_policy,
+        time_stop_bars=time_stop_bars,
     )
 
 
@@ -258,11 +374,13 @@ class _FakeClient:
         readiness: dict[str, object] | None = None,
         open_count: int = 0,
         monitor: dict[str, object] | None = None,
+        history: list[dict[str, object]] | None = None,
     ) -> None:
         self.db = db or _db()
         self.ready = readiness or _ready()
         self.open_count = open_count
         self.monitor_payload = monitor or _monitor_none()
+        self.history_rows = [dict(row) for row in (history or [])]
         self.open_calls = 0
         self.close_calls = 0
 
@@ -275,10 +393,35 @@ class _FakeClient:
             trades.append({"shadow_trade_id": "existing-shadow-2", "symbol": "XAUUSD", "timeframe": "M15"})
         return {"ok": True, "open_count": self.open_count, "trades": trades, **_safety()}
 
+    def shadow_trade_history(self) -> dict[str, object]:
+        open_rows = [row for row in self.history_rows if row.get("status") == "open"]
+        closed_rows = [row for row in self.history_rows if row.get("status") == "closed" or row.get("closed_at")]
+        return {
+            "ok": True,
+            "status": "persistent_intelligence_shadow_trade_history_ready",
+            "status_endpoints_write_free": True,
+            "trades": [dict(row) for row in self.history_rows],
+            "open_trades": [dict(row) for row in open_rows],
+            "closed_trades": [dict(row) for row in closed_rows],
+            "open_count": len(open_rows),
+            "closed_count": len(closed_rows),
+            **_safety(),
+        }
+
     def readiness(self) -> dict[str, object]:
         return dict(self.ready)
 
-    def monitor(self, *, apply_paper_close: bool = False) -> dict[str, object]:
+    def monitor(
+        self,
+        *,
+        apply_paper_close: bool = False,
+        exit_policy: str = "default",
+        time_stop_bars: int = 2,
+        max_hold_minutes: float | None = None,
+        min_r_to_arm_trailing: float = 0.25,
+        giveback_r: float = 0.15,
+    ) -> dict[str, object]:
+        del exit_policy, time_stop_bars, max_hold_minutes, min_r_to_arm_trailing, giveback_r
         if apply_paper_close:
             self.close_calls += 1
             self.open_count = 0
@@ -364,7 +507,7 @@ def _monitor_open(*, category: str = "none", should_watch: bool = False, risk_bl
     }
 
 
-def _monitor_close(exit_reason: str, *, pnl: float, r: float, category: str = "none") -> dict[str, object]:
+def _monitor_close(exit_reason: str, *, pnl: float, r: float, category: str = "none", bars_since_entry: int = 2) -> dict[str, object]:
     return {
         "ok": True,
         "monitor_state": "exit_pending",
@@ -379,7 +522,7 @@ def _monitor_close(exit_reason: str, *, pnl: float, r: float, category: str = "n
         "unrealized_pnl_pct": pnl,
         "r_multiple": r,
         "age_minutes": 20,
-        "bars_since_entry": 2,
+        "bars_since_entry": bars_since_entry,
         "exit_signal": True,
         "exit_reason": exit_reason,
         "should_close_paper": True,
@@ -388,6 +531,27 @@ def _monitor_close(exit_reason: str, *, pnl: float, r: float, category: str = "n
         "safety_exit_reason_detail": "unit_test",
         "close_decision_reason": f"close_paper:{exit_reason}",
         "paper_close_applied": False,
+        **_safety(),
+    }
+
+
+def _history_closed(shadow_trade_id: str, *, pnl: float, r: float) -> dict[str, object]:
+    return {
+        "shadow_trade_id": shadow_trade_id,
+        "symbol": "XAUUSD",
+        "broker_symbol": "XAUUSD.b",
+        "timeframe": "M15",
+        "strategy_profile": "volatility_compression_breakout|mode=nr7_trailing_defensive",
+        "side": "buy",
+        "entry_price": 100.0,
+        "exit_price": 100.0 + pnl,
+        "pnl": pnl,
+        "pnl_pct": pnl,
+        "r_multiple": r,
+        "status": "closed",
+        "opened_at": "2026-06-16T09:00:00+00:00",
+        "closed_at": "2026-06-16T09:30:00+00:00",
+        "exit_reason": "take_profit_hit" if pnl > 0 else "stop_loss_hit",
         **_safety(),
     }
 

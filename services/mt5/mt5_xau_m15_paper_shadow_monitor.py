@@ -17,6 +17,11 @@ DB_QUEUE_DEPTH_LIMIT = 3
 def run_xau_m15_paper_shadow_monitor(
     *,
     apply_paper_close: bool = False,
+    exit_policy: str = "default",
+    time_stop_bars: int = 2,
+    max_hold_minutes: float | None = None,
+    min_r_to_arm_trailing: float = 0.25,
+    giveback_r: float = 0.15,
     store: MT5PersistentIntelligenceStore | Any | None = None,
     runtime_snapshot: dict[str, Any] | None = None,
     db_state: dict[str, Any] | None = None,
@@ -93,6 +98,11 @@ def run_xau_m15_paper_shadow_monitor(
         trade=open_trade,
         metrics=metrics,
         safety_analysis=safety_analysis,
+        exit_policy=exit_policy,
+        time_stop_bars=time_stop_bars,
+        max_hold_minutes=max_hold_minutes,
+        min_r_to_arm_trailing=min_r_to_arm_trailing,
+        giveback_r=giveback_r,
     )
     updated_trade = _updated_trade(open_trade, metrics, exit_reason if exit_signal else "")
     paper_close_applied = False
@@ -100,7 +110,7 @@ def run_xau_m15_paper_shadow_monitor(
     persist_result: dict[str, Any] = {"ok": True, "skipped": True}
 
     if apply_paper_close and exit_signal and not apply_blocked:
-        closed = _closed_trade(updated_trade, metrics, exit_reason)
+        closed = _closed_trade(updated_trade, metrics, exit_reason, safety_analysis)
         update_open_shadow_trade(SYMBOL, None, timeframe=TIMEFRAME)
         append_closed_shadow_trade(SYMBOL, closed, timeframe=TIMEFRAME)
         paper_close_applied = True
@@ -143,6 +153,11 @@ def run_xau_m15_paper_shadow_monitor(
         "adaptive_state": adaptive,
         "risk_state": risk,
         "apply_paper_close_requested": bool(apply_paper_close),
+        "exit_policy": _exit_policy(exit_policy),
+        "time_stop_bars": int(_number(time_stop_bars) or 0),
+        "max_hold_minutes": _number(max_hold_minutes),
+        "min_r_to_arm_trailing": _number(min_r_to_arm_trailing) or 0.0,
+        "giveback_r": _number(giveback_r) or 0.0,
         "apply_blocked": bool(apply_blocked),
         "persist_result": persist_result,
     }
@@ -325,6 +340,11 @@ def _exit_decision(
     trade: dict[str, Any],
     metrics: dict[str, Any],
     safety_analysis: dict[str, Any],
+    exit_policy: str = "default",
+    time_stop_bars: int = 2,
+    max_hold_minutes: float | None = None,
+    min_r_to_arm_trailing: float = 0.25,
+    giveback_r: float = 0.15,
 ) -> tuple[bool, str, bool]:
     side = metrics["side"]
     price = float(metrics["current_price"])
@@ -347,9 +367,47 @@ def _exit_decision(
         if not metrics.get("current_price"):
             return True, "safety_exit", True
         return True, "safety_exit", False
+    if _exit_policy(exit_policy) == "fast_observation":
+        fast_reason = _fast_observation_exit_reason(
+            trade=trade,
+            metrics=metrics,
+            time_stop_bars=time_stop_bars,
+            max_hold_minutes=max_hold_minutes,
+            min_r_to_arm_trailing=min_r_to_arm_trailing,
+            giveback_r=giveback_r,
+        )
+        if fast_reason:
+            return True, fast_reason, False
     if safety_analysis.get("should_watch_only"):
         return False, "caution_watch", False
     return False, "", False
+
+
+def _fast_observation_exit_reason(
+    *,
+    trade: dict[str, Any],
+    metrics: dict[str, Any],
+    time_stop_bars: int,
+    max_hold_minutes: float | None,
+    min_r_to_arm_trailing: float,
+    giveback_r: float,
+) -> str:
+    r_multiple = float(metrics.get("r_multiple") or 0.0)
+    bars_since_entry = int(_number(metrics.get("bars_since_entry")) or 0)
+    age_minutes = float(_number(metrics.get("age_minutes")) or 0.0)
+    if int(time_stop_bars or 0) > 0 and bars_since_entry >= int(time_stop_bars or 0) and r_multiple <= 0.05:
+        return "paper_timebox_exit"
+    if max_hold_minutes is not None and age_minutes >= float(max_hold_minutes) and abs(r_multiple) <= 0.05:
+        return "paper_stagnation_exit"
+    initial_risk = float(metrics.get("initial_risk") or 0.0)
+    if initial_risk <= 0:
+        return ""
+    previous_max = float(_number(trade.get("max_favorable_excursion")) or 0.0)
+    current_pnl = float(metrics.get("unrealized_pnl") or 0.0)
+    max_favorable_r = max(previous_max, current_pnl) / initial_risk
+    if max_favorable_r >= float(min_r_to_arm_trailing or 0.0) and r_multiple <= max_favorable_r - float(giveback_r or 0.0):
+        return "paper_fast_trailing_exit"
+    return ""
 
 
 def _safety_exit_analysis(
@@ -698,9 +756,10 @@ def _updated_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: 
     return updated
 
 
-def _closed_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: str) -> dict[str, Any]:
+def _closed_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: str, safety_analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     closed = _updated_trade(trade, metrics, exit_reason)
     pnl = float(metrics["unrealized_pnl"])
+    safety = safety_analysis or {}
     closed.update(
         {
             "status": "closed",
@@ -712,6 +771,11 @@ def _closed_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: s
             "pnl_pct": metrics["unrealized_pnl_pct"],
             "result": "win" if pnl > 0 else "loss" if pnl < 0 else "flat",
             "source": closed.get("source") or "paper_observation_shadow_once",
+            "age_minutes": metrics.get("age_minutes") or 0.0,
+            "bars_since_entry": metrics.get("bars_since_entry") or 0,
+            "safety_exit_category": safety.get("safety_exit_category") or "",
+            "safety_exit_reason_detail": safety.get("safety_exit_reason_detail") or "",
+            "close_decision_reason": safety.get("close_decision_reason") or f"close_paper:{exit_reason}",
             **_safety(),
         }
     )
@@ -896,6 +960,11 @@ def _symbol(value: object) -> str:
 
 def _timeframe(value: object) -> str:
     return str(value or "").upper().strip()
+
+
+def _exit_policy(value: object) -> str:
+    clean = str(value or "default").casefold().strip()
+    return "fast_observation" if clean == "fast_observation" else "default"
 
 
 def _number(value: object) -> float | None:

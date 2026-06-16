@@ -463,6 +463,47 @@ class MT5PersistentIntelligenceStore:
             **_safety(),
         }
 
+    def shadow_trade_history(self, *, symbol: str = "", timeframe: str = "", limit: int = 20) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 20), 100))
+        clean_symbol = _symbol(symbol)
+        clean_timeframe = _timeframe(timeframe)
+        params = {
+            "select": (
+                "shadow_trade_id,symbol,broker_symbol,timeframe,profile,strategy_profile,source,side,"
+                "entry_price,stop_loss,take_profit,exit_price,pnl,pnl_pct,r_multiple,status,opened_at,closed_at,exit_reason,"
+                "age_minutes,bars_since_entry,safety_exit_category,safety_exit_reason_detail,close_decision_reason,"
+                "broker_touched,order_executed,order_policy"
+            ),
+            "order": "opened_at.desc",
+            "limit": str(safe_limit),
+        }
+        if clean_symbol:
+            params["symbol"] = f"eq.{clean_symbol}"
+        if clean_timeframe:
+            params["timeframe"] = f"eq.{clean_timeframe}"
+        result = self._safe_select("mt5_shadow_trades", params=params)
+        rows = _safety_rows(result.get("rows") or [])
+        open_trades = [row for row in rows if str(row.get("status") or "").casefold() == "open" and not row.get("closed_at")]
+        closed_trades = [row for row in rows if str(row.get("status") or "").casefold() == "closed" or bool(row.get("closed_at"))]
+        return {
+            "ok": bool(result.get("ok")),
+            "status": "persistent_intelligence_shadow_trade_history_ready",
+            "provider": _client_provider(self.client),
+            "symbol": clean_symbol,
+            "timeframe": clean_timeframe,
+            "limit": safe_limit,
+            "trades": rows,
+            "open_trades": open_trades,
+            "closed_trades": closed_trades,
+            "open_count": len(open_trades),
+            "closed_count": len(closed_trades),
+            "db_degraded": bool(result.get("db_degraded")),
+            "reason": result.get("reason") or "",
+            "status_endpoints_write_free": True,
+            **_backpressure_status(self.client),
+            **_safety(),
+        }
+
     def healthcheck(self, *, write_test_event: bool = False) -> dict[str, Any]:
         env_status = _env_status(self.client)
         client_available = bool(getattr(self.client, "available", False))
@@ -735,6 +776,11 @@ class MT5PersistentIntelligenceStore:
                 "opened_at": payload.get("opened_at") or payload.get("created_at") or None,
                 "closed_at": payload.get("closed_at") or None,
                 "exit_reason": payload.get("exit_reason") or "",
+                "age_minutes": _float(payload.get("age_minutes")),
+                "bars_since_entry": _int(payload.get("bars_since_entry")),
+                "safety_exit_category": payload.get("safety_exit_category") or "",
+                "safety_exit_reason_detail": payload.get("safety_exit_reason_detail") or "",
+                "close_decision_reason": payload.get("close_decision_reason") or "",
                 "broker_touched": False,
                 "order_executed": False,
                 "order_policy": "journal_only_no_broker",
@@ -1119,6 +1165,10 @@ def compact_old_decision_events(
 
 def persistent_intelligence_recent_events(*, limit: int = 10) -> dict[str, Any]:
     return MT5PersistentIntelligenceStore().recent_events(limit=limit)
+
+
+def persistent_intelligence_shadow_trade_history(*, symbol: str = "", timeframe: str = "", limit: int = 20) -> dict[str, Any]:
+    return MT5PersistentIntelligenceStore().shadow_trade_history(symbol=symbol, timeframe=timeframe, limit=limit)
 
 
 def persist_decision_event(

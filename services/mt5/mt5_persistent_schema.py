@@ -86,6 +86,11 @@ create table if not exists public.mt5_shadow_trades (
   opened_at timestamptz,
   closed_at timestamptz,
   exit_reason text not null default '',
+  age_minutes double precision,
+  bars_since_entry integer not null default 0,
+  safety_exit_category text not null default '',
+  safety_exit_reason_detail text not null default '',
+  close_decision_reason text not null default '',
   broker_touched boolean not null default false,
   order_executed boolean not null default false,
   order_policy text not null default 'journal_only_no_broker'
@@ -96,6 +101,11 @@ alter table if exists public.mt5_shadow_trades add column if not exists strategy
 alter table if exists public.mt5_shadow_trades add column if not exists source text not null default '';
 alter table if exists public.mt5_shadow_trades add column if not exists stop_loss double precision;
 alter table if exists public.mt5_shadow_trades add column if not exists take_profit double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists age_minutes double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists bars_since_entry integer not null default 0;
+alter table if exists public.mt5_shadow_trades add column if not exists safety_exit_category text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists safety_exit_reason_detail text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists close_decision_reason text not null default '';
 
 create table if not exists public.mt5_decision_events (
   id uuid primary key default gen_random_uuid(),
