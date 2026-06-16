@@ -993,6 +993,63 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_shadow_trade_history_does_not_select_age_minutes_and_derives_age(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_shadow_trades": [
+                    {
+                        "shadow_trade_id": "closed-age",
+                        "symbol": "XAUUSD",
+                        "timeframe": "M15",
+                        "status": "closed",
+                        "opened_at": "2026-06-16T09:00:00+00:00",
+                        "closed_at": "2026-06-16T09:30:00+00:00",
+                    }
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="XAUUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["age_minutes_derived"])
+        self.assertNotIn("age_minutes", client.last_select)
+        self.assertEqual(result["closed_trades"][0]["age_minutes"], 30.0)
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["queued_writes"], 0)
+        self.assertTrue(result["status_endpoints_write_free"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_shadow_trade_history_optional_missing_column_falls_back_without_queue_or_db_degrade(self) -> None:
+        client = _OptionalColumnMissingHistoryClient(
+            missing_column="safety_exit_category",
+            selected={
+                "mt5_shadow_trades": [
+                    {"shadow_trade_id": "closed-fallback", "symbol": "XAUUSD", "timeframe": "M15", "status": "closed"}
+                ]
+            },
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="XAUUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["history_available"])
+        self.assertTrue(result["history_schema_fallback_used"])
+        self.assertIn("safety_exit_category", result["omitted_history_columns"])
+        self.assertFalse(result["db_degraded"])
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(result["queued_writes"], 0)
+        self.assertEqual(persistent_write_backpressure().status()["queue_depth"], 0)
+        self.assertEqual(client.inserted, [])
+        self.assertEqual(client.upserted, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_recent_events_returns_empty_safe_summary_during_db_backoff(self) -> None:
         client = _FakeClient(selected={"mt5_decision_events": [{"symbol": "BTCUSD"}]})
         store = MT5PersistentIntelligenceStore(client=client)
@@ -1179,6 +1236,10 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
             app["genesis_mt5_persistent_intelligence_recent_events_endpoint"],
             "/api/genesis/mt5/persistent-intelligence/recent-events?limit=10",
         )
+        self.assertEqual(
+            app["genesis_mt5_persistent_intelligence_queue_drain_endpoint"],
+            "/api/genesis/mt5/persistent-intelligence/queue-drain",
+        )
         self.assertTrue(payload["ok"])
         self.assertIn("db_available", payload)
         self.assertFalse(payload["broker_touched"])
@@ -1197,6 +1258,7 @@ class _FakeClient:
         self.upserted: list[dict[str, object]] = []
         self.checked_tables: list[str] = []
         self.select_calls = 0
+        self.last_select = ""
 
     def table_ready(self, table: str) -> bool:
         self.checked_tables.append(table)
@@ -1212,7 +1274,22 @@ class _FakeClient:
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
         self.select_calls += 1
+        self.last_select = str((params or {}).get("select") or "")
         return [dict(row) for row in self.selected.get(table, [])]
+
+
+class _OptionalColumnMissingHistoryClient(_FakeClient):
+    def __init__(self, *, missing_column: str, selected: dict[str, list[dict[str, object]]] | None = None) -> None:
+        super().__init__(selected=selected)
+        self.missing_column = missing_column
+
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        selected = str((params or {}).get("select") or "")
+        if self.missing_column in {column.strip() for column in selected.split(",")}:
+            self.select_calls += 1
+            self.last_select = selected
+            raise RuntimeError(f'ERROR: column "{self.missing_column}" does not exist')
+        return super().select(table, params=params)
 
 
 class _MissingTablesClient:

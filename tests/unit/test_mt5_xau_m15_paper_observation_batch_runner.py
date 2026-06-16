@@ -295,6 +295,35 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["closed_trade"], {})
         self.assertEqual(client.open_calls, 0)
 
+    def test_pending_state_open_count_zero_history_unavailable_stops_without_inventing_pnl(self) -> None:
+        client = _FakeClient(
+            history_payload={
+                "ok": False,
+                "history_available": False,
+                "reason": "history_schema_optional_column_missing",
+                "closed_trades": [],
+                "trades": [],
+                **_safety(),
+            }
+        )
+        state = {"current_open_shadow_id": "pending-shadow", "last_shadow_trade_id": "pending-shadow", "trades_opened": 1}
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=[],
+            cycle_number=1,
+            target_trades=20,
+            dry_run=False,
+            paper_only_confirmed=True,
+        )
+
+        self.assertEqual(result["runner_state"], "stopped_by_history_unavailable")
+        self.assertEqual(result["stop_reason"], "history_schema_optional_column_missing")
+        self.assertEqual(result["next_action"], "fix_history_before_next_open")
+        self.assertEqual(result["closed_trade"], {})
+        self.assertEqual(client.open_calls, 0)
+
     def test_no_new_shadow_opened_while_pending_reconciliation_exists(self) -> None:
         client = _FakeClient(history=[])
         state = {"pending_reconciliation_shadow_id": "pending-shadow", "trades_opened": 1}
@@ -375,12 +404,14 @@ class _FakeClient:
         open_count: int = 0,
         monitor: dict[str, object] | None = None,
         history: list[dict[str, object]] | None = None,
+        history_payload: dict[str, object] | None = None,
     ) -> None:
         self.db = db or _db()
         self.ready = readiness or _ready()
         self.open_count = open_count
         self.monitor_payload = monitor or _monitor_none()
         self.history_rows = [dict(row) for row in (history or [])]
+        self.history_payload = dict(history_payload) if history_payload is not None else None
         self.open_calls = 0
         self.close_calls = 0
 
@@ -394,6 +425,8 @@ class _FakeClient:
         return {"ok": True, "open_count": self.open_count, "trades": trades, **_safety()}
 
     def shadow_trade_history(self) -> dict[str, object]:
+        if self.history_payload is not None:
+            return dict(self.history_payload)
         open_rows = [row for row in self.history_rows if row.get("status") == "open"]
         closed_rows = [row for row in self.history_rows if row.get("status") == "closed" or row.get("closed_at")]
         return {

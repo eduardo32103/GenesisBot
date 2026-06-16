@@ -95,6 +95,7 @@ from api.routes.genesis import (
     post_genesis_mt5_account_sync,
     post_genesis_mt5_order_request,
     post_genesis_mt5_order_result,
+    post_genesis_mt5_persistent_intelligence_queue_drain,
     post_genesis_mt5_manual_tests_reset,
     post_genesis_mt5_metrics_exclude_old_proxy,
     post_genesis_mt5_learning_run,
@@ -256,6 +257,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_risk_recovery_endpoint": "/api/genesis/mt5/risk-recovery?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_persistent_intelligence_status_endpoint": "/api/genesis/mt5/persistent-intelligence/status",
         "genesis_mt5_persistent_intelligence_recent_events_endpoint": "/api/genesis/mt5/persistent-intelligence/recent-events?limit=10",
+        "genesis_mt5_persistent_intelligence_queue_drain_endpoint": "/api/genesis/mt5/persistent-intelligence/queue-drain",
         "genesis_mt5_persistent_intelligence_bootstrap_status_endpoint": "/api/genesis/mt5/persistent-intelligence/bootstrap/status",
         "genesis_mt5_persistent_db_doctor_endpoint": "/api/genesis/mt5/persistent-intelligence/db-doctor",
         "genesis_mt5_capital_protection_status_endpoint": "/api/genesis/mt5/capital-protection/status",
@@ -4175,6 +4177,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/genesis/mt5/xau-m15/paper-shadow/monitor":
             result = post_genesis_mt5_xau_m15_paper_shadow_monitor(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/persistent-intelligence/queue-drain":
+            result = post_genesis_mt5_persistent_intelligence_queue_drain(body)
             self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

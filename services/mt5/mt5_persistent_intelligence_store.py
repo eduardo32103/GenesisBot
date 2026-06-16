@@ -36,6 +36,37 @@ from services.mt5.mt5_research_rejection_registry import research_rejection_regi
 STORE_VERSION = "2026-06-10.mt5_persistent_intelligence_store.v1"
 MAX_STRING_LENGTH = 500
 MAX_JSON_BYTES = 24_000
+SHADOW_HISTORY_BASE_COLUMNS = (
+    "shadow_trade_id",
+    "symbol",
+    "timeframe",
+    "side",
+    "entry_price",
+    "status",
+    "opened_at",
+    "broker_touched",
+    "order_executed",
+    "order_policy",
+)
+SHADOW_HISTORY_OPTIONAL_COLUMNS = (
+    "broker_symbol",
+    "profile",
+    "strategy_profile",
+    "source",
+    "stop_loss",
+    "take_profit",
+    "exit_price",
+    "pnl",
+    "pnl_pct",
+    "r_multiple",
+    "closed_at",
+    "exit_reason",
+    "bars_since_entry",
+    "safety_exit_category",
+    "safety_exit_reason_detail",
+    "close_decision_reason",
+)
+SHADOW_HISTORY_COLUMNS = (*SHADOW_HISTORY_BASE_COLUMNS, *SHADOW_HISTORY_OPTIONAL_COLUMNS)
 _POSTGRES_DRIVER_NAME = "pg8000"
 _JSONB_COLUMNS = {
     "recommended_candidate",
@@ -467,38 +498,55 @@ class MT5PersistentIntelligenceStore:
         safe_limit = max(1, min(int(limit or 20), 100))
         clean_symbol = _symbol(symbol)
         clean_timeframe = _timeframe(timeframe)
-        params = {
-            "select": (
-                "shadow_trade_id,symbol,broker_symbol,timeframe,profile,strategy_profile,source,side,"
-                "entry_price,stop_loss,take_profit,exit_price,pnl,pnl_pct,r_multiple,status,opened_at,closed_at,exit_reason,"
-                "age_minutes,bars_since_entry,safety_exit_category,safety_exit_reason_detail,close_decision_reason,"
-                "broker_touched,order_executed,order_policy"
-            ),
-            "order": "opened_at.desc",
-            "limit": str(safe_limit),
-        }
+        columns = list(SHADOW_HISTORY_COLUMNS)
+        omitted_columns: list[str] = []
+        result: dict[str, Any] = {}
+        params = {"order": "opened_at.desc", "limit": str(safe_limit)}
         if clean_symbol:
             params["symbol"] = f"eq.{clean_symbol}"
         if clean_timeframe:
             params["timeframe"] = f"eq.{clean_timeframe}"
-        result = self._safe_select("mt5_shadow_trades", params=params)
-        rows = _safety_rows(result.get("rows") or [])
+
+        for _attempt in range(len(SHADOW_HISTORY_OPTIONAL_COLUMNS) + 2):
+            params["select"] = ",".join(columns)
+            result = self._safe_select("mt5_shadow_trades", params=params)
+            if result.get("ok"):
+                break
+            missing = _missing_column_from_error(result.get("reason") or "")
+            if missing and missing in columns and missing not in SHADOW_HISTORY_BASE_COLUMNS:
+                columns = [column for column in columns if column != missing]
+                omitted_columns.append(missing)
+                continue
+            if columns != list(SHADOW_HISTORY_BASE_COLUMNS):
+                omitted_columns.extend([column for column in columns if column not in SHADOW_HISTORY_BASE_COLUMNS])
+                columns = list(SHADOW_HISTORY_BASE_COLUMNS)
+                continue
+            break
+
+        rows = _normalize_shadow_history_rows(_safety_rows(result.get("rows") or []))
         open_trades = [row for row in rows if str(row.get("status") or "").casefold() == "open" and not row.get("closed_at")]
         closed_trades = [row for row in rows if str(row.get("status") or "").casefold() == "closed" or bool(row.get("closed_at"))]
+        optional_schema_issue = bool(not result.get("ok") and _missing_column_from_error(result.get("reason") or ""))
+        history_available = bool(result.get("ok"))
         return {
-            "ok": bool(result.get("ok")),
+            "ok": history_available,
             "status": "persistent_intelligence_shadow_trade_history_ready",
             "provider": _client_provider(self.client),
             "symbol": clean_symbol,
             "timeframe": clean_timeframe,
             "limit": safe_limit,
+            "history_available": history_available,
+            "history_schema_fallback_used": bool(omitted_columns),
+            "history_selected_columns": columns,
+            "omitted_history_columns": sorted(set(omitted_columns)),
+            "age_minutes_derived": True,
             "trades": rows,
             "open_trades": open_trades,
             "closed_trades": closed_trades,
             "open_count": len(open_trades),
             "closed_count": len(closed_trades),
-            "db_degraded": bool(result.get("db_degraded")),
-            "reason": result.get("reason") or "",
+            "db_degraded": False if optional_schema_issue else bool(result.get("db_degraded")),
+            "reason": "history_schema_optional_column_missing" if optional_schema_issue else result.get("reason") or "",
             "status_endpoints_write_free": True,
             **_backpressure_status(self.client),
             **_safety(),
@@ -776,7 +824,6 @@ class MT5PersistentIntelligenceStore:
                 "opened_at": payload.get("opened_at") or payload.get("created_at") or None,
                 "closed_at": payload.get("closed_at") or None,
                 "exit_reason": payload.get("exit_reason") or "",
-                "age_minutes": _float(payload.get("age_minutes")),
                 "bars_since_entry": _int(payload.get("bars_since_entry")),
                 "safety_exit_category": payload.get("safety_exit_category") or "",
                 "safety_exit_reason_detail": payload.get("safety_exit_reason_detail") or "",
@@ -995,6 +1042,12 @@ class MT5PersistentIntelligenceStore:
                 "drain_attempted": False,
                 "before": before,
                 "healthcheck": health,
+                "queue_depth_before": int(before.get("queue_depth") or 0),
+                "queue_depth_after": int(before.get("queue_depth") or 0),
+                "queued_writes_before": int(before.get("queued_writes") or 0),
+                "queued_writes_after": int(before.get("queued_writes") or 0),
+                "dropped_noncritical_writes_this_drain": 0,
+                "critical_writes_retained": 0,
                 **_backpressure_status(self.client),
                 "candidate_activated": False,
                 "paper_forward_onboarding_started": False,
@@ -1008,6 +1061,7 @@ class MT5PersistentIntelligenceStore:
         )
         after_health = self.healthcheck(write_test_event=False)
         critical_retained = int(drain.get("critical_writes_retained") or 0)
+        after = _backpressure_status(self.client)
         return {
             "ok": bool(drain.get("ok")),
             "status": "persistent_intelligence_queue_drain_ready",
@@ -1016,7 +1070,13 @@ class MT5PersistentIntelligenceStore:
             "before": before,
             "drain": drain,
             "healthcheck": after_health,
-            **_backpressure_status(self.client),
+            "queue_depth_before": int(before.get("queue_depth") or 0),
+            "queue_depth_after": int(after.get("queue_depth") or 0),
+            "queued_writes_before": int(before.get("queued_writes") or 0),
+            "queued_writes_after": int(after.get("queued_writes") or 0),
+            "dropped_noncritical_writes_this_drain": int(drain.get("dropped_noncritical_writes") or 0),
+            "critical_writes_retained": critical_retained,
+            **after,
             "candidate_activated": False,
             "paper_forward_onboarding_started": False,
             "decision": "NO_TRADE" if critical_retained else "",
@@ -1623,6 +1683,69 @@ def _safety_rows(rows: list[Any]) -> list[dict[str, Any]]:
         clean.setdefault("order_policy", "journal_only_no_broker")
         compact.append(clean)
     return compact
+
+
+def _normalize_shadow_history_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        clean = dict(row)
+        clean.setdefault("broker_symbol", "")
+        clean.setdefault("profile", "")
+        clean.setdefault("strategy_profile", clean.get("profile") or "")
+        clean.setdefault("source", "")
+        clean.setdefault("stop_loss", 0.0)
+        clean.setdefault("take_profit", 0.0)
+        clean.setdefault("exit_price", 0.0)
+        clean.setdefault("pnl", 0.0)
+        clean.setdefault("pnl_pct", 0.0)
+        clean.setdefault("r_multiple", 0.0)
+        clean.setdefault("closed_at", "")
+        clean.setdefault("exit_reason", "")
+        clean.setdefault("bars_since_entry", 0)
+        clean.setdefault("safety_exit_category", "")
+        clean.setdefault("safety_exit_reason_detail", "")
+        clean.setdefault("close_decision_reason", "")
+        clean["age_minutes"] = _age_minutes_between(clean.get("opened_at"), clean.get("closed_at"))
+        if "last_price" not in clean:
+            clean["last_price"] = clean.get("exit_price") or clean.get("entry_price") or 0.0
+        normalized.append(clean)
+    return normalized
+
+
+def _missing_column_from_error(reason: object) -> str:
+    text = str(reason or "")
+    patterns = (
+        r'column\s+"(?P<column>[A-Za-z_][A-Za-z0-9_]*)"\s+does not exist',
+        r"Could not find the '(?P<column>[A-Za-z_][A-Za-z0-9_]*)' column",
+        r"column (?P<column>[A-Za-z_][A-Za-z0-9_]*) does not exist",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return str(match.group("column") or "").strip()
+    return ""
+
+
+def _age_minutes_between(opened_at: object, closed_at: object) -> float:
+    opened = _parse_datetime(opened_at)
+    if opened is None:
+        return 0.0
+    closed = _parse_datetime(closed_at) or datetime.now(timezone.utc)
+    age = max(0.0, (closed - opened).total_seconds() / 60.0)
+    return round(age, 3)
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _sanitize_row(row: dict[str, Any]) -> dict[str, Any]:

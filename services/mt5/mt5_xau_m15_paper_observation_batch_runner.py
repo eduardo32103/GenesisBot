@@ -335,22 +335,6 @@ def run_xau_m15_paper_observation_batch_step(
             terminal=True,
         )
 
-    db_block = _db_block_reason(db)
-    if db_block:
-        return _result(
-            "stopped_by_db",
-            cycle_number,
-            stats,
-            db_state=_public_db(db),
-            readiness=readiness,
-            open_payload=open_payload,
-            monitor=monitor,
-            open_shadow_count=open_count,
-            current_shadow_id=current_shadow_id,
-            stop_reason=db_block,
-            terminal=True,
-        )
-
     pending_id = _pending_reconciliation_shadow_id(state, trades, stats)
     if pending_id:
         if open_count == 1 and current_shadow_id and current_shadow_id != pending_id:
@@ -382,6 +366,25 @@ def run_xau_m15_paper_observation_batch_step(
                     monitor=monitor,
                     history=history,
                     stop_reason="history_safety_flag_detected",
+                    terminal=True,
+                )
+            if not _history_available(history):
+                return _result(
+                    "stopped_by_history_unavailable",
+                    cycle_number,
+                    stats,
+                    db_state=_public_db(db),
+                    readiness=readiness,
+                    open_payload=open_payload,
+                    monitor=monitor,
+                    history=history,
+                    open_shadow_count=0,
+                    current_shadow_id="",
+                    stop_reason=str(history.get("reason") or "history_unavailable"),
+                    anomaly="history_unavailable_for_pending_reconciliation",
+                    anomaly_type="history_unavailable_for_pending_reconciliation",
+                    orphan_shadow_trade_id=pending_id,
+                    next_action="fix_history_before_next_open",
                     terminal=True,
                 )
             closed = _find_closed_shadow_trade(history, pending_id)
@@ -421,6 +424,22 @@ def run_xau_m15_paper_observation_batch_step(
                 next_action="inspect_shadow_lifecycle_before_next_open",
                 terminal=True,
             )
+
+    db_block = _db_block_reason(db)
+    if db_block:
+        return _result(
+            "stopped_by_db",
+            cycle_number,
+            stats,
+            db_state=_public_db(db),
+            readiness=readiness,
+            open_payload=open_payload,
+            monitor=monitor,
+            open_shadow_count=open_count,
+            current_shadow_id=current_shadow_id,
+            stop_reason=db_block,
+            terminal=True,
+        )
 
     if open_count == 1:
         return _handle_existing_shadow(
@@ -804,6 +823,16 @@ def _find_closed_shadow_trade(history: dict[str, Any], shadow_trade_id: str) -> 
         if str(row.get("status") or "").casefold() == "closed" or bool(row.get("closed_at")):
             return dict(row)
     return {}
+
+
+def _history_available(history: dict[str, Any]) -> bool:
+    if not bool(history.get("ok")):
+        return False
+    if "history_available" in history and not bool(history.get("history_available")):
+        return False
+    if "closed_trades" not in history and "trades" not in history and "items" not in history:
+        return False
+    return True
 
 
 def _closed_trade_from_history(row: dict[str, Any]) -> dict[str, Any]:

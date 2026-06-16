@@ -7,6 +7,7 @@ from services.mt5.mt5_autonomous_learning_status import run_autonomous_learning_
 from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
 from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
 from services.mt5.mt5_persistent_intelligence_store import (
+    persistent_intelligence_queue_drain,
     persistent_intelligence_recent_events,
     persistent_intelligence_schema_freeze_status,
     persistent_intelligence_shadow_trade_history,
@@ -55,6 +56,36 @@ def mt5_persistent_intelligence_status(*, memory: MemoryStore | None = None) -> 
 
 def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = None, limit: int = 10) -> dict[str, Any]:
     return _status_write_free(persistent_intelligence_recent_events(limit=limit))
+
+
+def mt5_persistent_intelligence_queue_drain(
+    payload: dict[str, Any] | None = None,
+    *,
+    memory: MemoryStore | None = None,
+) -> dict[str, Any]:
+    del memory
+    body = payload if isinstance(payload, dict) else {}
+    if not bool(body.get("confirm_queue_drain")):
+        return {
+            "ok": False,
+            "status": "persistent_intelligence_queue_drain_confirmation_required",
+            "reason": "confirm_queue_drain_required",
+            "drain_attempted": False,
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    try:
+        max_items = max(1, min(200, int(body.get("max_items") or 50)))
+    except (TypeError, ValueError):
+        max_items = 50
+    keep_failed = bool(body.get("keep_failed_noncritical"))
+    return persistent_intelligence_queue_drain(
+        max_items=max_items,
+        drop_failed_noncritical=not keep_failed,
+    )
 
 
 def mt5_persistent_intelligence_bootstrap_status(*, memory: MemoryStore | None = None) -> dict[str, Any]:

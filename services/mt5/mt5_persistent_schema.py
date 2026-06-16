@@ -86,7 +86,6 @@ create table if not exists public.mt5_shadow_trades (
   opened_at timestamptz,
   closed_at timestamptz,
   exit_reason text not null default '',
-  age_minutes double precision,
   bars_since_entry integer not null default 0,
   safety_exit_category text not null default '',
   safety_exit_reason_detail text not null default '',
@@ -101,7 +100,12 @@ alter table if exists public.mt5_shadow_trades add column if not exists strategy
 alter table if exists public.mt5_shadow_trades add column if not exists source text not null default '';
 alter table if exists public.mt5_shadow_trades add column if not exists stop_loss double precision;
 alter table if exists public.mt5_shadow_trades add column if not exists take_profit double precision;
-alter table if exists public.mt5_shadow_trades add column if not exists age_minutes double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists exit_price double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists pnl double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists pnl_pct double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists r_multiple double precision;
+alter table if exists public.mt5_shadow_trades add column if not exists closed_at timestamptz;
+alter table if exists public.mt5_shadow_trades add column if not exists exit_reason text not null default '';
 alter table if exists public.mt5_shadow_trades add column if not exists bars_since_entry integer not null default 0;
 alter table if exists public.mt5_shadow_trades add column if not exists safety_exit_category text not null default '';
 alter table if exists public.mt5_shadow_trades add column if not exists safety_exit_reason_detail text not null default '';

@@ -36,6 +36,7 @@ from services.mt5.mt5_bridge import (
     mt5_paper_defense,
     mt5_persistent_db_doctor_status,
     mt5_persistent_intelligence_bootstrap_status,
+    mt5_persistent_intelligence_queue_drain,
     mt5_persistent_intelligence_recent_events,
     mt5_outcomes_recent,
     mt5_performance,
@@ -113,6 +114,10 @@ def get_genesis_mt5_persistent_intelligence_status() -> dict[str, Any]:
 
 def get_genesis_mt5_persistent_intelligence_recent_events(limit: int = 10) -> dict[str, Any]:
     return mt5_persistent_intelligence_recent_events(limit=limit)
+
+
+def post_genesis_mt5_persistent_intelligence_queue_drain(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_persistent_intelligence_queue_drain(payload)
 
 
 def get_genesis_mt5_persistent_intelligence_bootstrap_status() -> dict[str, Any]:

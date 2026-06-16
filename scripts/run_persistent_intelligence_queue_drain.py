@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -15,10 +16,18 @@ from services.mt5.mt5_persistent_intelligence_store import persistent_intelligen
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    result = persistent_intelligence_queue_drain(
-        max_items=args.max_items,
-        drop_failed_noncritical=not args.keep_failed_noncritical,
-    )
+    if args.base_url:
+        result = _post_live_queue_drain(
+            args.base_url,
+            max_items=args.max_items,
+            keep_failed_noncritical=args.keep_failed_noncritical,
+            timeout_seconds=args.timeout_seconds,
+        )
+    else:
+        result = persistent_intelligence_queue_drain(
+            max_items=args.max_items,
+            drop_failed_noncritical=not args.keep_failed_noncritical,
+        )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True, default=str))
     else:
@@ -28,10 +37,41 @@ def main(argv: list[str] | None = None) -> int:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Drain queued Persistent Intelligence writes safely. No broker, no trading.")
+    parser.add_argument("--base-url", default="", help="Optional live Genesis base URL. Drains the web-process queue through HTTP.")
     parser.add_argument("--max-items", type=int, default=50)
     parser.add_argument("--keep-failed-noncritical", action="store_true", help="Keep failed noncritical queued writes instead of dropping them.")
+    parser.add_argument("--timeout-seconds", type=float, default=15.0)
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
+
+
+def _post_live_queue_drain(
+    base_url: str,
+    *,
+    max_items: int,
+    keep_failed_noncritical: bool,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    target = base_url.rstrip("/") + "/api/genesis/mt5/persistent-intelligence/queue-drain"
+    payload = {
+        "confirm_queue_drain": True,
+        "max_items": int(max_items or 50),
+        "keep_failed_noncritical": bool(keep_failed_noncritical),
+    }
+    request = Request(
+        target,
+        data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=float(timeout_seconds or 15.0)) as response:
+        body = response.read()
+    try:
+        result = json.loads(body.decode("utf-8")) if body else {}
+    except json.JSONDecodeError:
+        result = {"ok": False, "status": "persistent_intelligence_queue_drain_http_parse_failed"}
+    result.setdefault("queue_drain_source", "live_http_web_process")
+    return result
 
 
 def _human_summary(result: dict[str, Any]) -> str:
@@ -43,13 +83,15 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"status={result.get('status')}",
             f"provider={result.get('provider')}",
             f"drain_attempted={result.get('drain_attempted')}",
-            f"before_queue_depth={drain.get('before_queue_depth', ((result.get('before') if isinstance(result.get('before'), dict) else {}) or {}).get('queue_depth'))}",
-            f"after_queue_depth={drain.get('after_queue_depth', result.get('queue_depth'))}",
+            f"queue_depth_before={result.get('queue_depth_before', drain.get('before_queue_depth', ((result.get('before') if isinstance(result.get('before'), dict) else {}) or {}).get('queue_depth')))}",
+            f"queue_depth_after={result.get('queue_depth_after', drain.get('after_queue_depth', result.get('queue_depth')))}",
+            f"queued_writes_before={result.get('queued_writes_before')}",
+            f"queued_writes_after={result.get('queued_writes_after')}",
             f"attempted={drain.get('attempted')}",
             f"succeeded={drain.get('succeeded')}",
             f"failed={drain.get('failed')}",
-            f"dropped_noncritical_writes_this_drain={drain.get('dropped_noncritical_writes')}",
-            f"critical_writes_retained={drain.get('critical_writes_retained')}",
+            f"dropped_noncritical_writes_this_drain={result.get('dropped_noncritical_writes_this_drain', drain.get('dropped_noncritical_writes'))}",
+            f"critical_writes_retained={result.get('critical_writes_retained', drain.get('critical_writes_retained'))}",
             f"queue_depth={result.get('queue_depth')}",
             f"queued_writes={result.get('queued_writes')}",
             f"queued_writes_total={result.get('queued_writes_total')}",
