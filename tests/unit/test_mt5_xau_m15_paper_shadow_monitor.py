@@ -282,6 +282,25 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_close_is_atomic_db_failure_keeps_runtime_shadow_open(self) -> None:
+        _seed_runtime(price=111.0)
+        _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
+        store = _FailingPersistentStore()
+
+        result = run_xau_m15_paper_shadow_monitor(apply_paper_close=True, db_state=_db(), risk_state=_risk(), store=store)
+        snapshot = get_snapshot("XAUUSD", "M15") or {}
+
+        self.assertEqual(result["monitor_state"], "close_blocked_by_persistence")
+        self.assertTrue(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "take_profit_hit")
+        self.assertFalse(result["paper_close_applied"])
+        self.assertTrue(result["close_persistence_failed"])
+        self.assertTrue(result["close_write_retained_critical"])
+        self.assertEqual((snapshot.get("open_shadow_trade") or {}).get("shadow_trade_id"), "xau-monitor-test")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_fast_observation_timebox_closes_paper_only_shadow(self) -> None:
         _seed_runtime(price=100.0)
         trade = _shadow(entry=100.0, stop=95.0, target=110.0)
@@ -324,6 +343,26 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertEqual(result["monitor_state"], "exit_applied")
         self.assertTrue(result["exit_signal"])
         self.assertEqual(result["exit_reason"], "paper_fast_trailing_exit")
+        self.assertTrue(result["paper_close_applied"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_fast_observation_fast_loss_cut_closes_paper_only_shadow(self) -> None:
+        _seed_runtime(price=98.5)
+        _seed_open_shadow(entry=100.0, stop=95.0, target=110.0)
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            exit_policy="fast_observation",
+            db_state=_db(),
+            risk_state=_risk(),
+            persist_events=False,
+        )
+
+        self.assertEqual(result["monitor_state"], "exit_applied")
+        self.assertTrue(result["exit_signal"])
+        self.assertEqual(result["exit_reason"], "paper_fast_loss_cut")
         self.assertTrue(result["paper_close_applied"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
@@ -419,6 +458,23 @@ class _FakePersistentStore:
     def record_research_lesson(self, payload: dict[str, object], *, critical: bool | None = None) -> dict[str, object]:
         self.lessons.append(dict(payload))
         return {"ok": True, "table": "mt5_research_lessons", "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+
+
+class _FailingPersistentStore(_FakePersistentStore):
+    def __init__(self) -> None:
+        super().__init__([])
+
+    def record_shadow_trade(self, payload: dict[str, object], *, critical: bool | None = None) -> dict[str, object]:
+        self.recorded.append(dict(payload))
+        return {
+            "ok": False,
+            "queued": True,
+            "db_degraded": True,
+            "reason": "simulated_persistent_write_failure",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
 
 
 def _bars(count: int, *, price: float) -> list[dict[str, object]]:

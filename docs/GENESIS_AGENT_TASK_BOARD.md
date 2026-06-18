@@ -6,27 +6,30 @@ through Safety Sentinel review before push or deploy.
 
 ## Urgent
 
-1. Shadow Lifecycle Agent: close or monitor the active XAUUSD M15 paper shadow.
-2. Paper Observation Agent: explain the exact `safety_exit` detail before any new shadow.
-3. Safety Sentinel Agent: block any new XAUUSD M15 shadow until the open shadow cause and exit state are known.
-4. DB Doctor Agent: keep Persistent Intelligence green and queue depth stable.
+1. Safety Sentinel Agent: validate no broker action, no execution path, and no forbidden activation before any paper test run.
+2. DB Doctor Agent: keep queue drain, history schema fallback, and close persistence healthy before any new XAUUSD M15 shadow.
+3. Runtime Bridge Agent: keep `shadow-trades/open` restart-safe through runtime + Persistent Intelligence fallback.
+4. Paper Observation Agent: operate the XAUUSD M15 paper test supervisor with max cycles and target trades.
+5. Shadow Lifecycle Agent: verify every paper close is persisted before runtime memory is cleared.
+6. QA Red Team Agent: reproduce orphan, restart, duplicate, and persistence-failure lifecycle tests.
 
 ## Active
 
 1. Coordinator Agent: maintain the autonomous Codex subagent operating system.
-2. Shadow Lifecycle Agent: keep XAUUSD M15 monitor restart-safe through runtime and Persistent Intelligence fallback.
-3. Dashboard Reporter Agent: expose paper observation and shadow lifecycle status without writes.
+2. Shadow Lifecycle Agent: enforce atomic paper close persistence before runtime shadow removal.
+3. Research Factory Agent: run fast observation parameter sweep offline/paper-only.
+4. Dashboard Reporter Agent: expose paper observation and shadow lifecycle status without writes.
 
 ## Queued
 
 1. Runtime Bridge Agent: verify XAUUSD.b M15 feed continuity after deploy.
-2. Strategy Tournament Agent: review candidates only after the current paper shadow is resolved.
-3. Research Factory Agent: continue volatility compression research only after safety and DB stay green.
+2. Strategy Tournament Agent: review candidates only after supervised paper observation has measurable closed trades.
+3. Research Factory Agent: refine fast observation parameters only after live paper supervisor remains lifecycle-clean.
 4. Deep Validation Agent: design the next non-correlated validation batch after current observation data is complete.
 
 ## Blocked
 
-1. Opening a new XAUUSD M15 paper shadow is blocked until the existing shadow is closed or explained.
+1. Opening a new XAUUSD M15 paper shadow is blocked until agents close or monitor the active XAUUSD M15 paper shadow, explain the exact `safety_exit` detail, and reconcile history.
 2. Paper rotation application is blocked without explicit human approval.
 3. Autonomous loops are blocked unless DB, Capital Protection, Adaptive Governor, and RiskGovernor all allow one controlled cycle.
 4. Any real trading path is blocked.
@@ -53,9 +56,9 @@ through Safety Sentinel review before push or deploy.
 
 ## Next Recommended Task
 
-Safety Sentinel and Shadow Lifecycle should review the current XAUUSD M15 paper
-shadow state, explain `safety_exit`, and confirm no new shadow is created until
-the current observation is closed or safely carried forward.
+Run the XAUUSD M15 paper test supervisor in dry-run against the live HTTP process,
+verify open/history/queue drain are consistent, and only then run a bounded
+paper-only cycle with explicit confirmation.
 
 ## Card Template
 

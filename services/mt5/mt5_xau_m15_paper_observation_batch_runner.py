@@ -33,6 +33,7 @@ ALLOWED_CLOSE_REASONS = {
     "paper_timebox_exit",
     "paper_stagnation_exit",
     "paper_fast_trailing_exit",
+    "paper_fast_loss_cut",
 }
 
 
@@ -58,8 +59,8 @@ class LocalPaperObservationClient:
         exit_policy: str = "default",
         time_stop_bars: int = 2,
         max_hold_minutes: float | None = None,
-        min_r_to_arm_trailing: float = 0.25,
-        giveback_r: float = 0.15,
+        min_r_to_arm_trailing: float = 0.15,
+        giveback_r: float = 0.10,
     ) -> dict[str, Any]:
         return run_xau_m15_paper_shadow_monitor(
             apply_paper_close=apply_paper_close,
@@ -78,6 +79,11 @@ class LocalPaperObservationClient:
                 "timeframe": TIMEFRAME,
             }
         )
+
+    def queue_drain(self) -> dict[str, Any]:
+        from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_queue_drain
+
+        return persistent_intelligence_queue_drain(max_items=50, drop_failed_noncritical=True)
 
 
 class HttpPaperObservationClient:
@@ -106,8 +112,8 @@ class HttpPaperObservationClient:
         exit_policy: str = "default",
         time_stop_bars: int = 2,
         max_hold_minutes: float | None = None,
-        min_r_to_arm_trailing: float = 0.25,
-        giveback_r: float = 0.15,
+        min_r_to_arm_trailing: float = 0.15,
+        giveback_r: float = 0.10,
     ) -> dict[str, Any]:
         policy = _exit_policy(exit_policy)
         if apply_paper_close or policy != "default":
@@ -130,6 +136,15 @@ class HttpPaperObservationClient:
                 "confirm_paper_shadow_only": True,
                 "symbol": SYMBOL,
                 "timeframe": TIMEFRAME,
+            },
+        )
+
+    def queue_drain(self) -> dict[str, Any]:
+        return self._post(
+            "/api/genesis/mt5/persistent-intelligence/queue-drain",
+            {
+                "confirm_queue_drain": True,
+                "max_items": 50,
             },
         )
 
@@ -169,8 +184,8 @@ def run_xau_m15_paper_observation_batch_runner(
     exit_policy: str = "default",
     time_stop_bars: int = 2,
     max_hold_minutes: float | None = None,
-    min_r_to_arm_trailing: float = 0.25,
-    giveback_r: float = 0.15,
+    min_r_to_arm_trailing: float = 0.15,
+    giveback_r: float = 0.10,
     state_file: str | Path | None = DEFAULT_STATE_FILE,
     results_file: str | Path | None = DEFAULT_RESULTS_FILE,
     sleep_fn: Callable[[float], None] | None = None,
@@ -285,8 +300,8 @@ def run_xau_m15_paper_observation_batch_step(
     exit_policy: str = "default",
     time_stop_bars: int = 2,
     max_hold_minutes: float | None = None,
-    min_r_to_arm_trailing: float = 0.25,
-    giveback_r: float = 0.15,
+    min_r_to_arm_trailing: float = 0.15,
+    giveback_r: float = 0.10,
 ) -> dict[str, Any]:
     stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=[])
     if int(stats.get("trades_closed") or 0) >= int(target_trades or 0) > 0:
@@ -553,8 +568,8 @@ def _handle_existing_shadow(
     exit_policy: str = "default",
     time_stop_bars: int = 2,
     max_hold_minutes: float | None = None,
-    min_r_to_arm_trailing: float = 0.25,
-    giveback_r: float = 0.15,
+    min_r_to_arm_trailing: float = 0.15,
+    giveback_r: float = 0.10,
 ) -> dict[str, Any]:
     should_watch = bool(monitor.get("should_watch_only")) or str(monitor.get("safety_exit_category") or "") in {"entry_block_only", "caution_watch"}
     should_close = bool(monitor.get("should_close_paper"))
@@ -667,6 +682,10 @@ def compute_xau_m15_paper_batch_stats(
         "avg_duration_minutes": round(sum(float(_num(trade.get("age_minutes")) or 0.0) for trade in closed) / len(closed), 6) if closed else 0.0,
         "take_profit_count": len([trade for trade in closed if trade.get("exit_reason") == "take_profit_hit"]),
         "stop_loss_count": len([trade for trade in closed if trade.get("exit_reason") == "stop_loss_hit"]),
+        "timebox_exit_count": len([trade for trade in closed if trade.get("exit_reason") == "paper_timebox_exit"]),
+        "fast_trailing_exit_count": len([trade for trade in closed if trade.get("exit_reason") == "paper_fast_trailing_exit"]),
+        "fast_loss_cut_count": len([trade for trade in closed if trade.get("exit_reason") == "paper_fast_loss_cut"]),
+        "orphan_count": len([cycle for cycle in cycles if cycle.get("anomaly_type") == "opened_shadow_missing_close_record"]),
         "trailing_exit_count": len([trade for trade in closed if trade.get("exit_reason") == "trailing_defensive_exit"]),
         "critical_safety_exit_count": len([trade for trade in closed if trade.get("safety_exit_category") == "critical_safety_exit"]),
         "watch_only_cycles": int(_num((state or {}).get("watch_only_cycles")) or 0) + len([cycle for cycle in cycles if cycle.get("watch_only_cycle")]),

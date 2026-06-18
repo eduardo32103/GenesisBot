@@ -25,7 +25,11 @@ data/research_outputs/xau_m15_paper_batch_state.json
 data/research_outputs/xau_m15_paper_batch_results.json
 data/research_outputs/xau_m15_batch_live_v2_state.json
 data/research_outputs/xau_m15_batch_live_v2_results.json
+data/research_outputs/xau_m15_batch_live_v4_state.json
+data/research_outputs/xau_m15_batch_live_v4_results.json
 data/research_outputs/xau_m15_before_history_fix_open_shadow.json
 data/research_outputs/xau_m15_pre_reboot_shadow_snapshot.json
 data/research_outputs/xau_m15_open_shadow_snapshot.json
+data/research_outputs/xau_m15_supervisor_state.json
+data/research_outputs/xau_m15_supervisor_results.json
 vol_scan_local.log

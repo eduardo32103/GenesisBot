@@ -7,6 +7,7 @@ from services.mt5.mt5_autonomous_learning_status import run_autonomous_learning_
 from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
 from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
 from services.mt5.mt5_persistent_intelligence_store import (
+    persistent_intelligence_open_shadow_trades,
     persistent_intelligence_queue_drain,
     persistent_intelligence_recent_events,
     persistent_intelligence_schema_freeze_status,
@@ -16,6 +17,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
 from services.mt5.mt5_persistent_intelligence_bootstrap import persistent_intelligence_bootstrap_status
 from services.mt5.mt5_risk_recovery import mt5_risk_recovery_status
 from services.mt5.mt5_runtime_snapshot import runtime_snapshot_inventory
+from services.mt5.mt5_runtime_snapshot import get_snapshot
 from services.mt5.mt5_signal_router import MT5SignalRouter
 from services.mt5.mt5_strategy_tournament import run_strategy_tournament
 from services.mt5.mt5_xau_m15_paper_shadow_monitor import run_xau_m15_paper_shadow_monitor
@@ -195,6 +197,179 @@ def _status_write_free(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _merge_open_shadow_payloads(
+    runtime_payload: dict[str, Any],
+    persistent_payload: dict[str, Any],
+    *,
+    symbol: str = "",
+    limit: int = 100,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol or runtime_payload.get("symbol") or "XAUUSD")
+    safe_limit = max(1, min(int(limit or 100), 100))
+    runtime_trades = [
+        _paper_safe_trade(trade, source="runtime_memory")
+        for trade in _rows(runtime_payload, "trades", "open_trades")
+        if _is_symbol_match(trade, clean_symbol)
+    ]
+    persistent_trades = [
+        _paper_safe_trade(trade, source="persistent_intelligence_fallback")
+        for trade in _rows(persistent_payload, "open_trades", "trades")
+        if _is_symbol_match(trade, clean_symbol)
+    ]
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    duplicate_detected = False
+    for trade in [*runtime_trades, *persistent_trades]:
+        trade_id = str(trade.get("shadow_trade_id") or "")
+        key = trade_id or f"{trade.get('symbol')}:{trade.get('timeframe')}:{trade.get('opened_at')}:{len(merged)}"
+        if key in seen:
+            duplicate_detected = True
+            continue
+        seen.add(key)
+        merged.append(trade)
+    runtime_count = len(runtime_trades)
+    persistent_count = len(persistent_trades)
+    if runtime_count and persistent_count:
+        open_source = "merged"
+    elif runtime_count:
+        open_source = "runtime_memory"
+    elif persistent_count:
+        open_source = "persistent_intelligence_fallback"
+    else:
+        open_source = "none"
+    result = dict(runtime_payload or {})
+    result.update(
+        {
+            "ok": bool(runtime_payload.get("ok", True)) or bool(persistent_payload.get("ok")),
+            "status": "mt5_shadow_trades_open_ready",
+            "symbol": clean_symbol,
+            "open_count": len(merged),
+            "trades": merged[:safe_limit],
+            "open_source": open_source,
+            "rehydration_needed": bool(persistent_count and not runtime_count),
+            "persistent_open_count": persistent_count,
+            "runtime_open_count": runtime_count,
+            "merged_open_count": len(merged),
+            "duplicate_detected": duplicate_detected or (runtime_count + persistent_count > len(merged)),
+            "persistent_intelligence_open": {
+                "ok": bool(persistent_payload.get("ok")),
+                "db_degraded": bool(persistent_payload.get("db_degraded")),
+                "reason": persistent_payload.get("reason") or "",
+                "provider": persistent_payload.get("provider") or "",
+            },
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    )
+    return result
+
+
+def _merge_runtime_closed_history(
+    payload: dict[str, Any],
+    *,
+    symbol: str = "",
+    timeframe: str = "",
+    limit: int = 20,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol or payload.get("symbol") or "XAUUSD")
+    clean_timeframe = _clean_timeframe(timeframe or payload.get("timeframe") or "")
+    safe_limit = max(1, min(int(limit or payload.get("limit") or 20), 100))
+    runtime_rows = _runtime_closed_shadow_trades(clean_symbol, clean_timeframe)
+    persistent_rows = [
+        _paper_safe_trade(row, source="persistent_intelligence")
+        for row in _rows(payload, "trades", "closed_trades")
+        if _is_symbol_match(row, clean_symbol) and (not clean_timeframe or _clean_timeframe(row.get("timeframe")) == clean_timeframe)
+    ]
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in [*runtime_rows, *persistent_rows]:
+        trade_id = str(row.get("shadow_trade_id") or "")
+        key = trade_id or f"{row.get('symbol')}:{row.get('timeframe')}:{row.get('closed_at')}:{len(merged)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(row)
+    open_trades = [row for row in merged if str(row.get("status") or "").casefold() == "open" and not row.get("closed_at")]
+    closed_trades = [row for row in merged if str(row.get("status") or "").casefold() == "closed" or bool(row.get("closed_at"))]
+    result = dict(payload or {})
+    result.update(
+        {
+            "trades": merged[:safe_limit],
+            "open_trades": open_trades[:safe_limit],
+            "closed_trades": closed_trades[:safe_limit],
+            "open_count": len(open_trades),
+            "closed_count": len(closed_trades),
+            "runtime_closed_event_count": len(runtime_rows),
+            "persistent_closed_event_count": len([row for row in persistent_rows if str(row.get("status") or "").casefold() == "closed" or row.get("closed_at")]),
+            "history_sources": {
+                "runtime_closed_event": len(runtime_rows),
+                "persistent_intelligence": len(persistent_rows),
+            },
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+    )
+    return result
+
+
+def _runtime_closed_shadow_trades(symbol: str, timeframe: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for alias in {symbol, f"{symbol}.B" if symbol == "XAUUSD" else symbol}:
+        snapshot = get_snapshot(alias, timeframe) or get_snapshot(alias) or {}
+        for row in snapshot.get("recent_closed_shadow_trades") if isinstance(snapshot.get("recent_closed_shadow_trades"), list) else []:
+            if not isinstance(row, dict):
+                continue
+            if not _is_symbol_match(row, symbol):
+                continue
+            if timeframe and _clean_timeframe(row.get("timeframe")) != timeframe:
+                continue
+            safe = _paper_safe_trade(row, source="runtime_closed_event")
+            key = str(safe.get("shadow_trade_id") or f"{safe.get('symbol')}:{safe.get('timeframe')}:{safe.get('closed_at')}")
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(safe)
+    return rows
+
+
+def _rows(payload: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key in keys:
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, list):
+            rows.extend([dict(row) for row in value if isinstance(row, dict)])
+    return rows
+
+
+def _paper_safe_trade(row: dict[str, Any], *, source: str) -> dict[str, Any]:
+    trade = dict(row or {})
+    trade.setdefault("symbol", _clean_symbol(trade.get("symbol")))
+    trade.setdefault("timeframe", _clean_timeframe(trade.get("timeframe")))
+    trade["record_source"] = source
+    trade["source"] = source if source in {"runtime_closed_event", "persistent_intelligence"} else trade.get("source") or source
+    trade["broker_touched"] = False
+    trade["order_executed"] = False
+    trade["order_policy"] = "journal_only_no_broker"
+    return trade
+
+
+def _is_symbol_match(row: dict[str, Any], symbol: str) -> bool:
+    if not symbol:
+        return True
+    return _clean_symbol(row.get("symbol") or row.get("broker_symbol")) == _clean_symbol(symbol)
+
+
+def _clean_symbol(value: object) -> str:
+    return str(value or "").upper().strip().replace(".B", "")
+
+
+def _clean_timeframe(value: object) -> str:
+    return str(value or "").upper().strip()
+
+
 def mt5_ui_summary(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "") -> dict[str, Any]:
     return build_router(memory).ui_summary(symbol=symbol, timeframe=timeframe)
 
@@ -232,12 +407,15 @@ def mt5_shadow_trades(*, memory: MemoryStore | None = None, symbol: str = "", li
 
 
 def mt5_shadow_trades_open(*, memory: MemoryStore | None = None, symbol: str = "", limit: int = 100) -> dict[str, Any]:
-    return build_router(memory).shadow_trades_open(symbol=symbol, limit=limit)
+    runtime_payload = build_router(memory).shadow_trades_open(symbol=symbol, limit=limit)
+    persistent_payload = persistent_intelligence_open_shadow_trades(limit=limit)
+    return _merge_open_shadow_payloads(runtime_payload, persistent_payload, symbol=symbol, limit=limit)
 
 
 def mt5_shadow_trades_history(*, memory: MemoryStore | None = None, symbol: str = "", timeframe: str = "", limit: int = 20) -> dict[str, Any]:
     del memory
-    return persistent_intelligence_shadow_trade_history(symbol=symbol, timeframe=timeframe, limit=limit)
+    payload = persistent_intelligence_shadow_trade_history(symbol=symbol, timeframe=timeframe, limit=limit)
+    return _merge_runtime_closed_history(payload, symbol=symbol, timeframe=timeframe, limit=limit)
 
 
 def mt5_shadow_trades_close_expired(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:

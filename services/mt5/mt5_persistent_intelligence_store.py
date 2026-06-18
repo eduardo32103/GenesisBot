@@ -478,7 +478,6 @@ class MT5PersistentIntelligenceStore:
             params={
                 "select": "shadow_trade_id,symbol,timeframe,profile,side,entry_price,exit_price,pnl,r_multiple,status,opened_at,closed_at,exit_reason,broker_touched,order_executed,order_policy",
                 "status": "eq.open",
-                "closed_at": "is.null",
                 "order": "opened_at.desc",
                 "limit": str(safe_limit),
             },
@@ -1225,6 +1224,10 @@ def compact_old_decision_events(
 
 def persistent_intelligence_recent_events(*, limit: int = 10) -> dict[str, Any]:
     return MT5PersistentIntelligenceStore().recent_events(limit=limit)
+
+
+def persistent_intelligence_open_shadow_trades(*, limit: int = 500) -> dict[str, Any]:
+    return MT5PersistentIntelligenceStore().open_shadow_trades(limit=limit)
 
 
 def persistent_intelligence_shadow_trade_history(*, symbol: str = "", timeframe: str = "", limit: int = 20) -> dict[str, Any]:

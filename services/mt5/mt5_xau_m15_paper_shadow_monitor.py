@@ -20,8 +20,8 @@ def run_xau_m15_paper_shadow_monitor(
     exit_policy: str = "default",
     time_stop_bars: int = 2,
     max_hold_minutes: float | None = None,
-    min_r_to_arm_trailing: float = 0.25,
-    giveback_r: float = 0.15,
+    min_r_to_arm_trailing: float = 0.15,
+    giveback_r: float = 0.10,
     store: MT5PersistentIntelligenceStore | Any | None = None,
     runtime_snapshot: dict[str, Any] | None = None,
     db_state: dict[str, Any] | None = None,
@@ -111,12 +111,53 @@ def run_xau_m15_paper_shadow_monitor(
 
     if apply_paper_close and exit_signal and not apply_blocked:
         closed = _closed_trade(updated_trade, metrics, exit_reason, safety_analysis)
+        if persist_events:
+            persist_result = _persist_close(store, closed)
+            if not bool(persist_result.get("ok")):
+                return {
+                    **_base_result(
+                        monitor_state="close_blocked_by_persistence",
+                        open_shadow_count=1,
+                        exit_signal=True,
+                        exit_reason=exit_reason,
+                        paper_close_applied=False,
+                        shadow_status_after="open",
+                        runtime_snapshot=snapshot,
+                        shadow_source=shadow_source,
+                        safety_analysis=safety_analysis,
+                    ),
+                    "shadow_trade_id": open_trade.get("shadow_trade_id") or "",
+                    "side": metrics["side"],
+                    "entry_price": metrics["entry_price"],
+                    "current_price": metrics["current_price"],
+                    "stop_loss": metrics["stop_loss"],
+                    "take_profit": metrics["take_profit"],
+                    "unrealized_pnl": metrics["unrealized_pnl"],
+                    "unrealized_pnl_pct": metrics["unrealized_pnl_pct"],
+                    "r_multiple": metrics["r_multiple"],
+                    "age_minutes": metrics["age_minutes"],
+                    "bars_since_entry": metrics["bars_since_entry"],
+                    "persistent_open_shadow_count": persistent_open_count,
+                    "db_state": _public_db_state(db),
+                    "capital_state": capital,
+                    "adaptive_state": adaptive,
+                    "risk_state": risk,
+                    "apply_paper_close_requested": True,
+                    "exit_policy": _exit_policy(exit_policy),
+                    "time_stop_bars": int(_number(time_stop_bars) or 0),
+                    "max_hold_minutes": _number(max_hold_minutes),
+                    "min_r_to_arm_trailing": _number(min_r_to_arm_trailing) or 0.0,
+                    "giveback_r": _number(giveback_r) or 0.0,
+                    "apply_blocked": False,
+                    "persist_result": persist_result,
+                    "close_persistence_failed": True,
+                    "close_write_retained_critical": bool(persist_result.get("close_write_retained_critical")),
+                    "next_action": "drain_queue_and_retry_close",
+                }
         update_open_shadow_trade(SYMBOL, None, timeframe=TIMEFRAME)
         append_closed_shadow_trade(SYMBOL, closed, timeframe=TIMEFRAME)
         paper_close_applied = True
         shadow_status_after = "closed"
-        if persist_events:
-            persist_result = _persist_close(store, closed)
     elif apply_paper_close and not exit_signal and not apply_blocked and shadow_source == "runtime_memory":
         update_open_shadow_trade(SYMBOL, updated_trade, timeframe=TIMEFRAME)
 
@@ -160,6 +201,8 @@ def run_xau_m15_paper_shadow_monitor(
         "giveback_r": _number(giveback_r) or 0.0,
         "apply_blocked": bool(apply_blocked),
         "persist_result": persist_result,
+        "close_persistence_failed": False,
+        "close_write_retained_critical": False,
     }
 
 
@@ -343,8 +386,8 @@ def _exit_decision(
     exit_policy: str = "default",
     time_stop_bars: int = 2,
     max_hold_minutes: float | None = None,
-    min_r_to_arm_trailing: float = 0.25,
-    giveback_r: float = 0.15,
+    min_r_to_arm_trailing: float = 0.15,
+    giveback_r: float = 0.10,
 ) -> tuple[bool, str, bool]:
     side = metrics["side"]
     price = float(metrics["current_price"])
@@ -395,7 +438,9 @@ def _fast_observation_exit_reason(
     r_multiple = float(metrics.get("r_multiple") or 0.0)
     bars_since_entry = int(_number(metrics.get("bars_since_entry")) or 0)
     age_minutes = float(_number(metrics.get("age_minutes")) or 0.0)
-    if int(time_stop_bars or 0) > 0 and bars_since_entry >= int(time_stop_bars or 0) and r_multiple <= 0.05:
+    if r_multiple <= -0.25:
+        return "paper_fast_loss_cut"
+    if int(time_stop_bars or 0) > 0 and bars_since_entry >= int(time_stop_bars or 0) and abs(r_multiple) <= 0.10:
         return "paper_timebox_exit"
     if max_hold_minutes is not None and age_minutes >= float(max_hold_minutes) and abs(r_multiple) <= 0.05:
         return "paper_stagnation_exit"
@@ -786,9 +831,20 @@ def _persist_close(store: Any | None, closed: dict[str, Any]) -> dict[str, Any]:
     active_store = store or MT5PersistentIntelligenceStore()
     results: dict[str, Any] = {}
     try:
-        results["shadow_trade"] = active_store.record_shadow_trade(closed, critical=False)
+        results["shadow_trade"] = active_store.record_shadow_trade(closed, critical=True)
     except Exception as exc:
         results["shadow_trade"] = {"ok": False, "error": type(exc).__name__}
+    shadow_ok = bool((results.get("shadow_trade") or {}).get("ok"))
+    if not shadow_ok:
+        shadow_result = results.get("shadow_trade") if isinstance(results.get("shadow_trade"), dict) else {}
+        return {
+            "ok": False,
+            "reason": shadow_result.get("reason") or shadow_result.get("error") or "shadow_close_persistence_failed",
+            "close_persistence_failed": True,
+            "close_write_retained_critical": bool(shadow_result.get("queued") or shadow_result.get("schema_missing_write_freeze") or shadow_result.get("db_degraded")),
+            "results": results,
+            **_safety(),
+        }
     try:
         r_multiple = _number(closed.get("r_multiple")) or 0.0
         results["profile_performance"] = active_store.upsert_profile_performance(
