@@ -221,6 +221,8 @@ def _supervisor_result(
         "cycles_completed": int(_num(batch_payload.get("cycles_completed")) or 0),
         "paper_shadow_created": bool(batch_payload.get("paper_shadow_created")),
         "paper_close_applied": bool(batch_payload.get("paper_close_applied")),
+        "open_persistence_failed": bool(batch_payload.get("open_persistence_failed")),
+        "open_write_retained_critical": bool(batch_payload.get("open_write_retained_critical")),
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,

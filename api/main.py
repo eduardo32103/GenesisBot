@@ -107,6 +107,7 @@ from api.routes.genesis import (
     post_genesis_mt5_signal,
     post_genesis_mt5_shadow_trade_close,
     post_genesis_mt5_shadow_trades_close_expired,
+    post_genesis_mt5_shadow_trades_runtime_open_backfill,
     post_genesis_mt5_tick,
     post_genesis_mt5_xau_m15_paper_observation_shadow_once,
     post_genesis_mt5_xau_m15_paper_shadow_monitor,
@@ -274,6 +275,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_shadow_trades_endpoint": "/api/genesis/mt5/shadow-trades?symbol={symbol}",
         "genesis_mt5_shadow_trades_open_endpoint": "/api/genesis/mt5/shadow-trades/open?symbol={symbol}",
         "genesis_mt5_shadow_trades_history_endpoint": "/api/genesis/mt5/shadow-trades/history?symbol={symbol}&timeframe={timeframe}",
+        "genesis_mt5_shadow_trades_runtime_open_backfill_endpoint": "/api/genesis/mt5/shadow-trades/runtime-open/backfill",
         "genesis_mt5_shadow_trades_close_expired_endpoint": "/api/genesis/mt5/shadow-trades/close-expired",
         "genesis_mt5_shadow_trade_close_endpoint": "/api/genesis/mt5/shadow-trades/close",
         "genesis_mt5_debug_storage_endpoint": "/api/genesis/mt5/debug/storage?symbol={symbol}",
@@ -4193,6 +4195,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/mt5/shadow-trades/close":
             result = post_genesis_mt5_shadow_trade_close(body)
             self._write_json(result, HTTPStatus.OK)
+            return
+
+        if parsed.path == "/api/genesis/mt5/shadow-trades/runtime-open/backfill":
+            result = post_genesis_mt5_shadow_trades_runtime_open_backfill(body)
+            self._write_json(result, HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
         if parsed.path == "/api/genesis/mt5/order-request":

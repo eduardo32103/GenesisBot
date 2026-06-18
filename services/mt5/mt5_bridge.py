@@ -26,6 +26,7 @@ from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     run_xau_m15_paper_observation_readiness,
     run_xau_m15_paper_observation_shadow_once,
 )
+from services.mt5.mt5_xau_m15_runtime_open_shadow_backfill import run_xau_m15_runtime_open_shadow_backfill
 
 
 def build_router(memory: MemoryStore | None = None) -> MT5SignalRouter:
@@ -416,6 +417,16 @@ def mt5_shadow_trades_history(*, memory: MemoryStore | None = None, symbol: str 
     del memory
     payload = persistent_intelligence_shadow_trade_history(symbol=symbol, timeframe=timeframe, limit=limit)
     return _merge_runtime_closed_history(payload, symbol=symbol, timeframe=timeframe, limit=limit)
+
+
+def mt5_shadow_trades_runtime_open_backfill(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:
+    del memory
+    body = payload if isinstance(payload, dict) else {}
+    snapshot = body.get("snapshot") if isinstance(body.get("snapshot"), dict) else body
+    return run_xau_m15_runtime_open_shadow_backfill(
+        snapshot=snapshot if isinstance(snapshot, dict) else {},
+        confirm_paper_only_backfill=bool(body.get("confirm_paper_only_backfill")),
+    )
 
 
 def mt5_shadow_trades_close_expired(payload: dict[str, Any] | None = None, *, memory: MemoryStore | None = None) -> dict[str, Any]:

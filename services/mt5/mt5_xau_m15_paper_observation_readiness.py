@@ -210,8 +210,39 @@ def run_xau_m15_paper_observation_shadow_once(
         )
 
     trade = _build_paper_observation_shadow_trade(readiness)
-    update_open_shadow_trade(SYMBOL, trade, timeframe=TIMEFRAME)
     persist_result = _persist_open_shadow_trade(readiness_kwargs.get("store"), trade)
+    if not bool(persist_result.get("ok")):
+        retained = bool(persist_result.get("queued") or persist_result.get("critical_persistence_failed") or persist_result.get("schema_missing_write_freeze"))
+        return {
+            "ok": False,
+            "status": "xau_m15_paper_observation_shadow_once_open_persistence_failed",
+            "mode": "paper_shadow_once",
+            "decision": "NO_TRADE",
+            "reason": "open_persistence_failed",
+            "symbol": SYMBOL,
+            "broker_symbol": BROKER_SYMBOL,
+            "timeframe": TIMEFRAME,
+            "candidate_profile": CANDIDATE_PROFILE,
+            "paper_shadow_once_requested": True,
+            "readiness_state": readiness.get("readiness_state") or "blocked",
+            "recommendation": "drain_queue_or_backfill_runtime_open_shadow",
+            "next_action": "drain_queue_or_backfill_runtime_open_shadow",
+            "readiness": readiness,
+            "paper_shadow_created": False,
+            "shadow_trade_id": trade["shadow_trade_id"],
+            "shadow_trade": trade,
+            "persistent_shadow_write": persist_result,
+            "persistent_shadow_write_ok": False,
+            "open_persistence_failed": True,
+            "open_write_retained_critical": retained,
+            "open_shadow_count_before": open_count_before,
+            "open_shadow_count_after": open_count_before,
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+            "applies_to_real_trading": False,
+            **_safety(),
+        }
+    update_open_shadow_trade(SYMBOL, trade, timeframe=TIMEFRAME)
     return {
         "ok": True,
         "status": "xau_m15_paper_observation_shadow_once_created",
@@ -639,7 +670,7 @@ def _persist_open_shadow_trade(store: Any | None, trade: dict[str, Any]) -> dict
     if not hasattr(active_store, "record_shadow_trade"):
         return {"ok": True, "skipped": True, "reason": "store_has_no_record_shadow_trade", **_safety()}
     try:
-        result = active_store.record_shadow_trade(trade, critical=False)
+        result = active_store.record_shadow_trade(trade, critical=True)
     except Exception as exc:
         return {"ok": False, "reason": type(exc).__name__, **_safety()}
     return dict(result or {"ok": False, "reason": "empty_record_shadow_trade_result", **_safety()})

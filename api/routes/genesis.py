@@ -56,6 +56,7 @@ from services.mt5.mt5_bridge import (
     mt5_shadow_trades_close_expired,
     mt5_shadow_trades_history,
     mt5_shadow_trades_open,
+    mt5_shadow_trades_runtime_open_backfill,
     mt5_status,
     mt5_strategy_tournament_status,
     mt5_strategy_profiles,
@@ -195,6 +196,10 @@ def post_genesis_mt5_shadow_trades_close_expired(payload: dict[str, Any] | None 
 
 def post_genesis_mt5_shadow_trade_close(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return mt5_shadow_trade_close(payload)
+
+
+def post_genesis_mt5_shadow_trades_runtime_open_backfill(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    return mt5_shadow_trades_runtime_open_backfill(payload)
 
 
 def get_genesis_mt5_debug_storage(symbol: str = "", limit: int = 20) -> dict[str, Any]:

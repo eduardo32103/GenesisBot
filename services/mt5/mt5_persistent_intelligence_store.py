@@ -67,6 +67,23 @@ SHADOW_HISTORY_OPTIONAL_COLUMNS = (
     "close_decision_reason",
 )
 SHADOW_HISTORY_COLUMNS = (*SHADOW_HISTORY_BASE_COLUMNS, *SHADOW_HISTORY_OPTIONAL_COLUMNS)
+_SHADOW_TRADE_OPTIONAL_WRITE_COLUMNS = {
+    "broker_symbol",
+    "profile",
+    "strategy_profile",
+    "stop_loss",
+    "take_profit",
+    "exit_price",
+    "pnl",
+    "pnl_pct",
+    "r_multiple",
+    "closed_at",
+    "exit_reason",
+    "bars_since_entry",
+    "safety_exit_category",
+    "safety_exit_reason_detail",
+    "close_decision_reason",
+}
 _POSTGRES_DRIVER_NAME = "pg8000"
 _JSONB_COLUMNS = {
     "recommended_candidate",
@@ -832,7 +849,7 @@ class MT5PersistentIntelligenceStore:
                 "order_policy": "journal_only_no_broker",
             }
         )
-        return self._safe_upsert("mt5_shadow_trades", row, critical=critical)
+        return self._safe_shadow_trade_upsert(row, critical=critical)
 
     def record_decision_event(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _sanitize_row(
@@ -1116,6 +1133,37 @@ class MT5PersistentIntelligenceStore:
             return _write_ok(table, started)
         except Exception as exc:
             return _write_failed(table, row, exc, started, critical=critical_write, operation="upsert")
+        finally:
+            persistent_write_backpressure().end_write(gate.get("token"))
+
+    def _safe_shadow_trade_upsert(self, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
+        critical_write = _critical_write("mt5_shadow_trades", row) if critical is None else bool(critical)
+        if _schema_missing_write_freeze_status().get("writes_frozen"):
+            return persistent_write_backpressure().record_schema_missing_freeze("mt5_shadow_trades", row, critical=critical_write)
+        gate = persistent_write_backpressure().begin_write("mt5_shadow_trades", row, critical=critical_write, operation="upsert")
+        if gate.get("short_circuit"):
+            return gate["result"]
+        started = time.monotonic()
+        attempted = dict(row)
+        omitted_columns: list[str] = []
+        try:
+            if not self._available():
+                return _write_unavailable("mt5_shadow_trades", row, _client_unavailable_reason(self.client), critical=critical_write, operation="upsert")
+            while True:
+                try:
+                    self.client.upsert("mt5_shadow_trades", attempted, on_conflict=TABLE_PRIMARY_KEYS.get("mt5_shadow_trades", ()))
+                    result = _write_ok("mt5_shadow_trades", started)
+                    if omitted_columns:
+                        result["shadow_trade_schema_fallback_used"] = True
+                        result["omitted_optional_columns"] = list(omitted_columns)
+                    return result
+                except Exception as exc:
+                    missing = _missing_column_from_error(_safe_error(exc))
+                    if missing and missing in _SHADOW_TRADE_OPTIONAL_WRITE_COLUMNS and missing in attempted:
+                        attempted.pop(missing, None)
+                        omitted_columns.append(missing)
+                        continue
+                    return _write_failed("mt5_shadow_trades", row, exc, started, critical=critical_write, operation="upsert")
         finally:
             persistent_write_backpressure().end_write(gate.get("token"))
 
@@ -1718,6 +1766,7 @@ def _normalize_shadow_history_rows(rows: list[dict[str, Any]]) -> list[dict[str,
 def _missing_column_from_error(reason: object) -> str:
     text = str(reason or "")
     patterns = (
+        r'column\s+"(?P<column>[A-Za-z_][A-Za-z0-9_]*)"\s+of\s+relation\s+"?[A-Za-z_][A-Za-z0-9_]*"?\s+does\s+not\s+exist',
         r'column\s+"(?P<column>[A-Za-z_][A-Za-z0-9_]*)"\s+does not exist',
         r"Could not find the '(?P<column>[A-Za-z_][A-Za-z0-9_]*)' column",
         r"column (?P<column>[A-Za-z_][A-Za-z0-9_]*) does not exist",

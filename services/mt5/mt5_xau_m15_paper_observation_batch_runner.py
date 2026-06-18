@@ -280,6 +280,8 @@ def run_xau_m15_paper_observation_batch_runner(
         "batch_stats": stats,
         "paper_shadow_created": any(bool(cycle.get("paper_shadow_created")) for cycle in cycle_outputs),
         "paper_close_applied": any(bool(cycle.get("paper_close_applied")) for cycle in cycle_outputs),
+        "open_persistence_failed": any(bool(cycle.get("open_persistence_failed")) for cycle in cycle_outputs),
+        "open_write_retained_critical": any(bool(cycle.get("open_write_retained_critical")) for cycle in cycle_outputs),
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
@@ -521,6 +523,20 @@ def run_xau_m15_paper_observation_batch_step(
     opened = _safe_call(client.open_shadow_once)
     if _unsafe_payload([opened]):
         return _result("stopped_by_safety", cycle_number, stats, stop_reason="open_shadow_safety_flag_detected", terminal=True, open_result=opened)
+    if bool(opened.get("open_persistence_failed")):
+        return _result(
+            "stopped_by_open_persistence_failed",
+            cycle_number,
+            stats,
+            db_state=_public_db(db),
+            readiness=readiness,
+            open_payload=open_payload,
+            monitor=monitor,
+            open_result=opened,
+            stop_reason="open_persistence_failed",
+            next_action="drain_queue_or_backfill_runtime_open_shadow",
+            terminal=True,
+        )
     created = bool(opened.get("paper_shadow_created"))
     shadow_id = str(opened.get("shadow_trade_id") or "")
     if not created:
@@ -742,6 +758,8 @@ def _result(
         "should_watch_only": bool(mon.get("should_watch_only")),
         "paper_shadow_created": bool(paper_shadow_created),
         "paper_close_applied": bool(paper_close_applied),
+        "open_persistence_failed": bool((open_result or {}).get("open_persistence_failed")),
+        "open_write_retained_critical": bool((open_result or {}).get("open_write_retained_critical")),
         "shadow_trade_id": current_shadow_id or str((open_result or {}).get("shadow_trade_id") or mon.get("shadow_trade_id") or ""),
         "readiness": ready,
         "open_shadow_payload": open_payload or {},
