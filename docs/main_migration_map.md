@@ -11,6 +11,11 @@ This file maps the current legacy `main.py` into the new module structure.
   - Google News fallback delegated to `integrations/news/client.py`
   - stock analysis + chart send flow delegated to `services/analysis/runtime.py`
   - Telegram polling runtime delegated to `app/telegram/bot.py`
+  - `/start` command UI delegated to `app/telegram/handlers/start.py`
+  - alert command wrappers delegated to `app/telegram/handlers/alerts.py`
+  - operation command wrappers delegated to `app/telegram/handlers/operations.py`
+  - DB health probe extracted to `infra/db/health.py`
+  - backup/recovery command flow extracted to `infra/storage/backups.py`
 
 - Still pending as full extraction:
   - pure movement of the remaining business logic out of `main.py`
@@ -86,10 +91,14 @@ This file maps the current legacy `main.py` into the new module structure.
 ## Telegram presentation layer
 
 - `main.py:7528` `/start`
+- `main.py:7602` `/check_db`
+- `main.py:7727` `/recover`
+- `main.py:7744` `/backup`
 - `main.py:7660` photo handler
 - `main.py:8197` text handler
   - Move to:
     - `app/telegram/handlers/start.py`
+    - `app/telegram/handlers/operations.py`
     - `app/telegram/handlers/analysis.py`
     - `app/telegram/handlers/alerts.py`
     - `app/telegram/handlers/geopolitics.py`
