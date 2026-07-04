@@ -41,6 +41,16 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "queue_depth_high")
         self.assertEqual(client.open_calls, 0)
 
+    def test_no_open_if_failed_writes_remain_after_queue_empty(self) -> None:
+        client = _FakeClient(db={**_db(), "queue_depth": 0, "queued_writes": 0, "failed_writes": 3})
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "stopped_by_db")
+        self.assertEqual(result["stop_reason"], "failed_writes_present")
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+
     def test_no_open_if_shadow_already_open(self) -> None:
         client = _FakeClient(open_count=1, monitor=_monitor_open())
 
@@ -102,6 +112,18 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(client.open_calls, 0)
         self.assertFalse(result["paper_shadow_created"])
 
+    def test_ready_readiness_with_stale_runtime_context_is_normalized_blocked(self) -> None:
+        client = _FakeClient(readiness={**_ready(), "runtime_context_recent": False})
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["readiness_state"], "blocked")
+        self.assertEqual(result["stop_reason"], "runtime_context_recent")
+        self.assertIn("runtime_context_recent", result["failed_gate_names"])
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+
     def test_strict_paper_probe_opens_only_when_stricter_gates_pass(self) -> None:
         client = _FakeClient(readiness=_recent_edge_ready(strict_passed=True))
 
@@ -147,6 +169,57 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertTrue(result["open_write_retained_critical"])
         self.assertEqual(result["stop_reason"], "open_persistence_failed")
         self.assertEqual(result["next_action"], "drain_queue_or_backfill_runtime_open_shadow")
+        self.assertEqual(client.open_calls, 1)
+
+    def test_created_open_response_without_shadow_id_is_invalid_contract(self) -> None:
+        client = _FakeClient(
+            open_result={
+                "ok": True,
+                "paper_shadow_created": True,
+                "shadow_trade_id": "",
+                "open_shadow_count_after": 0,
+                **_safety(),
+            }
+        )
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "stopped_by_invalid_open_response")
+        self.assertEqual(result["stop_reason"], "open_response_missing_shadow_trade_id")
+        self.assertEqual(result["open_count"], 0)
+        self.assertEqual(result["current_shadow_id"], "")
+        self.assertEqual(result["current_shadow_source"], "")
+        self.assertEqual(result["batch_stats"]["session_trades_opened"], 0)
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(client.open_calls, 1)
+
+    def test_invalid_created_open_response_does_not_repeat_next_cycle(self) -> None:
+        client = _FakeClient(
+            open_result={
+                "ok": True,
+                "paper_shadow_created": True,
+                "shadow_trade_id": "",
+                "open_shadow_count_after": 0,
+                **_safety(),
+            }
+        )
+
+        result = run_xau_m15_paper_observation_batch_runner(
+            client=client,
+            dry_run=False,
+            paper_only_confirmed=True,
+            target_trades=3,
+            max_cycles=2,
+            state_file=None,
+            results_file=None,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertEqual(result["runner_state"], "stopped_by_invalid_open_response")
+        self.assertEqual(result["cycles_completed"], 1)
+        self.assertEqual(result["session_trades_opened"], 0)
+        self.assertEqual(result["current_shadow_id"], "")
+        self.assertFalse(result["paper_shadow_created"])
         self.assertEqual(client.open_calls, 1)
 
     def test_does_not_close_entry_block_only(self) -> None:

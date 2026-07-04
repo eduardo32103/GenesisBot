@@ -4,10 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.run_xau_m15_paper_test_supervisor import _parse_args
 from services.mt5.mt5_xau_m15_paper_test_supervisor import repair_orphan_state, run_xau_m15_paper_test_supervisor
 
 
 class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
+    def test_cli_accepts_preflight_only_flag(self) -> None:
+        args = _parse_args(["--preflight-only", "--json"])
+
+        self.assertTrue(args.preflight_only)
+        self.assertTrue(args.json)
+
     def test_supervisor_dry_run_does_not_open_shadow(self) -> None:
         client = _SupervisorClient()
 
@@ -19,6 +26,92 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_supervisor_preflight_only_does_not_call_monitor_open_or_post_paths(self) -> None:
+        client = _SupervisorClient(
+            readiness={
+                **_recent_edge_readiness(),
+                "runtime_context_recent": False,
+                "capital_state": "kill_switch",
+                "capital_allows_observation": False,
+                "risk_state": "defensive",
+                "failed_gate_names": ["runtime_context_recent", "capital_allows_observation", "risk_allows_observation"],
+            },
+            open_payload={
+                "ok": True,
+                "open_count": 0,
+                "runtime_open_count": 0,
+                "persistent_open_count": 0,
+                "merged_open_count": 0,
+                "duplicate_detected": False,
+                "open_source": "none",
+                "trades": [],
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            },
+            history_payload={
+                "ok": True,
+                "history_available": True,
+                "closed_count": 16,
+                "closed_trades": [],
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            },
+        )
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["supervisor_state"], "preflight_only")
+        self.assertEqual(result["decision"], "blocked_by_readiness")
+        self.assertEqual(result["closed_count"], 16)
+        self.assertEqual(result["open_count"], 0)
+        self.assertEqual(result["merged_open_count"], 0)
+        self.assertEqual(result["capital_state"], "kill_switch")
+        self.assertFalse(result["capital_allows_observation"])
+        self.assertEqual(result["risk_state"], "defensive")
+        self.assertFalse(result["risk_allows_observation"])
+        self.assertIn("runtime_context_recent", result["blockers"])
+        self.assertIn("capital_allows_observation", result["blockers"])
+        self.assertIn("risk_allows_observation", result["blockers"])
+        self.assertEqual(result["next_safe_action"], "resolve_readiness_blockers_before_monitor_or_paper_open")
+        self.assertEqual(client.monitor_calls, 0)
+        self.assertEqual(client.open_calls, 0)
+        self.assertEqual(client.drain_calls, 0)
+        self.assertFalse(result["post_called"])
+        self.assertFalse(result["monitor_called"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["paper_close_applied"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_supervisor_preflight_only_does_not_drain_queue(self) -> None:
+        client = _SupervisorClient(db_queue=2, queue_after_drain=0)
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["decision"], "blocked_by_db")
+        self.assertIn("queue_depth_high", result["blockers"])
+        self.assertEqual(result["queue_depth"], 2)
+        self.assertEqual(client.drain_calls, 0)
+        self.assertEqual(client.monitor_calls, 0)
+        self.assertEqual(client.open_calls, 0)
 
     def test_supervisor_drains_queue_before_opening(self) -> None:
         client = _SupervisorClient(db_queue=2, queue_after_drain=0)
@@ -58,6 +151,24 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         self.assertEqual(client.open_calls, 0)
         self.assertFalse(result["paper_shadow_created"])
 
+    def test_supervisor_does_not_open_if_failed_writes_remain_after_queue_empty(self) -> None:
+        client = _SupervisorClient(failed_writes=2)
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            dry_run=False,
+            paper_only_confirmed=True,
+            once=True,
+            target_trades=3,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["supervisor_state"], "stopped_by_db")
+        self.assertEqual(result["stop_reason"], "failed_writes_present")
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+
     def test_supervisor_reports_open_persistence_failure_without_created_shadow(self) -> None:
         client = _SupervisorClient(
             open_result={
@@ -87,6 +198,37 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         self.assertFalse(result["paper_shadow_created"])
         self.assertTrue(result["open_persistence_failed"])
         self.assertTrue(result["open_write_retained_critical"])
+        self.assertEqual(client.open_calls, 1)
+
+    def test_supervisor_reports_invalid_open_response_without_opened_session_trade(self) -> None:
+        client = _SupervisorClient(
+            open_result={
+                "ok": True,
+                "paper_shadow_created": True,
+                "shadow_trade_id": "",
+                "open_shadow_count_after": 0,
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            }
+        )
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            dry_run=False,
+            paper_only_confirmed=True,
+            once=True,
+            target_trades=3,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["supervisor_state"], "stopped_by_invalid_open_response")
+        self.assertEqual(result["stop_reason"], "open_response_missing_shadow_trade_id")
+        self.assertEqual(result["session_trades_opened"], 0)
+        self.assertEqual(result["current_shadow_id"], "")
+        self.assertEqual(result["open_count"], 0)
+        self.assertFalse(result["paper_shadow_created"])
         self.assertEqual(client.open_calls, 1)
 
     def test_supervisor_exposes_recent_edge_negative_gate_summary(self) -> None:
@@ -165,17 +307,22 @@ class _SupervisorClient:
         *,
         db_queue: int = 0,
         queue_after_drain: int = 0,
+        failed_writes: int = 0,
         open_payload: dict[str, object] | None = None,
         open_result: dict[str, object] | None = None,
+        history_payload: dict[str, object] | None = None,
         readiness: dict[str, object] | None = None,
     ) -> None:
         self.db_queue = db_queue
         self.queue_after_drain = queue_after_drain
+        self.failed_writes = failed_writes
         self.open_payload = open_payload
         self.open_result = dict(open_result) if open_result is not None else None
+        self.history_payload = dict(history_payload) if history_payload is not None else None
         self.readiness_payload = dict(readiness) if readiness is not None else None
         self.drain_calls = 0
         self.open_calls = 0
+        self.monitor_calls = 0
 
     def persistent_status(self) -> dict[str, object]:
         return {
@@ -184,6 +331,8 @@ class _SupervisorClient:
             "db_degraded": False,
             "tables_ready": True,
             "queue_depth": self.db_queue,
+            "queued_writes": 0,
+            "failed_writes": self.failed_writes,
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
@@ -206,6 +355,8 @@ class _SupervisorClient:
         return {"ok": True, "open_count": 0, "merged_open_count": 0, "trades": [], "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
 
     def shadow_trade_history(self) -> dict[str, object]:
+        if self.history_payload is not None:
+            return dict(self.history_payload)
         return {"ok": True, "history_available": True, "trades": [], "closed_trades": [], "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
 
     def readiness(self) -> dict[str, object]:
@@ -229,6 +380,7 @@ class _SupervisorClient:
         }
 
     def monitor(self, **kwargs: object) -> dict[str, object]:
+        self.monitor_calls += 1
         return {
             "ok": True,
             "monitor_state": "no_action",
@@ -250,6 +402,7 @@ class _SupervisorClient:
             "ok": True,
             "paper_shadow_created": True,
             "shadow_trade_id": "xau-supervisor-open",
+            "open_shadow_count_after": 1,
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",

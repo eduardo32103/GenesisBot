@@ -37,6 +37,31 @@ class DashboardLiveMarketProxyTests(unittest.TestCase):
         with patch.dict("os.environ", env, clear=False):
             self.assertFalse(api_main._local_live_sources_missing())
 
+    def test_mt5_runtime_tick_and_bars_posts_are_proxy_allowed_without_shadow_mutations(self) -> None:
+        self.assertTrue(api_main._is_proxy_path("/api/genesis/mt5/tick", "POST"))
+        self.assertTrue(api_main._is_proxy_path("/api/genesis/mt5/bars", "POST"))
+        self.assertFalse(api_main._is_proxy_path("/api/genesis/mt5/xau-m15/paper-observation/shadow-once", "POST"))
+        self.assertFalse(api_main._is_proxy_path("/api/genesis/mt5/shadow-trades/close", "POST"))
+
+    def test_mt5_runtime_posts_try_proxy_before_local_handlers(self) -> None:
+        cases = [
+            ("/api/genesis/mt5/tick", "api.main.post_genesis_mt5_tick"),
+            ("/api/genesis/mt5/bars", "api.main.post_genesis_mt5_bars"),
+        ]
+        for path, local_handler in cases:
+            with self.subTest(path=path):
+                handler = object.__new__(api_main.DashboardRequestHandler)
+                handler.path = path
+                handler._read_json_body = lambda: {"symbol": "XAUUSD.b", "timeframe": "M15"}
+                with patch.object(api_main.DashboardRequestHandler, "_try_proxy_to_production", return_value=True) as mock_proxy:
+                    with patch(local_handler) as mock_local:
+                        handler.do_POST()
+
+                mock_proxy.assert_called_once()
+                self.assertEqual(mock_proxy.call_args.kwargs["method"], "POST")
+                self.assertEqual(mock_proxy.call_args.kwargs["body"]["symbol"], "XAUUSD.b")
+                mock_local.assert_not_called()
+
     @patch("api.main._market_search_for_proxy")
     @patch("api.main.search_dashboard_market_ticker")
     def test_market_search_uses_live_proxy_when_local_has_no_price(self, mock_local, mock_proxy) -> None:

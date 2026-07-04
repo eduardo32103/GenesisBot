@@ -48,7 +48,7 @@ class LocalPaperObservationClient:
         return mt5_shadow_trades_open(symbol=SYMBOL, limit=10)
 
     def shadow_trade_history(self) -> dict[str, Any]:
-        return mt5_shadow_trades_history(symbol=SYMBOL, timeframe=TIMEFRAME, limit=20)
+        return mt5_shadow_trades_history(symbol=SYMBOL, timeframe=TIMEFRAME, limit=50)
 
     def readiness(self) -> dict[str, Any]:
         return mt5_xau_m15_paper_observation_readiness()
@@ -104,7 +104,7 @@ class HttpPaperObservationClient:
         return self._get(f"/api/genesis/mt5/shadow-trades/open?{urlencode({'symbol': SYMBOL})}")
 
     def shadow_trade_history(self) -> dict[str, Any]:
-        return self._get(f"/api/genesis/mt5/shadow-trades/history?{urlencode({'symbol': SYMBOL, 'timeframe': TIMEFRAME, 'limit': 20})}")
+        return self._get(f"/api/genesis/mt5/shadow-trades/history?{urlencode({'symbol': SYMBOL, 'timeframe': TIMEFRAME, 'limit': 50})}")
 
     def readiness(self) -> dict[str, Any]:
         return self._get("/api/genesis/mt5/xau-m15/paper-observation/readiness")
@@ -644,6 +644,25 @@ def run_xau_m15_paper_observation_batch_step(
             current_shadow_source=current_shadow_source,
             next_action="wait_and_recheck",
         )
+    open_contract_error = _open_response_contract_error(opened)
+    if open_contract_error:
+        return _result(
+            "stopped_by_invalid_open_response",
+            cycle_number,
+            stats,
+            db_state=_public_db(db),
+            readiness=readiness,
+            open_payload=open_payload,
+            monitor=monitor,
+            open_result=opened,
+            stop_reason=open_contract_error,
+            current_shadow_id="",
+            current_shadow_source="",
+            paper_shadow_created=False,
+            open_shadow_count=0,
+            next_action="recheck_open_shadow_contract",
+            terminal=True,
+        )
     stats = {
         **stats,
         "trades_opened": int(stats.get("trades_opened") or 0) + 1,
@@ -1012,6 +1031,20 @@ def _normalize_readiness_diagnostics(readiness: dict[str, Any]) -> dict[str, Any
                 "applies_to_real_trading": False,
                 **_safety(),
             }
+    readiness_contract_error = _readiness_contract_error(ready)
+    if readiness_contract_error and str(ready.get("readiness_state") or "") == "ready_for_one_cycle_paper_observation":
+        ready["readiness_state_original"] = "ready_for_one_cycle_paper_observation"
+        ready["readiness_state"] = "blocked"
+        ready["readiness_contract_warning"] = readiness_contract_error
+        if str(ready.get("recommendation") or "") in {"", "ready_for_one_cycle_paper_observation", "resolve_observation_safety_gates", "readiness_blocked"}:
+            ready["recommendation"] = readiness_contract_error
+        failed_names = [str(name) for name in (ready.get("failed_gate_names") or [])]
+        if readiness_contract_error not in failed_names:
+            failed_names.append(readiness_contract_error)
+        ready["failed_gate_names"] = _dedupe(failed_names)
+        reasons = ready.get("failed_gate_reasons") if isinstance(ready.get("failed_gate_reasons"), dict) else {}
+        reasons[readiness_contract_error] = {"actual": False, "required": True}
+        ready["failed_gate_reasons"] = reasons
     ready["gate_summary"] = _gate_summary_from_readiness(ready)
     return ready
 
@@ -1056,6 +1089,29 @@ def _safe_call(fn: Callable[..., dict[str, Any]], **kwargs: Any) -> dict[str, An
     return dict(result or {"ok": False, "reason": "empty_payload", **_safety()})
 
 
+def _open_response_contract_error(opened: dict[str, Any]) -> str:
+    if not bool(opened.get("paper_shadow_created")):
+        return ""
+    if not str(opened.get("shadow_trade_id") or "").strip():
+        return "open_response_missing_shadow_trade_id"
+    after_count = _open_response_after_count(opened)
+    if after_count is None:
+        return "open_response_missing_open_count_after"
+    if after_count < 1:
+        return "open_response_created_without_open_shadow"
+    return ""
+
+
+def _open_response_after_count(opened: dict[str, Any]) -> int | None:
+    for key in ("open_shadow_count_after", "merged_open_count", "open_count", "open_shadow_count"):
+        if key in opened:
+            value = _num(opened.get(key))
+            if value is None:
+                return None
+            return int(value)
+    return None
+
+
 def _db_block_reason(db: dict[str, Any]) -> str:
     if not bool(db.get("db_available")):
         return "db_unavailable"
@@ -1067,6 +1123,21 @@ def _db_block_reason(db: dict[str, Any]) -> str:
         return "queue_depth_high"
     if int(_num(db.get("queued_writes")) or 0) > 0:
         return "queued_writes_pending"
+    if int(_num(db.get("failed_writes")) or 0) > 0:
+        return "failed_writes_present"
+    return ""
+
+
+def _readiness_contract_error(readiness: dict[str, Any]) -> str:
+    if not bool(readiness.get("candidate_found")):
+        return "candidate_missing"
+    if str(readiness.get("candidate_status") or "") != "paper_observation_review":
+        return "candidate_not_in_review"
+    for key in ("runtime_context_available", "runtime_context_recent", "tick_available", "capital_allows_observation", "risk_allows_observation", "adaptive_allows_observation"):
+        if not bool(readiness.get(key)):
+            return key
+    if int(_num(readiness.get("bars_count")) or 0) < 100:
+        return "m15_bars_count_below_100"
     return ""
 
 

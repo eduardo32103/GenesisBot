@@ -173,6 +173,8 @@ _YAHOO_TIMEFRAMES = {
 _PROXY_POST_PATHS = {
     "/api/genesis/analyze-image",
     "/api/genesis/memory/event",
+    "/api/genesis/mt5/bars",
+    "/api/genesis/mt5/tick",
 }
 
 
@@ -4079,6 +4081,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/genesis/mt5/forward-replay/run":
             logging.getLogger("genesis.mt5.forward_replay").info("forward_replay_request_received path=%s", parsed.path)
         body = self._read_json_body()
+        if parsed.path in {"/api/genesis/mt5/tick", "/api/genesis/mt5/bars"} and self._try_proxy_to_production(parsed, method="POST", body=body):
+            return
         if parsed.path == "/api/genesis/analyze-image":
             body = _normalize_analyze_image_body(body)
         message = _genesis_message_from_body(body)
