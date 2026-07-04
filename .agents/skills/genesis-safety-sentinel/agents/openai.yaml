@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis Safety Sentinel"
+  short_description: "Audit broker safety constraints"
+  default_prompt: "Use $genesis-safety-sentinel to audit GENESIS changes for paper-only broker safety."

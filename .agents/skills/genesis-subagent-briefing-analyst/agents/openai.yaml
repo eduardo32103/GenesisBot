@@ -1,0 +1,4 @@
+interface:
+  display_name: "Jefe de gabinete"
+  short_description: "Synthesize GENESIS agent handoffs"
+  default_prompt: "Use $genesis-subagent-briefing-analyst to produce a concise GENESIS handoff briefing before the next step."

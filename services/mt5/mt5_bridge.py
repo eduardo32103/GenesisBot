@@ -489,10 +489,11 @@ def mt5_xau_m15_paper_shadow_monitor(
         apply_paper_close=requested_apply,
         store=store,
         exit_policy=str(body.get("exit_policy") or "default"),
-        time_stop_bars=int(_maybe_float(body.get("time_stop_bars")) or 2),
+        time_stop_bars=int(_maybe_float(body.get("time_stop_bars")) or 1),
         max_hold_minutes=_maybe_float(body.get("max_hold_minutes")),
         min_r_to_arm_trailing=float(_maybe_float(body.get("min_r_to_arm_trailing")) or 0.25),
         giveback_r=float(_maybe_float(body.get("giveback_r")) or 0.15),
+        fast_loss_cut_r=float(_maybe_float(body.get("fast_loss_cut_r")) or -0.25),
     )
 
 

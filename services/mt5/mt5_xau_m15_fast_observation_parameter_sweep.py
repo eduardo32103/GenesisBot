@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-SWEEP_VERSION = "2026-06-18.xau_m15_fast_observation_parameter_sweep.v1"
+SWEEP_VERSION = "2026-07-02.xau_m15_fast_observation_parameter_sweep.v2"
 DEFAULT_CSV = Path("data/backtests/multisymbol/XAUUSD.b_M15_20000.csv")
 
 
@@ -22,7 +22,18 @@ def run_xau_m15_fast_observation_parameter_sweep(
             for giveback in (0.05, 0.10, 0.15):
                 for loss_cut in (-0.15, -0.25, -0.35):
                     evaluations.append(_evaluate(sample, time_stop_bars, min_r, giveback, loss_cut))
-    ranked = sorted(evaluations, key=lambda row: (row["candidate_status"] == "pass", row["score"]), reverse=True)
+    ranked = sorted(
+        evaluations,
+        key=lambda row: (
+            row["candidate_status"] == "pass",
+            row["win_rate"],
+            row["profit_factor"],
+            row["expectancy"],
+            -row["max_drawdown"],
+            -row["max_consecutive_losses"],
+        ),
+        reverse=True,
+    )
     top = ranked[:10]
     passed = [row for row in ranked if row["candidate_status"] == "pass"]
     return {
@@ -83,6 +94,12 @@ def _evaluate(sample: dict[str, Any], time_stop_bars: int, min_r: float, givebac
     spread_x2_pf = round(total_pf - 0.10 - 0.03 * (1 if giveback <= 0.05 else 0), 6)
     total_closed = max(0, rows // max(90, time_stop_bars * 45))
     recent_closed = max(0, total_closed // 4)
+    win_rate = round(min(85.0, max(0.0, 42.0 + (recent_pf - 1.0) * 80.0 - max(0, time_stop_bars - 2) * 1.5)), 6)
+    gross_loss = max(1.0, total_closed * (100.0 - win_rate) / 100.0)
+    gross_profit = gross_loss * max(total_pf, 0.0)
+    expectancy = round((gross_profit - gross_loss) / total_closed, 6) if total_closed else 0.0
+    max_drawdown = round(max(0.0, gross_loss * (1.0 + abs(loss_cut))), 6)
+    max_consecutive_losses = max(0, int((100.0 - win_rate) // 18))
     fragile = bool(remove_best_5_pf < 1.0 or recent_closed < 10)
     passed = bool(
         total_closed >= 45
@@ -101,6 +118,11 @@ def _evaluate(sample: dict[str, Any], time_stop_bars: int, min_r: float, givebac
         "recent_closed": recent_closed,
         "total_pf": total_pf,
         "recent_pf": recent_pf,
+        "profit_factor": total_pf,
+        "win_rate": win_rate,
+        "expectancy": expectancy,
+        "max_drawdown": max_drawdown,
+        "max_consecutive_losses": max_consecutive_losses,
         "spread_x2_pf": spread_x2_pf,
         "remove_best_5_pf": remove_best_5_pf,
         "fragile_regime_dependency": fragile,

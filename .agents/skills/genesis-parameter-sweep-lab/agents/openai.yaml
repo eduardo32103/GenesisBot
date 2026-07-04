@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis Parameter Sweep Lab"
+  short_description: "Optimize paper observation params"
+  default_prompt: "Use $genesis-parameter-sweep-lab to evaluate XAUUSD M15 paper-only parameter sweeps."

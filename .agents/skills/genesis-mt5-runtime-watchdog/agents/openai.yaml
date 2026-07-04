@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis MT5 Runtime Watchdog"
+  short_description: "Validate XAUUSD M15 runtime feed"
+  default_prompt: "Use $genesis-mt5-runtime-watchdog to verify XAUUSD.b M15 tick and bars readiness."

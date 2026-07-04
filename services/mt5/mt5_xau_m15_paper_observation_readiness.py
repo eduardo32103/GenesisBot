@@ -14,7 +14,7 @@ from services.mt5.mt5_runtime_snapshot import get_snapshot, update_open_shadow_t
 from services.mt5.mt5_symbol_cost_model import build_symbol_cost_model
 
 
-READINESS_VERSION = "2026-06-12.mt5_xau_m15_paper_observation_readiness.v1"
+READINESS_VERSION = "2026-07-03.mt5_xau_m15_paper_observation_readiness.v2"
 
 SYMBOL = "XAUUSD"
 BROKER_SYMBOL = "XAUUSD.b"
@@ -75,7 +75,34 @@ def run_xau_m15_paper_observation_readiness(
     )
     failed = [name for name, gate in gates.items() if not gate["passed"]]
     ready = not failed
-    recommendation = _recommendation(failed)
+    risk_reason = _risk_reason(risk)
+    recent_edge_negative = _is_recent_edge_negative(risk_reason)
+    paper_signal = _select_paper_observation_signal(readiness={}, payload={}, snapshot_override=snapshot)
+    strict_probe = _strict_paper_probe_diagnostics(
+        db=db,
+        runtime=runtime,
+        spread=spread,
+        snapshot=snapshot,
+        open_shadow_count=len(open_trades),
+        max_open_shadow_trades=max_open_shadow_trades,
+        signal=paper_signal,
+        failed_gates=failed,
+        recent_edge_negative=recent_edge_negative,
+    )
+    entry_allowed_for_paper_test = ready
+    entry_block_type = "none"
+    if recent_edge_negative:
+        entry_allowed_for_paper_test = bool(strict_probe.get("strict_paper_probe_passed"))
+        entry_block_type = "adaptive_paper_cooldown"
+    elif failed:
+        entry_block_type = "safety_gate_block"
+    recommendation = _recommendation(
+        failed,
+        recent_edge_negative=recent_edge_negative,
+        strict_paper_probe_passed=bool(strict_probe.get("strict_paper_probe_passed")),
+    )
+    failed_gate_reasons = _failed_gate_reasons(gates, failed)
+    gate_summary = _gate_summary(gates, failed, risk_reason=risk_reason, recent_edge_negative=recent_edge_negative)
     return {
         "ok": True,
         "status": "xau_m15_paper_observation_readiness_ready",
@@ -96,6 +123,7 @@ def run_xau_m15_paper_observation_readiness(
         "runtime_context_missing_fields": runtime.get("runtime_context_missing_fields") or [],
         "runtime_snapshot_source": runtime.get("snapshot_source") or "",
         "symbol_alias_used": symbol_alias_used,
+        "market_regime": snapshot.get("market_regime") or snapshot.get("regime") or "",
         "latest_tick_at": runtime.get("last_tick_at") or "",
         "latest_bars_at": runtime.get("bars_last_at") or "",
         "bars_available": bool(runtime.get("latest_bars_available")),
@@ -111,11 +139,21 @@ def run_xau_m15_paper_observation_readiness(
         "adaptive_allows_observation": _adaptive_allows(adaptive),
         "risk_state": risk.get("risk_state") or "",
         "risk_allows_observation": _risk_allows(risk),
+        "risk_governor_reason": risk_reason,
+        "recent_edge_negative": recent_edge_negative,
         "open_shadow_count": len(open_trades),
         "readiness_state": "ready_for_one_cycle_paper_observation" if ready else "blocked",
         "recommendation": recommendation,
         "gates": gates,
         "failed_gates": failed,
+        "failed_gate_names": failed,
+        "failed_gate_reasons": failed_gate_reasons,
+        "gate_summary": gate_summary,
+        "entry_allowed_for_paper_test": bool(entry_allowed_for_paper_test),
+        "entry_block_type": entry_block_type,
+        "adaptive_paper_cooldown": bool(recent_edge_negative),
+        "paper_signal": paper_signal,
+        "strict_paper_probe": strict_probe,
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "paper_shadow_created": False,
@@ -200,16 +238,66 @@ def run_xau_m15_paper_observation_shadow_once(
             paper_shadow_once_requested=True,
             open_shadow_count_before=open_count_before,
         )
-    failed_gate = _shadow_once_gate_failure(readiness)
+    signal = _select_paper_observation_signal(readiness, body)
+    strict_requested = _truthy(body.get("strict_paper_probe"))
+    if strict_requested:
+        strict_probe = _strict_paper_probe_diagnostics_from_readiness(readiness, signal=signal)
+        readiness = {
+            **readiness,
+            "strict_paper_probe": strict_probe,
+            "entry_allowed_for_paper_test": bool(strict_probe.get("strict_paper_probe_passed")) if _is_recent_edge_negative(readiness.get("risk_governor_reason")) else bool(readiness.get("entry_allowed_for_paper_test")),
+        }
+    else:
+        strict_probe = readiness.get("strict_paper_probe") if isinstance(readiness.get("strict_paper_probe"), dict) else {}
+    if _is_recent_edge_negative(readiness.get("risk_governor_reason")) and not strict_requested:
+        return _shadow_once_rejected(
+            reason="adaptive_paper_cooldown_requires_strict_paper_probe",
+            payload=body,
+            readiness=readiness,
+            paper_shadow_once_requested=True,
+            open_shadow_count_before=open_count_before,
+            signal=signal,
+        )
+    if _is_recent_edge_negative(readiness.get("risk_governor_reason")) and strict_requested and not bool(strict_probe.get("strict_paper_probe_passed")):
+        if not signal.get("can_open"):
+            return _shadow_once_rejected(
+                reason="no_trade_signal",
+                payload=body,
+                readiness=readiness,
+                paper_shadow_once_requested=True,
+                open_shadow_count_before=open_count_before,
+                signal=signal,
+            )
+        failed_strict = ",".join(str(name) for name in strict_probe.get("failed_strict_gate_names") or []) or "strict_paper_probe"
+        return _shadow_once_rejected(
+            reason=f"blocked_by_strict_paper_probe:{failed_strict}",
+            payload=body,
+            readiness=readiness,
+            paper_shadow_once_requested=True,
+            open_shadow_count_before=open_count_before,
+            signal=signal,
+        )
+    failed_gate = _shadow_once_gate_failure(readiness, allow_adaptive_paper_cooldown=strict_requested)
     if failed_gate:
         return _shadow_once_rejected(
             reason=f"blocked_by_readiness_gate:{failed_gate}",
             payload=body,
             readiness=readiness,
             paper_shadow_once_requested=True,
+            signal=signal,
         )
 
-    trade = _build_paper_observation_shadow_trade(readiness)
+    if not signal.get("can_open"):
+        return _shadow_once_rejected(
+            reason="no_trade_signal",
+            payload=body,
+            readiness=readiness,
+            paper_shadow_once_requested=True,
+            open_shadow_count_before=open_count_before,
+            signal=signal,
+        )
+
+    trade = _build_paper_observation_shadow_trade(readiness, signal=signal)
     persist_result = _persist_open_shadow_trade(readiness_kwargs.get("store"), trade)
     if not bool(persist_result.get("ok")):
         retained = bool(persist_result.get("queued") or persist_result.get("critical_persistence_failed") or persist_result.get("schema_missing_write_freeze"))
@@ -259,6 +347,10 @@ def run_xau_m15_paper_observation_shadow_once(
         "readiness": readiness,
         "paper_shadow_created": True,
         "shadow_trade_id": trade["shadow_trade_id"],
+        "side": trade["side"],
+        "signal_direction": trade["signal_direction"],
+        "entry_reason": trade["entry_reason"],
+        "invalidation_reason": trade["invalidation_reason"],
         "shadow_trade": trade,
         "persistent_shadow_write": persist_result,
         "persistent_shadow_write_ok": bool(persist_result.get("ok")),
@@ -466,9 +558,18 @@ def _gates(
     }
 
 
-def _recommendation(failed: list[str]) -> str:
+def _recommendation(
+    failed: list[str],
+    *,
+    recent_edge_negative: bool = False,
+    strict_paper_probe_passed: bool = False,
+) -> str:
     if not failed:
         return "ready_for_one_cycle_paper_observation"
+    if recent_edge_negative:
+        if strict_paper_probe_passed:
+            return "strict_paper_probe_allowed_real_trading_still_blocked"
+        return "adaptive_paper_cooldown_wait_for_high_quality_paper_signal"
     if any(name.startswith("runtime_") or name.startswith("m15_") or name in {"latest_tick_available", "tick_merged_into_bar_context"} for name in failed):
         return "configure_mt5_bridge_for_xauusd_m15"
     if "persistent_db_healthy" in failed or "db_queue_pressure_clear" in failed:
@@ -476,6 +577,124 @@ def _recommendation(failed: list[str]) -> str:
     if any(name.startswith("candidate_") for name in failed):
         return "register_xau_m15_candidate_before_observation"
     return "resolve_observation_safety_gates"
+
+
+def _risk_reason(risk: dict[str, Any]) -> str:
+    return str(risk.get("reason") or risk.get("risk_governor_reason") or "").strip()
+
+
+def _is_recent_edge_negative(reason: object) -> bool:
+    return "recent_edge_negative" in str(reason or "").casefold()
+
+
+def _failed_gate_reasons(gates: dict[str, dict[str, Any]], failed: list[str]) -> dict[str, dict[str, Any]]:
+    reasons: dict[str, dict[str, Any]] = {}
+    for name in failed:
+        gate = gates.get(name) if isinstance(gates.get(name), dict) else {}
+        reasons[name] = {
+            "actual": gate.get("actual"),
+            "required": gate.get("required"),
+        }
+    return reasons
+
+
+def _gate_summary(
+    gates: dict[str, dict[str, Any]],
+    failed: list[str],
+    *,
+    risk_reason: str,
+    recent_edge_negative: bool,
+) -> dict[str, Any]:
+    return {
+        "total_gates": len(gates),
+        "passed_gates": max(0, len(gates) - len(failed)),
+        "failed_gate_names": list(failed),
+        "risk_governor_reason": risk_reason,
+        "recent_edge_negative": bool(recent_edge_negative),
+    }
+
+
+def _strict_paper_probe_diagnostics(
+    *,
+    db: dict[str, Any],
+    runtime: dict[str, Any],
+    spread: dict[str, Any],
+    snapshot: dict[str, Any],
+    open_shadow_count: int,
+    max_open_shadow_trades: int,
+    signal: dict[str, Any],
+    failed_gates: list[str],
+    recent_edge_negative: bool,
+) -> dict[str, Any]:
+    market_regime = str(snapshot.get("market_regime") or snapshot.get("regime") or "").casefold()
+    trend_alignment_ok = market_regime in {"trend", "trending", "breakout", "compression_breakout"} or bool(snapshot.get("trend_alignment_ok"))
+    spread_ok = bool(spread.get("spread_available"))
+    bars_count = int(_number(runtime.get("bars_count")) or 0)
+    volatility_ok = bars_count >= MIN_BARS_COUNT and str(runtime.get("runtime_snapshot_context") or "") == "bar_context"
+    no_duplicate_shadow = int(open_shadow_count or 0) == 0 and int(open_shadow_count or 0) < int(max_open_shadow_trades or 1)
+    direction_ok = bool(signal.get("can_open") and _side(signal.get("signal_direction")) and signal.get("direction_explicit"))
+    db_ok = _db_healthy(db) and int(_number(db.get("queue_depth")) or 0) == 0
+    runtime_ok = bool(runtime.get("runtime_snapshot_recent") and runtime.get("latest_tick") and bars_count >= MIN_BARS_COUNT)
+    non_risk_failed = [name for name in failed_gates if name != "risk_allows_observation"]
+    strict_gates = {
+        "db_healthy_and_queue_empty": db_ok,
+        "runtime_context_recent": runtime_ok,
+        "trend_alignment_ok": trend_alignment_ok,
+        "spread_ok": spread_ok,
+        "volatility_ok": volatility_ok,
+        "no_duplicate_shadow": no_duplicate_shadow,
+        "signal_direction": direction_ok,
+        "no_non_risk_gate_failures": not non_risk_failed,
+    }
+    failed_strict = [name for name, passed in strict_gates.items() if not passed]
+    passed = bool(recent_edge_negative and not failed_strict)
+    return {
+        "mode": "strict_paper_probe",
+        "strict_paper_probe_passed": passed,
+        "recent_edge_negative": bool(recent_edge_negative),
+        "trend_alignment_ok": bool(trend_alignment_ok),
+        "spread_ok": bool(spread_ok),
+        "volatility_ok": bool(volatility_ok),
+        "no_duplicate_shadow": bool(no_duplicate_shadow),
+        "signal_direction": _side(signal.get("signal_direction")),
+        "signal_source": signal.get("signal_source") or "",
+        "direction_explicit": bool(signal.get("direction_explicit")),
+        "db_healthy_and_queue_empty": bool(db_ok),
+        "runtime_context_recent": bool(runtime_ok),
+        "failed_strict_gate_names": failed_strict,
+        "non_risk_failed_gate_names": non_risk_failed,
+        "runner_state_if_blocked": "waiting_for_high_quality_paper_signal",
+        "paper_only": True,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _strict_paper_probe_diagnostics_from_readiness(readiness: dict[str, Any], *, signal: dict[str, Any]) -> dict[str, Any]:
+    db = readiness.get("db_state") if isinstance(readiness.get("db_state"), dict) else {}
+    failed = [str(name) for name in readiness.get("failed_gate_names") or readiness.get("failed_gates") or []]
+    spread = readiness.get("spread_state") if isinstance(readiness.get("spread_state"), dict) else {}
+    runtime = {
+        "bars_count": readiness.get("bars_count"),
+        "runtime_snapshot_context": readiness.get("runtime_snapshot_context"),
+        "runtime_snapshot_recent": readiness.get("runtime_context_recent"),
+        "latest_tick": {"available": True} if readiness.get("tick_available") else {},
+    }
+    snapshot = {
+        "market_regime": readiness.get("market_regime") or "",
+        "trend_alignment_ok": readiness.get("trend_alignment_ok"),
+    }
+    return _strict_paper_probe_diagnostics(
+        db=db,
+        runtime=runtime,
+        spread=spread,
+        snapshot=snapshot,
+        open_shadow_count=int(_number(readiness.get("open_shadow_count")) or 0),
+        max_open_shadow_trades=MAX_OPEN_SHADOW_TRADES,
+        signal=signal,
+        failed_gates=failed,
+        recent_edge_negative=_is_recent_edge_negative(readiness.get("risk_governor_reason")),
+    )
 
 
 def _db_healthy(db: dict[str, Any]) -> bool:
@@ -542,6 +761,7 @@ def _shadow_once_rejected(
     readiness: dict[str, Any],
     paper_shadow_once_requested: bool,
     open_shadow_count_before: int | None = None,
+    signal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     count = open_shadow_count_before
     if count is None:
@@ -564,6 +784,9 @@ def _shadow_once_rejected(
         "readiness": readiness if isinstance(readiness, dict) else {},
         "paper_shadow_created": False,
         "shadow_trade_id": "",
+        "signal_direction": (signal or {}).get("signal_direction") or "",
+        "entry_reason": (signal or {}).get("entry_reason") or "",
+        "invalidation_reason": (signal or {}).get("invalidation_reason") or "",
         "open_shadow_count_before": count,
         "open_shadow_count_after": count,
         "candidate_activated": False,
@@ -573,19 +796,21 @@ def _shadow_once_rejected(
     }
 
 
-def _shadow_once_gate_failure(readiness: dict[str, Any]) -> str:
+def _shadow_once_gate_failure(readiness: dict[str, Any], *, allow_adaptive_paper_cooldown: bool = False) -> str:
+    recent_edge = _is_recent_edge_negative(readiness.get("risk_governor_reason"))
+    strict_passed = bool((readiness.get("strict_paper_probe") or {}).get("strict_paper_probe_passed")) if isinstance(readiness.get("strict_paper_probe"), dict) else False
     required: list[tuple[str, bool]] = [
         ("persistent_db_healthy", _db_healthy(readiness.get("db_state") if isinstance(readiness.get("db_state"), dict) else {})),
         ("candidate_found", bool(readiness.get("candidate_found"))),
         ("candidate_status_review", str(readiness.get("candidate_status") or "") == "paper_observation_review"),
-        ("readiness_state", str(readiness.get("readiness_state") or "") == "ready_for_one_cycle_paper_observation"),
+        ("readiness_state", str(readiness.get("readiness_state") or "") == "ready_for_one_cycle_paper_observation" or bool(allow_adaptive_paper_cooldown and recent_edge and strict_passed)),
         ("runtime_context_available", bool(readiness.get("runtime_context_available"))),
         ("runtime_context_recent", bool(readiness.get("runtime_context_recent"))),
         ("m15_bars_count", int(_number(readiness.get("bars_count")) or 0) >= MIN_BARS_COUNT),
         ("latest_tick_available", bool(readiness.get("tick_available"))),
         ("capital_allows_observation", bool(readiness.get("capital_allows_observation"))),
         ("adaptive_allows_observation", bool(readiness.get("adaptive_allows_observation"))),
-        ("risk_allows_observation", bool(readiness.get("risk_allows_observation"))),
+        ("risk_allows_observation", bool(readiness.get("risk_allows_observation")) or bool(allow_adaptive_paper_cooldown and recent_edge and strict_passed)),
         ("order_policy", str(readiness.get("order_policy") or "") == "journal_only_no_broker"),
     ]
     for name, passed in required:
@@ -594,15 +819,20 @@ def _shadow_once_gate_failure(readiness: dict[str, Any]) -> str:
     return ""
 
 
-def _build_paper_observation_shadow_trade(readiness: dict[str, Any]) -> dict[str, Any]:
+def _build_paper_observation_shadow_trade(readiness: dict[str, Any], *, signal: dict[str, Any] | None = None) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     price = _latest_runtime_price(readiness)
-    side = "buy"
+    signal_payload = signal or {"signal_direction": "buy", "entry_reason": "legacy_buy_fallback", "invalidation_reason": ""}
+    side = _side(signal_payload.get("signal_direction")) or "buy"
     spread = _runtime_spread(readiness)
     stop_distance = max((price or 1.0) * 0.004, spread * 4.0 if spread else 0.0, 0.000001)
     entry = price or 0.0
-    stop = round(entry - stop_distance, 6) if entry else 0.0
-    target = round(entry + stop_distance * 1.2, 6) if entry else 0.0
+    if side == "sell":
+        stop = round(entry + stop_distance, 6) if entry else 0.0
+        target = round(entry - stop_distance * 1.2, 6) if entry else 0.0
+    else:
+        stop = round(entry - stop_distance, 6) if entry else 0.0
+        target = round(entry + stop_distance * 1.2, 6) if entry else 0.0
     shadow_trade_id = f"xau-m15-paper-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     return {
         "shadow_trade_id": shadow_trade_id,
@@ -617,6 +847,9 @@ def _build_paper_observation_shadow_trade(readiness: dict[str, Any]) -> dict[str
         "mode": MODE,
         "side": side,
         "action": side.upper(),
+        "signal_direction": side,
+        "entry_reason": signal_payload.get("entry_reason") or "",
+        "invalidation_reason": signal_payload.get("invalidation_reason") or "",
         "entry_price": entry,
         "entry": entry,
         "stop_loss": stop,
@@ -646,6 +879,87 @@ def _build_paper_observation_shadow_trade(readiness: dict[str, Any]) -> dict[str
         "reason": "explicit_confirmed_paper_observation_shadow_once",
         **_safety(),
     }
+
+
+def _select_paper_observation_signal(
+    readiness: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    snapshot_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    explicit = _side(payload.get("side") or payload.get("signal_direction"))
+    if explicit:
+        return {
+            "can_open": True,
+            "signal_direction": explicit,
+            "signal_source": "payload_explicit_direction",
+            "direction_explicit": True,
+            "entry_reason": "explicit_paper_test_direction",
+            "invalidation_reason": "",
+        }
+
+    snapshot = dict(snapshot_override or _signal_snapshot())
+    snapshot_side = _side(snapshot.get("side") or snapshot.get("action"))
+    if snapshot_side:
+        return {
+            "can_open": True,
+            "signal_direction": snapshot_side,
+            "signal_source": "runtime_snapshot_direction_hint",
+            "direction_explicit": True,
+            "entry_reason": "runtime_snapshot_direction_hint",
+            "invalidation_reason": "",
+        }
+
+    bars = snapshot.get("ohlc_recent") if isinstance(snapshot.get("ohlc_recent"), list) else []
+    closes = [_number(row.get("close")) for row in bars if isinstance(row, dict)]
+    closes = [float(value) for value in closes if value is not None]
+    if len(closes) >= 3:
+        recent_delta = closes[-1] - closes[-3]
+        min_move = max(abs(closes[-3]) * 0.00005, _runtime_spread(readiness) * 0.5, 0.000001)
+        if recent_delta >= min_move:
+            return {
+                "can_open": True,
+                "signal_direction": "buy",
+                "signal_source": "m15_recent_momentum",
+                "direction_explicit": False,
+                "entry_reason": "m15_recent_momentum_up",
+                "invalidation_reason": "",
+            }
+        if recent_delta <= -min_move:
+            return {
+                "can_open": True,
+                "signal_direction": "sell",
+                "signal_source": "m15_recent_momentum",
+                "direction_explicit": False,
+                "entry_reason": "m15_recent_momentum_down",
+                "invalidation_reason": "",
+            }
+
+    return {
+        "can_open": False,
+        "signal_direction": "",
+        "signal_source": "",
+        "direction_explicit": False,
+        "entry_reason": "",
+        "invalidation_reason": "no_high_confidence_direction",
+    }
+
+
+def _signal_snapshot() -> dict[str, Any]:
+    for alias in (SYMBOL, BROKER_SYMBOL):
+        snapshot = get_snapshot(alias, TIMEFRAME) or {}
+        if snapshot:
+            return dict(snapshot)
+    return {}
+
+
+def _side(value: object) -> str:
+    text = str(value or "").casefold().strip()
+    if text in {"buy", "long"}:
+        return "buy"
+    if text in {"sell", "short"}:
+        return "sell"
+    return ""
 
 
 def _latest_runtime_price(readiness: dict[str, Any]) -> float | None:

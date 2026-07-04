@@ -40,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
             max_hold_minutes=args.max_hold_minutes,
             min_r_to_arm_trailing=args.min_r_to_arm_trailing,
             giveback_r=args.giveback_r,
+            fast_loss_cut_r=args.fast_loss_cut_r,
+            strict_paper_probe=args.strict_paper_probe,
+            explain_gates=args.explain_gates,
+            wait_for_signal=args.wait_for_signal,
+            max_wait_minutes=args.max_wait_minutes,
             state_file=args.state_file,
             results_file=args.results_file,
             timeout_seconds=args.timeout_seconds,
@@ -61,10 +66,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--paper-only-confirmed", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--exit-policy", choices=["default", "fast_observation"], default="fast_observation")
-    parser.add_argument("--time-stop-bars", type=int, default=2)
+    parser.add_argument("--time-stop-bars", type=int, default=1)
     parser.add_argument("--max-hold-minutes", type=float, default=None)
     parser.add_argument("--min-r-to-arm-trailing", type=float, default=0.15)
     parser.add_argument("--giveback-r", type=float, default=0.10)
+    parser.add_argument("--fast-loss-cut-r", type=float, default=-0.25)
+    parser.add_argument("--strict-paper-probe", action="store_true")
+    parser.add_argument("--explain-gates", action="store_true")
+    parser.add_argument("--wait-for-signal", action="store_true")
+    parser.add_argument("--max-wait-minutes", type=float, default=None)
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     parser.add_argument("--results-file", default=str(DEFAULT_RESULTS_FILE))
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
@@ -85,6 +95,15 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"status={result.get('status')}",
             f"supervisor_state={result.get('supervisor_state')}",
             f"stop_reason={result.get('stop_reason')}",
+            f"current_phase={result.get('current_phase')}",
+            f"readiness_state={result.get('readiness_state')}",
+            f"gate_summary={_compact_json(result.get('gate_summary') if isinstance(result.get('gate_summary'), dict) else {})}",
+            f"next_action={result.get('next_action')}",
+            f"failed_gate_names={result.get('failed_gate_names')}",
+            f"risk_governor_reason={result.get('risk_governor_reason')}",
+            f"recent_edge_negative={result.get('recent_edge_negative')}",
+            f"entry_allowed_for_paper_test={result.get('entry_allowed_for_paper_test')}",
+            f"entry_block_type={result.get('entry_block_type')}",
             f"db_available={db.get('db_available')}",
             f"db_degraded={db.get('db_degraded')}",
             f"tables_ready={db.get('tables_ready')}",
@@ -92,7 +111,20 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"open_source={open_payload.get('open_source')}",
             f"merged_open_count={open_payload.get('merged_open_count', open_payload.get('open_count'))}",
             f"batch_runner_state={batch.get('runner_state')}",
+            f"session_id={result.get('session_id')}",
+            f"session_started_at={result.get('session_started_at')}",
+            f"target_scope={result.get('target_scope')}",
+            f"session_trades_opened={result.get('session_trades_opened')}",
+            f"session_trades_closed={result.get('session_trades_closed')}",
+            f"historical_closed_count={result.get('historical_closed_count')}",
+            f"current_shadow_id={result.get('current_shadow_id')}",
+            f"current_shadow_source={result.get('current_shadow_source')}",
+            f"open_count={result.get('open_count')}",
             f"cycles_completed={result.get('cycles_completed')}",
+            f"win_rate={result.get('win_rate')}",
+            f"expectancy={result.get('expectancy')}",
+            f"profit_factor={result.get('profit_factor')}",
+            f"last_closed_trade={_compact_json(result.get('last_closed_trade') if isinstance(result.get('last_closed_trade'), dict) else {})}",
             f"paper_shadow_created={result.get('paper_shadow_created')}",
             f"paper_close_applied={result.get('paper_close_applied')}",
             f"candidate_activated={result.get('candidate_activated')}",
@@ -102,6 +134,10 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"order_policy={result.get('order_policy')}",
         ]
     )
+
+
+def _compact_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), default=str)
 
 
 if __name__ == "__main__":

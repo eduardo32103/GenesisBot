@@ -89,6 +89,7 @@ from services.mt5.mt5_bridge import (
     mt5_replay_status,
     mt5_signal,
     mt5_shadow_trades,
+    mt5_shadow_trades_history,
     mt5_shadow_trades_open,
     mt5_status,
     mt5_strategy_profiles,
@@ -1614,6 +1615,81 @@ class MT5BridgeTests(unittest.TestCase):
             self.assertFalse(payload["broker_touched"])
             self.assertFalse(payload["order_executed"])
             self.assertEqual(payload["order_policy"], "journal_only_no_broker")
+
+    def test_open_endpoint_merges_persistent_shadow_when_runtime_empty(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        persistent = {
+            "ok": True,
+            "open_trades": [
+                {
+                    "shadow_trade_id": "persistent-xau",
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "status": "open",
+                    "broker_touched": False,
+                    "order_executed": False,
+                    "order_policy": "journal_only_no_broker",
+                }
+            ],
+            "db_degraded": False,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        with patch("services.mt5.mt5_bridge.persistent_intelligence_open_shadow_trades", return_value=persistent):
+            result = mt5_shadow_trades_open(symbol="XAUUSD", limit=10)
+
+        self.assertEqual(result["open_count"], 1)
+        self.assertEqual(result["open_source"], "persistent_intelligence_fallback")
+        self.assertTrue(result["rehydration_needed"])
+        self.assertEqual(result["persistent_open_count"], 1)
+        self.assertEqual(result["runtime_open_count"], 0)
+        self.assertEqual(result["trades"][0]["shadow_trade_id"], "persistent-xau")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_history_endpoint_includes_runtime_closed_event(self) -> None:
+        from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, reset_runtime_snapshots_for_tests
+
+        reset_runtime_snapshots_for_tests()
+        append_closed_shadow_trade(
+            "XAUUSD",
+            {
+                "shadow_trade_id": "runtime-closed-xau",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "status": "closed",
+                "closed_at": "2026-06-18T10:00:00+00:00",
+                "exit_reason": "paper_timebox_exit",
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+            },
+            timeframe="M15",
+        )
+        persistent = {
+            "ok": True,
+            "trades": [],
+            "closed_trades": [],
+            "open_trades": [],
+            "history_available": True,
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
+        with patch("services.mt5.mt5_bridge.persistent_intelligence_shadow_trade_history", return_value=persistent):
+            result = mt5_shadow_trades_history(symbol="XAUUSD", timeframe="M15", limit=20)
+
+        self.assertEqual(result["closed_count"], 1)
+        self.assertEqual(result["closed_trades"][0]["shadow_trade_id"], "runtime-closed-xau")
+        self.assertEqual(result["closed_trades"][0]["source"], "runtime_closed_event")
+        self.assertEqual(result["runtime_closed_event_count"], 1)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_shadow_trade_manual_close_closes_runtime_paper_trade_only(self) -> None:
         from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, update_open_shadow_trade

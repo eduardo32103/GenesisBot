@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis Winrate Analyst"
+  short_description: "Analyze paper trade performance"
+  default_prompt: "Use $genesis-winrate-analyst to calculate paper-only winrate, R multiples, and expectancy."

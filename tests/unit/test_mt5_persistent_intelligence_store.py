@@ -499,6 +499,36 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(row["order_executed"])
         self.assertEqual(row["order_policy"], "journal_only_no_broker")
 
+    def test_record_shadow_trade_missing_optional_column_uses_minimal_fallback_without_queue(self) -> None:
+        client = _MissingOptionalShadowTradeColumnClient("bars_since_entry")
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.record_shadow_trade(
+            {
+                "shadow_trade_id": "xau-open",
+                "symbol": "XAUUSD",
+                "broker_symbol": "XAUUSD.b",
+                "timeframe": "M15",
+                "source": "paper_observation_shadow_once",
+                "side": "buy",
+                "entry_price": 4270.63,
+                "bars_since_entry": 0,
+                "status": "open",
+                "opened_at": "2026-06-18T09:22:47+00:00",
+            },
+            critical=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["shadow_trade_schema_fallback_used"])
+        self.assertIn("bars_since_entry", result["omitted_optional_columns"])
+        self.assertEqual(len(client.upserted), 1)
+        self.assertNotIn("bars_since_entry", client.upserted[-1]["payload"])
+        self.assertEqual(persistent_write_backpressure().status()["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_runtime_persistence_helpers_record_compact_events(self) -> None:
         client = _FakeClient()
         store = MT5PersistentIntelligenceStore(client=client)
@@ -1290,6 +1320,17 @@ class _OptionalColumnMissingHistoryClient(_FakeClient):
             self.last_select = selected
             raise RuntimeError(f'ERROR: column "{self.missing_column}" does not exist')
         return super().select(table, params=params)
+
+
+class _MissingOptionalShadowTradeColumnClient(_FakeClient):
+    def __init__(self, missing_column: str) -> None:
+        super().__init__()
+        self.missing_column = missing_column
+
+    def upsert(self, table: str, payload: dict[str, object], *, on_conflict: tuple[str, ...]) -> dict[str, object]:
+        if table == "mt5_shadow_trades" and self.missing_column in payload:
+            raise RuntimeError(f'ERROR: column "{self.missing_column}" of relation "mt5_shadow_trades" does not exist')
+        return super().upsert(table, payload, on_conflict=on_conflict)
 
 
 class _MissingTablesClient:

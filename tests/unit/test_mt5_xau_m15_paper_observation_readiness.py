@@ -171,6 +171,50 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertFalse(result["paper_forward_onboarding_started"])
         self.assertFalse(result["order_executed"])
 
+    def test_recent_edge_negative_blocks_real_trading_but_reports_adaptive_paper_cooldown(self) -> None:
+        result = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot={**_snapshot(), "side": "buy"},
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state={"allowed": False, "risk_state": "blocked", "reason": "recent_edge_negative"},
+        )
+
+        self.assertEqual(result["readiness_state"], "blocked")
+        self.assertFalse(result["risk_allows_observation"])
+        self.assertEqual(result["risk_governor_reason"], "recent_edge_negative")
+        self.assertTrue(result["recent_edge_negative"])
+        self.assertEqual(result["entry_block_type"], "adaptive_paper_cooldown")
+        self.assertIn("risk_allows_observation", result["failed_gate_names"])
+        self.assertIn("risk_allows_observation", result["failed_gate_reasons"])
+        self.assertEqual(result["recommendation"], "strict_paper_probe_allowed_real_trading_still_blocked")
+        self.assertTrue(result["entry_allowed_for_paper_test"])
+        self.assertTrue(result["strict_paper_probe"]["strict_paper_probe_passed"])
+        self.assertFalse(result["applies_to_real_trading"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_recent_edge_negative_without_explicit_direction_waits_for_strict_signal(self) -> None:
+        result = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot=_snapshot(),
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state={"allowed": False, "risk_state": "blocked", "reason": "recent_edge_negative"},
+        )
+
+        self.assertEqual(result["readiness_state"], "blocked")
+        self.assertTrue(result["recent_edge_negative"])
+        self.assertFalse(result["entry_allowed_for_paper_test"])
+        self.assertEqual(result["entry_block_type"], "adaptive_paper_cooldown")
+        self.assertEqual(result["recommendation"], "adaptive_paper_cooldown_wait_for_high_quality_paper_signal")
+        self.assertIn("signal_direction", result["strict_paper_probe"]["failed_strict_gate_names"])
+        self.assertFalse(result["paper_shadow_created"])
+
     def test_xauusd_b_m15_runtime_snapshot_is_read_by_logical_symbol(self) -> None:
         reset_runtime_snapshots_for_tests()
         self.addCleanup(reset_runtime_snapshots_for_tests)
@@ -508,6 +552,179 @@ class MT5XauM15PaperObservationReadinessTests(unittest.TestCase):
         self.assertFalse(duplicate["paper_shadow_created"])
         self.assertEqual((get_snapshot("XAUUSD", "M15") or {}).get("open_shadow_trade", {}).get("shadow_trade_id"), result["shadow_trade_id"])
 
+    def test_shadow_once_explicit_buy_opens_buy_shadow(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        readiness = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot=_snapshot(),
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+        store = _FakeStore()
+
+        result = run_xau_m15_paper_observation_shadow_once(
+            payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15", "side": "buy"},
+            readiness_result=readiness,
+            store=store,
+        )
+
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(result["side"], "buy")
+        self.assertEqual(result["signal_direction"], "buy")
+        self.assertEqual(result["entry_reason"], "explicit_paper_test_direction")
+        self.assertEqual(store.recorded_shadow_trades[0]["side"], "buy")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_shadow_once_explicit_sell_opens_sell_shadow(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        readiness = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot=_snapshot(),
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+        store = _FakeStore()
+
+        result = run_xau_m15_paper_observation_shadow_once(
+            payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15", "side": "sell"},
+            readiness_result=readiness,
+            store=store,
+        )
+
+        trade = store.recorded_shadow_trades[0]
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(result["side"], "sell")
+        self.assertEqual(result["signal_direction"], "sell")
+        self.assertEqual(trade["side"], "sell")
+        self.assertGreaterEqual(trade["stop_loss"], trade["entry_price"])
+        self.assertLessEqual(trade["take_profit"], trade["entry_price"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_shadow_once_no_direction_returns_no_trade_signal(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        readiness = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot=_snapshot(),
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+        store = _FakeStore()
+
+        result = run_xau_m15_paper_observation_shadow_once(
+            payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15"},
+            readiness_result=readiness,
+            store=store,
+        )
+
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "no_trade_signal")
+        self.assertEqual(result["invalidation_reason"], "no_high_confidence_direction")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(store.recorded_shadow_trades, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_recent_edge_negative_shadow_once_requires_strict_paper_probe(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        readiness = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot={**_snapshot(), "side": "buy"},
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state={"allowed": False, "risk_state": "blocked", "reason": "recent_edge_negative"},
+        )
+        store = _FakeStore()
+
+        result = run_xau_m15_paper_observation_shadow_once(
+            payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15", "side": "buy"},
+            readiness_result=readiness,
+            store=store,
+        )
+
+        self.assertEqual(result["reason"], "adaptive_paper_cooldown_requires_strict_paper_probe")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(store.recorded_shadow_trades, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_recent_edge_negative_strict_paper_probe_can_open_when_all_strict_gates_pass(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        readiness = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot={**_snapshot(), "side": "buy"},
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state={"allowed": False, "risk_state": "blocked", "reason": "recent_edge_negative"},
+        )
+        store = _FakeStore()
+
+        result = run_xau_m15_paper_observation_shadow_once(
+            payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15", "side": "buy", "strict_paper_probe": True},
+            readiness_result=readiness,
+            store=store,
+        )
+
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(result["side"], "buy")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["applies_to_real_trading"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_shadow_once_open_persistence_failure_does_not_claim_created_or_update_runtime(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        self.addCleanup(reset_runtime_snapshots_for_tests)
+        readiness = run_xau_m15_paper_observation_readiness(
+            db_state=_db(),
+            profile_state_rows=[_profile()],
+            strategy_registry_rows=[_strategy()],
+            runtime_snapshot=_snapshot(),
+            capital_state=_capital(),
+            adaptive_state=_adaptive(),
+            risk_state=_risk(),
+        )
+        store = _FailingShadowStore()
+
+        result = run_xau_m15_paper_observation_shadow_once(
+            payload={"confirm_paper_shadow_only": True, "symbol": "XAUUSD", "timeframe": "M15", "side": "buy"},
+            readiness_result=readiness,
+            store=store,
+        )
+
+        self.assertEqual(result["status"], "xau_m15_paper_observation_shadow_once_open_persistence_failed")
+        self.assertEqual(result["reason"], "open_persistence_failed")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertTrue(result["open_persistence_failed"])
+        self.assertTrue(result["open_write_retained_critical"])
+        self.assertEqual(result["next_action"], "drain_queue_or_backfill_runtime_open_shadow")
+        self.assertTrue(store.critical_seen)
+        self.assertFalse((get_snapshot("XAUUSD", "M15") or {}).get("open_shadow_trade"))
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_shadow_once_service_adds_no_order_send_reference(self) -> None:
         service_text = Path("services/mt5/mt5_xau_m15_paper_observation_readiness.py").read_text(encoding="utf-8")
         self.assertNotIn("order_send", service_text)
@@ -563,6 +780,23 @@ class _FakeStore:
     def record_shadow_trade(self, payload: dict[str, object], *, critical: bool | None = None) -> dict[str, object]:
         self.recorded_shadow_trades.append(dict(payload))
         return {"ok": True, "table": "mt5_shadow_trades", "broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+
+
+class _FailingShadowStore:
+    def __init__(self) -> None:
+        self.critical_seen = False
+
+    def record_shadow_trade(self, payload: dict[str, object], *, critical: bool | None = None) -> dict[str, object]:
+        self.critical_seen = bool(critical)
+        return {
+            "ok": False,
+            "queued": True,
+            "critical_persistence_failed": True,
+            "reason": "simulated_write_backpressure",
+            "broker_touched": False,
+            "order_executed": False,
+            "order_policy": "journal_only_no_broker",
+        }
 
 
 def _patched_live_readiness_dependencies():

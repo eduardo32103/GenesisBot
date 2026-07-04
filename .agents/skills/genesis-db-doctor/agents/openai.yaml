@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis DB Doctor"
+  short_description: "Debug Persistent Intelligence DB"
+  default_prompt: "Use $genesis-db-doctor to diagnose GENESIS Persistent Intelligence health and queue issues."

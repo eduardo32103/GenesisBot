@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         max_hold_minutes=args.max_hold_minutes,
         min_r_to_arm_trailing=args.min_r_to_arm_trailing,
         giveback_r=args.giveback_r,
+        fast_loss_cut_r=args.fast_loss_cut_r,
         state_file=args.state_file,
         results_file=args.results_file,
         timeout_seconds=args.timeout_seconds,
@@ -56,10 +57,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--paper-only-confirmed", action="store_true", help="Required to open or close paper shadows.")
     parser.add_argument("--once", action="store_true", help="Run exactly one step.")
     parser.add_argument("--exit-policy", choices=["default", "fast_observation"], default="default")
-    parser.add_argument("--time-stop-bars", type=int, default=2)
+    parser.add_argument("--time-stop-bars", type=int, default=1)
     parser.add_argument("--max-hold-minutes", type=float, default=None)
     parser.add_argument("--min-r-to-arm-trailing", type=float, default=0.15)
     parser.add_argument("--giveback-r", type=float, default=0.10)
+    parser.add_argument("--fast-loss-cut-r", type=float, default=-0.25)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     parser.add_argument("--results-file", default=str(DEFAULT_RESULTS_FILE))
@@ -83,6 +85,11 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"cycles_requested={result.get('cycles_requested')}",
             f"cycles_completed={result.get('cycles_completed')}",
             f"target_trades={result.get('target_trades')}",
+            f"session_id={result.get('session_id')}",
+            f"target_scope={result.get('target_scope')}",
+            f"session_trades_opened={result.get('session_trades_opened')}",
+            f"session_trades_closed={result.get('session_trades_closed')}",
+            f"historical_closed_count={result.get('historical_closed_count')}",
             f"stop_reason={result.get('stop_reason')}",
             f"db_state={_compact_json(db)}",
             f"readiness_state={last.get('readiness_state')}",

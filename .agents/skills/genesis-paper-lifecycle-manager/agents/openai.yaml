@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis Paper Lifecycle Manager"
+  short_description: "Manage paper shadow lifecycle"
+  default_prompt: "Use $genesis-paper-lifecycle-manager to debug paper shadow open, monitor, close, and reconciliation."

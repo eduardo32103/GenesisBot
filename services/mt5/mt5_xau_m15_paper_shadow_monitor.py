@@ -18,10 +18,11 @@ def run_xau_m15_paper_shadow_monitor(
     *,
     apply_paper_close: bool = False,
     exit_policy: str = "default",
-    time_stop_bars: int = 2,
+    time_stop_bars: int = 1,
     max_hold_minutes: float | None = None,
     min_r_to_arm_trailing: float = 0.15,
     giveback_r: float = 0.10,
+    fast_loss_cut_r: float = -0.25,
     store: MT5PersistentIntelligenceStore | Any | None = None,
     runtime_snapshot: dict[str, Any] | None = None,
     db_state: dict[str, Any] | None = None,
@@ -103,6 +104,7 @@ def run_xau_m15_paper_shadow_monitor(
         max_hold_minutes=max_hold_minutes,
         min_r_to_arm_trailing=min_r_to_arm_trailing,
         giveback_r=giveback_r,
+        fast_loss_cut_r=fast_loss_cut_r,
     )
     updated_trade = _updated_trade(open_trade, metrics, exit_reason if exit_signal else "")
     paper_close_applied = False
@@ -148,6 +150,7 @@ def run_xau_m15_paper_shadow_monitor(
                     "max_hold_minutes": _number(max_hold_minutes),
                     "min_r_to_arm_trailing": _number(min_r_to_arm_trailing) or 0.0,
                     "giveback_r": _number(giveback_r) or 0.0,
+                    "fast_loss_cut_r": _number(fast_loss_cut_r) or -0.25,
                     "apply_blocked": False,
                     "persist_result": persist_result,
                     "close_persistence_failed": True,
@@ -199,6 +202,7 @@ def run_xau_m15_paper_shadow_monitor(
         "max_hold_minutes": _number(max_hold_minutes),
         "min_r_to_arm_trailing": _number(min_r_to_arm_trailing) or 0.0,
         "giveback_r": _number(giveback_r) or 0.0,
+        "fast_loss_cut_r": _number(fast_loss_cut_r) or -0.25,
         "apply_blocked": bool(apply_blocked),
         "persist_result": persist_result,
         "close_persistence_failed": False,
@@ -388,6 +392,7 @@ def _exit_decision(
     max_hold_minutes: float | None = None,
     min_r_to_arm_trailing: float = 0.15,
     giveback_r: float = 0.10,
+    fast_loss_cut_r: float = -0.25,
 ) -> tuple[bool, str, bool]:
     side = metrics["side"]
     price = float(metrics["current_price"])
@@ -418,6 +423,7 @@ def _exit_decision(
             max_hold_minutes=max_hold_minutes,
             min_r_to_arm_trailing=min_r_to_arm_trailing,
             giveback_r=giveback_r,
+            fast_loss_cut_r=fast_loss_cut_r,
         )
         if fast_reason:
             return True, fast_reason, False
@@ -434,11 +440,12 @@ def _fast_observation_exit_reason(
     max_hold_minutes: float | None,
     min_r_to_arm_trailing: float,
     giveback_r: float,
+    fast_loss_cut_r: float,
 ) -> str:
     r_multiple = float(metrics.get("r_multiple") or 0.0)
     bars_since_entry = int(_number(metrics.get("bars_since_entry")) or 0)
     age_minutes = float(_number(metrics.get("age_minutes")) or 0.0)
-    if r_multiple <= -0.25:
+    if r_multiple <= float(fast_loss_cut_r or -0.25):
         return "paper_fast_loss_cut"
     if int(time_stop_bars or 0) > 0 and bars_since_entry >= int(time_stop_bars or 0) and abs(r_multiple) <= 0.10:
         return "paper_timebox_exit"

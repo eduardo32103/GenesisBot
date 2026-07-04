@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis Autopilot Orchestrator"
+  short_description: "Coordinate safe paper test cycles"
+  default_prompt: "Use $genesis-autopilot-orchestrator to coordinate a safe XAUUSD M15 paper-only test cycle."

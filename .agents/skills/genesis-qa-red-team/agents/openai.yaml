@@ -1,0 +1,4 @@
+interface:
+  display_name: "Genesis QA Red Team"
+  short_description: "Run regressions and safety gates"
+  default_prompt: "Use $genesis-qa-red-team to validate GENESIS tests, safety gates, and git status before commit."

@@ -61,6 +61,94 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["shadow_trade_id"], "xau-batch-opened")
         self.assertFalse(result["candidate_activated"])
 
+    def test_recent_edge_negative_does_not_blindly_open_paper(self) -> None:
+        client = _FakeClient(readiness=_recent_edge_ready(strict_passed=False))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "waiting_for_high_quality_paper_signal")
+        self.assertEqual(result["current_phase"], "adaptive_paper_cooldown")
+        self.assertTrue(result["recent_edge_negative"])
+        self.assertEqual(result["entry_block_type"], "adaptive_paper_cooldown")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_recent_edge_negative_can_wait_for_high_quality_paper_signal(self) -> None:
+        client = _FakeClient(readiness=_recent_edge_ready(strict_passed=False, failed_strict=["trend_alignment_ok", "signal_direction"]))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, strict_paper_probe=True)
+
+        self.assertEqual(result["runner_state"], "waiting_for_high_quality_paper_signal")
+        self.assertIn("trend_alignment_ok", result["stop_reason"])
+        self.assertIn("signal_direction", result["stop_reason"])
+        self.assertEqual(result["next_action"], "wait_for_high_quality_paper_signal")
+        self.assertFalse(result["entry_allowed_for_paper_test"])
+        self.assertEqual(client.open_calls, 0)
+
+    def test_legacy_readiness_recent_edge_negative_is_normalized_to_adaptive_wait(self) -> None:
+        client = _FakeClient(readiness=_legacy_recent_edge_ready())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, strict_paper_probe=True)
+
+        self.assertEqual(result["runner_state"], "waiting_for_high_quality_paper_signal")
+        self.assertEqual(result["current_phase"], "adaptive_paper_cooldown")
+        self.assertEqual(result["risk_governor_reason"], "recent_edge_negative")
+        self.assertTrue(result["recent_edge_negative"])
+        self.assertEqual(result["entry_block_type"], "adaptive_paper_cooldown")
+        self.assertEqual(result["next_action"], "wait_for_high_quality_paper_signal")
+        self.assertIn("signal_direction", result["stop_reason"])
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+
+    def test_strict_paper_probe_opens_only_when_stricter_gates_pass(self) -> None:
+        client = _FakeClient(readiness=_recent_edge_ready(strict_passed=True))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, strict_paper_probe=True)
+
+        self.assertEqual(result["runner_state"], "opening_shadow")
+        self.assertEqual(result["current_phase"], "strict_paper_probe")
+        self.assertTrue(result["entry_allowed_for_paper_test"])
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(client.open_calls, 1)
+        self.assertTrue(client.last_strict_paper_probe)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_no_trade_signal_under_recent_edge_does_not_open(self) -> None:
+        client = _FakeClient(readiness=_recent_edge_ready(strict_passed=False, failed_strict=["signal_direction"]))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, strict_paper_probe=True)
+
+        self.assertEqual(result["runner_state"], "waiting_for_high_quality_paper_signal")
+        self.assertIn("signal_direction", result["stop_reason"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(client.open_calls, 0)
+
+    def test_open_persistence_failure_does_not_claim_shadow_created(self) -> None:
+        client = _FakeClient(
+            open_result={
+                "ok": False,
+                "paper_shadow_created": False,
+                "shadow_trade_id": "xau-open-failed",
+                "open_persistence_failed": True,
+                "open_write_retained_critical": True,
+                "reason": "open_persistence_failed",
+                **_safety(),
+            }
+        )
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "stopped_by_open_persistence_failed")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertTrue(result["open_persistence_failed"])
+        self.assertTrue(result["open_write_retained_critical"])
+        self.assertEqual(result["stop_reason"], "open_persistence_failed")
+        self.assertEqual(result["next_action"], "drain_queue_or_backfill_runtime_open_shadow")
+        self.assertEqual(client.open_calls, 1)
+
     def test_does_not_close_entry_block_only(self) -> None:
         client = _FakeClient(open_count=1, monitor=_monitor_open(category="entry_block_only", should_watch=True, risk_block_type="entry_block"))
 
@@ -220,6 +308,29 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["cycles_completed"], 2)
         self.assertLessEqual(result["cycles_completed"], 2)
 
+    def test_wait_for_signal_dry_run_can_poll_multiple_cycles_without_opening(self) -> None:
+        client = _FakeClient(readiness=_legacy_recent_edge_ready())
+
+        result = run_xau_m15_paper_observation_batch_runner(
+            client=client,
+            dry_run=True,
+            wait_for_signal=True,
+            strict_paper_probe=True,
+            max_cycles=2,
+            target_trades=20,
+            interval_seconds=0,
+            state_file=None,
+            results_file=None,
+            sleep_fn=lambda _: None,
+        )
+
+        self.assertEqual(result["runner_state"], "waiting_for_high_quality_paper_signal")
+        self.assertEqual(result["cycles_completed"], 2)
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
     def test_target_trades_limit_stops(self) -> None:
         client = _FakeClient()
 
@@ -235,6 +346,93 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
 
         self.assertEqual(result["runner_state"], "stopped_by_target_trades")
         self.assertEqual(client.open_calls, 0)
+
+    def test_session_target_not_satisfied_by_old_history(self) -> None:
+        client = _FakeClient()
+        state = {"session_id": "session-new", "session_started_at": "2026-07-02T00:00:00+00:00"}
+        old_history = [{"shadow_trade_id": "old", "pnl": 10.0, "r_multiple": 1.0, "exit_reason": "take_profit_hit", "session_id": "old-session"}]
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=old_history,
+            cycle_number=1,
+            target_trades=1,
+            dry_run=True,
+            paper_only_confirmed=False,
+        )
+
+        self.assertEqual(result["runner_state"], "idle_no_shadow")
+        self.assertEqual(result["batch_stats"]["session_trades_closed"], 0)
+        self.assertEqual(result["batch_stats"]["historical_closed_count"], 1)
+        self.assertEqual(client.open_calls, 0)
+
+    def test_target_not_reached_while_current_shadow_open(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_open())
+        state = {
+            "session_id": "session-live",
+            "session_started_at": "2026-07-02T00:00:00+00:00",
+            "current_open_shadow_id": "existing-shadow",
+            "session_shadow_trade_ids": ["existing-shadow", "closed-one"],
+        }
+        trades = [{"shadow_trade_id": "closed-one", "pnl": 1.0, "r_multiple": 0.1, "exit_reason": "take_profit_hit", "session_id": "session-live"}]
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state=state,
+            trades=trades,
+            cycle_number=1,
+            target_trades=1,
+            dry_run=False,
+            paper_only_confirmed=True,
+        )
+
+        self.assertEqual(result["runner_state"], "shadow_open_monitoring")
+        self.assertEqual(result["open_shadow_count"], 1)
+        self.assertEqual(client.open_calls, 0)
+
+    def test_runtime_and_persistent_same_shadow_merges_to_one(self) -> None:
+        client = _FakeClient(
+            open_payload={
+                "ok": True,
+                "open_count": 2,
+                "runtime_open_count": 1,
+                "persistent_open_count": 1,
+                "merged_open_count": 1,
+                "duplicate_detected": True,
+                "open_source": "merged",
+                "trades": [{"shadow_trade_id": "same-shadow", "symbol": "XAUUSD", "timeframe": "M15"}],
+                **_safety(),
+            },
+            monitor={**_monitor_open(), "shadow_trade_id": "same-shadow", "open_shadow_count": 1, "shadow_source": "merged"},
+        )
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "shadow_open_monitoring")
+        self.assertEqual(result["open_shadow_count"], 1)
+        self.assertEqual(result["current_shadow_source"], "merged")
+        self.assertEqual(client.open_calls, 0)
+
+    def test_stats_are_session_scoped_and_side_stats_are_correct(self) -> None:
+        stats = compute_xau_m15_paper_batch_stats(
+            [
+                {"shadow_trade_id": "buy-win", "side": "buy", "pnl": 4.0, "r_multiple": 0.4, "exit_reason": "take_profit_hit", "session_id": "session-a"},
+                {"shadow_trade_id": "sell-loss", "side": "sell", "pnl": -2.0, "r_multiple": -0.2, "exit_reason": "stop_loss_hit", "session_id": "session-a"},
+                {"shadow_trade_id": "old-win", "side": "buy", "pnl": 100.0, "r_multiple": 10.0, "exit_reason": "take_profit_hit", "session_id": "old-session"},
+            ],
+            state={"session_id": "session-a", "session_started_at": "2026-07-02T00:00:00+00:00"},
+        )
+
+        self.assertEqual(stats["session_trades_closed"], 2)
+        self.assertEqual(stats["historical_closed_count"], 1)
+        self.assertEqual(stats["wins"], 1)
+        self.assertEqual(stats["losses"], 1)
+        self.assertEqual(stats["win_rate"], 50.0)
+        self.assertEqual(stats["side_stats"]["buy_count"], 1)
+        self.assertEqual(stats["side_stats"]["sell_count"], 1)
+        self.assertEqual(stats["side_stats"]["buy_win_rate"], 100.0)
+        self.assertEqual(stats["side_stats"]["sell_win_rate"], 0.0)
 
     def test_pending_state_live_open_same_id_monitors_existing(self) -> None:
         client = _FakeClient(open_count=1, monitor=_monitor_open())
@@ -379,6 +577,7 @@ def _step(
     paper_only_confirmed: bool = False,
     exit_policy: str = "default",
     time_stop_bars: int = 2,
+    strict_paper_probe: bool = False,
 ) -> dict[str, object]:
     return run_xau_m15_paper_observation_batch_step(
         client=client,
@@ -390,6 +589,7 @@ def _step(
         paper_only_confirmed=paper_only_confirmed,
         exit_policy=exit_policy,
         time_stop_bars=time_stop_bars,
+        strict_paper_probe=strict_paper_probe,
     )
 
 
@@ -405,6 +605,8 @@ class _FakeClient:
         monitor: dict[str, object] | None = None,
         history: list[dict[str, object]] | None = None,
         history_payload: dict[str, object] | None = None,
+        open_result: dict[str, object] | None = None,
+        open_payload: dict[str, object] | None = None,
     ) -> None:
         self.db = db or _db()
         self.ready = readiness or _ready()
@@ -412,13 +614,18 @@ class _FakeClient:
         self.monitor_payload = monitor or _monitor_none()
         self.history_rows = [dict(row) for row in (history or [])]
         self.history_payload = dict(history_payload) if history_payload is not None else None
+        self.open_result = dict(open_result) if open_result is not None else None
+        self.open_payload = dict(open_payload) if open_payload is not None else None
         self.open_calls = 0
         self.close_calls = 0
+        self.last_strict_paper_probe = False
 
     def persistent_status(self) -> dict[str, object]:
         return dict(self.db)
 
     def open_shadow_trades(self) -> dict[str, object]:
+        if self.open_payload is not None:
+            return dict(self.open_payload)
         trades = [{"shadow_trade_id": "existing-shadow", "symbol": "XAUUSD", "timeframe": "M15"}] if self.open_count else []
         if self.open_count > 1:
             trades.append({"shadow_trade_id": "existing-shadow-2", "symbol": "XAUUSD", "timeframe": "M15"})
@@ -453,16 +660,20 @@ class _FakeClient:
         max_hold_minutes: float | None = None,
         min_r_to_arm_trailing: float = 0.25,
         giveback_r: float = 0.15,
+        fast_loss_cut_r: float = -0.25,
     ) -> dict[str, object]:
-        del exit_policy, time_stop_bars, max_hold_minutes, min_r_to_arm_trailing, giveback_r
+        del exit_policy, time_stop_bars, max_hold_minutes, min_r_to_arm_trailing, giveback_r, fast_loss_cut_r
         if apply_paper_close:
             self.close_calls += 1
             self.open_count = 0
             return {**self.monitor_payload, "paper_close_applied": True, "shadow_status_after": "closed", **_safety()}
         return dict(self.monitor_payload)
 
-    def open_shadow_once(self) -> dict[str, object]:
+    def open_shadow_once(self, *, strict_paper_probe: bool = False) -> dict[str, object]:
+        self.last_strict_paper_probe = bool(strict_paper_probe)
         self.open_calls += 1
+        if self.open_result is not None:
+            return dict(self.open_result)
         self.open_count = 1
         return {
             "ok": True,
@@ -505,6 +716,58 @@ def _ready() -> dict[str, object]:
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         **_safety(),
+    }
+
+
+def _recent_edge_ready(*, strict_passed: bool, failed_strict: list[str] | None = None) -> dict[str, object]:
+    failed = failed_strict if failed_strict is not None else ([] if strict_passed else ["signal_direction"])
+    return {
+        **_ready(),
+        "readiness_state": "blocked",
+        "risk_allows_observation": False,
+        "risk_governor_reason": "recent_edge_negative",
+        "recent_edge_negative": True,
+        "recommendation": "strict_paper_probe_allowed_real_trading_still_blocked" if strict_passed else "adaptive_paper_cooldown_wait_for_high_quality_paper_signal",
+        "failed_gate_names": ["risk_allows_observation"],
+        "failed_gate_reasons": {"risk_allows_observation": {"actual": "recent_edge_negative", "required": "risk_governor_pass"}},
+        "entry_block_type": "adaptive_paper_cooldown",
+        "entry_allowed_for_paper_test": bool(strict_passed),
+        "gate_summary": {
+            "failed_gate_names": ["risk_allows_observation"],
+            "risk_governor_reason": "recent_edge_negative",
+            "recent_edge_negative": True,
+        },
+        "strict_paper_probe": {
+            "mode": "strict_paper_probe",
+            "strict_paper_probe_passed": bool(strict_passed),
+            "failed_strict_gate_names": failed,
+            "trend_alignment_ok": "trend_alignment_ok" not in failed,
+            "spread_ok": "spread_ok" not in failed,
+            "volatility_ok": "volatility_ok" not in failed,
+            "no_duplicate_shadow": "no_duplicate_shadow" not in failed,
+            "signal_direction": "buy" if "signal_direction" not in failed else "",
+            "db_healthy_and_queue_empty": True,
+            "runtime_context_recent": True,
+            **_safety(),
+        },
+    }
+
+
+def _legacy_recent_edge_ready() -> dict[str, object]:
+    return {
+        **_ready(),
+        "readiness_state": "blocked",
+        "risk_allows_observation": False,
+        "risk_state": "defensive",
+        "recommendation": "resolve_observation_safety_gates",
+        "failed_gates": ["risk_allows_observation"],
+        "gates": {
+            "risk_allows_observation": {
+                "actual": "recent_edge_negative",
+                "passed": False,
+                "required": "risk_governor_pass",
+            }
+        },
     }
 
 
