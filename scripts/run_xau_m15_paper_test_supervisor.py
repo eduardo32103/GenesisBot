@@ -45,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
             explain_gates=args.explain_gates,
             wait_for_signal=args.wait_for_signal,
             max_wait_minutes=args.max_wait_minutes,
+            preflight_only=args.preflight_only,
             state_file=args.state_file,
             results_file=args.results_file,
             timeout_seconds=args.timeout_seconds,
@@ -75,6 +76,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--explain-gates", action="store_true")
     parser.add_argument("--wait-for-signal", action="store_true")
     parser.add_argument("--max-wait-minutes", type=float, default=None)
+    parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
     parser.add_argument("--results-file", default=str(DEFAULT_RESULTS_FILE))
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
@@ -85,6 +87,32 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _human_summary(result: dict[str, Any]) -> str:
+    if result.get("preflight_only"):
+        return "\n".join(
+            [
+                "MT5 XAUUSD M15 Paper Test Supervisor Preflight Only",
+                f"status={result.get('status')}",
+                f"decision={result.get('decision')}",
+                f"blockers={result.get('blockers')}",
+                f"next_safe_action={result.get('next_safe_action')}",
+                f"db_available={result.get('db_available')}",
+                f"db_degraded={result.get('db_degraded')}",
+                f"tables_ready={result.get('tables_ready')}",
+                f"queue_depth={result.get('queue_depth')}",
+                f"readiness_state={result.get('readiness_state')}",
+                f"runtime_context_recent={result.get('runtime_context_recent')}",
+                f"capital_state={result.get('capital_state')}",
+                f"capital_allows_observation={result.get('capital_allows_observation')}",
+                f"risk_state={result.get('risk_state')}",
+                f"risk_allows_observation={result.get('risk_allows_observation')}",
+                f"open_count={result.get('open_count')}",
+                f"merged_open_count={result.get('merged_open_count')}",
+                f"closed_count={result.get('closed_count')}",
+                f"broker_touched={result.get('broker_touched')}",
+                f"order_executed={result.get('order_executed')}",
+                f"order_policy={result.get('order_policy')}",
+            ]
+        )
     preflight = result.get("preflight") if isinstance(result.get("preflight"), dict) else {}
     db = preflight.get("db_state") if isinstance(preflight.get("db_state"), dict) else {}
     open_payload = preflight.get("open_payload") if isinstance(preflight.get("open_payload"), dict) else {}
