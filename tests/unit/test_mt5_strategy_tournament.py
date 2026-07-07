@@ -136,6 +136,157 @@ class MT5StrategyTournamentTests(unittest.TestCase):
         self.assertEqual(result["top_candidate"]["profile"], "lower_pf_survivable")
         self.assertLess(result["top_candidate"]["max_drawdown"], 5.0)
 
+    def test_invalid_frozen_closed_trades_do_not_create_ranked_profile(self) -> None:
+        result = run_strategy_tournament(
+            closed_trades=[
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "strategy_profile": "xau_m15_flat_frozen",
+                    "entry_price": 4219.6,
+                    "exit_price": 4219.6,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "time_stop",
+                    "market_inactive_or_frozen": True,
+                    "sample_valid": False,
+                    "invalid_reason": "market_inactive_or_frozen",
+                    "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                }
+            ],
+            persistent_status=_persistent_ready(),
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            load_rotation=False,
+            persist_events=False,
+        )
+
+        self.assertEqual(result["ranked_profiles"], [])
+        self.assertIsNone(result["top_candidate"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
+    def test_mixed_closed_trades_rank_only_valid_samples(self) -> None:
+        result = run_strategy_tournament(
+            closed_trades=[
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "strategy_profile": "xau_m15_candidate",
+                    "entry_price": 100.0,
+                    "exit_price": 100.0,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "time_stop",
+                    "market_inactive_or_frozen": True,
+                    "sample_valid": False,
+                },
+                {
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "strategy_profile": "xau_m15_candidate",
+                    "entry_price": 100.0,
+                    "exit_price": 102.0,
+                    "pnl": 2.0,
+                    "r_multiple": 0.2,
+                    "exit_reason": "paper_timebox_exit",
+                    "market_active": True,
+                    "price_source": "tick_bid",
+                },
+            ],
+            persistent_status=_persistent_ready(),
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            load_rotation=False,
+            persist_events=False,
+        )
+
+        row = result["ranked_profiles"][0]
+        self.assertEqual(row["trades_forward"], 1)
+        self.assertEqual(row["win_rate"], 100.0)
+        self.assertEqual(row["expectancy"], 2.0)
+
+    def test_legacy_closed_trade_without_sample_valid_remains_ranked(self) -> None:
+        result = run_strategy_tournament(
+            closed_trades=[
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "H1",
+                    "strategy_profile": "eurusd_h1_clean_legacy_candidate",
+                    "entry_price": 1.08,
+                    "exit_price": 1.09,
+                    "pnl": 1.0,
+                    "r_multiple": 0.5,
+                    "exit_reason": "take_profit_hit",
+                }
+            ],
+            persistent_status=_persistent_ready(),
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            load_rotation=False,
+            persist_events=False,
+        )
+
+        self.assertEqual(len(result["ranked_profiles"]), 1)
+        self.assertEqual(result["ranked_profiles"][0]["profile"], "eurusd_h1_clean_legacy_candidate")
+        self.assertEqual(result["ranked_profiles"][0]["trades_forward"], 1)
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
+    def test_invalid_reason_without_sample_valid_excludes_closed_trade(self) -> None:
+        result = run_strategy_tournament(
+            closed_trades=[
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "H1",
+                    "strategy_profile": "eurusd_h1_invalid_legacy_candidate",
+                    "entry_price": 1.08,
+                    "exit_price": 1.09,
+                    "pnl": 1.0,
+                    "r_multiple": 0.5,
+                    "exit_reason": "take_profit_hit",
+                    "invalid_reason": "market_inactive_or_frozen",
+                }
+            ],
+            persistent_status=_persistent_ready(),
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            load_rotation=False,
+            persist_events=False,
+        )
+
+        self.assertEqual(result["ranked_profiles"], [])
+        self.assertIsNone(result["top_candidate"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
+    def test_frozen_market_detected_without_sample_valid_excludes_closed_trade(self) -> None:
+        result = run_strategy_tournament(
+            closed_trades=[
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "H1",
+                    "strategy_profile": "eurusd_h1_frozen_legacy_candidate",
+                    "entry_price": 1.08,
+                    "exit_price": 1.09,
+                    "pnl": 1.0,
+                    "r_multiple": 0.5,
+                    "exit_reason": "take_profit_hit",
+                    "frozen_market_detected": True,
+                }
+            ],
+            persistent_status=_persistent_ready(),
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            load_rotation=False,
+            persist_events=False,
+        )
+
+        self.assertEqual(result["ranked_profiles"], [])
+        self.assertIsNone(result["top_candidate"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
     def test_db_degraded_never_rotates(self) -> None:
         result = run_strategy_tournament(
             profile_performance=[

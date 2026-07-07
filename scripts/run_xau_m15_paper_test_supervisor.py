@@ -27,8 +27,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         dry_run = bool(args.dry_run) if args.dry_run is not None else not bool(args.paper_only_confirmed)
+        asset_configs = _load_asset_configs(args)
         result = run_xau_m15_paper_test_supervisor(
             base_url=args.base_url,
+            symbol=args.symbol,
+            broker_symbol=args.broker_symbol,
+            timeframe=args.timeframe,
+            allowed_symbols=args.allow_symbol,
+            asset_configs=asset_configs,
             target_trades=args.target_trades,
             max_cycles=args.max_cycles,
             interval_seconds=args.interval_seconds,
@@ -60,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the XAUUSD M15 paper-only test supervisor. No broker, no real trading.")
     parser.add_argument("--base-url", default="")
+    parser.add_argument("--symbol", default="XAUUSD")
+    parser.add_argument("--broker-symbol", default="XAUUSD.b")
+    parser.add_argument("--timeframe", default="M15")
+    parser.add_argument("--allow-symbol", action="append", default=None, help="Explicit paper-test symbol allowlist shorthand. Repeatable. No default; omitted allowlist fails closed.")
+    parser.add_argument("--asset-config-json", default="", help="Explicit JSON object/list with enabled paper-only asset config(s).")
+    parser.add_argument("--asset-config-file", default="", help="Path to explicit JSON object/list with enabled paper-only asset config(s).")
     parser.add_argument("--target-trades", type=int, default=3)
     parser.add_argument("--max-cycles", type=int, default=120)
     parser.add_argument("--interval-seconds", type=float, default=30.0)
@@ -86,11 +98,33 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _load_asset_configs(args: argparse.Namespace) -> list[dict[str, Any]] | None:
+    payloads: list[dict[str, Any]] = []
+    if args.asset_config_file:
+        path = Path(args.asset_config_file)
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+        payloads.extend(_as_config_list(decoded))
+    if args.asset_config_json:
+        payloads.extend(_as_config_list(json.loads(args.asset_config_json)))
+    return payloads if payloads else None
+
+
+def _as_config_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        return [dict(payload)]
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, dict)]
+    raise ValueError("asset config must be a JSON object or list of objects")
+
+
 def _human_summary(result: dict[str, Any]) -> str:
     if result.get("preflight_only"):
         return "\n".join(
             [
                 "MT5 XAUUSD M15 Paper Test Supervisor Preflight Only",
+                f"symbol={result.get('symbol')}",
+                f"broker_symbol={result.get('broker_symbol')}",
+                f"timeframe={result.get('timeframe')}",
                 f"status={result.get('status')}",
                 f"decision={result.get('decision')}",
                 f"blockers={result.get('blockers')}",
@@ -120,6 +154,9 @@ def _human_summary(result: dict[str, Any]) -> str:
     return "\n".join(
         [
             "MT5 XAUUSD M15 Paper Test Supervisor",
+            f"symbol={result.get('symbol')}",
+            f"broker_symbol={result.get('broker_symbol')}",
+            f"timeframe={result.get('timeframe')}",
             f"status={result.get('status')}",
             f"supervisor_state={result.get('supervisor_state')}",
             f"stop_reason={result.get('stop_reason')}",
@@ -144,6 +181,8 @@ def _human_summary(result: dict[str, Any]) -> str:
             f"target_scope={result.get('target_scope')}",
             f"session_trades_opened={result.get('session_trades_opened')}",
             f"session_trades_closed={result.get('session_trades_closed')}",
+            f"valid_trades_closed={result.get('valid_trades_closed')}",
+            f"invalid_samples={result.get('invalid_samples')}",
             f"historical_closed_count={result.get('historical_closed_count')}",
             f"current_shadow_id={result.get('current_shadow_id')}",
             f"current_shadow_source={result.get('current_shadow_source')}",

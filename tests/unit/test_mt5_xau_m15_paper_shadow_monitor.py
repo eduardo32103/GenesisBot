@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore
 from services.mt5.mt5_runtime_snapshot import get_snapshot, reset_runtime_snapshots_for_tests, update_bars, update_open_shadow_trade
 from services.mt5.mt5_xau_m15_paper_observation_readiness import CANDIDATE_PROFILE
 from services.mt5.mt5_xau_m15_paper_shadow_monitor import run_xau_m15_paper_shadow_monitor
@@ -324,6 +325,123 @@ class MT5XauM15PaperShadowMonitorTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_frozen_timebox_close_is_persisted_but_excluded_from_metrics(self) -> None:
+        _seed_frozen_runtime(price=100.0)
+        trade = _shadow(entry=100.0, stop=95.0, target=110.0)
+        trade["opened_at"] = (datetime.now(timezone.utc) - timedelta(minutes=75)).isoformat()
+        store = _FakePersistentStore([])
+        update_open_shadow_trade("XAUUSD", trade, timeframe="M15")
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            exit_policy="fast_observation",
+            time_stop_bars=2,
+            db_state=_db(),
+            risk_state=_risk(),
+            store=store,
+        )
+
+        self.assertEqual(result["monitor_state"], "exit_applied")
+        self.assertTrue(result["paper_close_applied"])
+        self.assertEqual(result["exit_reason"], "paper_timebox_exit")
+        self.assertEqual(len(store.recorded), 1)
+        closed = store.recorded[0]
+        self.assertEqual(closed["status"], "closed")
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertFalse(closed["use_for_winrate"])
+        self.assertFalse(closed["use_for_optimization"])
+        self.assertFalse(closed["use_for_calibration"])
+        self.assertFalse(closed["strategy_promotion_eligible"])
+        self.assertFalse(closed["candidate_promotion_eligible"])
+        self.assertEqual(store.performance, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_sample_validity_fields_persist_to_close_record_payload(self) -> None:
+        client = _CapturePersistentClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.record_shadow_trade(
+            {
+                "shadow_trade_id": "xau-flat-invalid",
+                "symbol": "XAUUSD",
+                "broker_symbol": "XAUUSD.b",
+                "timeframe": "M15",
+                "status": "closed",
+                "entry_price": 100.0,
+                "exit_price": 100.0,
+                "pnl": 0.0,
+                "r_multiple": 0.0,
+                "exit_reason": "paper_timebox_exit",
+                "sample_valid": False,
+                "invalid_reason": "market_inactive_or_frozen",
+                "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                "market_active_at_entry": False,
+                "market_active_at_exit": False,
+                "frozen_market_detected": True,
+                "price_movement_observed": False,
+                **_safety(),
+            },
+            critical=True,
+        )
+
+        self.assertTrue(result["ok"])
+        payload = client.upserted[-1]["payload"]
+        self.assertEqual(payload["sample_valid"], False)
+        self.assertEqual(payload["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(payload["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(payload["market_active_at_entry"], False)
+        self.assertEqual(payload["market_active_at_exit"], False)
+        self.assertEqual(payload["frozen_market_detected"], True)
+        self.assertEqual(payload["price_movement_observed"], False)
+        metadata = payload["sample_validity_metadata"]
+        self.assertEqual(metadata["sample_valid"], False)
+        self.assertEqual(metadata["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(metadata["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+
+    def test_sample_validity_history_fallback_exposes_fields(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_HistorySampleMetadataFallbackClient())
+
+        result = store.shadow_trade_history(symbol="XAUUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["history_schema_fallback_used"])
+        closed = result["closed_trades"][0]
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(closed["market_active_at_entry"], False)
+        self.assertEqual(closed["market_active_at_exit"], False)
+        self.assertEqual(closed["frozen_market_detected"], True)
+        self.assertEqual(closed["price_movement_observed"], False)
+
+    def test_frozen_sample_not_deleted_only_excluded(self) -> None:
+        _seed_frozen_runtime(price=100.0)
+        trade = _shadow(entry=100.0, stop=95.0, target=110.0)
+        trade["opened_at"] = (datetime.now(timezone.utc) - timedelta(minutes=75)).isoformat()
+        store = _FakePersistentStore([])
+        update_open_shadow_trade("XAUUSD", trade, timeframe="M15")
+
+        result = run_xau_m15_paper_shadow_monitor(
+            apply_paper_close=True,
+            exit_policy="fast_observation",
+            time_stop_bars=2,
+            db_state=_db(),
+            risk_state=_risk(),
+            store=store,
+        )
+
+        self.assertTrue(result["paper_close_applied"])
+        self.assertEqual(len(store.recorded), 1)
+        closed = store.recorded[0]
+        self.assertEqual(closed["entry_price"], closed["exit_price"])
+        self.assertEqual(closed["pnl"], 0.0)
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(store.performance, [])
+
     def test_fast_observation_giveback_closes_paper_only_shadow(self) -> None:
         _seed_runtime(price=101.0)
         trade = _shadow(entry=100.0, stop=95.0, target=110.0)
@@ -379,6 +497,29 @@ def _seed_runtime(*, price: float) -> None:
         "M15",
         _bars(120, price=price),
         tick={"bid": price, "ask": price + 0.2, "last": price + 0.1, "spread": 0.2, "timeframe": "M15"},
+        min_bars=100,
+    )
+
+
+def _seed_frozen_runtime(*, price: float) -> None:
+    now = datetime.now(timezone.utc)
+    bars = [
+        {
+            "time": (now - timedelta(minutes=15 * (120 - idx))).isoformat(),
+            "open": price,
+            "high": price,
+            "low": price,
+            "close": price,
+            "volume": 0,
+            "tick_volume": 0,
+        }
+        for idx in range(120)
+    ]
+    update_bars(
+        "XAUUSD.b",
+        "M15",
+        bars,
+        tick={"bid": price, "ask": price + 0.2, "last": price, "spread": 0.2, "timeframe": "M15"},
         min_bars=100,
     )
 
@@ -477,6 +618,74 @@ class _FailingPersistentStore(_FakePersistentStore):
         }
 
 
+class _CapturePersistentClient:
+    available = True
+    url_configured = True
+    key_configured = True
+
+    def __init__(self) -> None:
+        self.upserted: list[dict[str, object]] = []
+
+    def upsert(self, table: str, payload: dict[str, object], *, on_conflict: tuple[str, ...]) -> dict[str, object]:
+        self.upserted.append({"table": table, "payload": dict(payload), "on_conflict": on_conflict})
+        return {"ok": True}
+
+    def insert(self, table: str, payload: dict[str, object]) -> dict[str, object]:
+        return {"ok": True}
+
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        return []
+
+    def table_ready(self, table: str) -> bool:
+        return True
+
+
+class _HistorySampleMetadataFallbackClient(_CapturePersistentClient):
+    missing_columns = {
+        "sample_valid",
+        "invalid_reason",
+        "metric_exclusion_reason",
+        "market_active_at_entry",
+        "market_active_at_exit",
+        "frozen_market_detected",
+        "price_movement_observed",
+    }
+
+    def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
+        selected = {column.strip() for column in str((params or {}).get("select") or "").split(",") if column.strip()}
+        for column in sorted(self.missing_columns):
+            if column in selected:
+                raise RuntimeError(f'ERROR: column "{column}" does not exist')
+        return [
+            {
+                "shadow_trade_id": "xau-flat-invalid",
+                "symbol": "XAUUSD",
+                "timeframe": "M15",
+                "side": "buy",
+                "entry_price": 100.0,
+                "exit_price": 100.0,
+                "pnl": 0.0,
+                "r_multiple": 0.0,
+                "status": "closed",
+                "opened_at": "2026-07-05T00:00:00+00:00",
+                "closed_at": "2026-07-05T00:15:00+00:00",
+                "exit_reason": "paper_timebox_exit",
+                "broker_touched": False,
+                "order_executed": False,
+                "order_policy": "journal_only_no_broker",
+                "sample_validity_metadata": {
+                    "sample_valid": False,
+                    "invalid_reason": "market_inactive_or_frozen",
+                    "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                    "market_active_at_entry": False,
+                    "market_active_at_exit": False,
+                    "frozen_market_detected": True,
+                    "price_movement_observed": False,
+                },
+            }
+        ]
+
+
 def _bars(count: int, *, price: float) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     start = datetime.now(timezone.utc) - timedelta(minutes=15 * count)
@@ -505,6 +714,10 @@ def _db() -> dict[str, object]:
         "queue_depth": 0,
         "recommendation": "persistent_intelligence_ready",
     }
+
+
+def _safety() -> dict[str, object]:
+    return {"broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
 
 
 def _risk() -> dict[str, object]:

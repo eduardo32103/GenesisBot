@@ -118,6 +118,7 @@ _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
     {
         "symbol": "EURUSD",
         "timeframe": "H1",
+        "match_scope": "profile",
         "family_profile_patterns": (
             "*session_vwap_reclaim*",
         ),
@@ -134,9 +135,10 @@ _RESEARCH_REJECTIONS: tuple[dict[str, Any], ...] = (
         "aliases": ("USTEC.b", "NAS100"),
         "timeframe": "M30",
         "higher_timeframe": "H1",
+        "match_scope": "profile",
         "family_profile_patterns": (
             "*multi_timeframe_trend_pullback*",
-            "*trend_pullback*",
+            "*ustec_m30_h1_trend_pullback_fast_loss_cut*",
         ),
         "rejection_status": "rejected_after_real_hardening",
         "rejection_reason": "proxy_false_positive_after_monte_carlo_failure",
@@ -155,16 +157,21 @@ def research_rejection(
     profile: str = "",
     family: str = "",
     conceptual_family: str = "",
+    *,
+    candidate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_symbol = _symbol(symbol)
     clean_timeframe = _timeframe(timeframe)
-    blob = _blob(profile, family, conceptual_family)
+    invalid = _invalid_candidate_rejection(candidate)
+    if invalid:
+        return invalid
     for item in _RESEARCH_REJECTIONS:
         symbols = {_symbol(item.get("symbol")), *{_symbol(alias) for alias in item.get("aliases") or ()}}
         if clean_symbol not in symbols:
             continue
         if _timeframe(item.get("timeframe")) != clean_timeframe:
             continue
+        blob = _match_blob(item, profile, family, conceptual_family)
         if _matches_patterns(blob, item.get("family_profile_patterns") or ()):
             return {**deepcopy(item), **_safety()}
     return {}
@@ -187,6 +194,42 @@ def _matches_patterns(blob: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatchcase(blob, str(pattern or "").casefold()) for pattern in patterns)
 
 
+def _match_blob(item: dict[str, Any], profile: str, family: str, conceptual_family: str) -> str:
+    if str(item.get("match_scope") or "").casefold().strip() == "profile":
+        return _blob(profile)
+    return _blob(profile, family, conceptual_family)
+
+
+def _invalid_candidate_rejection(candidate: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(candidate, dict):
+        return {}
+    if candidate.get("sample_valid") is False:
+        return _invalid_sample_payload("sample_valid_false")
+    for key in ("invalid_reason", "invalid_sample_reason", "metric_exclusion_reason"):
+        if str(candidate.get(key) or "").strip():
+            return _invalid_sample_payload(str(candidate.get(key) or key))
+    for key in ("frozen_market_detected", "market_inactive_or_frozen", "no_price_movement"):
+        if _flag(candidate.get(key)):
+            return _invalid_sample_payload(key)
+    return {}
+
+
+def _invalid_sample_payload(reason: str) -> dict[str, Any]:
+    return {
+        "symbol": "",
+        "timeframe": "",
+        "family_profile_patterns": (),
+        "rejection_status": "rejected_invalid_sample",
+        "rejection_reason": f"invalid_sample_excluded_from_candidate_review:{reason}",
+        "applies_to_paper_forward_candidate": True,
+        "applies_to_real_trading": False,
+        "reviewed_at_version": RESEARCH_REJECTION_REGISTRY_VERSION,
+        "allow_future_research": False,
+        "allow_manual_override": False,
+        **_safety(),
+    }
+
+
 def _blob(*values: object) -> str:
     return " ".join(str(value or "").casefold().strip() for value in values if str(value or "").strip())
 
@@ -202,6 +245,12 @@ def _symbol(value: object) -> str:
 
 def _timeframe(value: object) -> str:
     return str(value or "").upper().strip()
+
+
+def _flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").casefold().strip() in {"1", "true", "yes", "y"}
 
 
 def _safety() -> dict[str, Any]:

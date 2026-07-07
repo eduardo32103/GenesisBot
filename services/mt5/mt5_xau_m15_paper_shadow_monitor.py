@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from services.mt5.mt5_frozen_sample_guard import evaluate_frozen_sample
 from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore
 from services.mt5.mt5_risk_governor import assess_runtime_risk
 from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, get_snapshot, update_open_shadow_trade
@@ -112,7 +113,7 @@ def run_xau_m15_paper_shadow_monitor(
     persist_result: dict[str, Any] = {"ok": True, "skipped": True}
 
     if apply_paper_close and exit_signal and not apply_blocked:
-        closed = _closed_trade(updated_trade, metrics, exit_reason, safety_analysis)
+        closed = _closed_trade(updated_trade, metrics, exit_reason, safety_analysis, snapshot)
         if persist_events:
             persist_result = _persist_close(store, closed)
             if not bool(persist_result.get("ok")):
@@ -808,10 +809,17 @@ def _updated_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: 
     return updated
 
 
-def _closed_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: str, safety_analysis: dict[str, Any] | None = None) -> dict[str, Any]:
+def _closed_trade(
+    trade: dict[str, Any],
+    metrics: dict[str, Any],
+    exit_reason: str,
+    safety_analysis: dict[str, Any] | None = None,
+    snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     closed = _updated_trade(trade, metrics, exit_reason)
     pnl = float(metrics["unrealized_pnl"])
     safety = safety_analysis or {}
+    movement = _observation_movement_flags(trade, metrics, snapshot or {})
     closed.update(
         {
             "status": "closed",
@@ -825,12 +833,53 @@ def _closed_trade(trade: dict[str, Any], metrics: dict[str, Any], exit_reason: s
             "source": closed.get("source") or "paper_observation_shadow_once",
             "age_minutes": metrics.get("age_minutes") or 0.0,
             "bars_since_entry": metrics.get("bars_since_entry") or 0,
+            "market_active": movement["market_active"],
+            "market_active_at_entry": movement["market_active_at_entry"],
+            "market_active_at_exit": movement["market_active_at_exit"],
+            "market_inactive_or_frozen": movement["market_inactive_or_frozen"],
+            "frozen_market_detected": movement["frozen_market_detected"],
+            "no_price_movement": movement["no_price_movement"],
+            "price_movement_observed": movement["price_movement_observed"],
+            "price_source": movement["price_source"],
             "safety_exit_category": safety.get("safety_exit_category") or "",
             "safety_exit_reason_detail": safety.get("safety_exit_reason_detail") or "",
             "close_decision_reason": safety.get("close_decision_reason") or f"close_paper:{exit_reason}",
             **_safety(),
         }
     )
+    frozen = evaluate_frozen_sample(closed)
+    if frozen.get("frozen_sample"):
+        closed.update(
+            {
+                "sample_valid": False,
+                "valid_winrate_sample": False,
+                "invalid_winrate_sample": True,
+                "invalid_sample_reason": frozen["invalid_reason"],
+                "invalid_reason": frozen["invalid_reason"],
+                "metric_exclusion_reason": frozen["metric_exclusion_reason"],
+                "use_for_winrate": False,
+                "use_for_optimization": False,
+                "use_for_calibration": False,
+                "strategy_promotion_eligible": False,
+                "candidate_promotion_eligible": False,
+            }
+        )
+    else:
+        closed.update(
+            {
+                "sample_valid": True,
+                "valid_winrate_sample": True,
+                "invalid_winrate_sample": False,
+                "invalid_sample_reason": "",
+                "invalid_reason": "",
+                "metric_exclusion_reason": "",
+                "use_for_winrate": True,
+                "use_for_optimization": True,
+                "use_for_calibration": True,
+                "strategy_promotion_eligible": True,
+                "candidate_promotion_eligible": True,
+            }
+        )
     return closed
 
 
@@ -852,6 +901,14 @@ def _persist_close(store: Any | None, closed: dict[str, Any]) -> dict[str, Any]:
             "results": results,
             **_safety(),
         }
+    if not bool(closed.get("sample_valid", True)):
+        results["profile_performance"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": str(closed.get("metric_exclusion_reason") or "invalid_paper_observation_sample"),
+            **_safety(),
+        }
+        return {"ok": True, "results": results, **_safety()}
     try:
         r_multiple = _number(closed.get("r_multiple")) or 0.0
         results["profile_performance"] = active_store.upsert_profile_performance(
@@ -889,6 +946,43 @@ def _persist_close(store: Any | None, closed: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             results["research_lesson"] = {"ok": False, "error": type(exc).__name__}
     return {"ok": True, "results": results, **_safety()}
+
+
+def _observation_movement_flags(trade: dict[str, Any], metrics: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    entry = _number(metrics.get("entry_price") or trade.get("entry_price") or trade.get("entry")) or 0.0
+    current = _number(metrics.get("current_price") or snapshot.get("last_price")) or 0.0
+    bars = snapshot.get("ohlc_recent") if isinstance(snapshot.get("ohlc_recent"), list) else []
+    closes = []
+    range_sum = 0.0
+    for bar in bars[-5:]:
+        if not isinstance(bar, dict):
+            continue
+        close = _number(bar.get("close") or bar.get("c"))
+        high = _number(bar.get("high") or bar.get("h"))
+        low = _number(bar.get("low") or bar.get("l"))
+        if close is not None:
+            closes.append(round(float(close), 12))
+        if high is not None and low is not None:
+            range_sum += max(0.0, float(high) - float(low))
+    previous_tick = snapshot.get("previous_tick") if isinstance(snapshot.get("previous_tick"), dict) else {}
+    previous_price = _number(previous_tick.get("last") or previous_tick.get("bid") or previous_tick.get("ask"))
+    tick_moved = previous_price is not None and current and abs(float(previous_price) - float(current)) > 1e-12
+    price_moved = bool(entry and current and abs(float(entry) - float(current)) > 1e-12)
+    bars_moved = len(set(closes)) > 1 or range_sum > 1e-12
+    market_active = bool(price_moved or tick_moved or bars_moved)
+    entry_market_active = trade.get("market_active_at_entry", trade.get("market_active"))
+    if entry_market_active is None or entry_market_active == "":
+        entry_market_active = market_active
+    return {
+        "market_active": market_active,
+        "market_active_at_entry": bool(entry_market_active),
+        "market_active_at_exit": market_active,
+        "market_inactive_or_frozen": not market_active,
+        "frozen_market_detected": not market_active,
+        "no_price_movement": not market_active,
+        "price_movement_observed": market_active,
+        "price_source": "runtime_tick_bar_context" if current else "",
+    }
 
 
 def _db_state(store: Any | None, injected: dict[str, Any] | None) -> dict[str, Any]:

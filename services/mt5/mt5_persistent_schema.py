@@ -90,6 +90,14 @@ create table if not exists public.mt5_shadow_trades (
   safety_exit_category text not null default '',
   safety_exit_reason_detail text not null default '',
   close_decision_reason text not null default '',
+  sample_valid boolean,
+  invalid_reason text not null default '',
+  metric_exclusion_reason text not null default '',
+  market_active_at_entry boolean,
+  market_active_at_exit boolean,
+  frozen_market_detected boolean,
+  price_movement_observed boolean,
+  sample_validity_metadata jsonb not null default '{}'::jsonb,
   broker_touched boolean not null default false,
   order_executed boolean not null default false,
   order_policy text not null default 'journal_only_no_broker'
@@ -110,6 +118,14 @@ alter table if exists public.mt5_shadow_trades add column if not exists bars_sin
 alter table if exists public.mt5_shadow_trades add column if not exists safety_exit_category text not null default '';
 alter table if exists public.mt5_shadow_trades add column if not exists safety_exit_reason_detail text not null default '';
 alter table if exists public.mt5_shadow_trades add column if not exists close_decision_reason text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists sample_valid boolean;
+alter table if exists public.mt5_shadow_trades add column if not exists invalid_reason text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists metric_exclusion_reason text not null default '';
+alter table if exists public.mt5_shadow_trades add column if not exists market_active_at_entry boolean;
+alter table if exists public.mt5_shadow_trades add column if not exists market_active_at_exit boolean;
+alter table if exists public.mt5_shadow_trades add column if not exists frozen_market_detected boolean;
+alter table if exists public.mt5_shadow_trades add column if not exists price_movement_observed boolean;
+alter table if exists public.mt5_shadow_trades add column if not exists sample_validity_metadata jsonb not null default '{}'::jsonb;
 
 create table if not exists public.mt5_decision_events (
   id uuid primary key default gen_random_uuid(),

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 
+from services.mt5.mt5_eurusd_h1_vwap_reclaim_hardening import run_eurusd_h1_vwap_reclaim_hardening
 from services.mt5.mt5_research_rejection_registry import (
     research_rejection,
     research_rejection_registry_status,
 )
+from services.mt5.mt5_ustec_m30_h1_trend_pullback_hardening import run_ustec_m30_h1_trend_pullback_hardening
 
 
 class MT5ResearchRejectionRegistryTests(unittest.TestCase):
@@ -100,6 +102,120 @@ class MT5ResearchRejectionRegistryTests(unittest.TestCase):
         self.assertEqual(rejected["order_policy"], "journal_only_no_broker")
         self.assertEqual(unrelated_timeframe, {})
         self.assertEqual(unrelated_symbol, {})
+
+    def test_rejection_registry_allows_eurusd_session_vwap_reclaim_candidate_review(self) -> None:
+        rejected = research_rejection(
+            "EURUSD",
+            "H1",
+            "eurusd_h1_vwap_reclaim_distance_filter",
+            "session_vwap_reclaim",
+            "session_vwap_reclaim",
+        )
+
+        self.assertEqual(rejected, {})
+
+    def test_rejection_registry_allows_ustec_multi_timeframe_trend_pullback_candidate_review(self) -> None:
+        rejected = research_rejection(
+            "USTEC",
+            "M30",
+            "ustec_m30_h1_trend_pullback_rsi_filter",
+            "multi_timeframe_trend_pullback",
+            "multi_timeframe_trend_pullback",
+        )
+
+        self.assertEqual(rejected, {})
+
+    def test_rejection_registry_rejects_explicit_sample_valid_false(self) -> None:
+        rejected = research_rejection(
+            "EURUSD",
+            "H1",
+            "eurusd_h1_vwap_reclaim_distance_filter",
+            "session_vwap_reclaim",
+            candidate={"sample_valid": False},
+        )
+
+        self.assertEqual(rejected["rejection_status"], "rejected_invalid_sample")
+        self.assertIn("sample_valid_false", rejected["rejection_reason"])
+        self.assertFalse(rejected["broker_touched"])
+        self.assertFalse(rejected["order_executed"])
+        self.assertEqual(rejected["order_policy"], "journal_only_no_broker")
+
+    def test_rejection_registry_rejects_frozen_market_candidate(self) -> None:
+        rejected = research_rejection(
+            "USTEC",
+            "M30",
+            "ustec_m30_h1_trend_pullback_rsi_filter",
+            "multi_timeframe_trend_pullback",
+            candidate={"frozen_market_detected": True},
+        )
+
+        self.assertEqual(rejected["rejection_status"], "rejected_invalid_sample")
+        self.assertIn("frozen_market_detected", rejected["rejection_reason"])
+        self.assertFalse(rejected["broker_touched"])
+        self.assertFalse(rejected["order_executed"])
+        self.assertEqual(rejected["order_policy"], "journal_only_no_broker")
+
+    def test_candidate_review_does_not_activate_candidate(self) -> None:
+        result = run_eurusd_h1_vwap_reclaim_hardening(
+            {
+                "rows": [
+                    {
+                        "profile": "eurusd_h1_vwap_reclaim_distance_filter",
+                        "hardening_actions": ["distance_filter"],
+                        "recent_closed": 24,
+                        "total_closed": 80,
+                        "recent_pf": 1.25,
+                        "total_pf": 1.36,
+                        "expectancy": 0.00012,
+                        "monte_carlo_stressed_pf": 1.09,
+                        "monte_carlo_stressed_expectancy": 0.00004,
+                        "spread_x2_pf": 1.2,
+                        "remove_best_5_pf": 1.05,
+                        "max_drawdown": 0.002,
+                        "fragile_regime_dependency": False,
+                        "single_trade_dependency": False,
+                        "data_quality": "ok",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(result["recommendation"], "paper_forward_candidate_review")
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_candidate_review_does_not_start_paper_forward_onboarding(self) -> None:
+        result = run_ustec_m30_h1_trend_pullback_hardening(
+            {
+                "rows": [
+                    {
+                        "profile": "ustec_m30_h1_trend_pullback_rsi_filter",
+                        "hardening_actions": ["rsi_filter"],
+                        "recent_closed": 24,
+                        "total_closed": 80,
+                        "recent_pf": 1.22,
+                        "total_pf": 1.34,
+                        "expectancy": 0.0008,
+                        "monte_carlo_stressed_pf": 1.08,
+                        "monte_carlo_stressed_expectancy": 0.0002,
+                        "spread_x2_pf": 1.14,
+                        "remove_best_5_pf": 1.04,
+                        "max_drawdown": 0.01,
+                        "fragile_regime_dependency": False,
+                        "single_trade_dependency": False,
+                        "data_quality": "ok",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(result["recommendation"], "paper_forward_candidate_review")
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_unrelated_candidate_is_not_rejected(self) -> None:
         self.assertEqual(

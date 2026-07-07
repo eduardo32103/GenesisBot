@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,13 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from services.mt5.mt5_bridge import mt5_shadow_trades_history, mt5_shadow_trades_open, mt5_xau_m15_paper_observation_readiness
-from services.mt5.mt5_persistent_intelligence_store import persistent_intelligence_status
+from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
+from services.mt5.mt5_frozen_sample_guard import evaluate_frozen_sample
+from services.mt5.mt5_market_active_guard import evaluate_market_active
+from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore, persistent_intelligence_status
+from services.mt5.mt5_risk_governor import assess_runtime_risk
+from services.mt5.mt5_runtime_context_diagnostics import run_runtime_context_diagnostics
+from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, get_snapshot, update_open_shadow_trade
 from services.mt5.mt5_xau_m15_paper_observation_readiness import (
     BROKER_SYMBOL,
     CANDIDATE_PROFILE,
@@ -25,6 +32,43 @@ RUNNER_VERSION = "2026-07-03.xau_m15_paper_observation_batch_runner.v3"
 STATE_SCHEMA_VERSION = "2026-07-02.xau_m15_paper_batch_state.v3"
 DEFAULT_STATE_FILE = Path("data/research_outputs/xau_m15_paper_batch_state.json")
 DEFAULT_RESULTS_FILE = Path("data/research_outputs/xau_m15_paper_batch_results.json")
+DEFAULT_MARKET_GUARD = {
+    "min_bars": 50,
+    "max_bar_age_seconds": 5400,
+    "max_tick_age_seconds": 5400,
+    "require_tick": True,
+    "movement_lookback_bars": 10,
+    "freeze_lookback_bars": 5,
+    "min_price_move_pct": 0.000001,
+    "min_spread_move_multiple": 0.1,
+    "min_absolute_move": 1e-12,
+    "min_recent_range_pct": 0.0,
+    "min_atr_pct": 0.0,
+    "max_spread": None,
+    "use_volume_freeze_check": True,
+}
+DEFAULT_MULTI_ASSET_MIN_BARS = 100
+DEFAULT_MAX_OPEN_POSITIONS = 1
+DEFAULT_MAX_OPEN_POSITIONS_TOTAL = 1
+UNSAFE_POLICY_BLOCK_REASONS = {
+    "asset_config_invalid_order_policy",
+    "asset_config_missing_allow_broker_orders",
+    "asset_config_allows_broker_orders",
+    "asset_config_missing_allow_candidate_activation",
+    "asset_config_allows_candidate_activation",
+    "asset_config_missing_allow_paper_forward",
+    "asset_config_allows_paper_forward",
+    "asset_config_broker_touched_true",
+    "asset_config_order_executed_true",
+}
+SAFETY_VIOLATION_POLICY_REASONS = {
+    "asset_config_invalid_order_policy",
+    "asset_config_allows_broker_orders",
+    "asset_config_allows_candidate_activation",
+    "asset_config_allows_paper_forward",
+    "asset_config_broker_touched_true",
+    "asset_config_order_executed_true",
+}
 ALLOWED_CLOSE_REASONS = {
     "take_profit_hit",
     "stop_loss_hit",
@@ -41,17 +85,43 @@ ALLOWED_CLOSE_REASONS = {
 class LocalPaperObservationClient:
     source = "local_process"
 
+    def __init__(
+        self,
+        *,
+        symbol: str = SYMBOL,
+        broker_symbol: str = BROKER_SYMBOL,
+        timeframe: str = TIMEFRAME,
+        allowed_symbols: list[str] | tuple[str, ...] | None = None,
+        asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        store: Any | None = None,
+        db_state: dict[str, Any] | None = None,
+    ) -> None:
+        self.symbol = _clean_symbol(symbol or SYMBOL)
+        self.broker_symbol = str(broker_symbol or self.symbol)
+        self.timeframe = _clean_timeframe(timeframe or TIMEFRAME)
+        self.asset_configs = _asset_configs_from_inputs(asset_configs=asset_configs, allowed_symbols=allowed_symbols, default_timeframe=self.timeframe)
+        self.asset_config = _asset_config_for(self.asset_configs, self.symbol, self.timeframe)
+        self.store = store
+        self.db_state = dict(db_state or {}) if db_state is not None else None
+
     def persistent_status(self) -> dict[str, Any]:
+        if self.db_state is not None:
+            return dict(self.db_state)
         return persistent_intelligence_status(write_test_event=False)
 
     def open_shadow_trades(self) -> dict[str, Any]:
-        return mt5_shadow_trades_open(symbol=SYMBOL, limit=10)
+        return mt5_shadow_trades_open(symbol=self.symbol, limit=10)
 
     def shadow_trade_history(self) -> dict[str, Any]:
-        return mt5_shadow_trades_history(symbol=SYMBOL, timeframe=TIMEFRAME, limit=50)
+        return mt5_shadow_trades_history(symbol=self.symbol, timeframe=self.timeframe, limit=50)
 
     def readiness(self) -> dict[str, Any]:
-        return mt5_xau_m15_paper_observation_readiness()
+        config_error = _asset_config_error(self.asset_config)
+        if config_error:
+            return _asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config)
+        if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
+            return _generic_multi_asset_readiness(self.symbol, self.broker_symbol, self.timeframe, db_state=self.db_state, asset_config=self.asset_config)
+        return _apply_asset_config_to_readiness(mt5_xau_m15_paper_observation_readiness(), self.asset_config)
 
     def monitor(
         self,
@@ -64,6 +134,35 @@ class LocalPaperObservationClient:
         giveback_r: float = 0.10,
         fast_loss_cut_r: float = -0.25,
     ) -> dict[str, Any]:
+        config_error = _asset_config_error(self.asset_config)
+        if config_error:
+            return _generic_monitor_result(
+                self.symbol,
+                self.broker_symbol,
+                self.timeframe,
+                monitor_state="blocked_by_asset_config",
+                open_shadow_count=0,
+                exit_signal=False,
+                exit_reason=config_error,
+                paper_close_applied=False,
+                shadow_status_after="unknown",
+                activity={"market_active": False, "market_inactive_or_frozen": True, "no_price_movement": True},
+            )
+        if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
+            return _generic_multi_asset_monitor(
+                self.symbol,
+                self.broker_symbol,
+                self.timeframe,
+                apply_paper_close=apply_paper_close,
+                exit_policy=exit_policy,
+                time_stop_bars=time_stop_bars,
+                max_hold_minutes=max_hold_minutes,
+                min_r_to_arm_trailing=min_r_to_arm_trailing,
+                giveback_r=giveback_r,
+                fast_loss_cut_r=fast_loss_cut_r,
+                store=self.store,
+                asset_config=self.asset_config,
+            )
         return run_xau_m15_paper_shadow_monitor(
             apply_paper_close=apply_paper_close,
             exit_policy=exit_policy,
@@ -72,14 +171,27 @@ class LocalPaperObservationClient:
             min_r_to_arm_trailing=min_r_to_arm_trailing,
             giveback_r=giveback_r,
             fast_loss_cut_r=fast_loss_cut_r,
-        )
+            )
 
     def open_shadow_once(self, *, strict_paper_probe: bool = False) -> dict[str, Any]:
+        config_error = _asset_config_error(self.asset_config)
+        if config_error:
+            return _generic_shadow_once_rejected(self.symbol, self.broker_symbol, self.timeframe, reason=config_error, readiness=_asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config))
+        if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
+            return _generic_multi_asset_shadow_once(
+                self.symbol,
+                self.broker_symbol,
+                self.timeframe,
+                asset_config=self.asset_config,
+                strict_paper_probe=strict_paper_probe,
+                store=self.store,
+                db_state=self.db_state,
+            )
         return run_xau_m15_paper_observation_shadow_once(
             payload={
                 "confirm_paper_shadow_only": True,
-                "symbol": SYMBOL,
-                "timeframe": TIMEFRAME,
+                "symbol": self.symbol,
+                "timeframe": self.timeframe,
                 "strict_paper_probe": bool(strict_paper_probe),
             }
         )
@@ -93,21 +205,41 @@ class LocalPaperObservationClient:
 class HttpPaperObservationClient:
     source = "remote_live_http_process"
 
-    def __init__(self, base_url: str, *, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 10.0,
+        symbol: str = SYMBOL,
+        broker_symbol: str = BROKER_SYMBOL,
+        timeframe: str = TIMEFRAME,
+        allowed_symbols: list[str] | tuple[str, ...] | None = None,
+        asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    ) -> None:
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout_seconds = max(1.0, float(timeout_seconds or 10.0))
+        self.symbol = _clean_symbol(symbol or SYMBOL)
+        self.broker_symbol = str(broker_symbol or self.symbol)
+        self.timeframe = _clean_timeframe(timeframe or TIMEFRAME)
+        self.asset_configs = _asset_configs_from_inputs(asset_configs=asset_configs, allowed_symbols=allowed_symbols, default_timeframe=self.timeframe)
+        self.asset_config = _asset_config_for(self.asset_configs, self.symbol, self.timeframe)
 
     def persistent_status(self) -> dict[str, Any]:
         return self._get("/api/genesis/mt5/persistent-intelligence/status")
 
     def open_shadow_trades(self) -> dict[str, Any]:
-        return self._get(f"/api/genesis/mt5/shadow-trades/open?{urlencode({'symbol': SYMBOL})}")
+        return self._get(f"/api/genesis/mt5/shadow-trades/open?{urlencode({'symbol': self.symbol})}")
 
     def shadow_trade_history(self) -> dict[str, Any]:
-        return self._get(f"/api/genesis/mt5/shadow-trades/history?{urlencode({'symbol': SYMBOL, 'timeframe': TIMEFRAME, 'limit': 50})}")
+        return self._get(f"/api/genesis/mt5/shadow-trades/history?{urlencode({'symbol': self.symbol, 'timeframe': self.timeframe, 'limit': 50})}")
 
     def readiness(self) -> dict[str, Any]:
-        return self._get("/api/genesis/mt5/xau-m15/paper-observation/readiness")
+        config_error = _asset_config_error(self.asset_config)
+        if config_error:
+            return _asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config)
+        if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
+            return _generic_http_readiness_unavailable(self.symbol, self.broker_symbol, self.timeframe)
+        return _apply_asset_config_to_readiness(self._get("/api/genesis/mt5/xau-m15/paper-observation/readiness"), self.asset_config)
 
     def monitor(
         self,
@@ -120,6 +252,22 @@ class HttpPaperObservationClient:
         giveback_r: float = 0.10,
         fast_loss_cut_r: float = -0.25,
     ) -> dict[str, Any]:
+        config_error = _asset_config_error(self.asset_config)
+        if config_error:
+            return _generic_monitor_result(
+                self.symbol,
+                self.broker_symbol,
+                self.timeframe,
+                monitor_state="blocked_by_asset_config",
+                open_shadow_count=0,
+                exit_signal=False,
+                exit_reason=config_error,
+                paper_close_applied=False,
+                shadow_status_after="unknown",
+                activity={"market_active": False, "market_inactive_or_frozen": True, "no_price_movement": True},
+            )
+        if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
+            return _http_monitor_asset_mismatch(self.symbol, self.broker_symbol, self.timeframe)
         policy = _exit_policy(exit_policy)
         if apply_paper_close or policy != "default":
             body = {
@@ -136,12 +284,17 @@ class HttpPaperObservationClient:
         return self._get("/api/genesis/mt5/xau-m15/paper-shadow/monitor")
 
     def open_shadow_once(self, *, strict_paper_probe: bool = False) -> dict[str, Any]:
+        config_error = _asset_config_error(self.asset_config)
+        if config_error:
+            return _generic_shadow_once_rejected(self.symbol, self.broker_symbol, self.timeframe, reason=config_error, readiness=_asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config))
+        if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
+            return _generic_shadow_once_rejected(self.symbol, self.broker_symbol, self.timeframe, reason="generic_http_shadow_once_endpoint_not_enabled")
         return self._post(
             "/api/genesis/mt5/xau-m15/paper-observation/shadow-once",
             {
                 "confirm_paper_shadow_only": True,
-                "symbol": SYMBOL,
-                "timeframe": TIMEFRAME,
+                "symbol": self.symbol,
+                "timeframe": self.timeframe,
                 "strict_paper_probe": bool(strict_paper_probe),
             },
         )
@@ -181,6 +334,9 @@ def run_xau_m15_paper_observation_batch_runner(
     *,
     client: Any | None = None,
     base_url: str = "",
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
     target_trades: int = 20,
     max_cycles: int = 200,
     interval_seconds: float = 60.0,
@@ -201,14 +357,36 @@ def run_xau_m15_paper_observation_batch_runner(
     results_file: str | Path | None = DEFAULT_RESULTS_FILE,
     sleep_fn: Callable[[float], None] | None = None,
     timeout_seconds: float = 10.0,
+    allowed_symbols: list[str] | tuple[str, ...] | None = None,
+    asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    active_client = client or (HttpPaperObservationClient(base_url, timeout_seconds=timeout_seconds) if base_url else LocalPaperObservationClient())
+    clean_symbol = _clean_symbol(symbol or SYMBOL)
+    clean_timeframe = _clean_timeframe(timeframe or TIMEFRAME)
+    clean_broker_symbol = str(broker_symbol or clean_symbol)
+    clean_asset_configs = _asset_configs_from_inputs(asset_configs=asset_configs, allowed_symbols=allowed_symbols, default_timeframe=clean_timeframe)
+    active_client = client or (
+        HttpPaperObservationClient(
+            base_url,
+            timeout_seconds=timeout_seconds,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
+            asset_configs=clean_asset_configs,
+        )
+        if base_url
+        else LocalPaperObservationClient(
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
+            asset_configs=clean_asset_configs,
+        )
+    )
     state_path = Path(state_file) if state_file else None
     results_path = Path(results_file) if results_file else None
     state = _load_state(state_path)
     results = _load_results(results_path)
-    _ensure_session(state, results)
+    _ensure_session(state, results, symbol=clean_symbol, broker_symbol=clean_broker_symbol, timeframe=clean_timeframe)
     trades = _trades(results)
     cycles_requested = 1 if once or (dry_run and not wait_for_signal) else max(1, int(max_cycles or 1))
     cycles_requested = min(cycles_requested, max(1, int(max_cycles or 1)))
@@ -237,6 +415,9 @@ def run_xau_m15_paper_observation_batch_runner(
             fast_loss_cut_r=fast_loss_cut_r,
             strict_paper_probe=strict_paper_probe,
             explain_gates=explain_gates,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
         )
         cycle_outputs.append(step)
         _merge_step_state(state, step)
@@ -255,7 +436,7 @@ def run_xau_m15_paper_observation_batch_runner(
         cycle_outputs.append(_terminal_cycle("stopped_by_max_cycles", 0, state, trades, "no_cycles_requested"))
 
     final = cycle_outputs[-1]
-    stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=cycle_outputs)
+    stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=cycle_outputs, symbol=clean_symbol, timeframe=clean_timeframe)
     if not dry_run:
         _write_json(state_path, _public_state(state, stats, trades))
         _write_json(
@@ -277,6 +458,8 @@ def run_xau_m15_paper_observation_batch_runner(
             },
         )
 
+    final_readiness = final.get("readiness") if isinstance(final.get("readiness"), dict) else {}
+    final_db = final.get("db_state") if isinstance(final.get("db_state"), dict) else {}
     return {
         "ok": True,
         "status": "xau_m15_paper_observation_batch_runner_ready",
@@ -292,10 +475,19 @@ def run_xau_m15_paper_observation_batch_runner(
         "explain_gates": bool(explain_gates),
         "wait_for_signal": bool(wait_for_signal),
         "client_source": getattr(active_client, "source", "injected"),
-        "symbol": SYMBOL,
-        "broker_symbol": BROKER_SYMBOL,
-        "timeframe": TIMEFRAME,
-        "candidate_profile": CANDIDATE_PROFILE,
+        "asset": clean_symbol,
+        "symbol": clean_symbol,
+        "broker_symbol": clean_broker_symbol,
+        "timeframe": clean_timeframe,
+        "bars_count": int(_num(final_readiness.get("bars_count")) or 0),
+        "market_active": bool(final_readiness.get("market_active")),
+        "market_active_reason": final_readiness.get("market_active_reason") or "",
+        "db_available": bool(final_db.get("db_available")),
+        "db_degraded": bool(final_db.get("db_degraded")),
+        "tables_ready": bool(final_db.get("tables_ready")),
+        "queue_depth": int(_num(final_db.get("queue_depth")) or 0),
+        "max_open_positions_total": int(_num(final_readiness.get("max_open_positions_total")) or DEFAULT_MAX_OPEN_POSITIONS_TOTAL),
+        "candidate_profile": CANDIDATE_PROFILE if clean_symbol == SYMBOL and clean_timeframe == TIMEFRAME else f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
         "session_id": state.get("session_id") or "",
         "session_started_at": state.get("session_started_at") or "",
         "target_scope": "session",
@@ -334,6 +526,7 @@ def run_xau_m15_paper_observation_batch_runner(
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
+        "safety_violation": any(bool(cycle.get("safety_violation")) for cycle in cycle_outputs),
         "duration_ms": int((time.monotonic() - started) * 1000),
         **_safety(),
     }
@@ -356,8 +549,14 @@ def run_xau_m15_paper_observation_batch_step(
     fast_loss_cut_r: float = -0.25,
     strict_paper_probe: bool = False,
     explain_gates: bool = False,
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
 ) -> dict[str, Any]:
-    stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=[])
+    clean_symbol = _clean_symbol(symbol or SYMBOL)
+    clean_timeframe = _clean_timeframe(timeframe or TIMEFRAME)
+    clean_broker_symbol = str(broker_symbol or clean_symbol)
+    stats = compute_xau_m15_paper_batch_stats(trades, state=state, cycle_outputs=[], symbol=clean_symbol, timeframe=clean_timeframe)
 
     db = _safe_call(client.persistent_status)
     open_payload = _safe_call(client.open_shadow_trades)
@@ -532,6 +731,9 @@ def run_xau_m15_paper_observation_batch_step(
             min_r_to_arm_trailing=min_r_to_arm_trailing,
             giveback_r=giveback_r,
             fast_loss_cut_r=fast_loss_cut_r,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
         )
 
     if int(stats.get("session_trades_closed") or stats.get("trades_closed") or 0) >= int(target_trades or 0) > 0:
@@ -547,6 +749,7 @@ def run_xau_m15_paper_observation_batch_step(
             current_shadow_id="",
             current_shadow_source=current_shadow_source,
             stop_reason="target_trades_reached",
+            closed_trade=_last_valid_session_closed_trade(trades, state, clean_symbol, clean_timeframe),
             terminal=True,
         )
 
@@ -707,11 +910,33 @@ def _handle_existing_shadow(
     min_r_to_arm_trailing: float = 0.15,
     giveback_r: float = 0.10,
     fast_loss_cut_r: float = -0.25,
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
 ) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol or SYMBOL)
+    clean_broker_symbol = str(broker_symbol or clean_symbol)
+    clean_timeframe = _clean_timeframe(timeframe or TIMEFRAME)
     should_watch = bool(monitor.get("should_watch_only")) or str(monitor.get("safety_exit_category") or "") in {"entry_block_only", "caution_watch"}
     should_close = bool(monitor.get("should_close_paper"))
     exit_reason = str(monitor.get("exit_reason") or "")
     close_allowed = should_close and exit_reason in ALLOWED_CLOSE_REASONS
+    if str(monitor.get("monitor_state") or "") == "blocked_by_asset_config":
+        return _result(
+            "readiness_blocked",
+            cycle_number,
+            stats,
+            db_state=_public_db(db),
+            readiness=readiness,
+            open_payload=open_payload,
+            monitor=monitor,
+            open_shadow_count=1,
+            current_shadow_id=current_shadow_id,
+            current_shadow_source=current_shadow_source,
+            stop_reason=exit_reason or "asset_config_block",
+            blocked_cycle=True,
+            next_action="provide_explicit_asset_config_before_monitor_or_open",
+        )
     if should_watch and not should_close:
         return _result(
             "watch_only",
@@ -770,7 +995,7 @@ def _handle_existing_shadow(
         return _result("stopped_by_safety", cycle_number, stats, stop_reason="close_shadow_safety_flag_detected", terminal=True, monitor=close_result)
     applied = bool(close_result.get("paper_close_applied"))
     state = "close_applied" if applied else "close_pending"
-    closed_trade = _closed_trade_from_monitor(close_result) if applied else {}
+    closed_trade = _closed_trade_from_monitor(close_result, symbol=clean_symbol, broker_symbol=clean_broker_symbol, timeframe=clean_timeframe) if applied else {}
     if closed_trade:
         closed_trade.setdefault("session_id", stats.get("session_id") or "")
     stats_state = {
@@ -778,7 +1003,7 @@ def _handle_existing_shadow(
         "session_shadow_trade_ids": list(_session_trade_ids(stats)) + ([closed_trade.get("shadow_trade_id")] if closed_trade else []),
         "current_open_shadow_id": "" if applied else current_shadow_id,
     }
-    stats_after = compute_xau_m15_paper_batch_stats([closed_trade] if closed_trade else [], state=stats_state, cycle_outputs=[])
+    stats_after = compute_xau_m15_paper_batch_stats([closed_trade] if closed_trade else [], state=stats_state, cycle_outputs=[], symbol=clean_symbol, timeframe=clean_timeframe)
     return _result(
         state,
         cycle_number,
@@ -801,12 +1026,23 @@ def compute_xau_m15_paper_batch_stats(
     *,
     state: dict[str, Any] | None = None,
     cycle_outputs: list[dict[str, Any]] | None = None,
+    symbol: str = "",
+    timeframe: str = "",
 ) -> dict[str, Any]:
     state_payload = state or {}
     session_id = str(state_payload.get("session_id") or "")
     session_started_at = str(state_payload.get("session_started_at") or "")
-    all_closed = [dict(trade) for trade in trades if str(trade.get("status") or "closed") == "closed" or trade.get("exit_reason")]
-    closed = _session_closed_trades(all_closed, state_payload)
+    clean_symbol = _clean_symbol(symbol or state_payload.get("symbol") or SYMBOL)
+    clean_timeframe = _clean_timeframe(timeframe or state_payload.get("timeframe") or TIMEFRAME)
+    all_closed = [
+        dict(trade)
+        for trade in trades
+        if (str(trade.get("status") or "closed") == "closed" or trade.get("exit_reason"))
+        and _trade_matches_symbol_timeframe(trade, clean_symbol, clean_timeframe)
+    ]
+    session_closed_all = _session_closed_trades(all_closed, state_payload)
+    invalid_closed = [trade for trade in session_closed_all if not _valid_winrate_sample(trade)]
+    closed = [trade for trade in session_closed_all if _valid_winrate_sample(trade)]
     pnls = [float(_num(trade.get("pnl")) or 0.0) for trade in closed]
     rs = [float(_num(trade.get("r_multiple")) or 0.0) for trade in closed]
     wins = len([pnl for pnl in pnls if pnl > 0])
@@ -824,12 +1060,19 @@ def compute_xau_m15_paper_batch_stats(
     return {
         "session_id": session_id,
         "session_started_at": session_started_at,
+        "symbol": clean_symbol,
+        "timeframe": clean_timeframe,
         "target_scope": "session",
         "trades_opened": trades_opened,
         "trades_closed": len(closed),
+        "valid_trades_closed": len(closed),
+        "invalid_samples": len(invalid_closed),
+        "invalid_sample_count": len(invalid_closed),
+        "invalid_winrate_sample_ids": [str(trade.get("shadow_trade_id") or "") for trade in invalid_closed if trade.get("shadow_trade_id")],
         "session_trades_opened": session_trades_opened,
         "session_trades_closed": len(closed),
-        "historical_closed_count": max(0, len(all_closed) - len(closed)),
+        "raw_session_trades_closed": len(session_closed_all),
+        "historical_closed_count": max(0, len(all_closed) - len(session_closed_all)),
         "wins": wins,
         "losses": losses,
         "breakeven": breakeven,
@@ -897,13 +1140,25 @@ def _result(
     stats = batch_stats or {}
     current_phase = _current_phase(runner_state, ready)
     gate_summary = _gate_summary_from_readiness(ready)
+    safety_violation = _unsafe_payload([db_state or {}, ready, open_payload or {}, mon, history or {}, open_result or {}, closed_trade or {}])
     return {
         "ok": True,
         "runner_state": runner_state,
         "current_phase": current_phase,
         "cycle_number": int(cycle_number),
+        "symbol": stats.get("symbol") or ready.get("symbol") or "",
+        "broker_symbol": ready.get("broker_symbol") or "",
+        "timeframe": stats.get("timeframe") or ready.get("timeframe") or "",
         "db_state": db_state or {},
         "readiness_state": ready.get("readiness_state") or "",
+        "bars_count": int(_num(ready.get("bars_count")) or 0),
+        "market_active": bool(ready.get("market_active")),
+        "market_active_reason": ready.get("market_active_reason") or "",
+        "db_available": bool((db_state or {}).get("db_available")),
+        "db_degraded": bool((db_state or {}).get("db_degraded")),
+        "tables_ready": bool((db_state or {}).get("tables_ready")),
+        "queue_depth": int(_num((db_state or {}).get("queue_depth")) or 0),
+        "max_open_positions_total": int(_num(ready.get("max_open_positions_total")) or DEFAULT_MAX_OPEN_POSITIONS_TOTAL),
         "gate_summary": gate_summary,
         "failed_gate_names": ready.get("failed_gate_names") or ready.get("failed_gates") or [],
         "failed_gate_reasons": ready.get("failed_gate_reasons") or {},
@@ -950,6 +1205,7 @@ def _result(
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
+        "safety_violation": bool(safety_violation),
         **_safety(),
     }
 
@@ -1113,19 +1369,37 @@ def _open_response_after_count(opened: dict[str, Any]) -> int | None:
 
 
 def _db_block_reason(db: dict[str, Any]) -> str:
-    if not bool(db.get("db_available")):
+    if db.get("db_available") is not True:
         return "db_unavailable"
-    if bool(db.get("db_degraded")):
+    if db.get("db_degraded") is not False:
         return "db_degraded"
-    if not bool(db.get("tables_ready")):
+    if db.get("tables_ready") is not True:
         return "tables_not_ready"
-    if int(_num(db.get("queue_depth")) or 0) > 0:
+    queue_depth = _db_counter(db, "queue_depth")
+    if queue_depth is None:
+        return "queue_depth_missing"
+    if queue_depth > 0:
         return "queue_depth_high"
-    if int(_num(db.get("queued_writes")) or 0) > 0:
+    queued_writes = _db_counter(db, "queued_writes")
+    if queued_writes is None:
+        return "queued_writes_missing"
+    if queued_writes > 0:
         return "queued_writes_pending"
-    if int(_num(db.get("failed_writes")) or 0) > 0:
+    failed_writes = _db_counter(db, "failed_writes")
+    if failed_writes is None:
+        return "failed_writes_missing"
+    if failed_writes > 0:
         return "failed_writes_present"
     return ""
+
+
+def _db_counter(db: dict[str, Any], key: str) -> int | None:
+    if key not in db:
+        return None
+    value = _num(db.get(key))
+    if value is None:
+        return None
+    return int(value)
 
 
 def _readiness_contract_error(readiness: dict[str, Any]) -> str:
@@ -1136,8 +1410,9 @@ def _readiness_contract_error(readiness: dict[str, Any]) -> str:
     for key in ("runtime_context_available", "runtime_context_recent", "tick_available", "capital_allows_observation", "risk_allows_observation", "adaptive_allows_observation"):
         if not bool(readiness.get(key)):
             return key
-    if int(_num(readiness.get("bars_count")) or 0) < 100:
-        return "m15_bars_count_below_100"
+    min_bars = _readiness_min_bars(readiness)
+    if int(_num(readiness.get("bars_count")) or 0) < min_bars:
+        return f"bars_count_below_{min_bars}"
     return ""
 
 
@@ -1168,9 +1443,20 @@ def _readiness_block_reason(readiness: dict[str, Any], *, strict_paper_probe: bo
             continue
         if not bool(readiness.get(key)):
             return key
-    if int(_num(readiness.get("bars_count")) or 0) < 100:
-        return "m15_bars_count_below_100"
+    min_bars = _readiness_min_bars(readiness)
+    if int(_num(readiness.get("bars_count")) or 0) < min_bars:
+        return f"bars_count_below_{min_bars}"
     return ""
+
+
+def _readiness_min_bars(readiness: dict[str, Any]) -> int:
+    activity = readiness.get("market_activity") if isinstance(readiness.get("market_activity"), dict) else {}
+    configured = int(_num(activity.get("min_bars")) or 0)
+    if configured > 0:
+        return configured
+    if str(readiness.get("status") or "").startswith("multi_asset_"):
+        return 50
+    return 100
 
 
 def _orphan_reason(state: dict[str, Any], open_payload: dict[str, Any], monitor: dict[str, Any]) -> str:
@@ -1243,6 +1529,20 @@ def _closed_trade_from_history(row: dict[str, Any]) -> dict[str, Any]:
         "safety_exit_category": row.get("safety_exit_category") or "",
         "safety_exit_reason_detail": row.get("safety_exit_reason_detail") or "",
         "close_decision_reason": row.get("close_decision_reason") or "imported_from_shadow_trade_history",
+        "valid_winrate_sample": row.get("valid_winrate_sample") if "valid_winrate_sample" in row else None,
+        "invalid_winrate_sample": bool(row.get("invalid_winrate_sample")),
+        "invalid_sample_reason": row.get("invalid_sample_reason") or "",
+        "sample_valid": row.get("sample_valid") if "sample_valid" in row else None,
+        "invalid_reason": row.get("invalid_reason") or row.get("invalid_sample_reason") or "",
+        "metric_exclusion_reason": row.get("metric_exclusion_reason") or "",
+        "market_active": row.get("market_active"),
+        "market_active_at_entry": row.get("market_active_at_entry"),
+        "market_active_at_exit": row.get("market_active_at_exit"),
+        "market_inactive_or_frozen": bool(row.get("market_inactive_or_frozen")),
+        "frozen_market_detected": bool(row.get("frozen_market_detected")),
+        "no_price_movement": bool(row.get("no_price_movement")),
+        "price_movement_observed": bool(row.get("price_movement_observed")),
+        "price_source": row.get("price_source") or "",
         "status": "closed",
         **_safety(),
     }
@@ -1250,7 +1550,13 @@ def _closed_trade_from_history(row: dict[str, Any]) -> dict[str, Any]:
 
 def _unsafe_payload(payloads: list[dict[str, Any]]) -> bool:
     for payload in payloads:
+        if bool(payload.get("safety_violation")):
+            return True
         if bool(payload.get("broker_touched")) or bool(payload.get("order_executed")):
+            return True
+        if bool(payload.get("candidate_activated")) or bool(payload.get("paper_forward_onboarding_started")):
+            return True
+        if bool(payload.get("applies_to_real_trading")):
             return True
         if str(payload.get("order_policy") or "journal_only_no_broker") != "journal_only_no_broker":
             return True
@@ -1286,15 +1592,21 @@ def _closed_trade_from_step(step: dict[str, Any]) -> dict[str, Any]:
     return dict(trade) if trade else {}
 
 
-def _closed_trade_from_monitor(monitor: dict[str, Any]) -> dict[str, Any]:
+def _closed_trade_from_monitor(
+    monitor: dict[str, Any],
+    *,
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
+) -> dict[str, Any]:
     shadow_id = str(monitor.get("shadow_trade_id") or "")
     if not shadow_id:
         return {}
-    return {
+    trade = {
         "shadow_trade_id": shadow_id,
-        "symbol": SYMBOL,
-        "broker_symbol": BROKER_SYMBOL,
-        "timeframe": TIMEFRAME,
+        "symbol": _clean_symbol(symbol),
+        "broker_symbol": broker_symbol or _clean_symbol(symbol),
+        "timeframe": _clean_timeframe(timeframe),
         "strategy_profile": CANDIDATE_PROFILE,
         "side": monitor.get("side") or "",
         "entry_price": _num(monitor.get("entry_price")) or 0.0,
@@ -1313,9 +1625,15 @@ def _closed_trade_from_monitor(monitor: dict[str, Any]) -> dict[str, Any]:
         "safety_exit_category": monitor.get("safety_exit_category") or "",
         "safety_exit_reason_detail": monitor.get("safety_exit_reason_detail") or "",
         "close_decision_reason": monitor.get("close_decision_reason") or "",
+        "market_active": monitor.get("market_active"),
+        "market_inactive_or_frozen": bool(monitor.get("market_inactive_or_frozen")),
+        "no_price_movement": bool(monitor.get("no_price_movement")),
+        "price_source": monitor.get("price_source") or monitor.get("current_price_source") or "",
         "status": "closed",
         **_safety(),
     }
+    trade.update(_winrate_sample_flags(trade))
+    return trade
 
 
 def _merge_step_state(state: dict[str, Any], step: dict[str, Any]) -> None:
@@ -1420,13 +1738,25 @@ def _closed_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows if isinstance(row, dict) and (str(row.get("status") or "closed") == "closed" or row.get("exit_reason"))]
 
 
-def _ensure_session(state: dict[str, Any], results: dict[str, Any]) -> None:
+def _ensure_session(
+    state: dict[str, Any],
+    results: dict[str, Any],
+    *,
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
+) -> None:
+    clean_symbol = _clean_symbol(symbol or state.get("symbol") or results.get("symbol") or SYMBOL)
+    clean_timeframe = _clean_timeframe(timeframe or state.get("timeframe") or results.get("timeframe") or TIMEFRAME)
     session_id = str(state.get("session_id") or results.get("session_id") or "").strip()
     if not session_id:
-        session_id = f"xau-m15-session-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+        session_id = f"{clean_symbol.lower()}-{clean_timeframe.lower()}-session-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
     started_at = str(state.get("session_started_at") or results.get("session_started_at") or "").strip() or _now()
     state["session_id"] = session_id
     state["session_started_at"] = started_at
+    state["symbol"] = clean_symbol
+    state["broker_symbol"] = broker_symbol or clean_symbol
+    state["timeframe"] = clean_timeframe
     state["target_scope"] = "session"
     ids = state.get("session_shadow_trade_ids")
     state["session_shadow_trade_ids"] = [str(item) for item in ids if item] if isinstance(ids, list) else []
@@ -1453,6 +1783,140 @@ def _session_trade_ids(state: dict[str, Any]) -> set[str]:
         if value:
             ids.add(value)
     return ids
+
+
+def _trade_matches_symbol_timeframe(trade: dict[str, Any], symbol: str, timeframe: str) -> bool:
+    trade_symbol = _clean_symbol(trade.get("symbol") or symbol)
+    trade_timeframe = _clean_timeframe(trade.get("timeframe") or timeframe)
+    return trade_symbol == _clean_symbol(symbol) and trade_timeframe == _clean_timeframe(timeframe)
+
+
+def _valid_winrate_sample(trade: dict[str, Any]) -> bool:
+    return bool(_winrate_sample_flags(trade)["valid_winrate_sample"])
+
+
+def _winrate_sample_flags(trade: dict[str, Any]) -> dict[str, Any]:
+    frozen = evaluate_frozen_sample(trade)
+    if frozen.get("frozen_sample"):
+        return {
+            "sample_valid": False,
+            "valid_winrate_sample": False,
+            "invalid_winrate_sample": True,
+            "invalid_sample_reason": frozen["invalid_reason"],
+            "invalid_reason": frozen["invalid_reason"],
+            "metric_exclusion_reason": frozen["metric_exclusion_reason"],
+            "use_for_winrate": False,
+            "use_for_optimization": False,
+            "use_for_calibration": False,
+            "strategy_promotion_eligible": False,
+            "candidate_promotion_eligible": False,
+        }
+    if trade.get("valid_winrate_sample") is True:
+        return {
+            "sample_valid": True,
+            "valid_winrate_sample": True,
+            "invalid_winrate_sample": False,
+            "invalid_sample_reason": "",
+            "invalid_reason": "",
+            "metric_exclusion_reason": "",
+            "use_for_winrate": True,
+            "use_for_optimization": True,
+            "use_for_calibration": True,
+            "strategy_promotion_eligible": True,
+            "candidate_promotion_eligible": True,
+        }
+    if trade.get("invalid_winrate_sample") is True:
+        reason = str(trade.get("invalid_sample_reason") or trade.get("invalid_reason") or "invalid_winrate_sample")
+        return {
+            "sample_valid": False,
+            "valid_winrate_sample": False,
+            "invalid_winrate_sample": True,
+            "invalid_sample_reason": reason,
+            "invalid_reason": reason,
+            "metric_exclusion_reason": str(trade.get("metric_exclusion_reason") or "excluded_from_winrate_invalid_sample"),
+            "use_for_winrate": False,
+            "use_for_optimization": False,
+            "use_for_calibration": False,
+            "strategy_promotion_eligible": False,
+            "candidate_promotion_eligible": False,
+        }
+    if trade.get("sample_valid") is False:
+        reason = str(trade.get("invalid_reason") or trade.get("invalid_sample_reason") or "invalid_winrate_sample")
+        return {
+            "sample_valid": False,
+            "valid_winrate_sample": False,
+            "invalid_winrate_sample": True,
+            "invalid_sample_reason": reason,
+            "invalid_reason": reason,
+            "metric_exclusion_reason": str(trade.get("metric_exclusion_reason") or "excluded_from_winrate_invalid_sample"),
+            "use_for_winrate": False,
+            "use_for_optimization": False,
+            "use_for_calibration": False,
+            "strategy_promotion_eligible": False,
+            "candidate_promotion_eligible": False,
+        }
+    market_inactive = bool(trade.get("market_inactive_or_frozen") or trade.get("no_price_movement"))
+    entry = _num(trade.get("entry_price"))
+    exit_price = _num(trade.get("exit_price") or trade.get("last_price"))
+    pnl = _num(trade.get("pnl")) or 0.0
+    r_multiple = _num(trade.get("r_multiple")) or 0.0
+    same_price = entry is not None and exit_price is not None and abs(float(entry) - float(exit_price)) <= 1e-12
+    if market_inactive:
+        reason = "market_inactive_or_frozen" if trade.get("market_inactive_or_frozen") else "no_price_movement"
+        return {
+            "sample_valid": False,
+            "valid_winrate_sample": False,
+            "invalid_winrate_sample": True,
+            "invalid_sample_reason": reason,
+            "invalid_reason": reason,
+            "metric_exclusion_reason": "excluded_from_winrate_frozen_market" if reason == "market_inactive_or_frozen" else "excluded_from_winrate_no_price_movement",
+            "use_for_winrate": False,
+            "use_for_optimization": False,
+            "use_for_calibration": False,
+            "strategy_promotion_eligible": False,
+            "candidate_promotion_eligible": False,
+        }
+    if same_price and abs(pnl) <= 1e-12 and abs(r_multiple) <= 1e-12:
+        if bool(trade.get("market_active")) and str(trade.get("price_source") or "").strip():
+            return {
+                "sample_valid": True,
+                "valid_winrate_sample": True,
+                "invalid_winrate_sample": False,
+                "invalid_sample_reason": "",
+                "invalid_reason": "",
+                "metric_exclusion_reason": "",
+                "use_for_winrate": True,
+                "use_for_optimization": True,
+                "use_for_calibration": True,
+                "strategy_promotion_eligible": True,
+                "candidate_promotion_eligible": True,
+            }
+        return {
+            "sample_valid": False,
+            "valid_winrate_sample": False,
+            "invalid_winrate_sample": True,
+            "invalid_sample_reason": "no_price_movement",
+            "invalid_reason": "no_price_movement",
+            "metric_exclusion_reason": "excluded_from_winrate_no_price_movement",
+            "use_for_winrate": False,
+            "use_for_optimization": False,
+            "use_for_calibration": False,
+            "strategy_promotion_eligible": False,
+            "candidate_promotion_eligible": False,
+        }
+    return {
+        "sample_valid": True,
+        "valid_winrate_sample": True,
+        "invalid_winrate_sample": False,
+        "invalid_sample_reason": "",
+        "invalid_reason": "",
+        "metric_exclusion_reason": "",
+        "use_for_winrate": True,
+        "use_for_optimization": True,
+        "use_for_calibration": True,
+        "strategy_promotion_eligible": True,
+        "candidate_promotion_eligible": True,
+    }
 
 
 def _side_stats(closed: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1546,6 +2010,15 @@ def _last_shadow_id(closed: list[dict[str, Any]], state: dict[str, Any] | None) 
     return str((state or {}).get("last_shadow_trade_id") or "")
 
 
+def _last_valid_session_closed_trade(trades: list[dict[str, Any]], state: dict[str, Any], symbol: str, timeframe: str) -> dict[str, Any]:
+    closed = [
+        dict(trade)
+        for trade in _session_closed_trades(_closed_rows(trades), state)
+        if _trade_matches_symbol_timeframe(trade, symbol, timeframe) and _valid_winrate_sample(trade)
+    ]
+    return dict(closed[-1]) if closed else {}
+
+
 def _num(value: object) -> float | None:
     try:
         if value is None or value == "":
@@ -1570,3 +2043,1018 @@ def _safety() -> dict[str, Any]:
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
     }
+
+
+def _allowed_symbol_set(allowed_symbols: list[str] | tuple[str, ...] | None = None) -> set[str]:
+    raw = list(allowed_symbols or [])
+    return {_clean_symbol(item) for item in raw if _clean_symbol(item)}
+
+
+def _asset_configs_from_inputs(
+    *,
+    asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    allowed_symbols: list[str] | tuple[str, ...] | None = None,
+    default_timeframe: str = TIMEFRAME,
+) -> list[dict[str, Any]]:
+    if asset_configs is not None:
+        return [dict(item) for item in asset_configs if isinstance(item, dict)]
+    raw = list(allowed_symbols or [])
+    if not raw:
+        env_value = os.getenv("GENESIS_PAPER_TEST_ASSET_CONFIGS") or ""
+        if env_value:
+            try:
+                decoded = json.loads(env_value)
+                if isinstance(decoded, dict):
+                    decoded = [decoded]
+                if isinstance(decoded, list):
+                    return [dict(item) for item in decoded if isinstance(item, dict)]
+            except (TypeError, ValueError):
+                return []
+        return []
+    return [_default_asset_config(_clean_symbol(symbol), timeframe=default_timeframe) for symbol in raw if _clean_symbol(symbol)]
+
+
+def _default_asset_config(symbol: str, *, timeframe: str = TIMEFRAME) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    guard = dict(DEFAULT_MARKET_GUARD)
+    guard["min_bars"] = DEFAULT_MULTI_ASSET_MIN_BARS
+    return {
+        "symbol": clean_symbol,
+        "broker_symbol": clean_symbol if clean_symbol != SYMBOL else BROKER_SYMBOL,
+        "timeframe": clean_timeframe,
+        "enabled": True,
+        "order_policy": "journal_only_no_broker",
+        "allow_broker_orders": False,
+        "allow_candidate_activation": False,
+        "allow_paper_forward": False,
+        "max_open_positions": DEFAULT_MAX_OPEN_POSITIONS,
+        "max_open_positions_total": DEFAULT_MAX_OPEN_POSITIONS_TOTAL,
+        "min_bars": DEFAULT_MULTI_ASSET_MIN_BARS,
+        "market_guard": guard,
+        "journal_metadata": {
+            "source": "explicit_allow_symbol_cli",
+            "strategy_profile": f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
+            "paper_only": True,
+        },
+    }
+
+
+def _asset_config_for(configs: list[dict[str, Any]], symbol: str, timeframe: str) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    for config in configs:
+        if _clean_symbol(config.get("symbol")) == clean_symbol and _clean_timeframe(config.get("timeframe")) == clean_timeframe:
+            return dict(config)
+    if configs:
+        return {
+            "_lookup_failed": True,
+            "symbol": clean_symbol,
+            "timeframe": clean_timeframe,
+            "known_assets": [
+                {"symbol": _clean_symbol(item.get("symbol")), "timeframe": _clean_timeframe(item.get("timeframe"))}
+                for item in configs
+                if isinstance(item, dict)
+            ],
+        }
+    return {}
+
+
+def _asset_config_error(config: dict[str, Any]) -> str:
+    if not config:
+        return "missing_explicit_asset_config_allowlist"
+    if bool(config.get("_lookup_failed")):
+        return "asset_not_in_explicit_asset_config_allowlist"
+    if config.get("enabled") is not True:
+        return "asset_config_not_enabled"
+    if str(config.get("order_policy") or "") != "journal_only_no_broker":
+        return "asset_config_invalid_order_policy"
+    if "allow_broker_orders" not in config:
+        return "asset_config_missing_allow_broker_orders"
+    if bool(config.get("allow_broker_orders")):
+        return "asset_config_allows_broker_orders"
+    if "allow_candidate_activation" not in config:
+        return "asset_config_missing_allow_candidate_activation"
+    if bool(config.get("allow_candidate_activation")):
+        return "asset_config_allows_candidate_activation"
+    if "allow_paper_forward" not in config:
+        return "asset_config_missing_allow_paper_forward"
+    if bool(config.get("allow_paper_forward")):
+        return "asset_config_allows_paper_forward"
+    if int(_num(config.get("max_open_positions")) or 0) != DEFAULT_MAX_OPEN_POSITIONS:
+        return "asset_config_invalid_max_open_positions"
+    if int(_num(config.get("max_open_positions_total")) or 0) != DEFAULT_MAX_OPEN_POSITIONS_TOTAL:
+        return "asset_config_invalid_max_open_positions_total"
+    if bool(config.get("broker_touched")):
+        return "asset_config_broker_touched_true"
+    if bool(config.get("order_executed")):
+        return "asset_config_order_executed_true"
+    guard = config.get("market_guard") if isinstance(config.get("market_guard"), dict) else {}
+    if not guard:
+        return "asset_config_missing_market_guard"
+    min_bars = int(_num(config.get("min_bars") or guard.get("min_bars")) or 0)
+    if min_bars <= 0:
+        return "asset_config_missing_min_bars"
+    if not isinstance(config.get("journal_metadata"), dict):
+        return "asset_config_missing_journal_metadata"
+    return ""
+
+
+def _asset_market_guard(config: dict[str, Any]) -> dict[str, Any]:
+    guard = dict(DEFAULT_MARKET_GUARD)
+    if isinstance(config.get("market_guard"), dict):
+        guard.update(config.get("market_guard") or {})
+    if config.get("min_bars") not in (None, ""):
+        guard["min_bars"] = int(_num(config.get("min_bars")) or guard["min_bars"])
+    return guard
+
+
+def _asset_max_open_positions(config: dict[str, Any]) -> int:
+    return int(_num(config.get("max_open_positions")) or DEFAULT_MAX_OPEN_POSITIONS)
+
+
+def _asset_max_open_positions_total(config: dict[str, Any]) -> int:
+    return int(_num(config.get("max_open_positions_total")) or DEFAULT_MAX_OPEN_POSITIONS_TOTAL)
+
+
+def _asset_journal_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    metadata = config.get("journal_metadata") if isinstance(config.get("journal_metadata"), dict) else {}
+    return dict(metadata or {})
+
+
+def _asset_config_readiness_blocked(symbol: str, broker_symbol: str, timeframe: str, reason: str, config: dict[str, Any]) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    unsafe_policy = reason in UNSAFE_POLICY_BLOCK_REASONS
+    return {
+        "ok": True,
+        "status": "asset_config_readiness_blocked",
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol or clean_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_found": True,
+        "candidate_status": "paper_observation_review",
+        "candidate_profile": f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
+        "asset_config": _public_asset_config(config),
+        "readiness_state": "blocked_unsafe_order_policy" if unsafe_policy else "blocked",
+        "recommendation": reason,
+        "failed_gates": [reason],
+        "failed_gate_names": [reason],
+        "failed_gate_reasons": {reason: {"actual": _public_asset_config(config), "required": "explicit enabled paper-only asset config"}},
+        "entry_allowed_for_paper_test": False,
+        "entry_block_type": "unsafe_order_policy" if unsafe_policy else "asset_config_block",
+        "runtime_context_available": False,
+        "runtime_context_recent": False,
+        "tick_available": False,
+        "bars_count": 0,
+        "open_count": 0,
+        "open_shadow_count": 0,
+        "max_open_positions": DEFAULT_MAX_OPEN_POSITIONS,
+        "max_open_positions_total": DEFAULT_MAX_OPEN_POSITIONS_TOTAL,
+        "capital_state": "not_evaluated",
+        "capital_reason": reason,
+        "capital_allows_observation": False,
+        "adaptive_allows_observation": True,
+        "risk_allows_observation": False,
+        "risk_governor_reason": reason,
+        "safety_violation": reason in SAFETY_VIOLATION_POLICY_REASONS,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _public_asset_config(config: dict[str, Any]) -> dict[str, Any]:
+    if not config:
+        return {}
+    return {
+        "symbol": _clean_symbol(config.get("symbol")),
+        "broker_symbol": config.get("broker_symbol") or "",
+        "timeframe": _clean_timeframe(config.get("timeframe")),
+        "enabled": bool(config.get("enabled")),
+        "order_policy": config.get("order_policy") or "",
+        "allow_broker_orders": bool(config.get("allow_broker_orders")),
+        "allow_candidate_activation": bool(config.get("allow_candidate_activation")),
+        "allow_paper_forward": bool(config.get("allow_paper_forward")),
+        "max_open_positions": int(_num(config.get("max_open_positions")) or 0),
+        "max_open_positions_total": int(_num(config.get("max_open_positions_total")) or 0),
+        "min_bars": int(_num(config.get("min_bars") or (config.get("market_guard") or {}).get("min_bars")) or 0) if isinstance(config.get("market_guard") or {}, dict) else int(_num(config.get("min_bars")) or 0),
+        "journal_metadata": _asset_journal_metadata(config),
+    }
+
+
+def _apply_asset_config_to_readiness(readiness: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    reason = _asset_config_error(config)
+    if reason:
+        return _asset_config_readiness_blocked(readiness.get("symbol") or config.get("symbol") or SYMBOL, readiness.get("broker_symbol") or config.get("broker_symbol") or BROKER_SYMBOL, readiness.get("timeframe") or config.get("timeframe") or TIMEFRAME, reason, config)
+    guard = _asset_market_guard(config)
+    min_bars = int(_num(guard.get("min_bars")) or 0)
+    bars_count = int(_num(readiness.get("bars_count")) or 0)
+    failed = list(readiness.get("failed_gate_names") or readiness.get("failed_gates") or [])
+    if min_bars > 0 and bars_count < min_bars and "asset_config_min_bars" not in failed:
+        failed.append("asset_config_min_bars")
+    blocked = bool(failed) or str(readiness.get("readiness_state") or "") != "ready_for_one_cycle_paper_observation"
+    patched = {
+        **readiness,
+        "asset_config": _public_asset_config(config),
+        "market_guard": guard,
+        "journal_metadata": _asset_journal_metadata(config),
+        "max_open_positions": _asset_max_open_positions(config),
+        "max_open_positions_total": _asset_max_open_positions_total(config),
+        "failed_gate_names": failed,
+        "failed_gates": failed,
+        "entry_allowed_for_paper_test": bool(readiness.get("entry_allowed_for_paper_test")) and not blocked,
+    }
+    if "asset_config_min_bars" in failed:
+        patched["readiness_state"] = "blocked"
+        patched["recommendation"] = "asset_config_min_bars"
+        patched["entry_block_type"] = "asset_config_block"
+    return patched
+
+
+def _generic_capital_protection_state(db: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    open_trades = [dict(open_trade)] if open_trade else []
+    try:
+        result = run_capital_protection_governor(
+            open_trades=open_trades,
+            closed_trades=[],
+            persistent_status=db,
+            runtime_snapshot=snapshot,
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            persist_events=False,
+        )
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        return {
+            "ok": False,
+            "status": "capital_protection_governor_unavailable",
+            "reason": type(exc).__name__,
+            "capital_state": "unknown",
+            "safe_to_trade": False,
+            **_safety(),
+        }
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "status": "capital_protection_governor_invalid_payload",
+            "reason": "non_dict_capital_protection_result",
+            "capital_state": "unknown",
+            "safe_to_trade": False,
+            **_safety(),
+        }
+    return dict(result)
+
+
+def _generic_capital_allows_observation(capital: dict[str, Any]) -> bool:
+    if not isinstance(capital, dict) or capital.get("ok") is False:
+        return False
+    state = str(capital.get("capital_state") or "").casefold()
+    return state == "normal" and bool(capital.get("safe_to_trade"))
+
+
+def _generic_capital_block_reason(capital: dict[str, Any]) -> str:
+    if not isinstance(capital, dict):
+        return "capital_protection_unavailable"
+    if capital.get("ok") is False:
+        return str(capital.get("reason") or capital.get("status") or "capital_protection_unavailable")
+    state = str(capital.get("capital_state") or "").casefold()
+    if state != "normal":
+        return f"capital_state_{state or 'missing'}"
+    if not bool(capital.get("safe_to_trade")):
+        return str(capital.get("reason") or "capital_protection_not_safe_to_trade")
+    return ""
+
+
+def _generic_multi_asset_shadow_once(
+    symbol: str,
+    broker_symbol: str,
+    timeframe: str,
+    *,
+    asset_config: dict[str, Any] | None = None,
+    strict_paper_probe: bool = False,
+    store: Any | None = None,
+    db_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    clean_broker_symbol = str(broker_symbol or clean_symbol)
+    config = dict(asset_config or {})
+    config_error = _asset_config_error(config)
+    if config_error:
+        return _generic_shadow_once_rejected(clean_symbol, clean_broker_symbol, clean_timeframe, reason=config_error, readiness=_asset_config_readiness_blocked(clean_symbol, clean_broker_symbol, clean_timeframe, config_error, config))
+    if clean_timeframe != "M15":
+        return _generic_shadow_once_rejected(clean_symbol, clean_broker_symbol, clean_timeframe, reason="timeframe_not_allowed_for_multi_asset_paper_test")
+
+    readiness = _generic_multi_asset_readiness(clean_symbol, clean_broker_symbol, clean_timeframe, db_state=db_state, asset_config=config)
+    activity = readiness.get("market_activity") if isinstance(readiness.get("market_activity"), dict) else {}
+    if str(readiness.get("readiness_state") or "") != "ready_for_one_cycle_paper_observation":
+        reason = str(readiness.get("recommendation") or "readiness_blocked")
+        return _generic_shadow_once_rejected(clean_symbol, clean_broker_symbol, clean_timeframe, reason=f"blocked_by_readiness_gate:{reason}", readiness=readiness)
+    if not bool(activity.get("market_active")):
+        return _generic_shadow_once_rejected(clean_symbol, clean_broker_symbol, clean_timeframe, reason=str(activity.get("reason") or "market_inactive_or_frozen"), readiness=readiness)
+
+    snapshot = _snapshot_for_symbol(clean_symbol, clean_broker_symbol, clean_timeframe)
+    signal = _generic_multi_asset_signal(readiness, snapshot)
+    if not signal.get("can_open"):
+        return _generic_shadow_once_rejected(clean_symbol, clean_broker_symbol, clean_timeframe, reason="no_trade_signal", readiness=readiness, signal=signal)
+
+    trade = _build_generic_multi_asset_shadow_trade(readiness, signal=signal, asset_config=config)
+    persist_result = _persist_generic_shadow_trade(store, trade)
+    if not bool(persist_result.get("ok")):
+        retained = bool(persist_result.get("queued") or persist_result.get("critical_persistence_failed") or persist_result.get("schema_missing_write_freeze"))
+        return {
+            "ok": False,
+            "status": "multi_asset_paper_shadow_once_open_persistence_failed",
+            "mode": "paper_shadow_once",
+            "decision": "NO_TRADE",
+            "reason": "open_persistence_failed",
+            "symbol": clean_symbol,
+            "broker_symbol": clean_broker_symbol,
+            "timeframe": clean_timeframe,
+            "candidate_profile": trade.get("strategy_profile") or "",
+            "readiness": readiness,
+            "paper_shadow_created": False,
+            "shadow_trade_id": trade.get("shadow_trade_id") or "",
+            "shadow_trade": trade,
+            "persistent_shadow_write": persist_result,
+            "persistent_shadow_write_ok": False,
+            "open_persistence_failed": True,
+            "open_write_retained_critical": retained,
+            "open_shadow_count_after": 0,
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+            "applies_to_real_trading": False,
+            **_safety(),
+        }
+
+    update_open_shadow_trade(clean_symbol, trade, timeframe=clean_timeframe)
+    return {
+        "ok": True,
+        "status": "multi_asset_paper_shadow_once_created",
+        "mode": "paper_shadow_once",
+        "decision": "NO_TRADE",
+        "reason": "multi_asset_paper_observation_shadow_once_created",
+        "symbol": clean_symbol,
+        "broker_symbol": clean_broker_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_profile": trade.get("strategy_profile") or "",
+        "paper_shadow_created": True,
+        "shadow_trade_id": trade.get("shadow_trade_id") or "",
+        "side": trade.get("side") or "",
+        "signal_direction": trade.get("signal_direction") or "",
+        "entry_reason": trade.get("entry_reason") or "",
+        "shadow_trade": trade,
+        "readiness": readiness,
+        "market_activity": activity,
+        "persistent_shadow_write": persist_result,
+        "persistent_shadow_write_ok": bool(persist_result.get("ok")),
+        "open_shadow_count_after": 1,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _generic_multi_asset_monitor(
+    symbol: str,
+    broker_symbol: str,
+    timeframe: str,
+    *,
+    apply_paper_close: bool = False,
+    exit_policy: str = "default",
+    time_stop_bars: int = 1,
+    max_hold_minutes: float | None = None,
+    min_r_to_arm_trailing: float = 0.15,
+    giveback_r: float = 0.10,
+    fast_loss_cut_r: float = -0.25,
+    store: Any | None = None,
+    asset_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    clean_broker_symbol = str(broker_symbol or clean_symbol)
+    snapshot = _snapshot_for_symbol(clean_symbol, clean_broker_symbol, clean_timeframe)
+    open_trade = snapshot.get("open_shadow_trade") if isinstance(snapshot.get("open_shadow_trade"), dict) else {}
+    if not open_trade:
+        return _generic_monitor_result(
+            clean_symbol,
+            clean_broker_symbol,
+            clean_timeframe,
+            monitor_state="no_action",
+            open_shadow_count=0,
+            exit_signal=False,
+            exit_reason="no_open_shadow",
+            paper_close_applied=False,
+            shadow_status_after="none",
+        )
+
+    metrics = _generic_trade_metrics(open_trade, snapshot)
+    config = dict(asset_config or {})
+    guard = _asset_market_guard(config) if not _asset_config_error(config) else dict(DEFAULT_MARKET_GUARD)
+    activity = _market_activity_from_snapshot(snapshot, guard=guard)
+    exit_signal, exit_reason = _generic_exit_decision(
+        metrics,
+        exit_policy=exit_policy,
+        time_stop_bars=time_stop_bars,
+        max_hold_minutes=max_hold_minutes,
+        min_r_to_arm_trailing=min_r_to_arm_trailing,
+        giveback_r=giveback_r,
+        fast_loss_cut_r=fast_loss_cut_r,
+    )
+    updated_trade = {
+        **open_trade,
+        "last_price": metrics["current_price"],
+        "unrealized_pnl": metrics["unrealized_pnl"],
+        "unrealized_pnl_pct": metrics["unrealized_pnl_pct"],
+        "r_multiple": metrics["r_multiple"],
+        "bars_since_entry": metrics["bars_since_entry"],
+        "updated_at": _now(),
+        **_safety(),
+    }
+    paper_close_applied = False
+    persist_result: dict[str, Any] = {"ok": True, "skipped": True}
+    if apply_paper_close and exit_signal:
+        closed = _generic_closed_trade(updated_trade, metrics, exit_reason, activity)
+        persist_result = _persist_generic_shadow_trade(store, closed)
+        if not bool(persist_result.get("ok")):
+            return {
+                **_generic_monitor_result(
+                    clean_symbol,
+                    clean_broker_symbol,
+                    clean_timeframe,
+                    monitor_state="close_blocked_by_persistence",
+                    open_shadow_count=1,
+                    exit_signal=True,
+                    exit_reason=exit_reason,
+                    paper_close_applied=False,
+                    shadow_status_after="open",
+                    trade=updated_trade,
+                    metrics=metrics,
+                    activity=activity,
+                ),
+                "persist_result": persist_result,
+                "close_persistence_failed": True,
+                "next_action": "drain_queue_and_retry_close",
+            }
+        update_open_shadow_trade(clean_symbol, None, timeframe=clean_timeframe)
+        append_closed_shadow_trade(clean_symbol, closed, timeframe=clean_timeframe)
+        paper_close_applied = True
+        updated_trade = closed
+    elif not exit_signal:
+        update_open_shadow_trade(clean_symbol, updated_trade, timeframe=clean_timeframe)
+
+    return {
+        **_generic_monitor_result(
+            clean_symbol,
+            clean_broker_symbol,
+            clean_timeframe,
+            monitor_state="exit_applied" if paper_close_applied else "exit_pending" if exit_signal else "open_monitoring",
+            open_shadow_count=0 if paper_close_applied else 1,
+            exit_signal=bool(exit_signal),
+            exit_reason=exit_reason,
+            paper_close_applied=paper_close_applied,
+            shadow_status_after="closed" if paper_close_applied else "open",
+            trade=updated_trade,
+            metrics=metrics,
+            activity=activity,
+        ),
+        "persist_result": persist_result,
+        "close_persistence_failed": False,
+    }
+
+
+def _generic_multi_asset_readiness(
+    symbol: str,
+    broker_symbol: str,
+    timeframe: str,
+    *,
+    db_state: dict[str, Any] | None = None,
+    asset_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    config = dict(asset_config or {})
+    config_error = _asset_config_error(config)
+    if config_error:
+        return _asset_config_readiness_blocked(clean_symbol, broker_symbol, clean_timeframe, config_error, config)
+    guard = _asset_market_guard(config)
+    min_bars = int(_num(guard.get("min_bars")) or 0)
+    snapshot = _snapshot_for_symbol(clean_symbol, broker_symbol, clean_timeframe)
+    runtime = run_runtime_context_diagnostics(symbol=clean_symbol, timeframe=clean_timeframe, snapshot=snapshot, generic_snapshot={})
+    db = dict(db_state) if db_state is not None else persistent_intelligence_status(write_test_event=False)
+    tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+    capital = _generic_capital_protection_state(db, snapshot)
+    capital_allowed = _generic_capital_allows_observation(capital)
+    capital_reason = _generic_capital_block_reason(capital)
+    try:
+        risk = assess_runtime_risk(clean_symbol, timeframe=clean_timeframe, tick=tick)
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        risk = {"allowed": False, "reason": type(exc).__name__, "risk_state": "unknown", **_safety()}
+    activity = _market_activity_from_snapshot(snapshot, guard=guard)
+    failed: list[str] = []
+    db_block = _db_block_reason(db)
+    if db_block:
+        failed.append(db_block)
+    if not bool(runtime.get("runtime_snapshot_available")):
+        failed.append("runtime_context_available")
+    if not bool(runtime.get("runtime_snapshot_recent")):
+        failed.append("runtime_context_recent")
+    if int(_num(runtime.get("bars_count")) or 0) < min_bars:
+        failed.append(f"bars_count_below_{min_bars}")
+    if not bool(runtime.get("latest_tick")):
+        failed.append("latest_tick_available")
+    market_reason = str(activity.get("reason") or "")
+    if not bool(activity.get("market_active")) and market_reason and market_reason not in failed:
+        failed.append(market_reason)
+    if not capital_allowed:
+        failed.append("capital_allows_observation")
+    if not bool(risk.get("allowed", risk.get("risk_governor_allowed", False))):
+        failed.append("risk_allows_observation")
+    ready = not failed
+    readiness_state = "ready_for_one_cycle_paper_observation" if ready else "blocked_db_not_clean" if db_block else "blocked_capital_protection" if not capital_allowed else "blocked_market_inactive" if market_reason else "blocked"
+    recommendation = "ready_for_one_cycle_paper_observation" if ready else db_block or capital_reason or market_reason or "resolve_multi_asset_observation_gates"
+    failed_gate_reasons: dict[str, dict[str, Any]] = {}
+    if not capital_allowed:
+        failed_gate_reasons["capital_allows_observation"] = {
+            "actual": capital_reason or capital.get("capital_state") or "unknown",
+            "required": "capital_state=normal,safe_to_trade=true",
+        }
+    return {
+        "ok": True,
+        "status": "multi_asset_paper_observation_readiness_ready",
+        "readiness_version": "2026-07-04.multi_asset_paper_observation_readiness.v1",
+        "candidate_found": True,
+        "candidate_status": "paper_observation_review",
+        "candidate_profile": f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
+        "asset_config": _public_asset_config(config),
+        "market_guard": guard,
+        "journal_metadata": _asset_journal_metadata(config),
+        "max_open_positions": _asset_max_open_positions(config),
+        "max_open_positions_total": _asset_max_open_positions_total(config),
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol or clean_symbol,
+        "timeframe": clean_timeframe,
+        "db_state": db,
+        "runtime_context_available": bool(runtime.get("runtime_snapshot_available")),
+        "runtime_context_recent": bool(runtime.get("runtime_snapshot_recent")),
+        "runtime_snapshot_context": runtime.get("runtime_snapshot_context") or "",
+        "bars_count": int(_num(runtime.get("bars_count")) or 0),
+        "tick_available": bool(runtime.get("latest_tick")),
+        "latest_tick_at": runtime.get("last_tick_at") or "",
+        "latest_bars_at": runtime.get("bars_last_at") or "",
+        "market_active": bool(activity["market_active"]),
+        "market_active_reason": market_reason,
+        "price_moved_recently": bool(activity["price_moved_recently"]),
+        "spread_valid": bool(activity["spread_valid"]),
+        "quote_valid": bool(activity.get("quote_valid", activity.get("current_price_valid"))),
+        "current_price": activity["current_price"],
+        "current_price_valid": bool(activity["current_price_valid"]),
+        "market_activity": activity,
+        "capital_state": capital.get("capital_state") or "",
+        "capital_reason": capital_reason,
+        "capital_protection": capital,
+        "capital_allows_observation": capital_allowed,
+        "adaptive_allows_observation": True,
+        "risk_allows_observation": bool(risk.get("allowed", risk.get("risk_governor_allowed", False))),
+        "risk_governor_reason": risk.get("reason") or risk.get("risk_governor_reason") or "",
+        "risk_state": risk.get("risk_state") or "",
+        "open_shadow_count": 0,
+        "open_count": 0,
+        "paper_shadow_created": False,
+        "readiness_state": readiness_state,
+        "recommendation": recommendation,
+        "failed_gates": failed,
+        "failed_gate_names": failed,
+        "failed_gate_reasons": failed_gate_reasons,
+        "entry_allowed_for_paper_test": ready,
+        "entry_block_type": "none" if ready else "db_not_clean" if db_block else "safety_gate_block",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _generic_http_readiness_unavailable(symbol: str, broker_symbol: str, timeframe: str) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    return {
+        "ok": True,
+        "status": "multi_asset_http_readiness_not_enabled",
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol or clean_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_found": True,
+        "candidate_status": "paper_observation_review",
+        "readiness_state": "blocked",
+        "recommendation": "use_dedicated_crypto_m15_supervisor_or_add_live_http_endpoint",
+        "failed_gates": ["generic_http_readiness_endpoint_missing"],
+        "failed_gate_names": ["generic_http_readiness_endpoint_missing"],
+        "entry_allowed_for_paper_test": False,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _generic_allowlist_readiness_blocked(symbol: str, broker_symbol: str, timeframe: str, allowed_symbols: set[str]) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    return {
+        "ok": True,
+        "status": "multi_asset_paper_observation_readiness_ready",
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol or clean_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_found": True,
+        "candidate_status": "paper_observation_review",
+        "candidate_profile": f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
+        "readiness_state": "blocked",
+        "recommendation": "symbol_not_in_paper_test_allowlist",
+        "failed_gates": ["symbol_not_in_paper_test_allowlist"],
+        "failed_gate_names": ["symbol_not_in_paper_test_allowlist"],
+        "failed_gate_reasons": {"symbol_not_in_paper_test_allowlist": {"actual": clean_symbol, "required": sorted(allowed_symbols)}},
+        "entry_allowed_for_paper_test": False,
+        "entry_block_type": "paper_test_allowlist_block",
+        "runtime_context_available": False,
+        "runtime_context_recent": False,
+        "tick_available": False,
+        "bars_count": 0,
+        "capital_state": "not_evaluated",
+        "capital_reason": "symbol_not_in_paper_test_allowlist",
+        "capital_allows_observation": False,
+        "adaptive_allows_observation": True,
+        "risk_allows_observation": False,
+        "risk_governor_reason": "symbol_not_in_paper_test_allowlist",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _generic_shadow_once_rejected(
+    symbol: str,
+    broker_symbol: str,
+    timeframe: str,
+    *,
+    reason: str,
+    readiness: dict[str, Any] | None = None,
+    signal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    return {
+        "ok": False,
+        "status": "multi_asset_paper_shadow_once_rejected",
+        "decision": "NO_TRADE",
+        "reason": reason,
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol or clean_symbol,
+        "timeframe": clean_timeframe,
+        "paper_shadow_created": False,
+        "shadow_trade_id": "",
+        "open_count": 0,
+        "open_shadow_count": 0,
+        "open_shadow_count_after": 0,
+        "readiness": readiness or {},
+        "signal": signal or {},
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        "safety_violation": bool((readiness or {}).get("safety_violation") or (signal or {}).get("safety_violation")),
+        **_safety(),
+    }
+
+
+def _generic_multi_asset_signal(readiness: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    bars = snapshot.get("ohlc_recent") if isinstance(snapshot.get("ohlc_recent"), list) else []
+    if not bars and isinstance(snapshot.get("bars"), list):
+        bars = snapshot.get("bars") or []
+    if not bars and isinstance(snapshot.get("recent_bars"), list):
+        bars = snapshot.get("recent_bars") or []
+    if not bars and isinstance(snapshot.get("bars"), list):
+        bars = snapshot.get("bars") or []
+    if not bars and isinstance(snapshot.get("recent_bars"), list):
+        bars = snapshot.get("recent_bars") or []
+    closes: list[float] = []
+    for row in bars[-5:]:
+        if isinstance(row, dict):
+            value = _num(row.get("close") or row.get("c"))
+            if value is not None:
+                closes.append(float(value))
+    if len(closes) < 3:
+        return {"can_open": False, "signal_direction": "", "signal_source": "", "invalidation_reason": "insufficient_direction_context", **_safety()}
+    spread = _num((readiness.get("market_activity") or {}).get("spread") if isinstance(readiness.get("market_activity"), dict) else 0.0) or 0.0
+    delta = closes[-1] - closes[-3]
+    min_move = max(abs(closes[-3]) * 0.000001, spread * 0.1, 1e-12)
+    if delta >= min_move:
+        return {
+            "can_open": True,
+            "signal_direction": "buy",
+            "signal_source": "multi_asset_recent_momentum",
+            "entry_reason": "multi_asset_recent_momentum_up",
+            "invalidation_reason": "",
+            **_safety(),
+        }
+    if delta <= -min_move:
+        return {
+            "can_open": True,
+            "signal_direction": "sell",
+            "signal_source": "multi_asset_recent_momentum",
+            "entry_reason": "multi_asset_recent_momentum_down",
+            "invalidation_reason": "",
+            **_safety(),
+        }
+    return {"can_open": False, "signal_direction": "", "signal_source": "", "invalidation_reason": "no_clear_direction", **_safety()}
+
+
+def _build_generic_multi_asset_shadow_trade(readiness: dict[str, Any], *, signal: dict[str, Any], asset_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    now = _now()
+    clean_symbol = _clean_symbol(readiness.get("symbol"))
+    clean_timeframe = _clean_timeframe(readiness.get("timeframe"))
+    clean_broker_symbol = str(readiness.get("broker_symbol") or clean_symbol)
+    config = dict(asset_config or {})
+    metadata = _asset_journal_metadata(config)
+    profile = str(metadata.get("strategy_profile") or f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}")
+    source = str(metadata.get("source") or "multi_asset_paper_observation_shadow_once")
+    activity = readiness.get("market_activity") if isinstance(readiness.get("market_activity"), dict) else {}
+    entry = _num(activity.get("current_price") or readiness.get("current_price")) or 0.0
+    side = "sell" if str(signal.get("signal_direction") or "").casefold() == "sell" else "buy"
+    spread = _num(activity.get("spread")) or 0.0
+    stop_distance = max(abs(entry) * 0.0025, spread * 4.0 if spread else 0.0, 1e-8)
+    stop = round(entry + stop_distance, 8) if side == "sell" else round(entry - stop_distance, 8)
+    target = round(entry - stop_distance * 1.2, 8) if side == "sell" else round(entry + stop_distance * 1.2, 8)
+    shadow_id = f"{clean_symbol.lower()}-{clean_timeframe.lower()}-paper-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+    return {
+        "shadow_trade_id": shadow_id,
+        "symbol": clean_symbol,
+        "broker_symbol": clean_broker_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_profile": profile,
+        "strategy_profile": profile,
+        "profile": profile,
+        "side": side,
+        "action": side.upper(),
+        "signal_direction": side,
+        "entry_reason": signal.get("entry_reason") or "multi_asset_paper_observation",
+        "invalidation_reason": signal.get("invalidation_reason") or "",
+        "entry_price": entry,
+        "entry": entry,
+        "stop_loss": stop,
+        "take_profit": target,
+        "initial_risk": abs(entry - stop) if entry and stop else 0.0,
+        "status": "open",
+        "lifecycle_status": "open",
+        "source": source,
+        "journal_metadata": metadata,
+        "asset_config": _public_asset_config(config),
+        "opened_at": now,
+        "updated_at": now,
+        "last_price": entry,
+        "unrealized_pnl": 0.0,
+        "unrealized_pnl_pct": 0.0,
+        "r_multiple": 0.0,
+        "bars_since_entry": 0,
+        "paper_observation": True,
+        "paper_forward_candidate": False,
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        "market_active": bool(activity.get("market_active")),
+        "market_active_at_entry": bool(activity.get("market_active")),
+        "market_active_at_exit": False,
+        "market_inactive_or_frozen": bool(activity.get("market_inactive_or_frozen")),
+        "frozen_market_detected": bool(activity.get("market_inactive_or_frozen") or activity.get("frozen_ohlc") or str(activity.get("reason") or "") == "frozen_ohlc"),
+        "no_price_movement": bool(activity.get("no_price_movement")),
+        "price_movement_observed": bool(activity.get("price_moved_recently")),
+        "price_source": "runtime_tick_bar_context",
+        "reason": "explicit_confirmed_multi_asset_paper_observation_shadow_once",
+        **_safety(),
+    }
+
+
+def _generic_monitor_result(
+    symbol: str,
+    broker_symbol: str,
+    timeframe: str,
+    *,
+    monitor_state: str,
+    open_shadow_count: int,
+    exit_signal: bool,
+    exit_reason: str,
+    paper_close_applied: bool,
+    shadow_status_after: str,
+    trade: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+    activity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(trade or {})
+    m = metrics or {}
+    a = activity or {}
+    return {
+        "ok": True,
+        "status": "multi_asset_paper_shadow_monitor_ready",
+        "monitor_state": monitor_state,
+        "symbol": _clean_symbol(symbol),
+        "broker_symbol": broker_symbol or _clean_symbol(symbol),
+        "timeframe": _clean_timeframe(timeframe),
+        "candidate_profile": payload.get("strategy_profile") or f"multi_asset_paper_test|symbol={_clean_symbol(symbol)}|timeframe={_clean_timeframe(timeframe)}",
+        "open_shadow_count": int(open_shadow_count),
+        "shadow_trade_id": payload.get("shadow_trade_id") or "",
+        "side": m.get("side") or payload.get("side") or "",
+        "entry_price": m.get("entry_price", payload.get("entry_price") or 0.0),
+        "current_price": m.get("current_price", payload.get("last_price") or 0.0),
+        "stop_loss": m.get("stop_loss", payload.get("stop_loss") or 0.0),
+        "take_profit": m.get("take_profit", payload.get("take_profit") or 0.0),
+        "unrealized_pnl": m.get("unrealized_pnl", payload.get("unrealized_pnl") or 0.0),
+        "unrealized_pnl_pct": m.get("unrealized_pnl_pct", payload.get("unrealized_pnl_pct") or 0.0),
+        "r_multiple": m.get("r_multiple", payload.get("r_multiple") or 0.0),
+        "age_minutes": m.get("age_minutes", payload.get("age_minutes") or 0.0),
+        "bars_since_entry": int(_num(m.get("bars_since_entry", payload.get("bars_since_entry") or 0)) or 0),
+        "exit_signal": bool(exit_signal),
+        "exit_reason": exit_reason,
+        "should_close_paper": bool(exit_signal),
+        "should_watch_only": False,
+        "paper_close_applied": bool(paper_close_applied),
+        "shadow_status_after": shadow_status_after,
+        "market_active": bool(a.get("market_active") if a else payload.get("market_active")),
+        "market_inactive_or_frozen": bool(a.get("market_inactive_or_frozen") if a else payload.get("market_inactive_or_frozen")),
+        "no_price_movement": bool(a.get("no_price_movement") if a else payload.get("no_price_movement")),
+        "price_source": "runtime_tick_bar_context" if m.get("current_price") else payload.get("price_source") or "",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _http_monitor_asset_mismatch(symbol: str, broker_symbol: str, timeframe: str) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    return {
+        "ok": True,
+        "status": "multi_asset_http_monitor_blocked",
+        "monitor_state": "blocked_monitor_asset_mismatch",
+        "readiness_state": "blocked_monitor_asset_mismatch",
+        "recommendation": "use_asset_specific_monitor_endpoint",
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol or clean_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_profile": f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
+        "open_shadow_count": 0,
+        "open_count": 0,
+        "paper_shadow_created": False,
+        "shadow_trade_id": "",
+        "exit_signal": False,
+        "exit_reason": "blocked_monitor_asset_mismatch",
+        "should_close_paper": False,
+        "should_watch_only": False,
+        "paper_close_applied": False,
+        "shadow_status_after": "unknown",
+        "candidate_activated": False,
+        "paper_forward_onboarding_started": False,
+        "applies_to_real_trading": False,
+        **_safety(),
+    }
+
+
+def _generic_trade_metrics(open_trade: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    tick = snapshot.get("last_tick") if isinstance(snapshot.get("last_tick"), dict) else {}
+    current = _num(tick.get("last") or tick.get("bid") or tick.get("ask") or snapshot.get("last_price") or open_trade.get("last_price")) or 0.0
+    entry = _num(open_trade.get("entry_price") or open_trade.get("entry")) or 0.0
+    side = "sell" if str(open_trade.get("side") or "").casefold() == "sell" else "buy"
+    pnl = (entry - current) if side == "sell" else (current - entry)
+    risk = abs(entry - (_num(open_trade.get("stop_loss")) or entry)) or _num(open_trade.get("initial_risk")) or 0.0
+    bars_since_entry = int(_num(open_trade.get("bars_since_entry")) or 0) + 1
+    return {
+        "side": side,
+        "entry_price": round(entry, 8),
+        "current_price": round(current, 8),
+        "stop_loss": _num(open_trade.get("stop_loss")) or 0.0,
+        "take_profit": _num(open_trade.get("take_profit")) or 0.0,
+        "unrealized_pnl": round(pnl, 8),
+        "unrealized_pnl_pct": round((pnl / entry) * 100.0, 8) if entry else 0.0,
+        "r_multiple": round(pnl / risk, 8) if risk else 0.0,
+        "age_minutes": _age_minutes(open_trade.get("opened_at")),
+        "bars_since_entry": bars_since_entry,
+    }
+
+
+def _generic_exit_decision(
+    metrics: dict[str, Any],
+    *,
+    exit_policy: str,
+    time_stop_bars: int,
+    max_hold_minutes: float | None,
+    min_r_to_arm_trailing: float,
+    giveback_r: float,
+    fast_loss_cut_r: float,
+) -> tuple[bool, str]:
+    side = str(metrics.get("side") or "")
+    current = _num(metrics.get("current_price")) or 0.0
+    stop = _num(metrics.get("stop_loss")) or 0.0
+    target = _num(metrics.get("take_profit")) or 0.0
+    r_value = _num(metrics.get("r_multiple")) or 0.0
+    if side == "buy" and stop and current <= stop:
+        return True, "stop_loss_hit"
+    if side == "sell" and stop and current >= stop:
+        return True, "stop_loss_hit"
+    if side == "buy" and target and current >= target:
+        return True, "take_profit_hit"
+    if side == "sell" and target and current <= target:
+        return True, "take_profit_hit"
+    if _exit_policy(exit_policy) == "fast_observation":
+        if r_value <= float(fast_loss_cut_r):
+            return True, "paper_fast_loss_cut"
+        if int(_num(metrics.get("bars_since_entry")) or 0) >= max(1, int(time_stop_bars or 1)):
+            return True, "paper_timebox_exit"
+        if r_value >= float(min_r_to_arm_trailing) and r_value <= float(min_r_to_arm_trailing) - float(giveback_r):
+            return True, "paper_fast_trailing_exit"
+    if max_hold_minutes is not None and (_num(metrics.get("age_minutes")) or 0.0) >= float(max_hold_minutes):
+        return True, "paper_stagnation_exit"
+    return False, ""
+
+
+def _generic_closed_trade(open_trade: dict[str, Any], metrics: dict[str, Any], exit_reason: str, activity: dict[str, Any]) -> dict[str, Any]:
+    closed = {
+        **open_trade,
+        "exit_price": metrics["current_price"],
+        "last_price": metrics["current_price"],
+        "pnl": metrics["unrealized_pnl"],
+        "pnl_pct": metrics["unrealized_pnl_pct"],
+        "r_multiple": metrics["r_multiple"],
+        "bars_since_entry": metrics["bars_since_entry"],
+        "status": "closed",
+        "lifecycle_status": "closed",
+        "closed_at": _now(),
+        "exit_reason": exit_reason,
+        "market_active": bool(activity.get("market_active")),
+        "market_active_at_entry": bool(open_trade.get("market_active_at_entry", open_trade.get("market_active"))),
+        "market_active_at_exit": bool(activity.get("market_active")),
+        "market_inactive_or_frozen": bool(activity.get("market_inactive_or_frozen")),
+        "frozen_market_detected": bool(activity.get("market_inactive_or_frozen") or activity.get("frozen_ohlc") or str(activity.get("reason") or "") == "frozen_ohlc"),
+        "no_price_movement": bool(activity.get("no_price_movement")),
+        "price_movement_observed": bool(activity.get("price_moved_recently")),
+        "price_source": "runtime_tick_bar_context",
+        **_safety(),
+    }
+    closed.update(_winrate_sample_flags(closed))
+    return closed
+
+
+def _persist_generic_shadow_trade(store: Any | None, trade: dict[str, Any]) -> dict[str, Any]:
+    active_store = store or MT5PersistentIntelligenceStore()
+    if not hasattr(active_store, "record_shadow_trade"):
+        return {"ok": True, "skipped": True, "reason": "store_has_no_record_shadow_trade", **_safety()}
+    try:
+        result = active_store.record_shadow_trade(trade, critical=True)
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        return {"ok": False, "reason": type(exc).__name__, **_safety()}
+    return dict(result or {"ok": False, "reason": "empty_record_shadow_trade_result", **_safety()})
+
+
+def _age_minutes(opened_at: object) -> float:
+    text = str(opened_at or "").strip()
+    if not text:
+        return 0.0
+    try:
+        opened = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - opened).total_seconds() / 60.0)
+    except ValueError:
+        return 0.0
+
+
+def _snapshot_for_symbol(symbol: str, broker_symbol: str, timeframe: str) -> dict[str, Any]:
+    for alias in _dedupe([symbol, broker_symbol, str(symbol).upper(), str(broker_symbol).upper()]):
+        snapshot = get_snapshot(alias, timeframe) or {}
+        if snapshot:
+            return dict(snapshot)
+    return {}
+
+
+def _market_activity_from_snapshot(snapshot: dict[str, Any], *, min_bars: int = 50, guard: dict[str, Any] | None = None) -> dict[str, Any]:
+    guard_payload = dict(guard or {})
+    guard_payload.setdefault("min_bars", int(_num(guard_payload.get("min_bars")) or min_bars))
+    return evaluate_market_active(snapshot, guard_payload)
+
+
+def _db_ok(db: dict[str, Any]) -> bool:
+    return _db_block_reason(db) == ""
+
+
+def _clean_symbol(value: object) -> str:
+    text = str(value or "").upper().strip()
+    if text.endswith(".B"):
+        text = text[:-2]
+    return text or SYMBOL
+
+
+def _clean_timeframe(value: object) -> str:
+    return str(value or "").upper().strip() or TIMEFRAME

@@ -25,6 +25,11 @@ def run_xau_m15_paper_test_supervisor(
     *,
     client: Any | None = None,
     base_url: str = "",
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
+    allowed_symbols: list[str] | tuple[str, ...] | None = None,
+    asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     target_trades: int = 3,
     max_cycles: int = 120,
     interval_seconds: float = 30.0,
@@ -48,16 +53,40 @@ def run_xau_m15_paper_test_supervisor(
     sleep_fn: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    active_client = client or (HttpPaperObservationClient(base_url, timeout_seconds=timeout_seconds) if base_url else LocalPaperObservationClient())
+    clean_symbol = str(symbol or SYMBOL).upper().strip()
+    clean_timeframe = str(timeframe or TIMEFRAME).upper().strip()
+    clean_broker_symbol = str(broker_symbol or clean_symbol)
+    active_client = client or (
+        HttpPaperObservationClient(
+            base_url,
+            timeout_seconds=timeout_seconds,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
+            allowed_symbols=allowed_symbols,
+            asset_configs=asset_configs,
+        )
+        if base_url
+        else LocalPaperObservationClient(
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
+            allowed_symbols=allowed_symbols,
+            asset_configs=asset_configs,
+        )
+    )
     preflight = _preflight(active_client)
     if preflight_only:
-        return _preflight_only_result(preflight=preflight, started=started)
-    if _unsafe([preflight.get("db_state", {}), preflight.get("open_payload", {}), preflight.get("history", {})]):
+        return _preflight_only_result(preflight=preflight, started=started, symbol=clean_symbol, broker_symbol=clean_broker_symbol, timeframe=clean_timeframe)
+    if _unsafe([preflight.get("db_state", {}), preflight.get("open_payload", {}), preflight.get("history", {}), preflight.get("readiness", {})]):
         return _supervisor_result(
             "stopped_by_broker_safety_violation",
             preflight=preflight,
             stop_reason="broker_or_order_flag_detected",
             started=started,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
         )
     db = preflight["db_state"]
     queue_depth = int(_num(db.get("queue_depth")) or 0)
@@ -74,6 +103,9 @@ def run_xau_m15_paper_test_supervisor(
                 stop_reason="queue_depth_remains_after_drain",
                 queue_drain=queue_drain,
                 started=started,
+                symbol=clean_symbol,
+                broker_symbol=clean_broker_symbol,
+                timeframe=clean_timeframe,
             )
     db_block = _db_block_reason(db)
     if db_block:
@@ -83,6 +115,9 @@ def run_xau_m15_paper_test_supervisor(
             stop_reason=db_block,
             queue_drain=queue_drain,
             started=started,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
         )
     if int(_num(preflight.get("open_payload", {}).get("merged_open_count") or preflight.get("open_payload", {}).get("open_count")) or 0) > 1:
         return _supervisor_result(
@@ -91,6 +126,9 @@ def run_xau_m15_paper_test_supervisor(
             stop_reason="multiple_open_shadows",
             queue_drain=queue_drain,
             started=started,
+            symbol=clean_symbol,
+            broker_symbol=clean_broker_symbol,
+            timeframe=clean_timeframe,
         )
 
     batch = run_xau_m15_paper_observation_batch_runner(
@@ -115,6 +153,11 @@ def run_xau_m15_paper_test_supervisor(
         results_file=results_file,
         sleep_fn=sleep_fn,
         timeout_seconds=timeout_seconds,
+        symbol=clean_symbol,
+        broker_symbol=clean_broker_symbol,
+        timeframe=clean_timeframe,
+        allowed_symbols=allowed_symbols,
+        asset_configs=asset_configs,
     )
     state = _supervisor_state_from_batch(batch)
     return _supervisor_result(
@@ -124,6 +167,9 @@ def run_xau_m15_paper_test_supervisor(
         batch=batch,
         stop_reason=batch.get("stop_reason") or "",
         started=started,
+        symbol=clean_symbol,
+        broker_symbol=clean_broker_symbol,
+        timeframe=clean_timeframe,
     )
 
 
@@ -208,7 +254,14 @@ def _preflight(client: Any) -> dict[str, Any]:
     }
 
 
-def _preflight_only_result(*, preflight: dict[str, Any], started: float) -> dict[str, Any]:
+def _preflight_only_result(
+    *,
+    preflight: dict[str, Any],
+    started: float,
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
+) -> dict[str, Any]:
     db = preflight.get("db_state") if isinstance(preflight.get("db_state"), dict) else {}
     readiness = preflight.get("readiness") if isinstance(preflight.get("readiness"), dict) else {}
     open_payload = preflight.get("open_payload") if isinstance(preflight.get("open_payload"), dict) else {}
@@ -219,27 +272,39 @@ def _preflight_only_result(*, preflight: dict[str, Any], started: float) -> dict
     blockers = _preflight_blockers(db=db, readiness=readiness, open_payload=open_payload, preflight=preflight)
     decision = _preflight_decision(blockers)
     next_safe_action = _preflight_next_safe_action(decision)
+    safety_violation = _unsafe([db, readiness, open_payload, history])
+    clean_symbol = str(symbol or SYMBOL).upper()
+    clean_timeframe = str(timeframe or TIMEFRAME).upper()
+    readiness_endpoint = (
+        "GET /api/genesis/mt5/xau-m15/paper-observation/readiness"
+        if clean_symbol == SYMBOL and clean_timeframe == TIMEFRAME
+        else "local generic multi-asset readiness"
+    )
     return {
         "ok": True,
         "status": "xau_m15_paper_test_supervisor_preflight_only_ready",
         "supervisor_version": SUPERVISOR_VERSION,
         "supervisor_state": "preflight_only",
         "preflight_only": True,
-        "symbol": SYMBOL,
-        "broker_symbol": BROKER_SYMBOL,
-        "timeframe": TIMEFRAME,
-        "candidate_profile": CANDIDATE_PROFILE,
+        "symbol": clean_symbol,
+        "broker_symbol": broker_symbol,
+        "timeframe": clean_timeframe,
+        "candidate_profile": CANDIDATE_PROFILE if clean_symbol == SYMBOL and clean_timeframe == TIMEFRAME else f"multi_asset_paper_test|symbol={clean_symbol}|timeframe={clean_timeframe}",
         "allowed_endpoints": [
             "GET /api/genesis/mt5/persistent-intelligence/status",
-            "GET /api/genesis/mt5/xau-m15/paper-observation/readiness",
-            "GET /api/genesis/mt5/shadow-trades/open?symbol=XAUUSD",
-            "GET /api/genesis/mt5/shadow-trades/history?symbol=XAUUSD&timeframe=M15&limit=50",
+            readiness_endpoint,
+            f"GET /api/genesis/mt5/shadow-trades/open?symbol={clean_symbol}",
+            f"GET /api/genesis/mt5/shadow-trades/history?symbol={clean_symbol}&timeframe={clean_timeframe}&limit=50",
         ],
         "db_available": bool(db.get("db_available")),
         "db_degraded": bool(db.get("db_degraded")),
         "tables_ready": bool(db.get("tables_ready")),
         "queue_depth": int(_num(db.get("queue_depth")) or 0),
+        "bars_count": int(_num(readiness.get("bars_count")) or 0),
+        "market_active": bool(readiness.get("market_active")),
+        "market_active_reason": readiness.get("market_active_reason") or "",
         "readiness_state": readiness.get("readiness_state") or "",
+        "entry_allowed_for_paper_test": bool(readiness.get("entry_allowed_for_paper_test")),
         "runtime_context_recent": bool(readiness.get("runtime_context_recent")),
         "capital_state": readiness.get("capital_state") or "",
         "capital_allows_observation": bool(readiness.get("capital_allows_observation")),
@@ -247,6 +312,7 @@ def _preflight_only_result(*, preflight: dict[str, Any], started: float) -> dict
         "risk_allows_observation": bool(readiness.get("risk_allows_observation")),
         "open_count": open_count,
         "merged_open_count": merged_open_count,
+        "max_open_positions_total": int(_num(readiness.get("max_open_positions_total")) or 1),
         "closed_count": closed_count,
         "decision": decision,
         "blockers": blockers,
@@ -260,6 +326,7 @@ def _preflight_only_result(*, preflight: dict[str, Any], started: float) -> dict
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
+        "safety_violation": bool(safety_violation),
         "duration_ms": int((time.monotonic() - started) * 1000),
         **_safety(),
     }
@@ -273,20 +340,39 @@ def _supervisor_result(
     stop_reason: str = "",
     queue_drain: dict[str, Any] | None = None,
     batch: dict[str, Any] | None = None,
+    symbol: str = SYMBOL,
+    broker_symbol: str = BROKER_SYMBOL,
+    timeframe: str = TIMEFRAME,
 ) -> dict[str, Any]:
     batch_payload = batch or {}
+    safety_violation = _unsafe([
+        preflight.get("db_state", {}) if isinstance(preflight.get("db_state"), dict) else {},
+        preflight.get("open_payload", {}) if isinstance(preflight.get("open_payload"), dict) else {},
+        preflight.get("history", {}) if isinstance(preflight.get("history"), dict) else {},
+        preflight.get("readiness", {}) if isinstance(preflight.get("readiness"), dict) else {},
+        batch_payload,
+        queue_drain or {},
+    ])
     return {
         "ok": True,
         "status": "xau_m15_paper_test_supervisor_ready",
         "supervisor_version": SUPERVISOR_VERSION,
         "supervisor_state": state,
-        "symbol": SYMBOL,
-        "broker_symbol": BROKER_SYMBOL,
-        "timeframe": TIMEFRAME,
-        "candidate_profile": CANDIDATE_PROFILE,
+        "symbol": batch_payload.get("symbol") or symbol,
+        "broker_symbol": batch_payload.get("broker_symbol") or broker_symbol,
+        "timeframe": batch_payload.get("timeframe") or timeframe,
+        "candidate_profile": batch_payload.get("candidate_profile") or (CANDIDATE_PROFILE if symbol == SYMBOL and timeframe == TIMEFRAME else f"multi_asset_paper_test|symbol={symbol}|timeframe={timeframe}"),
         "stop_reason": stop_reason,
         "current_phase": batch_payload.get("current_phase") or "",
         "readiness_state": batch_payload.get("readiness_state") or "",
+        "bars_count": int(_num(batch_payload.get("bars_count")) or 0),
+        "market_active": bool(batch_payload.get("market_active")),
+        "market_active_reason": batch_payload.get("market_active_reason") or "",
+        "db_available": bool(batch_payload.get("db_available")),
+        "db_degraded": bool(batch_payload.get("db_degraded")),
+        "tables_ready": bool(batch_payload.get("tables_ready")),
+        "queue_depth": int(_num(batch_payload.get("queue_depth")) or 0),
+        "max_open_positions_total": int(_num(batch_payload.get("max_open_positions_total")) or 1),
         "gate_summary": batch_payload.get("gate_summary") or {},
         "next_action": batch_payload.get("next_action") or "",
         "preflight": preflight,
@@ -298,6 +384,8 @@ def _supervisor_result(
         "target_scope": batch_payload.get("target_scope") or "session",
         "session_trades_opened": int(_num(batch_payload.get("session_trades_opened")) or 0),
         "session_trades_closed": int(_num(batch_payload.get("session_trades_closed")) or 0),
+        "valid_trades_closed": int(_num(batch_payload.get("batch_stats", {}).get("valid_trades_closed") if isinstance(batch_payload.get("batch_stats"), dict) else batch_payload.get("valid_trades_closed")) or 0),
+        "invalid_samples": int(_num(batch_payload.get("batch_stats", {}).get("invalid_samples") if isinstance(batch_payload.get("batch_stats"), dict) else batch_payload.get("invalid_samples")) or 0),
         "historical_closed_count": int(_num(batch_payload.get("historical_closed_count")) or 0),
         "current_shadow_id": batch_payload.get("current_shadow_id") or "",
         "current_shadow_source": batch_payload.get("current_shadow_source") or "",
@@ -305,6 +393,7 @@ def _supervisor_result(
         "win_rate": _num(batch_payload.get("win_rate")) or 0.0,
         "expectancy": _num(batch_payload.get("expectancy")) or 0.0,
         "profit_factor": _num(batch_payload.get("profit_factor")) or 0.0,
+        "avg_r": _num(batch_payload.get("batch_stats", {}).get("avg_r") if isinstance(batch_payload.get("batch_stats"), dict) else batch_payload.get("avg_r")) or 0.0,
         "last_closed_trade": batch_payload.get("last_closed_trade") if isinstance(batch_payload.get("last_closed_trade"), dict) else {},
         "failed_gate_names": batch_payload.get("failed_gate_names") or [],
         "failed_gate_reasons": batch_payload.get("failed_gate_reasons") or {},
@@ -319,6 +408,7 @@ def _supervisor_result(
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
         "applies_to_real_trading": False,
+        "safety_violation": bool(safety_violation),
         "duration_ms": int((time.monotonic() - started) * 1000),
         **_safety(),
     }
@@ -335,17 +425,37 @@ def _supervisor_state_from_batch(batch: dict[str, Any]) -> str:
 
 
 def _db_block_reason(db: dict[str, Any]) -> str:
-    if not bool(db.get("db_available")):
+    if db.get("db_available") is not True:
         return "db_unavailable"
-    if bool(db.get("db_degraded")):
+    if db.get("db_degraded") is not False:
         return "db_degraded"
-    if not bool(db.get("tables_ready")):
+    if db.get("tables_ready") is not True:
         return "tables_not_ready"
-    if int(_num(db.get("queue_depth")) or 0) > 0:
+    queue_depth = _db_counter(db, "queue_depth")
+    if queue_depth is None:
+        return "queue_depth_missing"
+    if queue_depth > 0:
         return "queue_depth_high"
-    if int(_num(db.get("failed_writes")) or 0) > 0:
+    queued_writes = _db_counter(db, "queued_writes")
+    if queued_writes is None:
+        return "queued_writes_missing"
+    if queued_writes > 0:
+        return "queued_writes_pending"
+    failed_writes = _db_counter(db, "failed_writes")
+    if failed_writes is None:
+        return "failed_writes_missing"
+    if failed_writes > 0:
         return "failed_writes_present"
     return ""
+
+
+def _db_counter(db: dict[str, Any], key: str) -> int | None:
+    if key not in db:
+        return None
+    value = _num(db.get(key))
+    if value is None:
+        return None
+    return int(value)
 
 
 def _preflight_blockers(*, db: dict[str, Any], readiness: dict[str, Any], open_payload: dict[str, Any], preflight: dict[str, Any]) -> list[str]:
@@ -376,7 +486,20 @@ def _preflight_blockers(*, db: dict[str, Any], readiness: dict[str, Any], open_p
 def _preflight_decision(blockers: list[str]) -> str:
     if "broker_or_order_flag_detected" in blockers:
         return "blocked_by_safety_flags"
-    if any(blocker in blockers for blocker in ("db_unavailable", "db_degraded", "tables_not_ready", "queue_depth_high", "failed_writes_present")):
+    if any(
+        blocker in blockers
+        for blocker in (
+            "db_unavailable",
+            "db_degraded",
+            "tables_not_ready",
+            "queue_depth_missing",
+            "queue_depth_high",
+            "queued_writes_missing",
+            "queued_writes_pending",
+            "failed_writes_missing",
+            "failed_writes_present",
+        )
+    ):
         return "blocked_by_db"
     if "multiple_open_shadows" in blockers:
         return "blocked_by_duplicate_shadow"
@@ -411,7 +534,13 @@ def _safe_call(fn: Any, **kwargs: Any) -> dict[str, Any]:
 
 def _unsafe(payloads: list[dict[str, Any]]) -> bool:
     for payload in payloads:
+        if bool(payload.get("safety_violation")):
+            return True
         if bool(payload.get("broker_touched")) or bool(payload.get("order_executed")):
+            return True
+        if bool(payload.get("candidate_activated")) or bool(payload.get("paper_forward_onboarding_started")):
+            return True
+        if bool(payload.get("applies_to_real_trading")):
             return True
         if str(payload.get("order_policy") or "journal_only_no_broker") != "journal_only_no_broker":
             return True

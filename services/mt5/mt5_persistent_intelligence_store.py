@@ -65,6 +65,14 @@ SHADOW_HISTORY_OPTIONAL_COLUMNS = (
     "safety_exit_category",
     "safety_exit_reason_detail",
     "close_decision_reason",
+    "sample_valid",
+    "invalid_reason",
+    "metric_exclusion_reason",
+    "market_active_at_entry",
+    "market_active_at_exit",
+    "frozen_market_detected",
+    "price_movement_observed",
+    "sample_validity_metadata",
 )
 SHADOW_HISTORY_COLUMNS = (*SHADOW_HISTORY_BASE_COLUMNS, *SHADOW_HISTORY_OPTIONAL_COLUMNS)
 _SHADOW_TRADE_OPTIONAL_WRITE_COLUMNS = {
@@ -83,6 +91,14 @@ _SHADOW_TRADE_OPTIONAL_WRITE_COLUMNS = {
     "safety_exit_category",
     "safety_exit_reason_detail",
     "close_decision_reason",
+    "sample_valid",
+    "invalid_reason",
+    "metric_exclusion_reason",
+    "market_active_at_entry",
+    "market_active_at_exit",
+    "frozen_market_detected",
+    "price_movement_observed",
+    "sample_validity_metadata",
 }
 _POSTGRES_DRIVER_NAME = "pg8000"
 _JSONB_COLUMNS = {
@@ -92,6 +108,7 @@ _JSONB_COLUMNS = {
     "degraded_profiles",
     "circuit_breakers",
     "avoid_next",
+    "sample_validity_metadata",
 }
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -844,6 +861,14 @@ class MT5PersistentIntelligenceStore:
                 "safety_exit_category": payload.get("safety_exit_category") or "",
                 "safety_exit_reason_detail": payload.get("safety_exit_reason_detail") or "",
                 "close_decision_reason": payload.get("close_decision_reason") or "",
+                "sample_valid": _optional_bool(payload.get("sample_valid")) if "sample_valid" in payload else None,
+                "invalid_reason": payload.get("invalid_reason") or payload.get("invalid_sample_reason") or "",
+                "metric_exclusion_reason": payload.get("metric_exclusion_reason") or "",
+                "market_active_at_entry": _optional_bool(payload.get("market_active_at_entry")) if "market_active_at_entry" in payload else None,
+                "market_active_at_exit": _optional_bool(payload.get("market_active_at_exit")) if "market_active_at_exit" in payload else None,
+                "frozen_market_detected": _optional_bool(payload.get("frozen_market_detected")) if "frozen_market_detected" in payload else None,
+                "price_movement_observed": _optional_bool(payload.get("price_movement_observed")) if "price_movement_observed" in payload else None,
+                "sample_validity_metadata": _sample_validity_metadata(payload),
                 "broker_touched": False,
                 "order_executed": False,
                 "order_policy": "journal_only_no_broker",
@@ -1516,9 +1541,10 @@ def _postgres_placeholder(column: str) -> str:
 def _postgres_value(column: str, value: Any) -> Any:
     if column in _JSONB_COLUMNS:
         try:
-            return json.dumps(value if value is not None else ([] if column != "recommended_candidate" else {}), ensure_ascii=True, sort_keys=True)
+            empty_value = {} if column in {"recommended_candidate", "sample_validity_metadata"} else []
+            return json.dumps(value if value is not None else empty_value, ensure_ascii=True, sort_keys=True)
         except (TypeError, ValueError):
-            return "{}" if column == "recommended_candidate" else "[]"
+            return "{}" if column in {"recommended_candidate", "sample_validity_metadata"} else "[]"
     return value
 
 
@@ -1736,6 +1762,39 @@ def _safety_rows(rows: list[Any]) -> list[dict[str, Any]]:
     return compact
 
 
+def _sample_validity_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in (
+        "sample_valid",
+        "invalid_reason",
+        "invalid_sample_reason",
+        "metric_exclusion_reason",
+        "market_active_at_entry",
+        "market_active_at_exit",
+        "frozen_market_detected",
+        "price_movement_observed",
+    ):
+        if key in payload:
+            value = payload.get(key)
+            if value not in (None, ""):
+                metadata[key] = value
+    if "invalid_reason" not in metadata and metadata.get("invalid_sample_reason"):
+        metadata["invalid_reason"] = metadata["invalid_sample_reason"]
+    return _sanitize_row(metadata)
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(decoded) if isinstance(decoded, dict) else {}
+    return {}
+
+
 def _normalize_shadow_history_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for row in rows:
@@ -1756,6 +1815,26 @@ def _normalize_shadow_history_rows(rows: list[dict[str, Any]]) -> list[dict[str,
         clean.setdefault("safety_exit_category", "")
         clean.setdefault("safety_exit_reason_detail", "")
         clean.setdefault("close_decision_reason", "")
+        metadata = _metadata_dict(clean.get("sample_validity_metadata"))
+        for key in (
+            "sample_valid",
+            "invalid_reason",
+            "metric_exclusion_reason",
+            "market_active_at_entry",
+            "market_active_at_exit",
+            "frozen_market_detected",
+            "price_movement_observed",
+        ):
+            if (key not in clean or clean.get(key) in ("", None)) and key in metadata:
+                clean[key] = metadata.get(key)
+        clean.setdefault("sample_valid", None)
+        clean.setdefault("invalid_reason", "")
+        clean.setdefault("metric_exclusion_reason", "")
+        clean.setdefault("market_active_at_entry", None)
+        clean.setdefault("market_active_at_exit", None)
+        clean.setdefault("frozen_market_detected", None)
+        clean.setdefault("price_movement_observed", None)
+        clean.setdefault("sample_validity_metadata", metadata)
         clean["age_minutes"] = _age_minutes_between(clean.get("opened_at"), clean.get("closed_at"))
         if "last_price" not in clean:
             clean["last_price"] = clean.get("exit_price") or clean.get("entry_price") or 0.0
@@ -1899,6 +1978,19 @@ def _float(value: object) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return None
+    text = str(value).casefold().strip()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 def _now() -> str:

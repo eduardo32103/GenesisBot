@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+from services.mt5.mt5_market_active_guard import MarketActiveGuard
 from services.mt5.mt5_xau_m15_paper_observation_batch_runner import (
+    HttpPaperObservationClient,
+    LocalPaperObservationClient,
     compute_xau_m15_paper_batch_stats,
     run_xau_m15_paper_observation_batch_runner,
     run_xau_m15_paper_observation_batch_step,
 )
+from services.mt5.mt5_runtime_snapshot import reset_runtime_snapshots_for_tests, update_bars
 
 
 class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        reset_runtime_snapshots_for_tests()
+
     def test_dry_run_does_not_open_shadow(self) -> None:
         client = _FakeClient()
 
@@ -51,6 +60,57 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(client.open_calls, 0)
         self.assertFalse(result["paper_shadow_created"])
 
+    def test_db_ok_blocks_failed_writes(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state={**_db(), "failed_writes": 1})
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("failed_writes_present", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(opened["open_count"], 0)
+        self.assertEqual(len(store.rows), 0)
+
+    def test_db_ok_blocks_queued_writes(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state={**_db(), "queued_writes": 2})
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("queued_writes_pending", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(opened["open_count"], 0)
+        self.assertEqual(len(store.rows), 0)
+
+    def test_db_ok_fails_closed_when_write_counters_missing(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        db = _db()
+        db.pop("failed_writes")
+        db.pop("queued_writes")
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("queued_writes_missing", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(opened["open_count"], 0)
+        self.assertEqual(len(store.rows), 0)
+
     def test_no_open_if_shadow_already_open(self) -> None:
         client = _FakeClient(open_count=1, monitor=_monitor_open())
 
@@ -70,6 +130,395 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(client.open_calls, 1)
         self.assertEqual(result["shadow_trade_id"], "xau-batch-opened")
         self.assertFalse(result["candidate_activated"])
+
+    def test_btc_local_multi_asset_market_active_opens_paper_only_shadow(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "opening_shadow")
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(result["symbol"], "BTCUSD")
+        self.assertEqual(result["open_result"]["symbol"], "BTCUSD")
+        self.assertEqual(result["open_result"]["open_shadow_count_after"], 1)
+        self.assertEqual(len(store.rows), 1)
+        self.assertEqual(store.rows[0]["status"], "open")
+        self.assertEqual(store.rows[0]["journal_metadata"]["strategy_profile"], "unit_test_multi_asset|symbol=BTCUSD|timeframe=M15")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_eth_local_multi_asset_market_active_opens_paper_only_shadow(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("ETHUSD", closes=[200.0 - i * 0.5 for i in range(60)])
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="ETHUSD", broker_symbol="ETHUSD", timeframe="M15", asset_configs=[_asset_config("ETHUSD")], store=store, db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="ETHUSD", broker_symbol="ETHUSD")
+
+        self.assertEqual(result["runner_state"], "opening_shadow")
+        self.assertTrue(result["paper_shadow_created"])
+        self.assertEqual(result["symbol"], "ETHUSD")
+        self.assertEqual(result["open_result"]["side"], "sell")
+        self.assertEqual(len(store.rows), 1)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_global_max_open_positions_total_one(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], db_state=_db())
+
+        result = client.readiness()
+
+        self.assertEqual(result["max_open_positions"], 1)
+        self.assertEqual(result["max_open_positions_total"], 1)
+        self.assertEqual(result["open_count"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_readiness_requires_capital_protection(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], db_state=_db())
+        capital = {"ok": True, "capital_state": "normal", "safe_to_trade": True, "decision": "ALLOW_PAPER_REVIEW", **_safety()}
+
+        with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.run_capital_protection_governor", return_value=capital) as governor:
+            with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.assess_runtime_risk", return_value={"allowed": True, "reason": "", "risk_state": "normal", **_safety()}):
+                result = client.readiness()
+
+        governor.assert_called_once()
+        self.assertFalse(governor.call_args.kwargs["persist_events"])
+        self.assertFalse(governor.call_args.kwargs["load_persistent"])
+        self.assertFalse(governor.call_args.kwargs["load_shadow_snapshot"])
+        self.assertEqual(result["capital_state"], "normal")
+        self.assertTrue(result["capital_allows_observation"])
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertTrue(result["entry_allowed_for_paper_test"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_readiness_blocks_when_capital_not_normal(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("ETHUSD", closes=[200.0 + i for i in range(60)])
+        client = LocalPaperObservationClient(symbol="ETHUSD", broker_symbol="ETHUSD", timeframe="M15", asset_configs=[_asset_config("ETHUSD")], db_state=_db())
+        capital = {
+            "ok": True,
+            "capital_state": "kill_switch",
+            "safe_to_trade": False,
+            "decision": "NO_TRADE",
+            "reason": "capital_protection:recent_edge_negative",
+            **_safety(),
+        }
+
+        with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.run_capital_protection_governor", return_value=capital):
+            with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.assess_runtime_risk", return_value={"allowed": True, "reason": "", "risk_state": "normal", **_safety()}):
+                result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="ETHUSD", broker_symbol="ETHUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["readiness_state"], "blocked_capital_protection")
+        self.assertIn("capital_allows_observation", result["failed_gate_names"])
+        self.assertFalse(result["readiness"]["capital_allows_observation"])
+        self.assertEqual(result["readiness"]["capital_state"], "kill_switch")
+        self.assertFalse(result["entry_allowed_for_paper_test"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["open_count"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_http_client_never_calls_xau_monitor(self) -> None:
+        client = HttpPaperObservationClient("https://example.invalid", symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")])
+        client._get = Mock(side_effect=AssertionError("BTCUSD must not call XAU monitor"))
+        client._post = Mock(side_effect=AssertionError("BTCUSD must not POST XAU monitor"))
+
+        result = client.monitor()
+
+        client._get.assert_not_called()
+        client._post.assert_not_called()
+        self.assertEqual(result["readiness_state"], "blocked_monitor_asset_mismatch")
+        self.assertEqual(result["monitor_state"], "blocked_monitor_asset_mismatch")
+        self.assertFalse(result["paper_close_applied"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_monitor_asset_mismatch_fails_closed(self) -> None:
+        client = HttpPaperObservationClient("https://example.invalid", symbol="ETHUSD", broker_symbol="ETHUSD", timeframe="M15", asset_configs=[_asset_config("ETHUSD")])
+        client._get = Mock(side_effect=AssertionError("ETHUSD must not call XAU monitor"))
+        client._post = Mock(side_effect=AssertionError("ETHUSD must not POST XAU monitor"))
+
+        result = client.monitor(apply_paper_close=True, exit_policy="fast_observation")
+
+        client._get.assert_not_called()
+        client._post.assert_not_called()
+        self.assertEqual(result["readiness_state"], "blocked_monitor_asset_mismatch")
+        self.assertEqual(result["exit_reason"], "blocked_monitor_asset_mismatch")
+        self.assertFalse(result["should_close_paper"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["open_count"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_xau_backward_compatibility_still_uses_xau_monitor_only_for_xau(self) -> None:
+        client = HttpPaperObservationClient("https://example.invalid", symbol="XAUUSD", broker_symbol="XAUUSD.b", timeframe="M15", asset_configs=[_asset_config("XAUUSD")])
+        payload = {"ok": True, "monitor_state": "no_action", **_safety()}
+        client._get = Mock(return_value=payload)
+        client._post = Mock(side_effect=AssertionError("GET monitor should not POST"))
+
+        result = client.monitor()
+
+        self.assertEqual(result, payload)
+        client._get.assert_called_once_with("/api/genesis/mt5/xau-m15/paper-shadow/monitor")
+        client._post.assert_not_called()
+
+    def test_multi_asset_without_explicit_allowlist_fails_closed(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["stop_reason"], "missing_explicit_asset_config_allowlist")
+        self.assertEqual(result["entry_block_type"], "asset_config_block")
+        self.assertFalse(result["safety_violation"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_multi_asset_symbol_not_in_allowlist_fails_closed(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("LTCUSD", closes=[50.0 + i * 0.1 for i in range(60)])
+        client = LocalPaperObservationClient(symbol="LTCUSD", broker_symbol="LTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="LTCUSD", broker_symbol="LTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(result["stop_reason"], "asset_not_in_explicit_asset_config_allowlist")
+        self.assertEqual(result["entry_block_type"], "asset_config_block")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_only_allowlisted_assets_can_run(self) -> None:
+        self.test_multi_asset_symbol_not_in_allowlist_fails_closed()
+
+    def test_multi_asset_disabled_config_fails_closed(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = {**_asset_config("BTCUSD"), "enabled": False}
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["stop_reason"], "asset_config_not_enabled")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["safety_violation"])
+
+    def test_multi_asset_missing_safety_config_fails_closed(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = _asset_config("BTCUSD")
+        config.pop("allow_broker_orders")
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["stop_reason"], "asset_config_missing_allow_broker_orders")
+        self.assertEqual(result["readiness_state"], "blocked_unsafe_order_policy")
+        self.assertEqual(result["entry_block_type"], "unsafe_order_policy")
+        self.assertEqual(result["open_count"], 0)
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["safety_violation"])
+
+    def test_multi_asset_missing_candidate_activation_config_fails_closed(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = _asset_config("BTCUSD")
+        config.pop("allow_candidate_activation")
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["stop_reason"], "asset_config_missing_allow_candidate_activation")
+        self.assertEqual(result["readiness_state"], "blocked_unsafe_order_policy")
+        self.assertEqual(result["entry_block_type"], "unsafe_order_policy")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+
+    def test_multi_asset_candidate_activation_true_is_safety_violation(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = {**_asset_config("BTCUSD"), "allow_candidate_activation": True}
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertEqual(result["readiness_state"], "blocked_unsafe_order_policy")
+        self.assertTrue(result["safety_violation"])
+        self.assertFalse(result["paper_shadow_created"])
+
+    def test_multi_asset_paper_forward_true_is_safety_violation(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = {**_asset_config("BTCUSD"), "allow_paper_forward": True}
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertEqual(result["readiness_state"], "blocked_unsafe_order_policy")
+        self.assertTrue(result["safety_violation"])
+        self.assertFalse(result["paper_shadow_created"])
+
+    def test_multi_asset_invalid_order_policy_is_safety_violation(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = {**_asset_config("BTCUSD"), "order_policy": "broker_orders_allowed"}
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertEqual(result["stop_reason"], "broker_or_order_flag_detected")
+        self.assertEqual(result["readiness_state"], "blocked_unsafe_order_policy")
+        self.assertEqual(result["entry_block_type"], "unsafe_order_policy")
+        self.assertTrue(result["safety_violation"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_paper_supervisor_aborts_if_order_policy_not_journal_only(self) -> None:
+        self.test_multi_asset_invalid_order_policy_is_safety_violation()
+
+    def test_multi_asset_allow_broker_orders_is_safety_violation(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = {**_asset_config("BTCUSD"), "allow_broker_orders": True}
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertTrue(result["safety_violation"])
+        self.assertFalse(result["paper_shadow_created"])
+
+    def test_multi_asset_broker_touched_config_is_safety_violation(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = {**_asset_config("BTCUSD"), "broker_touched": True}
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertTrue(result["safety_violation"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_existing_shadow_without_asset_config_fails_closed_without_close(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        store.rows.append({"shadow_trade_id": "btc-open", "symbol": "BTCUSD", "timeframe": "M15", "status": "open", **_safety()})
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", store=store, db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["stop_reason"], "missing_explicit_asset_config_allowlist")
+        self.assertFalse(result["paper_close_applied"])
+        self.assertEqual(len(store.rows), 1)
+
+    def test_multi_asset_min_bars_config_is_enforced(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        config = _asset_config("BTCUSD", min_bars=100)
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[config], db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertIn("bars_count_below_100", result["failed_gate_names"])
+        self.assertFalse(result["paper_shadow_created"])
+
+    def test_multi_asset_frozen_market_blocks_open(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 for _ in range(60)])
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=_MemoryShadowStore(), db_state=_db())
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["runner_state"], "readiness_blocked")
+        self.assertEqual(result["readiness_state"], "blocked_market_inactive")
+        self.assertIn("frozen_ohlc", result["failed_gate_names"])
+        self.assertEqual(result["readiness"]["market_active_reason"], "frozen_ohlc")
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_market_active_guard_blocks_frozen_ohlc(self) -> None:
+        self.test_multi_asset_frozen_market_blocks_open()
+
+    def test_market_active_guard_reports_specific_block_reasons(self) -> None:
+        now = datetime.now(timezone.utc)
+        current_bars = _guard_bars(now=now, closes=[100.0 + idx * 0.2 for idx in range(10)])
+        cases = [
+            ("stale_bar", _guard_snapshot(bars=_guard_bars(now=now - timedelta(hours=4), closes=[100.0 + idx * 0.2 for idx in range(10)]))),
+            ("stale_tick", _guard_snapshot(bars=current_bars, tick_time=now - timedelta(hours=4))),
+            ("zero_spread", _guard_snapshot(bars=current_bars, spread=0.0)),
+            ("excessive_spread", _guard_snapshot(bars=current_bars, spread=2.0), {"max_spread": 0.5}),
+            ("invalid_quote", _guard_snapshot(bars=current_bars, bid=-1.0, ask=100.2, last=100.1, spread=0.1)),
+            ("frozen_ohlc", _guard_snapshot(bars=_guard_bars(now=now, closes=[100.0 for _ in range(10)], frozen=True), bid=99.9, ask=100.1, last=100.0, spread=0.2)),
+            ("insufficient_recent_movement", _guard_snapshot(bars=_guard_bars(now=now, closes=[100.0 + idx * 0.00001 for idx in range(10)], tiny_range=True)), {"min_absolute_move": 1.0}),
+        ]
+
+        for expected, snapshot, *override in cases:
+            config = {**_asset_config("BTCUSD")["market_guard"], "min_bars": 10, **(override[0] if override else {})}
+            result = MarketActiveGuard(config).evaluate(snapshot)
+            self.assertFalse(result["market_active"], expected)
+            self.assertFalse(result["entry_allowed_for_paper_test"], expected)
+            self.assertEqual(result["readiness_state"], "blocked_market_inactive")
+            self.assertEqual(result["reason"], expected)
+
+    def test_btc_local_multi_asset_open_then_close_counts_valid_sample(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=_db())
+
+        opened = _step(client, dry_run=False, paper_only_confirmed=True, symbol="BTCUSD", broker_symbol="BTCUSD")
+        _seed_runtime("BTCUSD", closes=[160.0 + i for i in range(60)])
+        closed = _step(
+            client,
+            dry_run=False,
+            paper_only_confirmed=True,
+            exit_policy="fast_observation",
+            time_stop_bars=1,
+            symbol="BTCUSD",
+            broker_symbol="BTCUSD",
+        )
+
+        self.assertEqual(opened["runner_state"], "opening_shadow")
+        self.assertEqual(closed["runner_state"], "close_applied")
+        self.assertTrue(closed["paper_close_applied"])
+        self.assertEqual(closed["closed_trade"]["symbol"], "BTCUSD")
+        self.assertEqual(closed["closed_trade"]["valid_winrate_sample"], True)
+        self.assertEqual(closed["batch_stats"]["valid_trades_closed"], 1)
+        self.assertEqual(closed["batch_stats"]["invalid_samples"], 0)
+        self.assertEqual(len(store.rows), 2)
+        self.assertEqual(store.rows[-1]["status"], "closed")
+        self.assertFalse(closed["broker_touched"])
+        self.assertFalse(closed["order_executed"])
+        self.assertEqual(closed["order_policy"], "journal_only_no_broker")
 
     def test_recent_edge_negative_does_not_blindly_open_paper(self) -> None:
         client = _FakeClient(readiness=_recent_edge_ready(strict_passed=False))
@@ -329,6 +778,7 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         result = _step(client, dry_run=False, paper_only_confirmed=True)
 
         self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertTrue(result["safety_violation"])
         self.assertEqual(client.open_calls, 0)
 
     def test_order_executed_true_blocks(self) -> None:
@@ -337,15 +787,26 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         result = _step(client, dry_run=False, paper_only_confirmed=True)
 
         self.assertEqual(result["runner_state"], "stopped_by_safety")
+        self.assertTrue(result["safety_violation"])
         self.assertEqual(client.open_calls, 0)
 
     def test_no_forbidden_execution_reference_added(self) -> None:
         forbidden = "order" + "_send"
-        service = Path("services/mt5/mt5_xau_m15_paper_observation_batch_runner.py").read_text(encoding="utf-8")
-        script = Path("scripts/run_xau_m15_paper_observation_batch_runner.py").read_text(encoding="utf-8")
+        paths = [
+            Path("services/mt5/mt5_market_active_guard.py"),
+            Path("services/mt5/mt5_frozen_sample_guard.py"),
+            Path("services/mt5/mt5_xau_m15_paper_observation_batch_runner.py"),
+            Path("services/mt5/mt5_xau_m15_paper_test_supervisor.py"),
+            Path("scripts/run_xau_m15_paper_observation_batch_runner.py"),
+            Path("scripts/run_xau_m15_paper_test_supervisor.py"),
+            Path("scripts/run_crypto_m15_paper_test_supervisor.py"),
+        ]
 
-        self.assertNotIn(forbidden, service)
-        self.assertNotIn(forbidden, script)
+        for path in paths:
+            self.assertNotIn(forbidden, path.read_text(encoding="utf-8"), str(path))
+
+    def test_paper_supervisor_never_calls_broker_order_send(self) -> None:
+        self.test_no_forbidden_execution_reference_added()
 
     def test_stats_win_rate_profit_factor_expectancy(self) -> None:
         stats = compute_xau_m15_paper_batch_stats(
@@ -418,6 +879,41 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         )
 
         self.assertEqual(result["runner_state"], "stopped_by_target_trades")
+        self.assertEqual(result["last_closed_trade"]["shadow_trade_id"], "done")
+        self.assertEqual(result["last_closed_trade"]["pnl"], 1.0)
+        self.assertEqual(client.open_calls, 0)
+
+    def test_target_trades_limit_ignores_invalid_samples(self) -> None:
+        client = _FakeClient()
+
+        result = run_xau_m15_paper_observation_batch_step(
+            client=client,
+            state={},
+            trades=[
+                {
+                    "shadow_trade_id": "invalid-flat",
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "entry_price": 100.0,
+                    "exit_price": 100.0,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "time_stop",
+                    "market_inactive_or_frozen": True,
+                    "status": "closed",
+                    **_safety(),
+                }
+            ],
+            cycle_number=1,
+            target_trades=1,
+            dry_run=True,
+            paper_only_confirmed=False,
+        )
+
+        self.assertNotEqual(result["runner_state"], "stopped_by_target_trades")
+        self.assertEqual(result["batch_stats"]["valid_trades_closed"], 0)
+        self.assertEqual(result["batch_stats"]["invalid_samples"], 1)
+        self.assertEqual(result["last_closed_trade"], {})
         self.assertEqual(client.open_calls, 0)
 
     def test_session_target_not_satisfied_by_old_history(self) -> None:
@@ -506,6 +1002,164 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(stats["side_stats"]["sell_count"], 1)
         self.assertEqual(stats["side_stats"]["buy_win_rate"], 100.0)
         self.assertEqual(stats["side_stats"]["sell_win_rate"], 0.0)
+
+    def test_xau_frozen_time_stop_does_not_count_for_winrate(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_close("paper_timebox_exit", pnl=0.0, r=0.0, market_inactive=True, no_price_movement=True))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, exit_policy="fast_observation", symbol="XAUUSD", broker_symbol="XAUUSD.b")
+
+        self.assertEqual(result["runner_state"], "close_applied")
+        self.assertTrue(result["paper_close_applied"])
+        self.assertEqual(result["batch_stats"]["valid_trades_closed"], 0)
+        self.assertEqual(result["batch_stats"]["invalid_samples"], 1)
+        self.assertEqual(result["batch_stats"]["session_trades_closed"], 0)
+        self.assertEqual(result["batch_stats"]["win_rate"], 0.0)
+        self.assertEqual(result["closed_trade"]["sample_valid"], False)
+        self.assertEqual(result["closed_trade"]["invalid_sample_reason"], "market_inactive_or_frozen")
+        self.assertEqual(result["closed_trade"]["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(result["closed_trade"]["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertFalse(result["closed_trade"]["use_for_optimization"])
+        self.assertFalse(result["closed_trade"]["use_for_calibration"])
+        self.assertFalse(result["closed_trade"]["strategy_promotion_eligible"])
+        self.assertFalse(result["closed_trade"]["candidate_promotion_eligible"])
+
+    def test_literal_time_stop_frozen_sample_is_excluded_from_winrate_and_optimization(self) -> None:
+        stats = compute_xau_m15_paper_batch_stats(
+            [
+                {
+                    "shadow_trade_id": "flat-time-stop",
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "entry_price": 100.0,
+                    "exit_price": 100.0,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "time_stop",
+                    "market_inactive_or_frozen": True,
+                    "no_price_movement": True,
+                    "status": "closed",
+                    **_safety(),
+                }
+            ]
+        )
+
+        self.assertEqual(stats["valid_trades_closed"], 0)
+        self.assertEqual(stats["invalid_samples"], 1)
+        self.assertEqual(stats["win_rate"], 0.0)
+        self.assertEqual(stats["profit_factor"], 0.0)
+
+    def test_frozen_time_stop_sample_excluded_from_metrics(self) -> None:
+        self.test_literal_time_stop_frozen_sample_is_excluded_from_winrate_and_optimization()
+
+    def test_btc_active_close_counts_valid_sample(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_close("paper_timebox_exit", pnl=25.0, r=0.25, side="buy", market_active=True, price_source="tick_bid"))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, exit_policy="fast_observation", symbol="BTCUSD", broker_symbol="BTCUSD")
+
+        self.assertEqual(result["closed_trade"]["symbol"], "BTCUSD")
+        self.assertEqual(result["batch_stats"]["symbol"], "BTCUSD")
+        self.assertEqual(result["batch_stats"]["valid_trades_closed"], 1)
+        self.assertEqual(result["batch_stats"]["invalid_samples"], 0)
+        self.assertEqual(result["batch_stats"]["wins"], 1)
+        self.assertEqual(result["batch_stats"]["win_rate"], 100.0)
+
+    def test_eth_active_close_counts_valid_sample(self) -> None:
+        client = _FakeClient(open_count=1, monitor=_monitor_close("paper_timebox_exit", pnl=-4.0, r=-0.2, side="sell", market_active=True, price_source="tick_ask"))
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True, exit_policy="fast_observation", symbol="ETHUSD", broker_symbol="ETHUSD")
+
+        self.assertEqual(result["closed_trade"]["symbol"], "ETHUSD")
+        self.assertEqual(result["batch_stats"]["symbol"], "ETHUSD")
+        self.assertEqual(result["batch_stats"]["valid_trades_closed"], 1)
+        self.assertEqual(result["batch_stats"]["losses"], 1)
+        self.assertEqual(result["batch_stats"]["win_rate"], 0.0)
+
+    def test_entry_exit_equal_market_inactive_is_invalid_sample(self) -> None:
+        stats = compute_xau_m15_paper_batch_stats(
+            [
+                {
+                    "shadow_trade_id": "flat-frozen",
+                    "symbol": "BTCUSD",
+                    "timeframe": "M15",
+                    "entry_price": 100.0,
+                    "exit_price": 100.0,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "paper_timebox_exit",
+                    "market_inactive_or_frozen": True,
+                    **_safety(),
+                }
+            ],
+            symbol="BTCUSD",
+            timeframe="M15",
+        )
+
+        self.assertEqual(stats["valid_trades_closed"], 0)
+        self.assertEqual(stats["invalid_samples"], 1)
+        self.assertEqual(stats["session_trades_closed"], 0)
+
+    def test_legacy_xau_flat_time_stop_without_price_source_is_invalid_sample(self) -> None:
+        stats = compute_xau_m15_paper_batch_stats(
+            [
+                {
+                    "shadow_trade_id": "legacy-xau-flat",
+                    "symbol": "XAUUSD",
+                    "timeframe": "M15",
+                    "entry_price": 4219.6,
+                    "exit_price": 4219.6,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "time_stop",
+                    **_safety(),
+                }
+            ],
+            symbol="XAUUSD",
+            timeframe="M15",
+        )
+
+        self.assertEqual(stats["valid_trades_closed"], 0)
+        self.assertEqual(stats["invalid_samples"], 1)
+        self.assertEqual(stats["session_trades_closed"], 0)
+        self.assertEqual(stats["win_rate"], 0.0)
+
+    def test_entry_exit_equal_active_price_source_counts_breakeven(self) -> None:
+        stats = compute_xau_m15_paper_batch_stats(
+            [
+                {
+                    "shadow_trade_id": "flat-real",
+                    "symbol": "ETHUSD",
+                    "timeframe": "M15",
+                    "entry_price": 100.0,
+                    "exit_price": 100.0,
+                    "pnl": 0.0,
+                    "r_multiple": 0.0,
+                    "exit_reason": "paper_timebox_exit",
+                    "market_active": True,
+                    "price_source": "tick_bid",
+                    **_safety(),
+                }
+            ],
+            symbol="ETHUSD",
+            timeframe="M15",
+        )
+
+        self.assertEqual(stats["valid_trades_closed"], 1)
+        self.assertEqual(stats["invalid_samples"], 0)
+        self.assertEqual(stats["breakeven"], 1)
+
+    def test_multi_symbol_stats_do_not_mix_history_or_session_stats(self) -> None:
+        trades = [
+            {"shadow_trade_id": "btc", "symbol": "BTCUSD", "timeframe": "M15", "pnl": 5.0, "r_multiple": 0.5, "exit_reason": "paper_timebox_exit", **_safety()},
+            {"shadow_trade_id": "eth", "symbol": "ETHUSD", "timeframe": "M15", "pnl": -2.0, "r_multiple": -0.2, "exit_reason": "paper_timebox_exit", **_safety()},
+        ]
+
+        btc = compute_xau_m15_paper_batch_stats(trades, symbol="BTCUSD", timeframe="M15")
+        eth = compute_xau_m15_paper_batch_stats(trades, symbol="ETHUSD", timeframe="M15")
+
+        self.assertEqual(btc["valid_trades_closed"], 1)
+        self.assertEqual(btc["wins"], 1)
+        self.assertEqual(eth["valid_trades_closed"], 1)
+        self.assertEqual(eth["losses"], 1)
 
     def test_pending_state_live_open_same_id_monitors_existing(self) -> None:
         client = _FakeClient(open_count=1, monitor=_monitor_open())
@@ -651,6 +1305,8 @@ def _step(
     exit_policy: str = "default",
     time_stop_bars: int = 2,
     strict_paper_probe: bool = False,
+    symbol: str = "XAUUSD",
+    broker_symbol: str = "XAUUSD.b",
 ) -> dict[str, object]:
     return run_xau_m15_paper_observation_batch_step(
         client=client,
@@ -663,6 +1319,9 @@ def _step(
         exit_policy=exit_policy,
         time_stop_bars=time_stop_bars,
         strict_paper_probe=strict_paper_probe,
+        symbol=symbol,
+        broker_symbol=broker_symbol,
+        timeframe="M15",
     )
 
 
@@ -757,6 +1416,100 @@ class _FakeClient:
             "paper_forward_onboarding_started": False,
             **_safety(),
         }
+
+
+class _MemoryShadowStore:
+    def __init__(self) -> None:
+        self.rows: list[dict[str, object]] = []
+
+    def record_shadow_trade(self, payload: dict[str, object], *, critical: bool | None = None) -> dict[str, object]:
+        self.rows.append(dict(payload))
+        return {"ok": True, "critical": bool(critical), **_safety()}
+
+
+def _guard_bars(*, now: datetime, closes: list[float], frozen: bool = False, tiny_range: bool = False) -> list[dict[str, object]]:
+    base = now - timedelta(minutes=max(0, len(closes) - 1))
+    bars: list[dict[str, object]] = []
+    for idx, close in enumerate(closes):
+        if frozen:
+            open_price = high = low = close
+        elif tiny_range:
+            open_price = close
+            high = close + 0.000001
+            low = close - 0.000001
+        else:
+            open_price = close - 0.05
+            high = close + 0.1
+            low = close - 0.1
+        bars.append(
+            {
+                "time": (base + timedelta(minutes=idx)).isoformat(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "tick_volume": 100 + idx,
+            }
+        )
+    return bars
+
+
+def _guard_snapshot(
+    *,
+    bars: list[dict[str, object]],
+    bid: float = 101.0,
+    ask: float = 101.2,
+    last: float = 101.1,
+    spread: float = 0.2,
+    tick_time: datetime | None = None,
+) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    tick_at = tick_time or now
+    return {
+        "runtime_snapshot_recent": True,
+        "bars_count": len(bars),
+        "ohlc_recent": bars,
+        "last_tick_at": tick_at.isoformat(),
+        "last_tick": {
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "spread": spread,
+        },
+        "spread": spread,
+        "last_price": last,
+        "bars_last_at": str(bars[-1].get("time") if bars else now.isoformat()),
+    }
+
+
+def _seed_runtime(symbol: str, *, closes: list[float]) -> None:
+    base = datetime.now(timezone.utc) - timedelta(minutes=max(0, len(closes) - 1))
+    bars = [
+        {
+            "time": (base + timedelta(minutes=idx)).isoformat(),
+            "open": close,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "tick_volume": 100 + idx,
+        }
+        for idx, close in enumerate(closes)
+    ]
+    last = float(closes[-1])
+    update_bars(
+        symbol,
+        "M15",
+        bars,
+        tick={
+            "symbol": symbol,
+            "timeframe": "M15",
+            "bid": last - 0.01,
+            "ask": last + 0.01,
+            "last": last,
+            "spread": 0.02,
+        },
+        min_bars=50,
+    )
 
 
 def _db() -> dict[str, object]:
@@ -876,13 +1629,25 @@ def _monitor_open(*, category: str = "none", should_watch: bool = False, risk_bl
     }
 
 
-def _monitor_close(exit_reason: str, *, pnl: float, r: float, category: str = "none", bars_since_entry: int = 2) -> dict[str, object]:
+def _monitor_close(
+    exit_reason: str,
+    *,
+    pnl: float,
+    r: float,
+    category: str = "none",
+    bars_since_entry: int = 2,
+    side: str = "buy",
+    market_active: bool | None = None,
+    market_inactive: bool = False,
+    no_price_movement: bool = False,
+    price_source: str = "",
+) -> dict[str, object]:
     return {
         "ok": True,
         "monitor_state": "exit_pending",
         "open_shadow_count": 1,
         "shadow_trade_id": "existing-shadow",
-        "side": "buy",
+        "side": side,
         "entry_price": 100.0,
         "current_price": 100.0 + pnl,
         "stop_loss": 95.0,
@@ -899,6 +1664,10 @@ def _monitor_close(exit_reason: str, *, pnl: float, r: float, category: str = "n
         "safety_exit_category": category,
         "safety_exit_reason_detail": "unit_test",
         "close_decision_reason": f"close_paper:{exit_reason}",
+        "market_active": market_active,
+        "market_inactive_or_frozen": market_inactive,
+        "no_price_movement": no_price_movement,
+        "price_source": price_source,
         "paper_close_applied": False,
         **_safety(),
     }
@@ -927,6 +1696,35 @@ def _history_closed(shadow_trade_id: str, *, pnl: float, r: float) -> dict[str, 
 
 def _safety() -> dict[str, object]:
     return {"broker_touched": False, "order_executed": False, "order_policy": "journal_only_no_broker"}
+
+
+def _asset_config(symbol: str, *, timeframe: str = "M15", min_bars: int = 50) -> dict[str, object]:
+    clean_symbol = str(symbol).upper()
+    return {
+        "symbol": clean_symbol,
+        "broker_symbol": clean_symbol,
+        "timeframe": timeframe,
+        "enabled": True,
+        "order_policy": "journal_only_no_broker",
+        "allow_broker_orders": False,
+        "allow_candidate_activation": False,
+        "allow_paper_forward": False,
+        "max_open_positions": 1,
+        "max_open_positions_total": 1,
+        "min_bars": min_bars,
+        "market_guard": {
+            "min_bars": min_bars,
+            "min_price_move_pct": 0.000001,
+            "min_spread_move_multiple": 0.1,
+            "min_absolute_move": 1e-12,
+            "max_spread": None,
+        },
+        "journal_metadata": {
+            "source": "unit_test_asset_config",
+            "strategy_profile": f"unit_test_multi_asset|symbol={clean_symbol}|timeframe={timeframe}",
+            "paper_only": True,
+        },
+    }
 
 
 if __name__ == "__main__":

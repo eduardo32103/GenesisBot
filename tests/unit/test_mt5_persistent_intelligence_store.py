@@ -529,6 +529,48 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_record_shadow_trade_sample_validity_explicit_column_missing_keeps_metadata(self) -> None:
+        client = _MissingOptionalShadowTradeColumnClient("sample_valid")
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.record_shadow_trade(
+            {
+                "shadow_trade_id": "xau-flat-invalid",
+                "symbol": "XAUUSD",
+                "broker_symbol": "XAUUSD.b",
+                "timeframe": "M15",
+                "status": "closed",
+                "entry_price": 100.0,
+                "exit_price": 100.0,
+                "pnl": 0.0,
+                "r_multiple": 0.0,
+                "exit_reason": "paper_timebox_exit",
+                "sample_valid": False,
+                "invalid_reason": "market_inactive_or_frozen",
+                "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                "market_active_at_entry": False,
+                "market_active_at_exit": False,
+                "frozen_market_detected": True,
+                "price_movement_observed": False,
+            },
+            critical=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["shadow_trade_schema_fallback_used"])
+        self.assertIn("sample_valid", result["omitted_optional_columns"])
+        payload = client.upserted[-1]["payload"]
+        self.assertNotIn("sample_valid", payload)
+        self.assertIn("sample_validity_metadata", payload)
+        metadata = payload["sample_validity_metadata"]
+        self.assertEqual(metadata["sample_valid"], False)
+        self.assertEqual(metadata["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(metadata["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(persistent_write_backpressure().status()["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_runtime_persistence_helpers_record_compact_events(self) -> None:
         client = _FakeClient()
         store = MT5PersistentIntelligenceStore(client=client)

@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Any
 
 from services.mt5.mt5_forward_profile_degradation_registry import forward_profile_degradation
+from services.mt5.mt5_frozen_sample_guard import evaluate_frozen_sample
 from services.mt5.mt5_paper_forward_candidate_rotation import run_paper_forward_candidate_rotation
 from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore, persist_candidate_rotation_run, persist_research_lesson
 from services.mt5.mt5_research_rejection_registry import research_rejection
@@ -492,10 +493,39 @@ def _persist_tournament(result: dict[str, Any]) -> None:
 def _group_trades(trades: list[dict[str, Any]]) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for trade in trades:
+        if not _valid_metric_trade(trade):
+            continue
         key = (_symbol(trade.get("symbol")), _timeframe(trade.get("timeframe")), str(trade.get("strategy_profile") or trade.get("profile") or "unknown_profile").strip())
         if key[0] and key[2]:
             grouped[key].append(trade)
     return grouped
+
+
+def _valid_metric_trade(trade: dict[str, Any]) -> bool:
+    if not isinstance(trade, dict):
+        return False
+    if trade.get("sample_valid") is False:
+        return False
+    if trade.get("valid_winrate_sample") is False:
+        return False
+    if bool(trade.get("invalid_winrate_sample")):
+        return False
+    if _explicit_invalid_metric_evidence(trade):
+        return False
+    for key in ("use_for_winrate", "use_for_optimization", "use_for_calibration", "strategy_promotion_eligible", "candidate_promotion_eligible"):
+        if trade.get(key) is False:
+            return False
+    return not bool(evaluate_frozen_sample(trade).get("frozen_sample"))
+
+
+def _explicit_invalid_metric_evidence(trade: dict[str, Any]) -> bool:
+    for key in ("invalid_reason", "invalid_sample_reason", "metric_exclusion_reason"):
+        if str(trade.get(key) or "").strip():
+            return True
+    for key in ("frozen_market_detected", "market_inactive_or_frozen", "no_price_movement"):
+        if _optional_bool(trade.get(key)) is True:
+            return True
+    return False
 
 
 def _row_from_trades(key: tuple[str, str, str], trades: list[dict[str, Any]]) -> dict[str, Any]:
