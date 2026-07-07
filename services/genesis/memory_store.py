@@ -4,11 +4,13 @@ import json
 import os
 import sqlite3
 import hashlib
+import ssl
 from contextlib import closing
 from datetime import datetime, timezone
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from app.settings import load_settings
 from services.mt5.instrument_resolver import enrich_payload, normalize_mt5_symbol, payload_matches_symbol, symbol_aliases
@@ -38,6 +40,9 @@ _LEARNING_TABLES = {
     "hypothesis_log": "genesis_hypothesis_log",
     "outcome_tracking": "genesis_outcome_tracking",
 }
+_POSTGRES_DRIVER_NAME = "pg8000"
+_POSTGRES_RESOLVER_USED = "persistent_intelligence_compatible_postgres"
+_POSTGRES_CONNECT_TIMEOUT_SECONDS = 5.0
 
 
 class MemoryStore:
@@ -54,15 +59,22 @@ class MemoryStore:
         self.sqlite_path = Path(sqlite_path or _DEFAULT_SQLITE_PATH)
         self.backend = "sqlite"
         self._pg = None
+        self.postgres_resolver_used = _POSTGRES_RESOLVER_USED
+        self.resolver_used = _POSTGRES_RESOLVER_USED
+        self.database_url_configured = bool(self.database_url)
+        self.postgres_driver_available = _postgres_driver_available()
+        self.postgres_connect_error_category = ""
+        self.db_fingerprint = safe_postgres_db_fingerprint(self.database_url)
         if require_postgres and not self.database_url:
             raise RuntimeError("source_unavailable_require_live_db")
         if self.database_url:
             try:
                 self._pg = self._connect_postgres(self.database_url)
                 self.backend = "postgres"
-            except Exception:
+            except Exception as exc:
+                self.postgres_connect_error_category = _postgres_connect_error_category(exc)
                 if require_postgres:
-                    raise RuntimeError("source_unavailable_require_live_db")
+                    raise RuntimeError("source_unavailable_require_live_db") from None
                 self._pg = None
                 self.backend = "sqlite"
         if ensure_schema and (self.backend != "postgres" or _db_migrations_enabled()):
@@ -1349,31 +1361,23 @@ class MemoryStore:
         import pg8000.dbapi
 
         parsed = urlparse(database_url)
-        conn = pg8000.dbapi.connect(
-            user=parsed.username,
-            password=parsed.password,
-            host=parsed.hostname,
-            port=parsed.port or 5432,
-            database=(parsed.path or "/").lstrip("/"),
-            ssl_context=True if parsed.scheme.endswith("+ssl") else None,
+        query = parse_qs(parsed.query or "")
+        sslmode = str((query.get("sslmode") or [""])[0]).casefold()
+        ssl_context = (
+            ssl.create_default_context()
+            if sslmode in {"require", "verify-ca", "verify-full"} or str(parsed.scheme or "").casefold().endswith("+ssl")
+            else None
         )
-        cursor = None
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SET statement_timeout TO 1500")
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        finally:
-            try:
-                if cursor is not None:
-                    cursor.close()
-            except Exception:
-                pass
-        return conn
+        return pg8000.dbapi.connect(
+            user=unquote(parsed.username or ""),
+            password=unquote(parsed.password or "") if parsed.password else None,
+            host=parsed.hostname or "localhost",
+            port=_postgres_port(parsed),
+            database=(parsed.path or "/").lstrip("/") or None,
+            timeout=_postgres_connect_timeout_seconds(),
+            ssl_context=ssl_context,
+            application_name="GenesisMemoryStore",
+        )
 
     def _pg_execute(self, sql: str, params: tuple) -> None:
         cursor = self._pg.cursor()
@@ -1435,6 +1439,68 @@ def _learning_table_name(table_key: str) -> str:
 
 def _db_migrations_enabled() -> bool:
     return str(os.getenv("GENESIS_DB_MIGRATIONS_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def memory_store_postgres_resolver_used() -> str:
+    return _POSTGRES_RESOLVER_USED
+
+
+def safe_postgres_db_fingerprint(database_url: object) -> str:
+    raw = str(database_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    host = str(parsed.hostname or "").casefold().strip()
+    database = (parsed.path or "/").lstrip("/") or ""
+    if not host and not database:
+        return ""
+    provider = "railway_postgres" if "railway" in host else "postgres"
+    payload = {
+        "provider": provider,
+        "host": host,
+        "port": _postgres_port(parsed),
+        "database": database,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+    return f"{provider}:{digest}"
+
+
+def _postgres_port(parsed: Any) -> int:
+    try:
+        return int(parsed.port or 5432)
+    except (TypeError, ValueError):
+        return 5432
+
+
+def _postgres_connect_timeout_seconds() -> float:
+    for name in ("PERSISTENT_DB_CONNECT_TIMEOUT_SEC", "POSTGRES_CONNECT_TIMEOUT_SECONDS"):
+        try:
+            value = float(os.getenv(name) or "")
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    return _POSTGRES_CONNECT_TIMEOUT_SECONDS
+
+
+def _postgres_driver_available() -> bool:
+    try:
+        return find_spec(_POSTGRES_DRIVER_NAME) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _postgres_connect_error_category(exc: object) -> str:
+    text = str(exc or "").casefold()
+    if "pg8000" in text or "no module named" in text:
+        return "postgres_driver_missing"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "authentication" in text or "password" in text or "permission" in text:
+        return "auth_or_permission"
+    if "could not connect" in text or "connection" in text or "network" in text:
+        return "connection_unavailable"
+    return "postgres_connect_failed"
 
 
 def _stable_learning_id(table_key: str, payload: dict[str, Any]) -> str:

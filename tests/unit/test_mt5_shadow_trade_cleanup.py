@@ -133,6 +133,46 @@ class MT5ShadowTradeCleanupTests(unittest.TestCase):
         self.assertEqual(closed, [])
         _assert_safety(self, result)
 
+    def test_cleanup_hardening_still_blocks_count_mismatch(self) -> None:
+        closed: list[dict[str, object]] = []
+        result = run_shadow_trade_cleanup(
+            open_trades=[_open_trade("shadow-local", opened_at="2000-01-01T00:00:00+00:00")],
+            apply_paper_cleanup=True,
+            stale_hours=1,
+            load_shadow_snapshot=False,
+            load_persistent_db=False,
+            expected_live_capital_count=48,
+            confirm_source_fingerprint="source-fp-1",
+            source_fingerprint=_source_fingerprint(1, "source-fp-1"),
+            closer=lambda trade, reason: closed.append({"trade": trade, "reason": reason}) or {"ok": True},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "dry_run_count_mismatches_live_capital_count")
+        self.assertEqual(result["closed_paper_only"], 0)
+        self.assertEqual(closed, [])
+        _assert_safety(self, result)
+
+    def test_cleanup_hardening_still_requires_confirmed_fingerprint(self) -> None:
+        closed: list[dict[str, object]] = []
+        result = run_shadow_trade_cleanup(
+            open_trades=[_open_trade("shadow-local", opened_at="2000-01-01T00:00:00+00:00")],
+            apply_paper_cleanup=True,
+            stale_hours=1,
+            load_shadow_snapshot=False,
+            load_persistent_db=False,
+            expected_live_capital_count=1,
+            confirm_source_fingerprint="",
+            source_fingerprint=_source_fingerprint(1, "source-fp-1"),
+            closer=lambda trade, reason: closed.append({"trade": trade, "reason": reason}) or {"ok": True},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "missing_confirm_source_fingerprint")
+        self.assertEqual(result["closed_paper_only"], 0)
+        self.assertEqual(closed, [])
+        _assert_safety(self, result)
+
     def test_cleanup_blocks_when_source_is_local_sqlite_but_live_required(self) -> None:
         closed: list[dict[str, object]] = []
         result = run_shadow_trade_cleanup(

@@ -5,8 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from app.settings import load_settings
-from services.genesis.memory_store import MemoryStore
+from services.genesis.memory_store import MemoryStore, memory_store_postgres_resolver_used, safe_postgres_db_fingerprint
 from services.mt5.mt5_shadow_trading import MT5ShadowTrading, is_main_metric_trade
 
 
@@ -40,14 +39,6 @@ def inspect_legacy_open_shadows(
             reason="include_sensitive_ids_not_allowed_with_require_live_db",
             recommendation="rerun_without_include_sensitive_ids_for_live_db",
         )
-    if require_live_db and memory is None and not load_settings().database_url:
-        return _source_unavailable(
-            limit=clean_limit,
-            status=clean_status,
-            require_live_db=require_live_db,
-            reason="source_unavailable_require_live_db",
-        )
-
     try:
         active_memory = memory or MemoryStore(require_postgres=require_live_db, ensure_schema=False)
     except Exception:
@@ -60,7 +51,9 @@ def inspect_legacy_open_shadows(
 
     backend = str(getattr(active_memory, "backend", "") or "unknown")
     database_url = str(getattr(active_memory, "database_url", "") or "")
-    live_db_detected = bool(database_url and backend == LIVE_BACKEND)
+    resolver_used = _memory_resolver_used(active_memory)
+    db_fingerprint = _memory_db_fingerprint(active_memory, database_url=database_url)
+    live_db_detected = bool((database_url or db_fingerprint) and backend == LIVE_BACKEND)
     if require_live_db and not live_db_detected:
         return _source_unavailable(
             limit=clean_limit,
@@ -69,6 +62,8 @@ def inspect_legacy_open_shadows(
             reason="source_unavailable_require_live_db",
             backend_type=backend,
             live_db_detected=live_db_detected,
+            resolver_used=resolver_used,
+            db_fingerprint=db_fingerprint,
         )
 
     try:
@@ -83,6 +78,8 @@ def inspect_legacy_open_shadows(
             reason="inspector_source_unavailable_read_only",
             backend_type=backend,
             live_db_detected=live_db_detected,
+            resolver_used=resolver_used,
+            db_fingerprint=db_fingerprint,
         )
     close_index = _close_record_index(raw_rows)
     open_rows = _status_rows(snapshot.get("open_trades") or [], clean_status)
@@ -99,6 +96,8 @@ def inspect_legacy_open_shadows(
     fingerprint = _source_fingerprint(
         backend=backend,
         live_db_detected=live_db_detected,
+        resolver_used=resolver_used,
+        db_fingerprint=db_fingerprint,
         status=clean_status,
         limit=clean_limit,
         count=count,
@@ -114,6 +113,8 @@ def inspect_legacy_open_shadows(
         "live_db_detected": live_db_detected,
         "source_matches_capital_protection": source_matches,
         "source_fingerprint": fingerprint,
+        "db_fingerprint": db_fingerprint,
+        "resolver_used": resolver_used,
         "query_description": _query_description(clean_limit),
         "limit_used": clean_limit,
         "capital_snapshot_limit": CAPITAL_SNAPSHOT_LIMIT,
@@ -225,6 +226,8 @@ def _source_unavailable(
     reason: str,
     backend_type: str = "unavailable",
     live_db_detected: bool = False,
+    resolver_used: str = "",
+    db_fingerprint: str = "",
     recommendation: str = "run_in_live_environment_with_database_url_before_cleanup",
 ) -> dict[str, Any]:
     return {
@@ -239,6 +242,8 @@ def _source_unavailable(
         "live_db_detected": bool(live_db_detected),
         "source_matches_capital_protection": False,
         "source_fingerprint": "",
+        "db_fingerprint": str(db_fingerprint or ""),
+        "resolver_used": str(resolver_used or memory_store_postgres_resolver_used()),
         "query_description": _query_description(limit),
         "limit_used": int(limit),
         "capital_snapshot_limit": CAPITAL_SNAPSHOT_LIMIT,
@@ -279,11 +284,22 @@ def _query_description(limit: int) -> str:
     )
 
 
-def _source_fingerprint(*, backend: str, live_db_detected: bool, status: str, limit: int, count: int) -> str:
+def _source_fingerprint(
+    *,
+    backend: str,
+    live_db_detected: bool,
+    resolver_used: str,
+    db_fingerprint: str,
+    status: str,
+    limit: int,
+    count: int,
+) -> str:
     payload = {
         "source": "legacy_memory_store_mt5_shadow_trades",
         "backend": backend,
         "live_db_detected": bool(live_db_detected),
+        "resolver_used": resolver_used,
+        "db_fingerprint": db_fingerprint,
         "status": status,
         "limit": int(limit),
         "effective_fetch_limit": min(int(limit), CAPITAL_EFFECTIVE_FETCH_LIMIT),
@@ -291,6 +307,17 @@ def _source_fingerprint(*, backend: str, live_db_detected: bool, status: str, li
         "open_shadow_trades_count": int(count),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+
+
+def _memory_resolver_used(memory: Any) -> str:
+    return str(getattr(memory, "resolver_used", "") or getattr(memory, "postgres_resolver_used", "") or memory_store_postgres_resolver_used())
+
+
+def _memory_db_fingerprint(memory: Any, *, database_url: str = "") -> str:
+    fingerprint = str(getattr(memory, "db_fingerprint", "") or "")
+    if fingerprint:
+        return fingerprint
+    return safe_postgres_db_fingerprint(database_url)
 
 
 def _recommendation(source_matches: bool, require_live_db: bool, live_db_detected: bool, count: int) -> str:
