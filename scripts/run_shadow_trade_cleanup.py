@@ -22,6 +22,9 @@ def main(argv: list[str] | None = None) -> int:
         stale_hours=args.stale_hours,
         load_shadow_snapshot=not args.no_shadow_snapshot,
         load_persistent_db=not args.no_persistent_db,
+        require_live_db=args.require_live_db,
+        expected_live_capital_count=args.expected_live_capital_count,
+        confirm_source_fingerprint=args.confirm_source_fingerprint,
     )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=True))
@@ -50,6 +53,7 @@ def _human_summary(result: dict[str, Any]) -> str:
         f"broker_touched={result.get('broker_touched')}",
         f"order_executed={result.get('order_executed')}",
         f"order_policy={result.get('order_policy')}",
+        f"source_guard={result.get('source_guard')}",
         "",
         "Candidates:",
     ]
@@ -80,6 +84,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--stale-hours", type=float, default=12.0)
     parser.add_argument("--no-shadow-snapshot", action="store_true")
     parser.add_argument("--no-persistent-db", action="store_true")
+    parser.add_argument("--require-live-db", action="store_true")
+    parser.add_argument("--expected-live-capital-count", type=int, default=None)
+    parser.add_argument("--confirm-source-fingerprint", default="")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 

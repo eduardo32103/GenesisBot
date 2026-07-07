@@ -41,20 +41,31 @@ _LEARNING_TABLES = {
 
 
 class MemoryStore:
-    def __init__(self, database_url: str | None = None, sqlite_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        database_url: str | None = None,
+        sqlite_path: str | Path | None = None,
+        *,
+        require_postgres: bool = False,
+        ensure_schema: bool = True,
+    ) -> None:
         settings = load_settings()
         self.database_url = database_url if database_url is not None else settings.database_url
         self.sqlite_path = Path(sqlite_path or _DEFAULT_SQLITE_PATH)
         self.backend = "sqlite"
         self._pg = None
+        if require_postgres and not self.database_url:
+            raise RuntimeError("source_unavailable_require_live_db")
         if self.database_url:
             try:
                 self._pg = self._connect_postgres(self.database_url)
                 self.backend = "postgres"
             except Exception:
+                if require_postgres:
+                    raise RuntimeError("source_unavailable_require_live_db")
                 self._pg = None
                 self.backend = "sqlite"
-        if self.backend != "postgres" or _db_migrations_enabled():
+        if ensure_schema and (self.backend != "postgres" or _db_migrations_enabled()):
             self._ensure_schema()
 
     def save_event(self, event_type: str, payload: dict[str, Any] | None = None, source: str = "genesis", confidence: str | float = "media") -> dict[str, Any]:

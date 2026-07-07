@@ -22,6 +22,10 @@ def run_shadow_trade_cleanup(
     load_shadow_snapshot: bool = True,
     load_persistent_db: bool = True,
     closer: Closer | None = None,
+    require_live_db: bool = False,
+    expected_live_capital_count: int | None = None,
+    confirm_source_fingerprint: str = "",
+    source_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     hygiene = run_shadow_trade_hygiene(
         open_trades=open_trades,
@@ -36,6 +40,41 @@ def run_shadow_trade_cleanup(
     unsafe = [row for row in hygiene.get("unsafe_to_close") or [] if isinstance(row, dict)]
     closed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = list(unsafe)
+    source_guard = _cleanup_source_guard(
+        apply_paper_cleanup=apply_paper_cleanup,
+        hygiene=hygiene,
+        require_live_db=require_live_db,
+        expected_live_capital_count=expected_live_capital_count,
+        confirm_source_fingerprint=confirm_source_fingerprint,
+        source_fingerprint=source_fingerprint,
+    )
+    if apply_paper_cleanup and not bool(source_guard.get("allowed")):
+        return {
+            "ok": False,
+            "status": "shadow_trade_cleanup_blocked_source_mismatch",
+            "reason": source_guard.get("reason") or "source_guard_blocked",
+            "cleanup_version": CLEANUP_VERSION,
+            "mode": "blocked_no_mutation",
+            "apply_paper_cleanup": bool(apply_paper_cleanup),
+            "open_shadow_trades_before": hygiene.get("open_shadow_trades_total", hygiene.get("open_shadow_trades", 0)),
+            "open_shadow_trades_after": hygiene.get("open_shadow_trades_total", hygiene.get("open_shadow_trades", 0)),
+            "cleanup_candidates": candidates,
+            "closed_paper_only": 0,
+            "closed": [],
+            "skipped_unsafe": skipped,
+            "source_guard": source_guard,
+            "history_deleted": False,
+            "metrics_reset": False,
+            "losses_reset": False,
+            "capital_protection_relaxed": False,
+            "risk_governor_relaxed": False,
+            "shadow_hygiene": hygiene,
+            "paper_rotation_applied": False,
+            "candidate_activated": False,
+            "paper_forward_onboarding_started": False,
+            "applies_to_real_trading": False,
+            **_safety(),
+        }
     close_fn = closer or _default_close
     if apply_paper_cleanup:
         indexed = {_trade_id(row): row for row in open_trades or [] if isinstance(row, dict)}
@@ -73,6 +112,7 @@ def run_shadow_trade_cleanup(
         "closed_paper_only": len(closed),
         "closed": closed,
         "skipped_unsafe": skipped,
+        "source_guard": source_guard,
         "history_deleted": False,
         "metrics_reset": False,
         "losses_reset": False,
@@ -145,6 +185,81 @@ def _unsafe_reasons(trade: dict[str, Any]) -> list[str]:
     if str(trade.get("status") or "open").casefold() != "open":
         reasons.append("not_open")
     return reasons
+
+
+def _cleanup_source_guard(
+    *,
+    apply_paper_cleanup: bool,
+    hygiene: dict[str, Any],
+    require_live_db: bool,
+    expected_live_capital_count: int | None,
+    confirm_source_fingerprint: str,
+    source_fingerprint: dict[str, Any] | None,
+) -> dict[str, Any]:
+    dry_run_count = int(hygiene.get("open_shadow_trades_total", hygiene.get("open_shadow_trades", 0)) or 0)
+    if not apply_paper_cleanup:
+        return {
+            "allowed": True,
+            "reason": "dry_run_no_mutation",
+            "dry_run_count": dry_run_count,
+            "expected_live_capital_count": expected_live_capital_count,
+            "source_matches_capital_protection": False,
+            **_safety(),
+        }
+    source = source_fingerprint if isinstance(source_fingerprint, dict) else _inspect_cleanup_source(require_live_db=require_live_db)
+    source_count = int(source.get("open_shadow_trades_count") or 0) if isinstance(source, dict) else 0
+    source_hash = str(source.get("source_fingerprint") or "") if isinstance(source, dict) else ""
+    guard = {
+        "allowed": False,
+        "dry_run_count": dry_run_count,
+        "source_open_shadow_trades_count": source_count,
+        "expected_live_capital_count": expected_live_capital_count,
+        "require_live_db": bool(require_live_db),
+        "backend_type": source.get("backend_type") if isinstance(source, dict) else "unknown",
+        "live_db_detected": bool(source.get("live_db_detected")) if isinstance(source, dict) else False,
+        "source_matches_capital_protection": bool(source.get("source_matches_capital_protection")) if isinstance(source, dict) else False,
+        "source_fingerprint": source_hash,
+        "confirmed_source_fingerprint": str(confirm_source_fingerprint or ""),
+        **_safety(),
+    }
+    if not str(confirm_source_fingerprint or "").strip():
+        return {**guard, "reason": "missing_confirm_source_fingerprint"}
+    if source_hash != str(confirm_source_fingerprint or "").strip():
+        return {**guard, "reason": "confirm_source_fingerprint_mismatch"}
+    if require_live_db and not bool(guard["live_db_detected"]):
+        return {**guard, "reason": "source_is_local_sqlite_but_live_required"}
+    if not bool(guard["source_matches_capital_protection"]):
+        return {**guard, "reason": "source_matches_capital_protection_false"}
+    if expected_live_capital_count is not None and dry_run_count != int(expected_live_capital_count):
+        return {**guard, "reason": "dry_run_count_mismatches_live_capital_count"}
+    if expected_live_capital_count is not None and source_count != int(expected_live_capital_count):
+        return {**guard, "reason": "source_count_mismatches_live_capital_count"}
+    if source_count != dry_run_count:
+        return {**guard, "reason": "dry_run_count_mismatches_source_count"}
+    return {**guard, "allowed": True, "reason": "source_fingerprint_confirmed"}
+
+
+def _inspect_cleanup_source(*, require_live_db: bool) -> dict[str, Any]:
+    try:
+        from services.mt5.mt5_legacy_shadow_inspector import inspect_legacy_open_shadows
+
+        return inspect_legacy_open_shadows(
+            limit=500,
+            status="open",
+            require_live_db=require_live_db,
+            redact_ids=True,
+        )
+    except Exception:
+        return {
+            "ok": False,
+            "status": "source_inspection_failed",
+            "backend_type": "unknown",
+            "live_db_detected": False,
+            "source_matches_capital_protection": False,
+            "open_shadow_trades_count": 0,
+            "source_fingerprint": "",
+            **_safety(),
+        }
 
 
 def _trade_id(trade: dict[str, Any]) -> str:
