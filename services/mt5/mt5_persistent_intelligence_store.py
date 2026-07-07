@@ -75,6 +75,39 @@ SHADOW_HISTORY_OPTIONAL_COLUMNS = (
     "sample_validity_metadata",
 )
 SHADOW_HISTORY_COLUMNS = (*SHADOW_HISTORY_BASE_COLUMNS, *SHADOW_HISTORY_OPTIONAL_COLUMNS)
+SAMPLE_VALIDITY_FIELDS = (
+    "sample_valid",
+    "invalid_reason",
+    "metric_exclusion_reason",
+    "market_active_at_entry",
+    "market_active_at_exit",
+    "frozen_market_detected",
+    "price_movement_observed",
+)
+SAMPLE_VALIDITY_HISTORY_KEYS = (*SAMPLE_VALIDITY_FIELDS, "sample_validity_metadata")
+_SAMPLE_VALIDITY_BOOL_FIELDS = {
+    "sample_valid",
+    "market_active_at_entry",
+    "market_active_at_exit",
+    "frozen_market_detected",
+    "price_movement_observed",
+}
+_SAMPLE_VALIDITY_TEXT_FIELDS = {
+    "invalid_reason",
+    "metric_exclusion_reason",
+}
+_SAMPLE_VALIDITY_JSON_SOURCES = (
+    "sample_validity_metadata",
+    "metadata",
+    "details",
+    "sample_metadata",
+    "close_metadata",
+)
+_SAMPLE_VALIDITY_NESTED_JSON_KEYS = (
+    "sample_validity_metadata",
+    "sample_validity",
+    "sample_metadata",
+)
 _SHADOW_TRADE_OPTIONAL_WRITE_COLUMNS = {
     "broker_symbol",
     "profile",
@@ -561,6 +594,11 @@ class MT5PersistentIntelligenceStore:
         closed_trades = [row for row in rows if str(row.get("status") or "").casefold() == "closed" or bool(row.get("closed_at"))]
         optional_schema_issue = bool(not result.get("ok") and _missing_column_from_error(result.get("reason") or ""))
         history_available = bool(result.get("ok"))
+        omitted_sample_validity_columns = sorted(set(omitted_columns).intersection(SAMPLE_VALIDITY_HISTORY_KEYS))
+        if not history_available:
+            sample_validity_contract_mode = "unavailable"
+        else:
+            sample_validity_contract_mode = "schema_columns" if not omitted_sample_validity_columns else "normalized_defaults"
         return {
             "ok": history_available,
             "status": "persistent_intelligence_shadow_trade_history_ready",
@@ -572,6 +610,10 @@ class MT5PersistentIntelligenceStore:
             "history_schema_fallback_used": bool(omitted_columns),
             "history_selected_columns": columns,
             "omitted_history_columns": sorted(set(omitted_columns)),
+            "sample_validity_contract_ready": history_available,
+            "sample_validity_contract_mode": sample_validity_contract_mode,
+            "sample_validity_fields": list(SAMPLE_VALIDITY_HISTORY_KEYS),
+            "sample_validity_omitted_columns": omitted_sample_validity_columns,
             "age_minutes_derived": True,
             "trades": rows,
             "open_trades": open_trades,
@@ -1764,23 +1806,29 @@ def _safety_rows(rows: list[Any]) -> list[dict[str, Any]]:
 
 def _sample_validity_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    for key in (
-        "sample_valid",
-        "invalid_reason",
-        "invalid_sample_reason",
-        "metric_exclusion_reason",
-        "market_active_at_entry",
-        "market_active_at_exit",
-        "frozen_market_detected",
-        "price_movement_observed",
-    ):
-        if key in payload:
-            value = payload.get(key)
-            if value not in (None, ""):
-                metadata[key] = value
+    for source in _sample_validity_sources(payload):
+        for key in (*SAMPLE_VALIDITY_FIELDS, "invalid_sample_reason"):
+            if key in source:
+                value = source.get(key)
+                if value not in (None, ""):
+                    metadata[key] = value
     if "invalid_reason" not in metadata and metadata.get("invalid_sample_reason"):
         metadata["invalid_reason"] = metadata["invalid_sample_reason"]
     return _sanitize_row(metadata)
+
+
+def _sample_validity_sources(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = [payload]
+    for source_key in _SAMPLE_VALIDITY_JSON_SOURCES:
+        source = _metadata_dict(payload.get(source_key))
+        if not source:
+            continue
+        sources.append(source)
+        for nested_key in _SAMPLE_VALIDITY_NESTED_JSON_KEYS:
+            nested = _metadata_dict(source.get(nested_key))
+            if nested:
+                sources.append(nested)
+    return sources
 
 
 def _metadata_dict(value: Any) -> dict[str, Any]:
@@ -1793,6 +1841,27 @@ def _metadata_dict(value: Any) -> dict[str, Any]:
             return {}
         return dict(decoded) if isinstance(decoded, dict) else {}
     return {}
+
+
+def normalize_shadow_trade_sample_validity(row: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(row or {})
+    metadata = _sample_validity_metadata(clean)
+    for key in SAMPLE_VALIDITY_FIELDS:
+        value = clean.get(key)
+        if value in (None, "") and key in metadata:
+            value = metadata.get(key)
+        if key in _SAMPLE_VALIDITY_BOOL_FIELDS:
+            value = _optional_bool(value)
+        elif key in _SAMPLE_VALIDITY_TEXT_FIELDS:
+            value = str(value or "")
+        clean[key] = value
+        if value not in (None, ""):
+            metadata[key] = value
+    if "invalid_reason" not in metadata and metadata.get("invalid_sample_reason"):
+        metadata["invalid_reason"] = metadata["invalid_sample_reason"]
+        clean["invalid_reason"] = str(metadata["invalid_reason"] or "")
+    clean["sample_validity_metadata"] = _sanitize_row(metadata)
+    return clean
 
 
 def _normalize_shadow_history_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1815,26 +1884,7 @@ def _normalize_shadow_history_rows(rows: list[dict[str, Any]]) -> list[dict[str,
         clean.setdefault("safety_exit_category", "")
         clean.setdefault("safety_exit_reason_detail", "")
         clean.setdefault("close_decision_reason", "")
-        metadata = _metadata_dict(clean.get("sample_validity_metadata"))
-        for key in (
-            "sample_valid",
-            "invalid_reason",
-            "metric_exclusion_reason",
-            "market_active_at_entry",
-            "market_active_at_exit",
-            "frozen_market_detected",
-            "price_movement_observed",
-        ):
-            if (key not in clean or clean.get(key) in ("", None)) and key in metadata:
-                clean[key] = metadata.get(key)
-        clean.setdefault("sample_valid", None)
-        clean.setdefault("invalid_reason", "")
-        clean.setdefault("metric_exclusion_reason", "")
-        clean.setdefault("market_active_at_entry", None)
-        clean.setdefault("market_active_at_exit", None)
-        clean.setdefault("frozen_market_detected", None)
-        clean.setdefault("price_movement_observed", None)
-        clean.setdefault("sample_validity_metadata", metadata)
+        clean = normalize_shadow_trade_sample_validity(clean)
         clean["age_minutes"] = _age_minutes_between(clean.get("opened_at"), clean.get("closed_at"))
         if "last_price" not in clean:
             clean["last_price"] = clean.get("exit_price") or clean.get("entry_price") or 0.0

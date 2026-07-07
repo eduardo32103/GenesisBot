@@ -1122,6 +1122,241 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_history_exposes_sample_validity_fields(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_shadow_trades": [
+                    {
+                        "shadow_trade_id": "closed-sample-fields",
+                        "symbol": "BTCUSD",
+                        "timeframe": "M15",
+                        "status": "closed",
+                        "closed_at": "2026-07-07T00:00:00+00:00",
+                        "sample_valid": False,
+                        "invalid_reason": "market_inactive_or_frozen",
+                        "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                        "market_active_at_entry": False,
+                        "market_active_at_exit": False,
+                        "frozen_market_detected": True,
+                        "price_movement_observed": False,
+                    }
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="BTCUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["sample_validity_contract_ready"])
+        closed = result["closed_trades"][0]
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(closed["market_active_at_entry"], False)
+        self.assertEqual(closed["market_active_at_exit"], False)
+        self.assertEqual(closed["frozen_market_detected"], True)
+        self.assertEqual(closed["price_movement_observed"], False)
+        self.assertIn("sample_validity_metadata", closed)
+
+    def test_history_exposes_sample_validity_metadata(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_shadow_trades": [
+                    {
+                        "shadow_trade_id": "closed-sample-metadata",
+                        "symbol": "ETHUSD",
+                        "timeframe": "M15",
+                        "status": "closed",
+                        "closed_at": "2026-07-07T00:00:00+00:00",
+                        "sample_validity_metadata": {
+                            "sample_valid": False,
+                            "invalid_reason": "no_price_movement",
+                            "metric_exclusion_reason": "excluded_from_winrate_no_price_movement",
+                            "market_active_at_entry": True,
+                            "market_active_at_exit": False,
+                            "frozen_market_detected": True,
+                            "price_movement_observed": False,
+                        },
+                    }
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="ETHUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        closed = result["closed_trades"][0]
+        metadata = closed["sample_validity_metadata"]
+        self.assertEqual(metadata["sample_valid"], False)
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["invalid_reason"], "no_price_movement")
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_no_price_movement")
+        self.assertEqual(closed["market_active_at_entry"], True)
+        self.assertEqual(closed["market_active_at_exit"], False)
+        self.assertEqual(closed["frozen_market_detected"], True)
+        self.assertEqual(closed["price_movement_observed"], False)
+
+    def test_history_legacy_record_sample_validity_defaults(self) -> None:
+        client = _OptionalColumnMissingHistoryClient(
+            missing_columns=[
+                "sample_valid",
+                "invalid_reason",
+                "metric_exclusion_reason",
+                "market_active_at_entry",
+                "market_active_at_exit",
+                "frozen_market_detected",
+                "price_movement_observed",
+                "sample_validity_metadata",
+            ],
+            selected={
+                "mt5_shadow_trades": [
+                    {
+                        "shadow_trade_id": "legacy-closed",
+                        "symbol": "BTCUSD",
+                        "timeframe": "M15",
+                        "status": "closed",
+                        "closed_at": "2026-07-07T00:00:00+00:00",
+                    }
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="BTCUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["history_schema_fallback_used"])
+        self.assertTrue(result["sample_validity_contract_ready"])
+        self.assertEqual(result["sample_validity_contract_mode"], "normalized_defaults")
+        self.assertIn("sample_valid", result["sample_validity_omitted_columns"])
+        self.assertIn("sample_validity_metadata", result["sample_validity_omitted_columns"])
+        closed = result["closed_trades"][0]
+        self.assertIn("sample_valid", closed)
+        self.assertIn("invalid_reason", closed)
+        self.assertIn("metric_exclusion_reason", closed)
+        self.assertIn("market_active_at_entry", closed)
+        self.assertIn("market_active_at_exit", closed)
+        self.assertIn("frozen_market_detected", closed)
+        self.assertIn("price_movement_observed", closed)
+        self.assertIn("sample_validity_metadata", closed)
+        self.assertIsNone(closed["sample_valid"])
+        self.assertEqual(closed["invalid_reason"], "")
+        self.assertEqual(closed["metric_exclusion_reason"], "")
+        self.assertIsNone(closed["market_active_at_entry"])
+        self.assertIsNone(closed["market_active_at_exit"])
+        self.assertIsNone(closed["frozen_market_detected"])
+        self.assertIsNone(closed["price_movement_observed"])
+        self.assertEqual(closed["sample_validity_metadata"], {})
+
+    def test_history_json_fallback_sample_validity(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_shadow_trades": [
+                    {
+                        "shadow_trade_id": "details-json-closed",
+                        "symbol": "ETHUSD",
+                        "timeframe": "M15",
+                        "status": "closed",
+                        "closed_at": "2026-07-07T00:00:00+00:00",
+                        "details": json.dumps(
+                            {
+                                "sample_validity": {
+                                    "sample_valid": False,
+                                    "invalid_reason": "market_inactive_or_frozen",
+                                    "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                                    "market_active_at_entry": False,
+                                    "market_active_at_exit": False,
+                                    "frozen_market_detected": True,
+                                    "price_movement_observed": False,
+                                }
+                            }
+                        ),
+                    }
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="ETHUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(result["ok"])
+        closed = result["closed_trades"][0]
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(closed["market_active_at_entry"], False)
+        self.assertEqual(closed["market_active_at_exit"], False)
+        self.assertEqual(closed["frozen_market_detected"], True)
+        self.assertEqual(closed["price_movement_observed"], False)
+
+    def test_frozen_sample_history_roundtrip_preserves_exclusion_reason(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        write = store.record_shadow_trade(
+            {
+                "shadow_trade_id": "frozen-roundtrip",
+                "symbol": "XAUUSD",
+                "broker_symbol": "XAUUSD.b",
+                "timeframe": "M15",
+                "status": "closed",
+                "entry_price": 100.0,
+                "exit_price": 100.0,
+                "pnl": 0.0,
+                "r_multiple": 0.0,
+                "closed_at": "2026-07-07T00:00:00+00:00",
+                "exit_reason": "paper_timebox_exit",
+                "sample_valid": False,
+                "invalid_reason": "market_inactive_or_frozen",
+                "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                "market_active_at_entry": False,
+                "market_active_at_exit": False,
+                "frozen_market_detected": True,
+                "price_movement_observed": False,
+            },
+            critical=True,
+        )
+        client.selected["mt5_shadow_trades"] = [client.upserted[-1]["payload"]]
+
+        result = store.shadow_trade_history(symbol="XAUUSD", timeframe="M15", limit=20)
+
+        self.assertTrue(write["ok"])
+        self.assertTrue(result["ok"])
+        closed = result["closed_trades"][0]
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["invalid_reason"], "market_inactive_or_frozen")
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(closed["sample_validity_metadata"]["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+
+    def test_sample_valid_false_available_to_metric_filters(self) -> None:
+        client = _FakeClient(
+            selected={
+                "mt5_shadow_trades": [
+                    {
+                        "shadow_trade_id": "metric-filter-invalid",
+                        "symbol": "BTCUSD",
+                        "timeframe": "M15",
+                        "status": "closed",
+                        "closed_at": "2026-07-07T00:00:00+00:00",
+                        "pnl": 0.0,
+                        "sample_valid": False,
+                        "metric_exclusion_reason": "excluded_from_winrate_frozen_market",
+                    }
+                ]
+            }
+        )
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.shadow_trade_history(symbol="BTCUSD", timeframe="M15", limit=20)
+
+        closed = result["closed_trades"][0]
+        metric_eligible = [row for row in result["closed_trades"] if row.get("sample_valid") is not False]
+        self.assertEqual(closed["sample_valid"], False)
+        self.assertEqual(closed["metric_exclusion_reason"], "excluded_from_winrate_frozen_market")
+        self.assertEqual(metric_eligible, [])
+
     def test_recent_events_returns_empty_safe_summary_during_db_backoff(self) -> None:
         client = _FakeClient(selected={"mt5_decision_events": [{"symbol": "BTCUSD"}]})
         store = MT5PersistentIntelligenceStore(client=client)
@@ -1351,16 +1586,25 @@ class _FakeClient:
 
 
 class _OptionalColumnMissingHistoryClient(_FakeClient):
-    def __init__(self, *, missing_column: str, selected: dict[str, list[dict[str, object]]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        missing_column: str = "",
+        missing_columns: list[str] | tuple[str, ...] | set[str] | None = None,
+        selected: dict[str, list[dict[str, object]]] | None = None,
+    ) -> None:
         super().__init__(selected=selected)
         self.missing_column = missing_column
+        self.missing_columns = {str(column) for column in (missing_columns or [missing_column]) if str(column)}
 
     def select(self, table: str, *, params: dict[str, str] | None = None) -> list[dict[str, object]]:
         selected = str((params or {}).get("select") or "")
-        if self.missing_column in {column.strip() for column in selected.split(",")}:
-            self.select_calls += 1
-            self.last_select = selected
-            raise RuntimeError(f'ERROR: column "{self.missing_column}" does not exist')
+        selected_columns = {column.strip() for column in selected.split(",")}
+        for missing_column in sorted(self.missing_columns):
+            if missing_column in selected_columns:
+                self.select_calls += 1
+                self.last_select = selected
+                raise RuntimeError(f'ERROR: column "{missing_column}" does not exist')
         return super().select(table, params=params)
 
 

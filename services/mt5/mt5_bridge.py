@@ -7,6 +7,7 @@ from services.mt5.mt5_autonomous_learning_status import run_autonomous_learning_
 from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
 from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
 from services.mt5.mt5_persistent_intelligence_store import (
+    normalize_shadow_trade_sample_validity,
     persistent_intelligence_open_shadow_trades,
     persistent_intelligence_queue_drain,
     persistent_intelligence_recent_events,
@@ -346,7 +347,7 @@ def _rows(payload: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
 
 
 def _paper_safe_trade(row: dict[str, Any], *, source: str) -> dict[str, Any]:
-    trade = dict(row or {})
+    trade = normalize_shadow_trade_sample_validity(dict(row or {}))
     trade.setdefault("symbol", _clean_symbol(trade.get("symbol")))
     trade.setdefault("timeframe", _clean_timeframe(trade.get("timeframe")))
     trade["record_source"] = source
