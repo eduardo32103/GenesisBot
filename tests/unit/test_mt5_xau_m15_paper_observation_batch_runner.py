@@ -11,6 +11,7 @@ from services.mt5.mt5_xau_m15_paper_observation_batch_runner import (
     HttpPaperObservationClient,
     LocalPaperObservationClient,
     compute_xau_m15_paper_batch_stats,
+    run_multi_asset_paper_observation_readiness,
     run_xau_m15_paper_observation_batch_runner,
     run_xau_m15_paper_observation_batch_step,
 )
@@ -241,6 +242,90 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["readiness_state"], "blocked_monitor_asset_mismatch")
         self.assertEqual(result["monitor_state"], "blocked_monitor_asset_mismatch")
         self.assertFalse(result["paper_close_applied"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_http_readiness_uses_generic_live_endpoint(self) -> None:
+        client = HttpPaperObservationClient("https://example.invalid", symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD", min_bars=100)])
+        client._get = Mock(
+            return_value={
+                "ok": True,
+                "status": "multi_asset_paper_observation_readiness_ready",
+                "symbol": "BTCUSD",
+                "broker_symbol": "BTCUSD",
+                "timeframe": "M15",
+                "candidate_found": True,
+                "candidate_status": "paper_observation_review",
+                "readiness_state": "ready_for_one_cycle_paper_observation",
+                "runtime_context_available": True,
+                "runtime_context_recent": True,
+                "bars_count": 120,
+                "tick_available": True,
+                "market_active": True,
+                "price_moved_recently": True,
+                "capital_allows_observation": True,
+                "risk_allows_observation": True,
+                "failed_gate_names": [],
+                "failed_gates": [],
+                "entry_allowed_for_paper_test": True,
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                **_safety(),
+            }
+        )
+
+        result = client.readiness()
+
+        called_path = client._get.call_args.args[0]
+        self.assertTrue(called_path.startswith("/api/genesis/mt5/paper-observation/readiness?"))
+        self.assertIn("symbol=BTCUSD", called_path)
+        self.assertIn("broker_symbol=BTCUSD", called_path)
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertTrue(result["entry_allowed_for_paper_test"])
+        self.assertNotIn("generic_http_readiness_endpoint_missing", result["failed_gate_names"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_http_readiness_without_allowlist_fails_closed_before_http(self) -> None:
+        client = HttpPaperObservationClient("https://example.invalid", symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15")
+        client._get = Mock(side_effect=AssertionError("missing allowlist must not query live readiness"))
+
+        result = client.readiness()
+
+        client._get.assert_not_called()
+        self.assertEqual(result["recommendation"], "missing_explicit_asset_config_allowlist")
+        self.assertEqual(result["entry_block_type"], "asset_config_block")
+        self.assertFalse(result["entry_allowed_for_paper_test"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_crypto_http_readiness_endpoint_failure_fails_closed(self) -> None:
+        client = HttpPaperObservationClient("https://example.invalid", symbol="ETHUSD", broker_symbol="ETHUSD", timeframe="M15", asset_configs=[_asset_config("ETHUSD")])
+        client._get = Mock(side_effect=RuntimeError("generic readiness route unavailable"))
+
+        result = client.readiness()
+
+        self.assertIn("generic_http_readiness_endpoint_missing", result["failed_gate_names"])
+        self.assertFalse(result["entry_allowed_for_paper_test"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_multi_asset_readiness_wrapper_uses_runtime_snapshot(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(120)])
+
+        with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.run_capital_protection_governor", return_value={"capital_state": "normal", "safe_to_trade": True, **_safety()}):
+            with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.assess_runtime_risk", return_value={"allowed": True, "reason": "risk_governor_pass", "risk_state": "normal", **_safety()}):
+                result = run_multi_asset_paper_observation_readiness(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", db_state=_db())
+
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertEqual(result["runtime_snapshot_context"], "bar_context")
+        self.assertGreaterEqual(result["bars_count"], 100)
+        self.assertTrue(result["market_active"])
+        self.assertTrue(result["entry_allowed_for_paper_test"])
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
 

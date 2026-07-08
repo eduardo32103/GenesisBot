@@ -34,6 +34,7 @@ from services.mt5.mt5_bridge import (
     mt5_order_request,
     mt5_order_result,
     mt5_paper_defense,
+    mt5_paper_observation_readiness,
     mt5_persistent_db_doctor_status,
     mt5_persistent_intelligence_bootstrap_status,
     mt5_persistent_intelligence_queue_drain,
@@ -212,6 +213,10 @@ def get_genesis_mt5_runtime_snapshot_inventory(symbol: str = "XAUUSD", broker_sy
 
 def get_genesis_mt5_xau_m15_paper_observation_readiness() -> dict[str, Any]:
     return mt5_xau_m15_paper_observation_readiness()
+
+
+def get_genesis_mt5_paper_observation_readiness(symbol: str = "XAUUSD", broker_symbol: str = "XAUUSD.b", timeframe: str = "M15") -> dict[str, Any]:
+    return mt5_paper_observation_readiness(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
 
 
 def get_genesis_mt5_xau_m15_paper_observation_cycle() -> dict[str, Any]:

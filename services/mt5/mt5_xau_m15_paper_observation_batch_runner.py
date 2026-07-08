@@ -238,7 +238,14 @@ class HttpPaperObservationClient:
         if config_error:
             return _asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config)
         if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
-            return _generic_http_readiness_unavailable(self.symbol, self.broker_symbol, self.timeframe)
+            query = urlencode({"symbol": self.symbol, "broker_symbol": self.broker_symbol, "timeframe": self.timeframe})
+            try:
+                return _apply_asset_config_to_readiness(
+                    self._get(f"/api/genesis/mt5/paper-observation/readiness?{query}"),
+                    self.asset_config,
+                )
+            except Exception:
+                return _generic_http_readiness_unavailable(self.symbol, self.broker_symbol, self.timeframe)
         return _apply_asset_config_to_readiness(self._get("/api/genesis/mt5/xau-m15/paper-observation/readiness"), self.asset_config)
 
     def monitor(
@@ -2636,6 +2643,28 @@ def _generic_multi_asset_readiness(
         "applies_to_real_trading": False,
         **_safety(),
     }
+
+
+def run_multi_asset_paper_observation_readiness(
+    *,
+    symbol: str,
+    broker_symbol: str = "",
+    timeframe: str = TIMEFRAME,
+    db_state: dict[str, Any] | None = None,
+    asset_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_symbol = _clean_symbol(symbol)
+    clean_timeframe = _clean_timeframe(timeframe)
+    config = dict(asset_config) if isinstance(asset_config, dict) else _default_asset_config(clean_symbol, timeframe=clean_timeframe)
+    if broker_symbol and not asset_config:
+        config["broker_symbol"] = broker_symbol
+    return _generic_multi_asset_readiness(
+        clean_symbol,
+        broker_symbol or str(config.get("broker_symbol") or clean_symbol),
+        clean_timeframe,
+        db_state=db_state,
+        asset_config=config,
+    )
 
 
 def _generic_http_readiness_unavailable(symbol: str, broker_symbol: str, timeframe: str) -> dict[str, Any]:

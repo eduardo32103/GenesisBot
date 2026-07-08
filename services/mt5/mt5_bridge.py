@@ -460,6 +460,19 @@ def mt5_xau_m15_paper_observation_readiness(
     return run_xau_m15_paper_observation_readiness(store=store)
 
 
+def mt5_paper_observation_readiness(
+    *,
+    memory: MemoryStore | None = None,
+    symbol: str = "XAUUSD",
+    broker_symbol: str = "XAUUSD.b",
+    timeframe: str = "M15",
+) -> dict[str, Any]:
+    del memory
+    from services.mt5.mt5_xau_m15_paper_observation_batch_runner import run_multi_asset_paper_observation_readiness
+
+    return run_multi_asset_paper_observation_readiness(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
+
+
 def mt5_xau_m15_paper_observation_cycle(
     *,
     memory: MemoryStore | None = None,
