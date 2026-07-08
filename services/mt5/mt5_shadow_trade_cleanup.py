@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from services.genesis.memory_store import MemoryStore
+from services.mt5.mt5_journal import MT5Journal
 from services.mt5.mt5_persistent_intelligence_store import persist_shadow_trade
+from services.mt5.mt5_shadow_trading import MT5ShadowTrading
 from services.mt5.mt5_shadow_trade_hygiene import run_shadow_trade_hygiene
 
 
@@ -26,9 +29,51 @@ def run_shadow_trade_cleanup(
     expected_live_capital_count: int | None = None,
     confirm_source_fingerprint: str = "",
     source_fingerprint: dict[str, Any] | None = None,
+    memory: Any | None = None,
 ) -> dict[str, Any]:
+    active_memory = memory
+    active_open_trades = open_trades
+    if require_live_db and active_open_trades is None:
+        try:
+            active_memory = active_memory or MemoryStore(require_postgres=True, ensure_schema=False)
+            snapshot = MT5ShadowTrading(memory=active_memory).snapshot(limit=500)
+            active_open_trades = [row for row in snapshot.get("open_trades") or [] if isinstance(row, dict)]
+            load_shadow_snapshot = False
+            load_persistent_db = False
+        except Exception:
+            return {
+                "ok": False,
+                "status": "shadow_trade_cleanup_blocked_source_mismatch",
+                "reason": "source_unavailable_require_live_db",
+                "cleanup_version": CLEANUP_VERSION,
+                "mode": "blocked_no_mutation",
+                "apply_paper_cleanup": bool(apply_paper_cleanup),
+                "open_shadow_trades_before": 0,
+                "open_shadow_trades_after": 0,
+                "cleanup_candidates": [],
+                "closed_paper_only": 0,
+                "closed": [],
+                "skipped_unsafe": [],
+                "source_guard": {
+                    "allowed": False,
+                    "reason": "source_unavailable_require_live_db",
+                    "require_live_db": True,
+                    **_safety(),
+                },
+                "history_deleted": False,
+                "metrics_reset": False,
+                "losses_reset": False,
+                "capital_protection_relaxed": False,
+                "risk_governor_relaxed": False,
+                "shadow_hygiene": {},
+                "paper_rotation_applied": False,
+                "candidate_activated": False,
+                "paper_forward_onboarding_started": False,
+                "applies_to_real_trading": False,
+                **_safety(),
+            }
     hygiene = run_shadow_trade_hygiene(
-        open_trades=open_trades,
+        open_trades=active_open_trades,
         max_open_shadow_trades=max_open_shadow_trades,
         max_profile_open_shadows=max_profile_open_shadows,
         stale_hours=stale_hours,
@@ -75,9 +120,9 @@ def run_shadow_trade_cleanup(
             "applies_to_real_trading": False,
             **_safety(),
         }
-    close_fn = closer or _default_close
+    close_fn = closer or (_strict_live_legacy_close(active_memory) if require_live_db and active_memory is not None else _default_close)
     if apply_paper_cleanup:
-        indexed = {_trade_id(row): row for row in open_trades or [] if isinstance(row, dict)}
+        indexed = {_trade_id(row): row for row in active_open_trades or [] if isinstance(row, dict)}
         for candidate in candidates:
             trade_id = _trade_id(candidate)
             source_trade = indexed.get(trade_id) or candidate
@@ -155,6 +200,45 @@ def _default_close(trade: dict[str, Any], reason: str) -> dict[str, Any]:
         "status": "persistent_paper_shadow_marked_closed",
         "closed_trade": closed,
         "persistent_intelligence_shadow_trade": persist,
+        **_safety(),
+    }
+
+
+def _strict_live_legacy_close(memory: Any) -> Closer:
+    def close(trade: dict[str, Any], reason: str) -> dict[str, Any]:
+        return _close_legacy_memory_trade(memory, trade, reason)
+
+    return close
+
+
+def _close_legacy_memory_trade(memory: Any, trade: dict[str, Any], reason: str) -> dict[str, Any]:
+    trade_id = _trade_id(trade)
+    symbol = str(trade.get("symbol") or "").upper().strip()
+    if not trade_id or not symbol:
+        return {"ok": False, "status": "missing_trade_identity", **_safety()}
+    closed = {
+        **trade,
+        "status": "closed",
+        "lifecycle_status": "closed",
+        "closed_at": _now(),
+        "updated_at": _now(),
+        "exit_reason": reason,
+        "last_exit_reason": reason,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+    event = MT5Journal(memory=memory).save(
+        "mt5_shadow_trades",
+        symbol,
+        closed,
+        confidence=closed.get("confidence") or "media",
+    )
+    return {
+        "ok": True,
+        "status": "legacy_memory_paper_shadow_marked_closed",
+        "closed_trade": closed,
+        "event": event,
         **_safety(),
     }
 

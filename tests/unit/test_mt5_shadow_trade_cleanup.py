@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from services.mt5.mt5_shadow_trade_cleanup import run_shadow_trade_cleanup
 
@@ -213,6 +214,104 @@ class MT5ShadowTradeCleanupTests(unittest.TestCase):
         self.assertEqual(result["reason"], "source_is_local_sqlite_but_live_required")
         self.assertEqual(result["closed_paper_only"], 0)
         self.assertEqual(closed, [])
+        _assert_safety(self, result)
+
+    def test_require_live_db_dry_run_uses_strict_memory_source(self) -> None:
+        fake_memory = object()
+
+        class FakeShadowTrading:
+            def __init__(self, *, memory: object | None = None) -> None:
+                self.memory = memory
+
+            def snapshot(self, limit: int = 100) -> dict[str, object]:
+                return {
+                    "open_trades": [
+                        _open_trade("shadow-live-1", opened_at="2000-01-01T00:00:00+00:00"),
+                        _open_trade("shadow-live-2", opened_at="2000-01-01T00:01:00+00:00"),
+                    ]
+                }
+
+        with (
+            patch("services.mt5.mt5_shadow_trade_cleanup.MemoryStore", return_value=fake_memory),
+            patch("services.mt5.mt5_shadow_trade_cleanup.MT5ShadowTrading", FakeShadowTrading),
+        ):
+            result = run_shadow_trade_cleanup(
+                apply_paper_cleanup=False,
+                require_live_db=True,
+                load_shadow_snapshot=True,
+                load_persistent_db=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["open_shadow_trades_before"], 2)
+        self.assertEqual(result["open_shadow_trades_after"], 2)
+        self.assertEqual(result["closed_paper_only"], 0)
+        _assert_safety(self, result)
+
+    def test_require_live_db_blocks_when_strict_source_unavailable(self) -> None:
+        with patch("services.mt5.mt5_shadow_trade_cleanup.MemoryStore", side_effect=RuntimeError("source_unavailable_require_live_db")):
+            result = run_shadow_trade_cleanup(
+                apply_paper_cleanup=False,
+                require_live_db=True,
+                load_shadow_snapshot=True,
+                load_persistent_db=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "source_unavailable_require_live_db")
+        self.assertEqual(result["closed_paper_only"], 0)
+        _assert_safety(self, result)
+
+    def test_require_live_db_apply_writes_closed_event_to_same_legacy_memory(self) -> None:
+        fake_memory = object()
+        saved: list[dict[str, object]] = []
+
+        class FakeJournal:
+            def __init__(self, *, memory: object | None = None) -> None:
+                self.memory = memory
+
+            def save(self, collection: str, symbol: str, payload: dict[str, object], confidence: object = "media") -> dict[str, object]:
+                saved.append(
+                    {
+                        "memory_matches": self.memory is fake_memory,
+                        "collection": collection,
+                        "symbol": symbol,
+                        "payload": payload,
+                        "confidence": confidence,
+                    }
+                )
+                return {"ok": True, "collection": collection}
+
+        with patch("services.mt5.mt5_shadow_trade_cleanup.MT5Journal", FakeJournal):
+            result = run_shadow_trade_cleanup(
+                open_trades=[
+                    _open_trade("shadow-live-keep", opened_at="2026-06-11T00:00:00+00:00"),
+                    _open_trade("shadow-live-dup", opened_at="2026-06-11T00:01:00+00:00"),
+                ],
+                apply_paper_cleanup=True,
+                stale_hours=1000000,
+                load_shadow_snapshot=False,
+                load_persistent_db=False,
+                require_live_db=True,
+                expected_live_capital_count=2,
+                confirm_source_fingerprint="source-fp-2",
+                source_fingerprint=_source_fingerprint(2, "source-fp-2"),
+                memory=fake_memory,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["closed_paper_only"], 1)
+        self.assertEqual(len(saved), 1)
+        self.assertTrue(saved[0]["memory_matches"])
+        self.assertEqual(saved[0]["collection"], "mt5_shadow_trades")
+        self.assertEqual(saved[0]["symbol"], "BTCUSD")
+        payload = saved[0]["payload"]
+        self.assertEqual(payload["shadow_trade_id"], "shadow-live-dup")
+        self.assertEqual(payload["status"], "closed")
+        self.assertEqual(payload["exit_reason"], "duplicate_paper_shadow_cleanup")
+        self.assertFalse(payload["broker_touched"])
+        self.assertFalse(payload["order_executed"])
+        self.assertEqual(payload["order_policy"], "journal_only_no_broker")
         _assert_safety(self, result)
 
 
