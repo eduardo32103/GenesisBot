@@ -732,19 +732,33 @@ def get_recent_mt5_shadow_trades_fast(
     limit: int = 100,
     timeframe: str = "",
 ) -> list[dict[str, Any]]:
-    safe_limit = max(1, min(int(limit or 100), 100))
+    safe_limit = max(1, min(int(limit or 100), 1000))
     clean_symbol = _symbol(symbol)
     clean_timeframe = str(timeframe or "").upper().strip()
     rows = memory.get_mt5_events("mt5_shadow_trades", clean_symbol or None, limit=safe_limit)
     latest: dict[str, dict[str, Any]] = {}
+    latest_key: dict[str, tuple[float, int]] = {}
     for index, row in enumerate(rows):
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         if clean_timeframe and str(payload.get("timeframe") or "").upper() != clean_timeframe:
             continue
         trade_id = str(payload.get("shadow_trade_id") or row.get("created_at") or f"row-{index}")
-        if trade_id and trade_id not in latest:
-            latest[trade_id] = _normalize_trade_for_read({**payload, "created_at": row.get("created_at") or payload.get("created_at")})
+        if not trade_id:
+            continue
+        event_key = _event_sort_key(row, payload, index)
+        if trade_id in latest and event_key <= latest_key.get(trade_id, event_key):
+            continue
+        latest_key[trade_id] = event_key
+        latest[trade_id] = _normalize_trade_for_read({**payload, "created_at": row.get("created_at") or payload.get("created_at")})
     return list(latest.values())
+
+
+def _event_sort_key(row: dict[str, Any], payload: dict[str, Any], index: int) -> tuple[float, int]:
+    for key in ("closed_at", "updated_at", "created_at", "opened_at"):
+        parsed = _parse_datetime(payload.get(key) or row.get(key))
+        if parsed is not None:
+            return (parsed.timestamp(), -index)
+    return (-1.0, -index)
 
 
 def _is_main_for_query(trade: dict[str, Any], query_symbol: str) -> bool:

@@ -11,7 +11,7 @@ from services.mt5.mt5_shadow_trading import MT5ShadowTrading, is_main_metric_tra
 
 INSPECTOR_VERSION = "2026-07-07.mt5_legacy_shadow_inspector.v1"
 CAPITAL_SNAPSHOT_LIMIT = 500
-CAPITAL_EFFECTIVE_FETCH_LIMIT = 100
+CAPITAL_EFFECTIVE_FETCH_LIMIT = 500
 LEGACY_COLLECTION = "mt5_shadow_trades"
 LEGACY_EVENT_TYPE = "mt5_shadow_trade"
 LIVE_BACKEND = "postgres"

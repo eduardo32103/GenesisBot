@@ -79,11 +79,11 @@ class MT5LegacyShadowInspectorTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["limit_used"], 500)
         self.assertEqual(result["capital_snapshot_limit"], 500)
-        self.assertEqual(result["effective_fetch_limit"], 100)
+        self.assertEqual(result["effective_fetch_limit"], 500)
         self.assertEqual(result["open_shadow_trades_count"], 2)
         self.assertTrue(result["source_matches_capital_protection"])
         self.assertTrue(memory.calls)
-        self.assertTrue(all(call == ("mt5_shadow_trades", None, 100) for call in memory.calls))
+        self.assertTrue(all(call == ("mt5_shadow_trades", None, 500) for call in memory.calls))
 
     def test_inspector_require_live_db_blocks_sqlite_fallback(self) -> None:
         with patch.dict(os.environ, {"DATABASE_URL": ""}), patch.object(
