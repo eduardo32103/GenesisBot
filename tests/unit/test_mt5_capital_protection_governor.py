@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -79,6 +80,31 @@ class MT5CapitalProtectionGovernorTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_capital_protection_does_not_bypass_drawdown(self) -> None:
+        result = run_capital_protection_governor(
+            closed_trades=[],
+            open_trades=[],
+            profile_performance=[{"symbol": "BTCUSD", "timeframe": "M30", "profile": "btc_m30_test", "max_drawdown_pct": 12.5}],
+            limits={"max_daily_loss_pct": 99.0, "max_weekly_loss_pct": 99.0, "max_drawdown_pct": 10.0},
+            load_shadow_snapshot=False,
+            load_persistent=False,
+            persist_events=False,
+        )
+
+        self.assertEqual(result["capital_state"], "kill_switch")
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertFalse(result["safe_to_trade"])
+        self.assertTrue(_breaker_active(result, "max_drawdown_pct"))
+        self.assertEqual(result["reason"], "capital_protection:max_drawdown_pct")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_no_order_send(self) -> None:
+        source = Path("services/mt5/mt5_capital_protection_governor.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("order_send", source)
 
     def test_db_degraded_blocks_critical_trade(self) -> None:
         result = capital_protection_enforcement(

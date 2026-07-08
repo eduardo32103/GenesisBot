@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.mt5.mt5_forward_profile_degradation_registry import forward_profile_degradation
+from services.mt5.mt5_frozen_sample_guard import evaluate_frozen_sample
 from services.mt5.mt5_paper_forward_candidate_rotation import run_paper_forward_candidate_rotation
 from services.mt5.mt5_persistent_intelligence_store import (
     persist_adaptive_governor_state,
@@ -24,6 +25,7 @@ DEFAULT_LIMITS = {
     "max_consecutive_losses_global": 5,
     "max_open_shadow_trades": 3,
     "max_profile_drawdown": 3.0,
+    "max_profile_drawdown_unit": "r_multiple",
     "max_recent_error_rate": 0.75,
 }
 
@@ -381,7 +383,8 @@ def _profile_state(
     open_: list[dict[str, Any]],
     limits: dict[str, Any],
 ) -> dict[str, Any]:
-    ordered = sorted(closed, key=_trade_sort_value)
+    ordered_all = sorted(closed, key=_trade_sort_value)
+    ordered = [row for row in ordered_all if _valid_metric_trade(row)]
     pnls = [_pnl(row) for row in ordered]
     wins = [value for value in pnls if value > 0]
     losses = [value for value in pnls if value < 0]
@@ -393,7 +396,11 @@ def _profile_state(
     profit_factor = _profit_factor(gross_win, gross_loss)
     expectancy = round(sum(pnls) / trades_forward, 8) if trades_forward else 0.0
     consecutive_losses = _consecutive_losses(ordered)
-    max_drawdown = _max_drawdown(pnls)
+    drawdown_metric_unit = _drawdown_metric_unit(limits)
+    drawdown_values, drawdown_metric_unavailable_count = _normalized_drawdown_values(ordered, drawdown_metric_unit)
+    no_valid_metric_samples = bool(ordered_all and not ordered)
+    drawdown_metric_unavailable = bool(ordered and drawdown_metric_unavailable_count)
+    max_drawdown = None if no_valid_metric_samples or drawdown_metric_unavailable else _max_drawdown(drawdown_values)
     recent_error_rate = _recent_error_rate(ordered)
     degraded = forward_profile_degradation(symbol, timeframe, profile)
     rejected = research_rejection(symbol, timeframe, profile, _infer_family(profile))
@@ -404,6 +411,8 @@ def _profile_state(
         expectancy=expectancy,
         consecutive_losses=consecutive_losses,
         max_drawdown=max_drawdown,
+        no_valid_metric_samples=no_valid_metric_samples,
+        drawdown_metric_unavailable=drawdown_metric_unavailable,
         recent_error_rate=recent_error_rate,
         rejected=bool(rejected),
         degraded=bool(degraded),
@@ -414,7 +423,9 @@ def _profile_state(
         "timeframe": timeframe,
         "profile": profile,
         "active_state": active_state,
+        "raw_trades_forward": len(ordered_all),
         "trades_forward": trades_forward,
+        "invalid_samples": len(ordered_all) - trades_forward,
         "wins": win_count,
         "losses": loss_count,
         "win_rate": _win_rate(win_count, trades_forward),
@@ -423,6 +434,10 @@ def _profile_state(
         "avg_win": round(sum(wins) / len(wins), 8) if wins else 0.0,
         "avg_loss": round(sum(losses) / len(losses), 8) if losses else 0.0,
         "max_drawdown": max_drawdown,
+        "drawdown_metric_unit": drawdown_metric_unit,
+        "no_valid_metric_samples": no_valid_metric_samples,
+        "drawdown_metric_unavailable": drawdown_metric_unavailable,
+        "drawdown_metric_unavailable_count": drawdown_metric_unavailable_count,
         "consecutive_losses": consecutive_losses,
         "recent_error_rate": recent_error_rate,
         "confidence_score": _confidence_score(trades_forward, profit_factor, expectancy),
@@ -446,7 +461,9 @@ def _profile_action(
     profit_factor: float,
     expectancy: float,
     consecutive_losses: int,
-    max_drawdown: float,
+    max_drawdown: float | None,
+    no_valid_metric_samples: bool,
+    drawdown_metric_unavailable: bool,
     recent_error_rate: float,
     rejected: bool,
     degraded: bool,
@@ -456,7 +473,11 @@ def _profile_action(
         return "observation_only", "degraded", "observation_only"
     if rejected:
         return "skip_rejected_family", "rejected", "observation_only"
-    if max_drawdown > float(limits["max_profile_drawdown"]):
+    if no_valid_metric_samples:
+        return "kill_switch", "critical", "paused"
+    if drawdown_metric_unavailable:
+        return "kill_switch", "critical", "paused"
+    if max_drawdown is not None and max_drawdown > float(limits["max_profile_drawdown"]):
         return "kill_switch", "critical", "paused"
     if trades_forward >= 5 and profit_factor < 0.9 and expectancy <= 0:
         return "degrade_to_observation_only", "degraded", "observation_only"
@@ -480,10 +501,18 @@ def _circuit_breakers(
     *,
     shadow_snapshot_source_unavailable: bool = False,
 ) -> list[dict[str, Any]]:
-    daily_pnl = _period_pnl(closed_trades, "day")
-    weekly_pnl = _period_pnl(closed_trades, "week")
-    global_consecutive_losses = _consecutive_losses(sorted(closed_trades, key=_trade_sort_value))
-    max_profile_drawdown = max((float(row["max_drawdown"]) for row in profiles), default=0.0)
+    metric_closed = [row for row in closed_trades if _valid_metric_trade(row)]
+    daily_pnl = _period_pnl(metric_closed, "day")
+    weekly_pnl = _period_pnl(metric_closed, "week")
+    global_consecutive_losses = _consecutive_losses(sorted(metric_closed, key=_trade_sort_value))
+    no_valid_metric_sample_profiles = [row for row in profiles if row.get("no_valid_metric_samples")]
+    drawdown_metric_unavailable_profiles = [row for row in profiles if row.get("drawdown_metric_unavailable")]
+    profile_drawdowns = [
+        float(row["max_drawdown"])
+        for row in profiles
+        if isinstance(row.get("max_drawdown"), (int, float)) and not isinstance(row.get("max_drawdown"), bool)
+    ]
+    max_profile_drawdown = max(profile_drawdowns, default=0.0)
     breakers = [
         _breaker(
             "shadow_snapshot_source_unavailable",
@@ -526,6 +555,20 @@ def _circuit_breakers(
             True,
             "open_shadow_trade_limit",
             f"open_shadow_trades={len(open_trades)}",
+        ),
+        _breaker(
+            "no_valid_metric_samples",
+            bool(no_valid_metric_sample_profiles),
+            True,
+            "no_valid_metric_samples",
+            "profiles=" + ",".join(_profile_label(row) for row in no_valid_metric_sample_profiles[:5]),
+        ),
+        _breaker(
+            "drawdown_metric_unavailable",
+            bool(drawdown_metric_unavailable_profiles),
+            True,
+            "drawdown_metric_unavailable",
+            "profiles=" + ",".join(_profile_label(row) for row in drawdown_metric_unavailable_profiles[:5]),
         ),
         _breaker(
             "max_profile_drawdown",
@@ -710,6 +753,82 @@ def _trade_key(trade: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _valid_metric_trade(trade: dict[str, Any]) -> bool:
+    if not isinstance(trade, dict):
+        return False
+    if trade.get("sample_valid") is False:
+        return False
+    if trade.get("valid_winrate_sample") is False:
+        return False
+    if _optional_bool(trade.get("invalid_winrate_sample")) is True:
+        return False
+    if _explicit_invalid_metric_evidence(trade):
+        return False
+    for key in ("use_for_winrate", "use_for_optimization", "use_for_calibration", "strategy_promotion_eligible", "candidate_promotion_eligible"):
+        if trade.get(key) is False:
+            return False
+    return not bool(evaluate_frozen_sample(trade).get("frozen_sample"))
+
+
+def _explicit_invalid_metric_evidence(trade: dict[str, Any]) -> bool:
+    for key in ("invalid_reason", "invalid_sample_reason", "metric_exclusion_reason"):
+        if str(trade.get(key) or "").strip():
+            return True
+    for key in ("frozen_market_detected", "market_inactive_or_frozen", "no_price_movement"):
+        if _optional_bool(trade.get(key)) is True:
+            return True
+    return False
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().casefold()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
+
+
+def _drawdown_metric_unit(limits: dict[str, Any]) -> str:
+    unit = str(limits.get("max_profile_drawdown_unit") or limits.get("profile_drawdown_unit") or "r_multiple").strip().casefold()
+    if unit in {"pnl_pct", "percent", "percentage", "pct"}:
+        return "pnl_pct"
+    return "r_multiple"
+
+
+def _normalized_drawdown_values(trades: list[dict[str, Any]], unit: str) -> tuple[list[float], int]:
+    values: list[float] = []
+    missing = 0
+    for trade in trades:
+        value = _normalized_drawdown_value(trade, unit)
+        if value is None:
+            missing += 1
+            continue
+        values.append(value)
+    return values, missing
+
+
+def _normalized_drawdown_value(trade: dict[str, Any], unit: str) -> float | None:
+    keys = ("pnl_pct",) if unit == "pnl_pct" else ("r_multiple", "pnl_r")
+    for key in keys:
+        value = trade.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _profile_label(row: dict[str, Any]) -> str:
+    return "|".join(str(row.get(key) or "") for key in ("symbol", "timeframe", "profile"))
+
+
 def _pnl(trade: dict[str, Any]) -> float:
     for key in ("pnl", "profit", "r_multiple", "net_pnl", "pnl_r"):
         value = trade.get(key)
@@ -784,9 +903,9 @@ def _confidence_score(trades_forward: int, profit_factor: float, expectancy: flo
     return round(sample + pf_score + expectancy_score, 4)
 
 
-def _risk_score(max_drawdown: float, consecutive_losses: int, recent_error_rate: float, limits: dict[str, Any]) -> float:
+def _risk_score(max_drawdown: float | None, consecutive_losses: int, recent_error_rate: float, limits: dict[str, Any]) -> float:
     drawdown_limit = max(float(limits["max_profile_drawdown"]), 0.000001)
-    score = min(max_drawdown / drawdown_limit, 1.5) * 45.0
+    score = min(max_drawdown / drawdown_limit, 1.5) * 45.0 if max_drawdown is not None else 0.0
     score += min(consecutive_losses / 3.0, 1.5) * 35.0
     score += min(recent_error_rate, 1.0) * 20.0
     return round(score, 4)

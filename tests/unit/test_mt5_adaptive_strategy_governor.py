@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -88,6 +89,241 @@ class MT5AdaptiveStrategyGovernorTests(unittest.TestCase):
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_adaptive_drawdown_uses_r_multiple_before_raw_pnl(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade("BTCUSD", "M30", "btc_m30_unit_profile", 303.49, "win", r_multiple=0.5),
+                _trade("BTCUSD", "M30", "btc_m30_unit_profile", -148.63, "loss", r_multiple=-0.1),
+                _trade("BTCUSD", "M30", "btc_m30_unit_profile", -80.0, "loss", r_multiple=-0.05),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertEqual(profile["drawdown_metric_unit"], "r_multiple")
+        self.assertEqual(profile["max_drawdown"], 0.15)
+        self.assertFalse(profile["drawdown_metric_unavailable"])
+        self.assertFalse(_breaker_active(result, "max_profile_drawdown"))
+        self.assertFalse(_breaker_active(result, "drawdown_metric_unavailable"))
+        self.assertNotEqual(result["global_state"], "kill_switch")
+
+    def test_adaptive_drawdown_does_not_compare_raw_pnl_to_r_limit(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade("BTCUSD", "M30", "btc_m30_raw_only_profile", 303.49, "win", include_r_multiple=False),
+                _trade("BTCUSD", "M30", "btc_m30_raw_only_profile", -148.63, "loss", include_r_multiple=False),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertIsNone(profile["max_drawdown"])
+        self.assertTrue(profile["drawdown_metric_unavailable"])
+        self.assertEqual(profile["drawdown_metric_unavailable_count"], 2)
+        self.assertEqual(result["global_state"], "kill_switch")
+        self.assertEqual(result["reason"], "adaptive_governor:drawdown_metric_unavailable")
+        self.assertTrue(_breaker_active(result, "drawdown_metric_unavailable"))
+        self.assertFalse(_breaker_active(result, "max_profile_drawdown"))
+
+    def test_adaptive_drawdown_excludes_sample_valid_false(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade("XAUUSD", "M15", "xau_m15_invalid_profile", -500.0, "loss", r_multiple=-10.0, sample_valid=False),
+                _trade("XAUUSD", "M15", "xau_m15_invalid_profile", 20.0, "win", r_multiple=0.2),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertEqual(profile["raw_trades_forward"], 2)
+        self.assertEqual(profile["trades_forward"], 1)
+        self.assertEqual(profile["invalid_samples"], 1)
+        self.assertEqual(profile["max_drawdown"], 0.0)
+        self.assertFalse(_breaker_active(result, "max_profile_drawdown"))
+        self.assertFalse(_breaker_active(result, "drawdown_metric_unavailable"))
+
+    def test_adaptive_drawdown_all_sample_valid_false_fails_closed(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade("XAUUSD", "M15", "xau_m15_all_invalid_profile", -500.0, "loss", r_multiple=-10.0, sample_valid=False),
+                _trade("XAUUSD", "M15", "xau_m15_all_invalid_profile", 0.0, "breakeven", r_multiple=0.0, sample_valid=False),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertEqual(profile["raw_trades_forward"], 2)
+        self.assertEqual(profile["trades_forward"], 0)
+        self.assertEqual(profile["invalid_samples"], 2)
+        self.assertTrue(profile["no_valid_metric_samples"])
+        self.assertIsNone(profile["max_drawdown"])
+        self.assertEqual(result["global_state"], "kill_switch")
+        self.assertEqual(result["reason"], "adaptive_governor:no_valid_metric_samples")
+        self.assertTrue(_breaker_active(result, "no_valid_metric_samples"))
+        self.assertFalse(_breaker_active(result, "max_profile_drawdown"))
+
+    def test_adaptive_drawdown_excludes_frozen_invalid_samples(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade(
+                    "XAUUSD",
+                    "M15",
+                    "xau_m15_frozen_profile",
+                    0.0,
+                    "breakeven",
+                    r_multiple=-10.0,
+                    entry_price=2340.1,
+                    exit_price=2340.1,
+                    exit_reason="time_stop",
+                    market_inactive_or_frozen=True,
+                ),
+                _trade("XAUUSD", "M15", "xau_m15_frozen_profile", 5.0, "win", r_multiple=0.1),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertEqual(profile["trades_forward"], 1)
+        self.assertEqual(profile["invalid_samples"], 1)
+        self.assertEqual(profile["max_drawdown"], 0.0)
+        self.assertFalse(_breaker_active(result, "max_profile_drawdown"))
+
+    def test_adaptive_drawdown_all_frozen_invalid_samples_fail_closed(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade(
+                    "XAUUSD",
+                    "M15",
+                    "xau_m15_all_frozen_profile",
+                    0.0,
+                    "breakeven",
+                    r_multiple=-10.0,
+                    entry_price=2340.1,
+                    exit_price=2340.1,
+                    exit_reason="time_stop",
+                    market_inactive_or_frozen=True,
+                ),
+                _trade(
+                    "XAUUSD",
+                    "M15",
+                    "xau_m15_all_frozen_profile",
+                    0.0,
+                    "breakeven",
+                    r_multiple=0.0,
+                    invalid_reason="market_inactive_or_frozen",
+                ),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertEqual(profile["raw_trades_forward"], 2)
+        self.assertEqual(profile["trades_forward"], 0)
+        self.assertEqual(profile["invalid_samples"], 2)
+        self.assertTrue(profile["no_valid_metric_samples"])
+        self.assertIsNone(profile["max_drawdown"])
+        self.assertEqual(result["global_state"], "kill_switch")
+        self.assertEqual(result["reason"], "adaptive_governor:no_valid_metric_samples")
+        self.assertTrue(_breaker_active(result, "no_valid_metric_samples"))
+        self.assertFalse(_breaker_active(result, "max_profile_drawdown"))
+
+    def test_adaptive_drawdown_fails_closed_when_normalized_metric_missing(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade("ETHUSD", "H1", "eth_h1_pct_only_profile", 40.0, "win", include_r_multiple=False, pnl_pct=0.2),
+                _trade("ETHUSD", "H1", "eth_h1_pct_only_profile", -20.0, "loss", include_r_multiple=False, pnl_pct=-0.1),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        self.assertEqual(result["global_state"], "kill_switch")
+        self.assertEqual(result["reason"], "adaptive_governor:drawdown_metric_unavailable")
+        self.assertTrue(_breaker_active(result, "drawdown_metric_unavailable"))
+
+    def test_adaptive_drawdown_legacy_valid_record_not_auto_invalid(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[
+                _trade("EURUSD", "M15", "eurusd_m15_legacy_profile", 30.0, "win", r_multiple=0.4),
+                _trade("EURUSD", "M15", "eurusd_m15_legacy_profile", -10.0, "loss", r_multiple=-0.2),
+            ],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            limits={"max_profile_drawdown": 3.0},
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        profile = result["profile_states"][0]
+        self.assertEqual(profile["raw_trades_forward"], 2)
+        self.assertEqual(profile["trades_forward"], 2)
+        self.assertEqual(profile["invalid_samples"], 0)
+        self.assertEqual(profile["max_drawdown"], 0.2)
+        self.assertFalse(profile["drawdown_metric_unavailable"])
+        self.assertFalse(_breaker_active(result, "drawdown_metric_unavailable"))
+
+    def test_no_direct_kill_switch_reset(self) -> None:
+        result = run_adaptive_strategy_governor(
+            closed_trades=[_trade("BTCUSD", "M30", "btc_m30_raw_only_profile", -148.63, "loss", include_r_multiple=False)],
+            open_trades=[],
+            rotation_result=_empty_rotation(),
+            intelligence_result=_empty_intelligence(),
+            load_shadow_snapshot=False,
+            load_rotation=False,
+            load_intelligence=False,
+        )
+
+        self.assertEqual(result["global_state"], "kill_switch")
+        self.assertFalse(result.get("kill_switch_reset", False))
+
+    def test_no_order_send(self) -> None:
+        source = Path("services/mt5/mt5_adaptive_strategy_governor.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("order_send", source)
 
     def test_does_not_rotate_to_rejected_degraded_or_sibling_candidates(self) -> None:
         result = run_adaptive_strategy_governor(
@@ -253,14 +489,31 @@ class MT5AdaptiveStrategyGovernorTests(unittest.TestCase):
         self.assertIn("order_policy=journal_only_no_broker", text)
 
 
-def _trade(symbol: str, timeframe: str, profile: str, pnl: float, status: str) -> dict[str, object]:
-    return {
+def _trade(
+    symbol: str,
+    timeframe: str,
+    profile: str,
+    pnl: float,
+    status: str,
+    *,
+    r_multiple: float | None = None,
+    include_r_multiple: bool = True,
+    pnl_pct: float | None = None,
+    **overrides: object,
+) -> dict[str, object]:
+    row: dict[str, object] = {
         "symbol": symbol,
         "timeframe": timeframe,
         "strategy_profile": profile,
         "pnl": pnl,
         "status": status,
     }
+    if include_r_multiple:
+        row["r_multiple"] = pnl if r_multiple is None else r_multiple
+    if pnl_pct is not None:
+        row["pnl_pct"] = pnl_pct
+    row.update(overrides)
+    return row
 
 
 def _rotation_row(
@@ -316,6 +569,13 @@ def _empty_intelligence() -> dict[str, object]:
     }
 
 
+def _breaker_active(result: dict[str, object], name: str) -> bool:
+    return any(
+        isinstance(row, dict) and row.get("name") == name and row.get("active")
+        for row in result.get("circuit_breakers", [])
+    )
+
+
 _POSTGRES_URL = "postgresql://user:secret@db.railway.internal:5432/railway"
 
 
@@ -353,6 +613,7 @@ def _shadow_event(shadow_trade_id: str, status: str, *, updated_at: str, pnl: fl
         "status": status,
         "lifecycle_status": "closed" if status in {"closed", "win", "loss", "breakeven"} else "open",
         "pnl": pnl,
+        "r_multiple": pnl,
         "updated_at": updated_at,
         "closed_at": updated_at if status != "open" else "",
         "broker_touched": False,
