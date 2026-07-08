@@ -13,6 +13,7 @@ from services.mt5.mt5_persistent_intelligence_store import (
 )
 from services.mt5.mt5_research_intelligence_core import run_research_intelligence_core
 from services.mt5.mt5_research_rejection_registry import research_rejection
+from services.mt5.mt5_shadow_snapshot_source import load_governor_shadow_snapshot
 
 
 GOVERNOR_VERSION = "2026-06-10.mt5_adaptive_strategy_governor.v1"
@@ -68,9 +69,18 @@ def run_adaptive_strategy_governor(
     closed = list(closed_trades if closed_trades is not None else shadow_snapshot.get("closed_trades") or [])
     open_ = list(open_trades if open_trades is not None else shadow_snapshot.get("open_trades") or [])
     runtime = runtime_snapshot or {}
+    snapshot_source = shadow_snapshot.get("shadow_snapshot_source") if isinstance(shadow_snapshot.get("shadow_snapshot_source"), dict) else {}
+    shadow_snapshot_source_unavailable = bool(shadow_snapshot.get("source_unavailable"))
 
     profiles = _profile_states(closed, open_, active_limits)
-    circuit_breakers = _circuit_breakers(closed, open_, profiles, runtime, active_limits)
+    circuit_breakers = _circuit_breakers(
+        closed,
+        open_,
+        profiles,
+        runtime,
+        active_limits,
+        shadow_snapshot_source_unavailable=shadow_snapshot_source_unavailable,
+    )
     critical_breakers = [row for row in circuit_breakers if row.get("active") and row.get("critical")]
     missing_data_breakers = [row for row in circuit_breakers if row.get("active") and row.get("name") == "missing_shadow_trade_data"]
 
@@ -121,6 +131,9 @@ def run_adaptive_strategy_governor(
         "rotation_candidates": rotation_candidates,
         "rejected_candidates": rejected_candidates,
         "circuit_breakers": circuit_breakers,
+        "shadow_snapshot_source": snapshot_source,
+        "snapshot_source": snapshot_source,
+        "shadow_snapshot_source_unavailable": shadow_snapshot_source_unavailable,
         "recommended_next_action": recommended_next_action,
         "rotation_recommendation": (rotation or {}).get("recommendation") or "",
         "research_recommendation": (intelligence or {}).get("recommended_next_research_phase") or "",
@@ -328,9 +341,7 @@ def _load_shadow_snapshot(
     if closed_trades is not None or open_trades is not None or not load_shadow_snapshot:
         return {"closed_trades": closed_trades or [], "open_trades": open_trades or []}
     try:
-        from services.mt5.mt5_shadow_trading import MT5ShadowTrading
-
-        return MT5ShadowTrading().snapshot(limit=200)
+        return load_governor_shadow_snapshot(limit=200)
     except Exception as exc:  # pragma: no cover - defensive local runtime guard
         return {
             "ok": False,
@@ -466,12 +477,21 @@ def _circuit_breakers(
     profiles: list[dict[str, Any]],
     runtime_snapshot: dict[str, Any],
     limits: dict[str, Any],
+    *,
+    shadow_snapshot_source_unavailable: bool = False,
 ) -> list[dict[str, Any]]:
     daily_pnl = _period_pnl(closed_trades, "day")
     weekly_pnl = _period_pnl(closed_trades, "week")
     global_consecutive_losses = _consecutive_losses(sorted(closed_trades, key=_trade_sort_value))
     max_profile_drawdown = max((float(row["max_drawdown"]) for row in profiles), default=0.0)
     breakers = [
+        _breaker(
+            "shadow_snapshot_source_unavailable",
+            shadow_snapshot_source_unavailable,
+            True,
+            "shadow_snapshot_source_unavailable",
+            "Shadow latest-state source unavailable; fail closed.",
+        ),
         _breaker(
             "missing_shadow_trade_data",
             not closed_trades and not open_trades,

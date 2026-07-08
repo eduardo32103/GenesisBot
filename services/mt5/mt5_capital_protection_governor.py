@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore, persist_risk_event
+from services.mt5.mt5_shadow_snapshot_source import load_governor_shadow_snapshot
 
 
 CAPITAL_GOVERNOR_VERSION = "2026-06-10.mt5_capital_protection_governor.v1"
@@ -41,6 +42,8 @@ def run_capital_protection_governor(
     shadow_snapshot = _load_shadow_snapshot(load_shadow_snapshot, closed_trades, open_trades)
     closed = list(closed_trades if closed_trades is not None else shadow_snapshot.get("closed_trades") or [])
     open_ = list(open_trades if open_trades is not None else shadow_snapshot.get("open_trades") or [])
+    snapshot_source = shadow_snapshot.get("shadow_snapshot_source") if isinstance(shadow_snapshot.get("shadow_snapshot_source"), dict) else {}
+    shadow_snapshot_source_unavailable = bool(shadow_snapshot.get("source_unavailable"))
     recent_events = persistent.get("recent_events") if isinstance(persistent.get("recent_events"), dict) else {}
     risks = list(risk_events if risk_events is not None else recent_events.get("recent_risk_events") or [])
     decisions = list(decision_events if decision_events is not None else recent_events.get("recent_decisions") or [])
@@ -72,6 +75,7 @@ def run_capital_protection_governor(
         decision_events=decisions,
         open_trades=open_,
         limits=active_limits,
+        shadow_snapshot_source_unavailable=shadow_snapshot_source_unavailable,
     )
     critical_breakers = [row for row in breakers if row.get("active") and row.get("critical")]
     capital_state = _capital_state(
@@ -101,6 +105,9 @@ def run_capital_protection_governor(
         "open_shadow_exposure": open_shadow_exposure,
         "open_profile_count": open_profile_count,
         "open_shadow_trades": len(open_),
+        "shadow_snapshot_source": snapshot_source,
+        "snapshot_source": snapshot_source,
+        "shadow_snapshot_source_unavailable": shadow_snapshot_source_unavailable,
         "consecutive_losses_global": global_consecutive_losses,
         "consecutive_losses_by_profile": profile_losses,
         "risk_budget_remaining": risk_budget_remaining,
@@ -194,9 +201,7 @@ def _load_shadow_snapshot(
     if closed_trades is not None or open_trades is not None or not load_shadow_snapshot:
         return {"closed_trades": closed_trades or [], "open_trades": open_trades or []}
     try:
-        from services.mt5.mt5_shadow_trading import MT5ShadowTrading
-
-        return MT5ShadowTrading().snapshot(limit=500)
+        return load_governor_shadow_snapshot(limit=500)
     except Exception:
         return {"closed_trades": [], "open_trades": []}
 
@@ -218,6 +223,7 @@ def _circuit_breakers(
     decision_events: list[dict[str, Any]],
     open_trades: list[dict[str, Any]],
     limits: dict[str, Any],
+    shadow_snapshot_source_unavailable: bool = False,
 ) -> list[dict[str, Any]]:
     max_profile_losses = max(consecutive_losses_by_profile.values(), default=0)
     max_profile_open = _max_profile_open_count(open_trades)
@@ -230,6 +236,7 @@ def _circuit_breakers(
     adaptive_global = str(adaptive_state.get("global_state") or adaptive_state.get("capital_state") or "").casefold()
     conflicting_governor = adaptive_global in {"kill_switch", "lockdown", "pause_new_entries", "degrade_to_observation_only"}
     return [
+        _breaker("shadow_snapshot_source_unavailable", shadow_snapshot_source_unavailable, True, "shadow latest-state source unavailable; fail closed"),
         _breaker("max_daily_loss_pct", daily_loss_pct >= float(limits["max_daily_loss_pct"]), True, f"daily_loss_pct={daily_loss_pct}"),
         _breaker("max_weekly_loss_pct", weekly_loss_pct >= float(limits["max_weekly_loss_pct"]), True, f"weekly_loss_pct={weekly_loss_pct}"),
         _breaker("max_drawdown_pct", max_drawdown_pct >= float(limits["max_drawdown_pct"]) or current_drawdown_pct >= float(limits["max_drawdown_pct"]), True, f"max_drawdown_pct={max_drawdown_pct}"),

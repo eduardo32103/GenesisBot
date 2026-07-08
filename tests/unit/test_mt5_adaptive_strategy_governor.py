@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.run_adaptive_strategy_governor import main as governor_main
 from services.mt5.mt5_adaptive_strategy_governor import run_adaptive_strategy_governor
@@ -182,6 +184,58 @@ class MT5AdaptiveStrategyGovernorTests(unittest.TestCase):
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
+    def test_latest_state_snapshot_does_not_count_reconciled_legacy_open_as_open(self) -> None:
+        rows = [
+            _event(_shadow_event("shadow-66", "breakeven", updated_at="2026-07-07T01:10:00+00:00", pnl=0.0)),
+            _event(_shadow_event("shadow-66", "open", updated_at="2026-07-07T01:00:00+00:00")),
+        ]
+
+        with patch("services.mt5.mt5_shadow_snapshot_source.load_settings", return_value=SimpleNamespace(database_url=_POSTGRES_URL)), patch(
+            "services.mt5.mt5_shadow_snapshot_source.MemoryStore", return_value=_FakeMemory(rows)
+        ):
+            result = run_adaptive_strategy_governor(
+                rotation_result=_empty_rotation(),
+                intelligence_result=_empty_intelligence(),
+                load_rotation=False,
+                load_intelligence=False,
+                persist_events=False,
+            )
+
+        self.assertEqual(result["global_state"], "watch")
+        self.assertFalse(any(row["name"] == "max_open_shadow_trades" and row["active"] for row in result["circuit_breakers"]))
+        self.assertEqual(result["shadow_snapshot_source"]["backend_type"], "postgres")
+        self.assertTrue(result["shadow_snapshot_source"]["live_db_required"])
+        self.assertTrue(result["shadow_snapshot_source"]["live_db_detected"])
+        self.assertEqual(result["shadow_snapshot_source"]["open_shadow_trades_count"], 0)
+        self.assertEqual(result["shadow_snapshot_source"]["closed_shadow_trades_count"], 1)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_latest_state_snapshot_source_unavailable_fails_closed_without_reset(self) -> None:
+        with patch("services.mt5.mt5_shadow_snapshot_source.load_settings", return_value=SimpleNamespace(database_url=_POSTGRES_URL)), patch(
+            "services.mt5.mt5_shadow_snapshot_source.MemoryStore", side_effect=RuntimeError("source_unavailable_require_live_db")
+        ):
+            result = run_adaptive_strategy_governor(
+                rotation_result=_empty_rotation(),
+                intelligence_result=_empty_intelligence(),
+                load_rotation=False,
+                load_intelligence=False,
+                persist_events=False,
+            )
+
+        self.assertEqual(result["global_state"], "kill_switch")
+        self.assertEqual(result["decision"], "NO_TRADE")
+        self.assertEqual(result["reason"], "adaptive_governor:shadow_snapshot_source_unavailable")
+        self.assertTrue(result["shadow_snapshot_source_unavailable"])
+        self.assertTrue(any(row["name"] == "shadow_snapshot_source_unavailable" and row["active"] for row in result["circuit_breakers"]))
+        self.assertFalse(result.get("kill_switch_reset", False))
+        self.assertFalse(result["candidate_activated"])
+        self.assertFalse(result["paper_forward_onboarding_started"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_script_runs_without_activation(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -256,6 +310,51 @@ def _empty_intelligence() -> dict[str, object]:
         "recommended_next_research_phase": "continue_research",
         "candidate_activated": False,
         "paper_forward_onboarding_started": False,
+        "broker_touched": False,
+        "order_executed": False,
+        "order_policy": "journal_only_no_broker",
+    }
+
+
+_POSTGRES_URL = "postgresql://user:secret@db.railway.internal:5432/railway"
+
+
+class _FakeMemory:
+    backend = "postgres"
+    resolver_used = "env:DATABASE_URL"
+    postgres_resolver_used = "env:DATABASE_URL"
+    db_fingerprint = "railway_postgres:test"
+    database_url = _POSTGRES_URL
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def get_mt5_events(self, collection: str | None = None, symbol: str | None = None, limit: int = 30) -> list[dict[str, object]]:
+        return self._rows[:limit]
+
+
+def _event(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "event_type": "mt5_shadow_trade",
+        "payload": payload,
+        "source": "test",
+        "confidence": "media",
+        "created_at": payload.get("updated_at") or "2026-07-07T01:00:00+00:00",
+    }
+
+
+def _shadow_event(shadow_trade_id: str, status: str, *, updated_at: str, pnl: float = 0.0) -> dict[str, object]:
+    return {
+        "shadow_trade_id": shadow_trade_id,
+        "symbol": "XAUUSD",
+        "normalized_symbol": "XAUUSD",
+        "timeframe": "M15",
+        "strategy_profile": "xau_m15_latest_state_test",
+        "status": status,
+        "lifecycle_status": "closed" if status in {"closed", "win", "loss", "breakeven"} else "open",
+        "pnl": pnl,
+        "updated_at": updated_at,
+        "closed_at": updated_at if status != "open" else "",
         "broker_touched": False,
         "order_executed": False,
         "order_policy": "journal_only_no_broker",
