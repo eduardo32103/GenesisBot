@@ -471,11 +471,19 @@ def mt5_paper_observation_readiness(
     symbol: str = "XAUUSD",
     broker_symbol: str = "XAUUSD.b",
     timeframe: str = "M15",
+    dry_run_no_persist: bool = False,
+    preflight_only: bool = False,
 ) -> dict[str, Any]:
     del memory
     from services.mt5.mt5_xau_m15_paper_observation_batch_runner import run_multi_asset_paper_observation_readiness
 
-    return run_multi_asset_paper_observation_readiness(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
+    return run_multi_asset_paper_observation_readiness(
+        symbol=symbol,
+        broker_symbol=broker_symbol,
+        timeframe=timeframe,
+        dry_run_no_persist=dry_run_no_persist,
+        preflight_only=preflight_only,
+    )
 
 
 def mt5_xau_m15_paper_observation_cycle(

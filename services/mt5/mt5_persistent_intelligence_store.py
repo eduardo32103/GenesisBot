@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import hashlib
 import os
 import re
 import ssl
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from importlib.util import find_spec
 from typing import Any
@@ -37,6 +39,10 @@ from services.mt5.mt5_research_rejection_registry import research_rejection_regi
 STORE_VERSION = "2026-06-10.mt5_persistent_intelligence_store.v1"
 MAX_STRING_LENGTH = 500
 MAX_JSON_BYTES = 24_000
+_RISK_EVENT_WRITE_SUPPRESSION_REASON: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "genesis_risk_event_write_suppression_reason",
+    default="",
+)
 SHADOW_HISTORY_BASE_COLUMNS = (
     "shadow_trade_id",
     "symbol",
@@ -964,21 +970,11 @@ class MT5PersistentIntelligenceStore:
         return self._safe_insert("mt5_decision_events", row, critical=critical)
 
     def record_risk_event(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
-        row = _sanitize_row(
-            {
-                "timestamp": payload.get("timestamp") or _now(),
-                "symbol": _symbol(payload.get("symbol")),
-                "timeframe": _timeframe(payload.get("timeframe")),
-                "risk_state": payload.get("risk_state") or "",
-                "allowed": bool(payload.get("allowed")),
-                "reason": payload.get("reason") or "",
-                "circuit_breaker": payload.get("circuit_breaker") or "",
-                "consecutive_losses": _int(payload.get("consecutive_losses")),
-                "drawdown": _float(payload.get("drawdown") or payload.get("max_drawdown")),
-                "open_shadow_count": _int(payload.get("open_shadow_count") or payload.get("open_shadow_trades")),
-                "recommended_action": payload.get("recommended_action") or "",
-            }
-        )
+        row = _risk_event_row(payload)
+        critical_write = _critical_write("mt5_risk_events", row) if critical is None else bool(critical)
+        suppression_reason = _risk_event_write_suppression_reason()
+        if suppression_reason and not critical_write:
+            return _suppressed_noncritical_risk_event_write(row, reason=suppression_reason, critical=False)
         return self._safe_insert("mt5_risk_events", row, critical=critical)
 
     def record_candidate_rotation_run(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
@@ -1398,6 +1394,20 @@ def persistent_intelligence_shadow_trade_history(*, symbol: str = "", timeframe:
     return MT5PersistentIntelligenceStore().shadow_trade_history(symbol=symbol, timeframe=timeframe, limit=limit)
 
 
+@contextmanager
+def suppress_noncritical_risk_event_writes(reason: str = "preflight_dry_run"):
+    clean_reason = str(reason or "preflight_dry_run").strip() or "preflight_dry_run"
+    token = _RISK_EVENT_WRITE_SUPPRESSION_REASON.set(clean_reason)
+    try:
+        yield
+    finally:
+        _RISK_EVENT_WRITE_SUPPRESSION_REASON.reset(token)
+
+
+def _risk_event_write_suppression_reason() -> str:
+    return str(_RISK_EVENT_WRITE_SUPPRESSION_REASON.get() or "").strip()
+
+
 def persist_decision_event(
     payload: dict[str, Any],
     *,
@@ -1414,6 +1424,14 @@ def persist_risk_event(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
+    suppression_reason = _risk_event_write_suppression_reason()
+    if suppression_reason and not bool(critical):
+        result = _suppressed_noncritical_risk_event_write(
+            _risk_event_row(payload),
+            reason=suppression_reason,
+            critical=False,
+        )
+        return _runtime_persistence_result("risk_event", result, critical=False)
     result = (store or MT5PersistentIntelligenceStore()).record_risk_event(payload, critical=critical)
     return _runtime_persistence_result("risk_event", result, critical=critical)
 
@@ -1740,12 +1758,56 @@ def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *
         "dropped_noncritical_writes": stats.get("dropped_noncritical_writes", 0),
         "dropped_noncritical_writes_total": stats.get("dropped_noncritical_writes_total", stats.get("dropped_noncritical_writes", 0)),
         "suppressed_duplicate_events": stats.get("suppressed_duplicate_events", 0),
+        "suppressed_noncritical_risk_event": bool(write_result.get("suppressed_noncritical_risk_event")),
+        "dry_run_no_persist": bool(write_result.get("dry_run_no_persist")),
+        "suppression_reason": write_result.get("suppression_reason") or "",
         "last_db_error_category": stats.get("last_db_error_category", ""),
         "critical": bool(critical),
         "critical_persistence_failed": critical_failed,
         "decision": "NO_TRADE" if critical_failed else "",
         "reason": critical_reason,
         "secrets_printed": False,
+        **_safety(),
+    }
+
+
+def _risk_event_row(payload: dict[str, Any]) -> dict[str, Any]:
+    return _sanitize_row(
+        {
+            "timestamp": payload.get("timestamp") or _now(),
+            "symbol": _symbol(payload.get("symbol")),
+            "timeframe": _timeframe(payload.get("timeframe")),
+            "risk_state": payload.get("risk_state") or "",
+            "allowed": bool(payload.get("allowed")),
+            "reason": payload.get("reason") or "",
+            "circuit_breaker": payload.get("circuit_breaker") or "",
+            "consecutive_losses": _int(payload.get("consecutive_losses")),
+            "drawdown": _float(payload.get("drawdown") or payload.get("max_drawdown")),
+            "open_shadow_count": _int(payload.get("open_shadow_count") or payload.get("open_shadow_trades")),
+            "recommended_action": payload.get("recommended_action") or "",
+        }
+    )
+
+
+def _suppressed_noncritical_risk_event_write(row: dict[str, Any], *, reason: str, critical: bool) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "table": "mt5_risk_events",
+        "operation": "insert",
+        "queued": False,
+        "db_degraded": False,
+        "critical": bool(critical),
+        "suppressed_noncritical_risk_event": True,
+        "dry_run_no_persist": True,
+        "suppression_reason": str(reason or "preflight_dry_run"),
+        "payload_redacted": True,
+        "symbol": row.get("symbol") or "",
+        "timeframe": row.get("timeframe") or "",
+        "risk_state": row.get("risk_state") or "",
+        "allowed": bool(row.get("allowed")),
+        "reason": row.get("reason") or "",
+        "circuit_breaker": row.get("circuit_breaker") or "",
+        "recommended_action": row.get("recommended_action") or "",
         **_safety(),
     }
 

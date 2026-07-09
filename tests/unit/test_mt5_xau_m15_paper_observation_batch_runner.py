@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from services.mt5.mt5_market_active_guard import MarketActiveGuard
+from services.mt5.mt5_persistent_connection_manager import persistent_write_backpressure
+from services.mt5.mt5_persistent_intelligence_store import _reset_persistent_intelligence_counters_for_tests, persist_risk_event
 from services.mt5.mt5_xau_m15_paper_observation_batch_runner import (
     HttpPaperObservationClient,
     LocalPaperObservationClient,
@@ -62,6 +64,75 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertFalse(readiness["entry_allowed_for_paper_test"])
         self.assertFalse(opened["paper_shadow_created"])
         self.assertEqual(len(store.rows), 0)
+
+    def test_pool_exhaustion_still_blocks_readiness(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        db = {
+            **_db(),
+            "db_readiness_blocking_reason": "persistent_db_connection_pool_exhausted",
+            "last_db_error_category": "pool_exhausted",
+            "db_pool_exhaustion_detected": True,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], db_state=db)
+
+        readiness = client.readiness()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("persistent_db_connection_pool_exhausted", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+
+    def test_status_readiness_does_not_enqueue_noncritical_risk_events(self) -> None:
+        _reset_persistent_intelligence_counters_for_tests()
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        risk_write: dict[str, object] = {}
+
+        def noisy_capital(*args: object, **kwargs: object) -> dict[str, object]:
+            del args, kwargs
+            nonlocal risk_write
+            risk_write = persist_risk_event(
+                {
+                    "symbol": "BTCUSD",
+                    "timeframe": "M15",
+                    "risk_state": "readiness_diagnostic",
+                    "allowed": True,
+                    "reason": "readiness_status_check",
+                    "recommended_action": "review_preflight",
+                }
+            )
+            write = risk_write.get("write") if isinstance(risk_write.get("write"), dict) else {}
+            return {
+                "ok": True,
+                "capital_state": "normal",
+                "safe_to_trade": True,
+                "decision": "ALLOW_PAPER_REVIEW",
+                "reason": "",
+                "suppressed_noncritical_risk_events": [dict(write)],
+                "dry_run_risk_events": [dict(write)],
+                **_safety(),
+            }
+
+        with patch("services.mt5.mt5_xau_m15_paper_observation_batch_runner.run_capital_protection_governor", side_effect=noisy_capital):
+            readiness = run_multi_asset_paper_observation_readiness(
+                symbol="BTCUSD",
+                broker_symbol="BTCUSD",
+                timeframe="M15",
+                db_state=_db(),
+                asset_config=_asset_config("BTCUSD"),
+                dry_run_no_persist=True,
+                preflight_only=True,
+            )
+        status = persistent_write_backpressure().status()
+
+        self.assertTrue(readiness["dry_run_no_persist"])
+        self.assertTrue(risk_write["suppressed_noncritical_risk_event"])
+        self.assertEqual(status["queue_depth"], 0)
+        self.assertEqual(status["queued_writes"], 0)
+        self.assertEqual(status["failed_writes_active"], 0)
+        self.assertTrue(readiness["suppressed_noncritical_risk_events"])
+        self.assertFalse(readiness["broker_touched"])
+        self.assertFalse(readiness["order_executed"])
 
     def test_db_degraded_still_blocks_paper_open(self) -> None:
         client = _FakeClient(db={**_db(), "db_degraded": True})

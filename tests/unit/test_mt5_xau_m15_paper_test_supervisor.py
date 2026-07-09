@@ -6,6 +6,8 @@ from pathlib import Path
 
 from scripts.run_crypto_m15_paper_test_supervisor import _parse_args as _parse_crypto_args
 from scripts.run_xau_m15_paper_test_supervisor import _parse_args
+from services.mt5.mt5_persistent_connection_manager import persistent_write_backpressure
+from services.mt5.mt5_persistent_intelligence_store import _reset_persistent_intelligence_counters_for_tests, persist_risk_event
 from services.mt5.mt5_xau_m15_paper_test_supervisor import repair_orphan_state, run_xau_m15_paper_test_supervisor
 
 
@@ -123,6 +125,75 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         self.assertEqual(client.drain_calls, 0)
         self.assertEqual(client.monitor_calls, 0)
         self.assertEqual(client.open_calls, 0)
+
+    def test_crypto_preflight_dry_run_does_not_write_mt5_risk_events(self) -> None:
+        _reset_persistent_intelligence_counters_for_tests()
+        client = _RiskWritingSupervisorClient()
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            symbol="BTCUSD",
+            broker_symbol="BTCUSD",
+            timeframe="M15",
+            preflight_only=True,
+            dry_run=True,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+        status = persistent_write_backpressure().status()
+
+        self.assertEqual(result["supervisor_state"], "preflight_only")
+        self.assertTrue(client.risk_write["suppressed_noncritical_risk_event"])
+        self.assertTrue(client.risk_write["dry_run_no_persist"])
+        self.assertEqual(status["queue_depth"], 0)
+        self.assertEqual(status["queued_writes"], 0)
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_preflight_returns_suppressed_risk_events_in_result(self) -> None:
+        _reset_persistent_intelligence_counters_for_tests()
+        client = _RiskWritingSupervisorClient()
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            symbol="BTCUSD",
+            broker_symbol="BTCUSD",
+            timeframe="M15",
+            preflight_only=True,
+            dry_run=True,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertTrue(result["dry_run_no_persist"])
+        self.assertTrue(result["suppressed_noncritical_risk_events"])
+        self.assertTrue(result["dry_run_risk_events"])
+        self.assertEqual(result["suppressed_noncritical_risk_events"][0]["table"], "mt5_risk_events")
+        self.assertEqual(result["suppressed_noncritical_risk_events"][0]["suppression_reason"], "preflight_dry_run")
+
+    def test_no_paper_shadow_created_when_preflight_db_degraded(self) -> None:
+        client = _SupervisorClient(db_degraded=True)
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            symbol="BTCUSD",
+            broker_symbol="BTCUSD",
+            timeframe="M15",
+            preflight_only=True,
+            dry_run=True,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["decision"], "blocked_by_db")
+        self.assertIn("db_degraded", result["blockers"])
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
 
     def test_repeated_crypto_preflight_reuses_db_status_snapshot(self) -> None:
         client = _SnapshotAwareSupervisorClient()
@@ -620,6 +691,30 @@ class _SnapshotAwareSupervisorClient(_SupervisorClient):
     def readiness(self) -> dict[str, object]:
         self.readiness_saw_db_snapshot = isinstance(self.db_state, dict) and bool(self.db_state.get("db_available"))
         return super().readiness()
+
+
+class _RiskWritingSupervisorClient(_SupervisorClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.risk_write: dict[str, object] = {}
+
+    def readiness(self) -> dict[str, object]:
+        self.risk_write = persist_risk_event(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M15",
+                "risk_state": "preflight_diagnostic",
+                "allowed": True,
+                "reason": "readiness_preflight_diagnostic",
+                "recommended_action": "review_preflight",
+            }
+        )
+        write = self.risk_write.get("write") if isinstance(self.risk_write.get("write"), dict) else {}
+        return {
+            **super().readiness(),
+            "suppressed_noncritical_risk_events": [dict(write)],
+            "dry_run_risk_events": [dict(write)],
+        }
 
 
 def _recent_edge_readiness() -> dict[str, object]:

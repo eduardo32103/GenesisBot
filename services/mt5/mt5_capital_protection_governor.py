@@ -123,6 +123,11 @@ def run_capital_protection_governor(
     }
     if persist_events:
         _persist_capital_state(result)
+    else:
+        suppressed = _suppressed_capital_risk_events(result)
+        result["suppressed_noncritical_risk_events"] = suppressed
+        result["dry_run_risk_events"] = suppressed
+        result["risk_event_persistence"] = "suppressed_noncritical" if suppressed else "not_required"
     return result
 
 
@@ -384,22 +389,45 @@ def _runtime_snapshot_stale(snapshot: dict[str, Any], max_minutes: float) -> boo
 
 
 def _persist_capital_state(result: dict[str, Any]) -> None:
+    payload = _capital_risk_event_payload(result)
+    if not payload:
+        return
+    result["persistent_intelligence_risk_event"] = persist_risk_event(payload)
+
+
+def _capital_risk_event_payload(result: dict[str, Any]) -> dict[str, Any]:
     active_breakers = [row for row in result.get("circuit_breakers") or [] if isinstance(row, dict) and row.get("active")]
     if not active_breakers:
-        return
+        return {}
     breaker = active_breakers[0]
-    result["persistent_intelligence_risk_event"] = persist_risk_event(
+    return {
+        "symbol": "",
+        "timeframe": "",
+        "risk_state": result.get("capital_state") or "capital_protection",
+        "allowed": bool(result.get("safe_to_trade")),
+        "reason": breaker.get("reason") or result.get("reason") or "",
+        "circuit_breaker": f"capital_protection:{breaker.get('name') or ''}",
+        "open_shadow_count": result.get("open_shadow_trades") or 0,
+        "recommended_action": result.get("recommended_action") or "NO_TRADE",
+    }
+
+
+def _suppressed_capital_risk_events(result: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = _capital_risk_event_payload(result)
+    if not payload:
+        return []
+    return [
         {
-            "symbol": "",
-            "timeframe": "",
-            "risk_state": result.get("capital_state") or "capital_protection",
-            "allowed": bool(result.get("safe_to_trade")),
-            "reason": breaker.get("reason") or result.get("reason") or "",
-            "circuit_breaker": f"capital_protection:{breaker.get('name') or ''}",
-            "open_shadow_count": result.get("open_shadow_trades") or 0,
-            "recommended_action": result.get("recommended_action") or "NO_TRADE",
+            **payload,
+            "table": "mt5_risk_events",
+            "operation": "insert",
+            "critical": False,
+            "suppressed_noncritical_risk_event": True,
+            "dry_run_no_persist": True,
+            "suppression_reason": "persist_events_false",
+            "payload_redacted": True,
         }
-    )
+    ]
 
 
 def _pnl(trade: dict[str, Any]) -> float:

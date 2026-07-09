@@ -14,7 +14,11 @@ from services.mt5.mt5_bridge import mt5_shadow_trades_history, mt5_shadow_trades
 from services.mt5.mt5_capital_protection_governor import run_capital_protection_governor
 from services.mt5.mt5_frozen_sample_guard import evaluate_frozen_sample
 from services.mt5.mt5_market_active_guard import evaluate_market_active
-from services.mt5.mt5_persistent_intelligence_store import MT5PersistentIntelligenceStore, persistent_intelligence_status
+from services.mt5.mt5_persistent_intelligence_store import (
+    MT5PersistentIntelligenceStore,
+    persistent_intelligence_status,
+    suppress_noncritical_risk_event_writes,
+)
 from services.mt5.mt5_risk_governor import assess_runtime_risk
 from services.mt5.mt5_runtime_context_diagnostics import run_runtime_context_diagnostics
 from services.mt5.mt5_runtime_snapshot import append_closed_shadow_trade, get_snapshot, update_open_shadow_trade
@@ -95,6 +99,8 @@ class LocalPaperObservationClient:
         asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
         store: Any | None = None,
         db_state: dict[str, Any] | None = None,
+        dry_run_no_persist: bool = False,
+        preflight_only: bool = False,
     ) -> None:
         self.symbol = _clean_symbol(symbol or SYMBOL)
         self.broker_symbol = str(broker_symbol or self.symbol)
@@ -103,6 +109,8 @@ class LocalPaperObservationClient:
         self.asset_config = _asset_config_for(self.asset_configs, self.symbol, self.timeframe)
         self.store = store
         self.db_state = dict(db_state or {}) if db_state is not None else None
+        self.dry_run_no_persist = bool(dry_run_no_persist)
+        self.preflight_only = bool(preflight_only)
 
     def persistent_status(self) -> dict[str, Any]:
         if self.db_state is not None:
@@ -120,7 +128,15 @@ class LocalPaperObservationClient:
         if config_error:
             return _asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config)
         if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
-            return _generic_multi_asset_readiness(self.symbol, self.broker_symbol, self.timeframe, db_state=self.db_state, asset_config=self.asset_config)
+            return _generic_multi_asset_readiness(
+                self.symbol,
+                self.broker_symbol,
+                self.timeframe,
+                db_state=self.db_state,
+                asset_config=self.asset_config,
+                dry_run_no_persist=self.dry_run_no_persist,
+                preflight_only=self.preflight_only,
+            )
         return _apply_asset_config_to_readiness(mt5_xau_m15_paper_observation_readiness(), self.asset_config)
 
     def monitor(
@@ -215,6 +231,8 @@ class HttpPaperObservationClient:
         timeframe: str = TIMEFRAME,
         allowed_symbols: list[str] | tuple[str, ...] | None = None,
         asset_configs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+        dry_run_no_persist: bool = False,
+        preflight_only: bool = False,
     ) -> None:
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout_seconds = max(1.0, float(timeout_seconds or 10.0))
@@ -223,6 +241,8 @@ class HttpPaperObservationClient:
         self.timeframe = _clean_timeframe(timeframe or TIMEFRAME)
         self.asset_configs = _asset_configs_from_inputs(asset_configs=asset_configs, allowed_symbols=allowed_symbols, default_timeframe=self.timeframe)
         self.asset_config = _asset_config_for(self.asset_configs, self.symbol, self.timeframe)
+        self.dry_run_no_persist = bool(dry_run_no_persist)
+        self.preflight_only = bool(preflight_only)
 
     def persistent_status(self) -> dict[str, Any]:
         return self._get("/api/genesis/mt5/persistent-intelligence/status")
@@ -238,7 +258,15 @@ class HttpPaperObservationClient:
         if config_error:
             return _asset_config_readiness_blocked(self.symbol, self.broker_symbol, self.timeframe, config_error, self.asset_config)
         if self.symbol != SYMBOL or self.timeframe != TIMEFRAME:
-            query = urlencode({"symbol": self.symbol, "broker_symbol": self.broker_symbol, "timeframe": self.timeframe})
+            query = urlencode(
+                {
+                    "symbol": self.symbol,
+                    "broker_symbol": self.broker_symbol,
+                    "timeframe": self.timeframe,
+                    "dry_run_no_persist": "true" if self.dry_run_no_persist else "false",
+                    "preflight_only": "true" if self.preflight_only else "false",
+                }
+            )
             try:
                 return _apply_asset_config_to_readiness(
                     self._get(f"/api/genesis/mt5/paper-observation/readiness?{query}"),
@@ -380,6 +408,7 @@ def run_xau_m15_paper_observation_batch_runner(
             broker_symbol=clean_broker_symbol,
             timeframe=clean_timeframe,
             asset_configs=clean_asset_configs,
+            dry_run_no_persist=bool(dry_run),
         )
         if base_url
         else LocalPaperObservationClient(
@@ -387,6 +416,7 @@ def run_xau_m15_paper_observation_batch_runner(
             broker_symbol=clean_broker_symbol,
             timeframe=clean_timeframe,
             asset_configs=clean_asset_configs,
+            dry_run_no_persist=bool(dry_run),
         )
     )
     state_path = Path(state_file) if state_file else None
@@ -2588,7 +2618,23 @@ def _generic_multi_asset_readiness(
     *,
     db_state: dict[str, Any] | None = None,
     asset_config: dict[str, Any] | None = None,
+    dry_run_no_persist: bool = False,
+    preflight_only: bool = False,
 ) -> dict[str, Any]:
+    if dry_run_no_persist or preflight_only:
+        with suppress_noncritical_risk_event_writes("preflight_dry_run"):
+            payload = _generic_multi_asset_readiness(
+                symbol,
+                broker_symbol,
+                timeframe,
+                db_state=db_state,
+                asset_config=asset_config,
+                dry_run_no_persist=False,
+                preflight_only=False,
+            )
+        payload["dry_run_no_persist"] = bool(dry_run_no_persist)
+        payload["preflight_only"] = bool(preflight_only)
+        return payload
     clean_symbol = _clean_symbol(symbol)
     clean_timeframe = _clean_timeframe(timeframe)
     config = dict(asset_config or {})
@@ -2637,6 +2683,7 @@ def _generic_multi_asset_readiness(
             "actual": capital_reason or capital.get("capital_state") or "unknown",
             "required": "capital_state=normal,safe_to_trade=true",
         }
+    suppressed_risk_events = list(capital.get("suppressed_noncritical_risk_events") or [])
     return {
         "ok": True,
         "status": "multi_asset_paper_observation_readiness_ready",
@@ -2671,6 +2718,10 @@ def _generic_multi_asset_readiness(
         "capital_state": capital.get("capital_state") or "",
         "capital_reason": capital_reason,
         "capital_protection": capital,
+        "suppressed_noncritical_risk_events": suppressed_risk_events,
+        "dry_run_risk_events": suppressed_risk_events,
+        "dry_run_no_persist": False,
+        "preflight_only": False,
         "capital_allows_observation": capital_allowed,
         "adaptive_allows_observation": True,
         "risk_allows_observation": bool(risk.get("allowed", risk.get("risk_governor_allowed", False))),
@@ -2700,6 +2751,8 @@ def run_multi_asset_paper_observation_readiness(
     timeframe: str = TIMEFRAME,
     db_state: dict[str, Any] | None = None,
     asset_config: dict[str, Any] | None = None,
+    dry_run_no_persist: bool = False,
+    preflight_only: bool = False,
 ) -> dict[str, Any]:
     clean_symbol = _clean_symbol(symbol)
     clean_timeframe = _clean_timeframe(timeframe)
@@ -2712,6 +2765,8 @@ def run_multi_asset_paper_observation_readiness(
         clean_timeframe,
         db_state=db_state,
         asset_config=config,
+        dry_run_no_persist=dry_run_no_persist,
+        preflight_only=preflight_only,
     )
 
 

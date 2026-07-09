@@ -4721,7 +4721,15 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             symbol = (query.get("symbol") or query.get("ticker") or ["XAUUSD"])[0]
             broker_symbol = (query.get("broker_symbol") or query.get("broker-symbol") or [symbol])[0]
             timeframe = (query.get("timeframe") or query.get("tf") or ["M15"])[0]
-            payload_data = get_genesis_mt5_paper_observation_readiness(symbol=symbol, broker_symbol=broker_symbol, timeframe=timeframe)
+            dry_run_no_persist = _truthy((query.get("dry_run_no_persist") or query.get("dry-run-no-persist") or [""])[0])
+            preflight_only = _truthy((query.get("preflight_only") or query.get("preflight-only") or [""])[0])
+            payload_data = get_genesis_mt5_paper_observation_readiness(
+                symbol=symbol,
+                broker_symbol=broker_symbol,
+                timeframe=timeframe,
+                dry_run_no_persist=dry_run_no_persist,
+                preflight_only=preflight_only,
+            )
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

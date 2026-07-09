@@ -1082,6 +1082,33 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(second["order_executed"])
         self.assertEqual(second["order_policy"], "journal_only_no_broker")
 
+    def test_real_paper_observation_can_persist_critical_risk_events_when_not_dry_run(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = persist_risk_event(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M15",
+                "risk_state": "critical_safety_exit",
+                "allowed": False,
+                "reason": "critical_safety_exit",
+                "circuit_breaker": "critical_safety_exit",
+                "recommended_action": "NO_TRADE",
+            },
+            critical=True,
+            store=store,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["critical"])
+        self.assertFalse(result["suppressed_noncritical_risk_event"])
+        self.assertEqual(len(client.inserted), 1)
+        self.assertEqual(client.inserted[0]["table"], "mt5_risk_events")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_duplicate_candidate_rotation_runs_are_coalesced(self) -> None:
         client = _FakeClient()
         store = MT5PersistentIntelligenceStore(client=client)

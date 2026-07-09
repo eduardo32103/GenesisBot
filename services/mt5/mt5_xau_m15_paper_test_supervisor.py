@@ -17,6 +17,7 @@ from services.mt5.mt5_xau_m15_paper_observation_batch_runner import (
     _readiness_with_db_snapshot,
     run_xau_m15_paper_observation_batch_runner,
 )
+from services.mt5.mt5_persistent_intelligence_store import suppress_noncritical_risk_event_writes
 from services.mt5.mt5_xau_m15_paper_observation_readiness import BROKER_SYMBOL, CANDIDATE_PROFILE, SYMBOL, TIMEFRAME
 
 
@@ -58,6 +59,7 @@ def run_xau_m15_paper_test_supervisor(
     clean_symbol = str(symbol or SYMBOL).upper().strip()
     clean_timeframe = str(timeframe or TIMEFRAME).upper().strip()
     clean_broker_symbol = str(broker_symbol or clean_symbol)
+    no_write_preflight = bool(preflight_only or dry_run)
     active_client = client or (
         HttpPaperObservationClient(
             base_url,
@@ -67,6 +69,8 @@ def run_xau_m15_paper_test_supervisor(
             timeframe=clean_timeframe,
             allowed_symbols=allowed_symbols,
             asset_configs=asset_configs,
+            dry_run_no_persist=no_write_preflight,
+            preflight_only=preflight_only,
         )
         if base_url
         else LocalPaperObservationClient(
@@ -75,9 +79,18 @@ def run_xau_m15_paper_test_supervisor(
             timeframe=clean_timeframe,
             allowed_symbols=allowed_symbols,
             asset_configs=asset_configs,
+            dry_run_no_persist=no_write_preflight,
+            preflight_only=preflight_only,
         )
     )
-    preflight = _preflight(active_client)
+    if no_write_preflight:
+        with suppress_noncritical_risk_event_writes("preflight_dry_run"):
+            preflight = _preflight(active_client)
+    else:
+        preflight = _preflight(active_client)
+    preflight["dry_run_no_persist"] = no_write_preflight
+    preflight["suppressed_noncritical_risk_events"] = _preflight_suppressed_risk_events(preflight)
+    preflight["dry_run_risk_events"] = list(preflight["suppressed_noncritical_risk_events"])
     if preflight_only:
         return _preflight_only_result(preflight=preflight, started=started, symbol=clean_symbol, broker_symbol=clean_broker_symbol, timeframe=clean_timeframe)
     if _unsafe([preflight.get("db_state", {}), preflight.get("open_payload", {}), preflight.get("history", {}), preflight.get("readiness", {})]):
@@ -258,6 +271,18 @@ def _preflight(client: Any) -> dict[str, Any]:
     }
 
 
+def _preflight_suppressed_risk_events(preflight: dict[str, Any]) -> list[dict[str, Any]]:
+    readiness = preflight.get("readiness") if isinstance(preflight.get("readiness"), dict) else {}
+    events = readiness.get("suppressed_noncritical_risk_events")
+    if isinstance(events, list):
+        return [dict(row) for row in events if isinstance(row, dict)]
+    capital = readiness.get("capital_protection") if isinstance(readiness.get("capital_protection"), dict) else {}
+    events = capital.get("suppressed_noncritical_risk_events")
+    if isinstance(events, list):
+        return [dict(row) for row in events if isinstance(row, dict)]
+    return []
+
+
 def _preflight_only_result(
     *,
     preflight: dict[str, Any],
@@ -314,6 +339,9 @@ def _preflight_only_result(
         "capital_allows_observation": bool(readiness.get("capital_allows_observation")),
         "risk_state": readiness.get("risk_state") or "",
         "risk_allows_observation": bool(readiness.get("risk_allows_observation")),
+        "dry_run_no_persist": bool(preflight.get("dry_run_no_persist")),
+        "suppressed_noncritical_risk_events": list(preflight.get("suppressed_noncritical_risk_events") or []),
+        "dry_run_risk_events": list(preflight.get("dry_run_risk_events") or []),
         "open_count": open_count,
         "merged_open_count": merged_open_count,
         "max_open_positions_total": int(_num(readiness.get("max_open_positions_total")) or 1),
