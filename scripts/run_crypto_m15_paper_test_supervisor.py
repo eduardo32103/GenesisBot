@@ -16,6 +16,7 @@ from services.mt5.mt5_xau_m15_paper_test_supervisor import run_xau_m15_paper_tes
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     symbol = str(args.symbol or "BTCUSD").upper().strip()
+    timeframe = str(args.timeframe or "M15").upper().strip()
     dry_run = bool(args.dry_run) if args.dry_run is not None else not bool(args.paper_only_confirmed)
     state_file = args.state_file or f"data/research_outputs/{symbol.lower()}_m15_paper_batch_state.json"
     results_file = args.results_file or f"data/research_outputs/{symbol.lower()}_m15_paper_batch_results.json"
@@ -24,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         base_url=args.base_url,
         symbol=symbol,
         broker_symbol=args.broker_symbol or symbol,
-        timeframe="M15",
+        timeframe=timeframe,
         allowed_symbols=args.allow_symbol,
         asset_configs=asset_configs,
         target_trades=args.target_trades,
@@ -59,6 +60,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run BTCUSD/ETHUSD M15 paper-only supervisor lab. No broker, no real trading.")
     parser.add_argument("--symbol", default="BTCUSD")
     parser.add_argument("--broker-symbol", default="")
+    parser.add_argument("--timeframe", choices=["M15"], default="M15", help="Paper-only crypto supervisor timeframe. Only M15 is enabled.")
     parser.add_argument("--allow-symbol", action="append", default=None, help="Explicit paper-test symbol allowlist shorthand. Repeatable. No default; omitted allowlist fails closed.")
     parser.add_argument("--asset-config-json", default="", help="Explicit JSON object/list with enabled paper-only asset config(s).")
     parser.add_argument("--asset-config-file", default="", help="Path to explicit JSON object/list with enabled paper-only asset config(s).")

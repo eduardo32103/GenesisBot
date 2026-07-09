@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import ssl
@@ -636,17 +637,31 @@ class MT5PersistentIntelligenceStore:
         table_status: dict[str, bool] = {}
         table_errors: dict[str, str] = {}
         schema_check_performed = False
-        use_schema_cache = bool(
-            _schema_missing_write_freeze_status().get("writes_frozen")
-            and _schema_check_cooldown_active()
+        cached_schema_available = bool(
+            _schema_check_cooldown_active()
             and _LAST_SCHEMA_CLIENT_SIGNATURE == _client_signature(self.client)
+            and _LAST_SCHEMA_TABLE_STATUS
             and not write_test_event
+        )
+        healthy_schema_cache_available = bool(
+            cached_schema_available
+            and _LAST_SCHEMA_DB_AVAILABLE
+            and not _LAST_SCHEMA_TABLE_ERRORS
+            and all(_LAST_SCHEMA_TABLE_STATUS.values())
+        )
+        use_schema_cache = bool(
+            cached_schema_available
+            and not backpressure_degraded
+            and (_schema_missing_write_freeze_status().get("writes_frozen") or healthy_schema_cache_available)
         )
         if use_schema_cache:
             schema_check_performed = True
             table_status = dict(_LAST_SCHEMA_TABLE_STATUS) or {table: False for table in REQUIRED_TABLES}
             table_errors = dict(_LAST_SCHEMA_TABLE_ERRORS)
-            table_errors.setdefault("schema_check_cooldown", "schema_missing_write_freeze")
+            table_errors.setdefault(
+                "schema_check_cooldown",
+                "schema_missing_write_freeze" if _schema_missing_write_freeze_status().get("writes_frozen") else "healthy_schema_cache",
+            )
         elif client_available and not backpressure_degraded:
             schema_check_performed = True
             _mark_schema_check_started()
@@ -1513,10 +1528,10 @@ def _db_health_source(
     backpressure: dict[str, Any],
     db_degraded: bool,
 ) -> str:
-    if current_probe_ok and not db_degraded:
-        return "current_probe"
     if use_schema_cache:
         return "schema_cache"
+    if current_probe_ok and not db_degraded:
+        return "current_probe"
     if backpressure.get("backoff_active"):
         return "active_backpressure"
     if not client_available:
@@ -1821,7 +1836,19 @@ def _cache_schema_check(table_status: dict[str, bool], table_errors: dict[str, s
 
 
 def _client_signature(client: Any) -> str:
-    return f"{client.__class__.__module__}.{client.__class__.__qualname__}:{id(client)}"
+    class_name = f"{client.__class__.__module__}.{client.__class__.__qualname__}"
+    provider = _client_provider(client)
+    database_url = str(getattr(client, "database_url", "") or "")
+    if database_url:
+        return f"{class_name}:{provider}:database_url:{_stable_hash(database_url)}"
+    url = str(getattr(client, "url", "") or "")
+    if url:
+        return f"{class_name}:{provider}:url:{_stable_hash(url)}"
+    return f"{class_name}:{provider}"
+
+
+def _stable_hash(value: str) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
 
 def _schema_check_cooldown_active() -> bool:

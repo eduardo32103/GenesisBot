@@ -141,6 +141,51 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(status["pool_max_size"], 2)
         self.assertEqual(status["pool_idle"], 1)
 
+    def test_repeated_preflight_does_not_create_unbounded_db_connections(self) -> None:
+        with patch.dict("os.environ", {"PERSISTENT_DB_SCHEMA_CHECK_COOLDOWN_SEC": "60"}):
+            _reset_persistent_intelligence_counters_for_tests()
+            first_client = _ReadyPooledRailwayClient()
+            first = MT5PersistentIntelligenceStore(client=first_client).healthcheck()
+            first_execute_count = first_client.connections[0].cursor_obj.execute_count
+            second_client = _ReadyPooledRailwayClient()
+            second = MT5PersistentIntelligenceStore(client=second_client).healthcheck()
+
+        self.assertTrue(first["db_available"])
+        self.assertFalse(first["db_degraded"])
+        self.assertTrue(first["tables_ready"])
+        self.assertEqual(first["db_health_source"], "current_probe")
+        self.assertEqual(first["db_connection_opened"], 1)
+        self.assertEqual(first["db_connection_closed"], 0)
+        self.assertEqual(first["pool_idle"], 1)
+        self.assertTrue(second["db_available"])
+        self.assertFalse(second["db_degraded"])
+        self.assertTrue(second["tables_ready"])
+        self.assertEqual(second["db_health_source"], "schema_cache")
+        self.assertTrue(second["schema_check_cooldown_active"])
+        self.assertEqual(second["db_connection_opened"], 1)
+        self.assertEqual(second["db_connection_closed"], 0)
+        self.assertEqual(first_client.connection_count, 1)
+        self.assertEqual(second_client.connection_count, 0)
+        self.assertEqual(first_client.connections[0].cursor_obj.execute_count, first_execute_count)
+
+    def test_db_connection_closed_on_status_failure(self) -> None:
+        client = _FailingPooledRailwayClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = store.healthcheck()
+        status = client.pool_status()
+
+        self.assertTrue(result["db_degraded"])
+        self.assertEqual(result["last_db_error_category"], "max_connections")
+        self.assertTrue(result["db_pool_exhaustion_detected"])
+        self.assertEqual(status["db_connection_opened"], 1)
+        self.assertEqual(status["db_connection_closed"], 1)
+        self.assertEqual(client.connections[0].close_count, 1)
+        self.assertEqual(status["pool_idle"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_missing_tables_degrades_safely_with_apply_schema_recommendation(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
 
@@ -895,6 +940,27 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(client.table_ready_calls, first_calls)
         self.assertIn("schema_check_cooldown", second["table_errors"])
         self.assertEqual(second["queue_depth"], 0)
+        self.assertFalse(second["broker_touched"])
+        self.assertFalse(second["order_executed"])
+        self.assertEqual(second["order_policy"], "journal_only_no_broker")
+
+    def test_healthy_schema_check_reuses_cache_during_cooldown(self) -> None:
+        with patch.dict("os.environ", {"PERSISTENT_DB_SCHEMA_CHECK_COOLDOWN_SEC": "60"}):
+            _reset_persistent_intelligence_counters_for_tests()
+            client = _CountingHealthyClient()
+            first = MT5PersistentIntelligenceStore(client=client).healthcheck()
+            first_calls = client.table_ready_calls
+            second = MT5PersistentIntelligenceStore(client=client).healthcheck()
+
+        self.assertTrue(first["db_available"])
+        self.assertFalse(first["db_degraded"])
+        self.assertTrue(first["tables_ready"])
+        self.assertEqual(first["db_health_source"], "current_probe")
+        self.assertEqual(second["db_health_source"], "schema_cache")
+        self.assertTrue(second["schema_check_cooldown_active"])
+        self.assertEqual(second["last_schema_check_at"], first["last_schema_check_at"])
+        self.assertEqual(second["table_errors"].get("schema_check_cooldown"), "healthy_schema_cache")
+        self.assertEqual(client.table_ready_calls, first_calls)
         self.assertFalse(second["broker_touched"])
         self.assertFalse(second["order_executed"])
         self.assertEqual(second["order_policy"], "journal_only_no_broker")
@@ -1685,6 +1751,16 @@ class _CountingMissingTablesClient(_MissingTablesClient):
         return super().select(table, params=params)
 
 
+class _CountingHealthyClient(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.table_ready_calls = 0
+
+    def table_ready(self, table: str) -> bool:
+        self.table_ready_calls += 1
+        return super().table_ready(table)
+
+
 class _FailingWriteClient:
     available = True
     url_configured = True
@@ -1740,6 +1816,40 @@ class _PooledRailwayClient(RailwayPostgresClient):
         return connection
 
 
+class _ReadyPooledRailwayClient(RailwayPostgresClient):
+    def __init__(self) -> None:
+        self.connection_count = 0
+        self.connections: list[_ReadyPgConnection] = []
+        super().__init__(
+            database_url="postgresql://user:pass@example.test:5432/readydb",
+            driver_available=True,
+            pool_max_size=1,
+        )
+
+    def _connect(self) -> "_ReadyPgConnection":
+        self.connection_count += 1
+        connection = _ReadyPgConnection()
+        self.connections.append(connection)
+        return connection
+
+
+class _FailingPooledRailwayClient(RailwayPostgresClient):
+    def __init__(self) -> None:
+        self.connection_count = 0
+        self.connections: list[_FailingPgConnection] = []
+        super().__init__(
+            database_url="postgresql://user:pass@example.test:5432/failingdb",
+            driver_available=True,
+            pool_max_size=1,
+        )
+
+    def _connect(self) -> "_FailingPgConnection":
+        self.connection_count += 1
+        connection = _FailingPgConnection()
+        self.connections.append(connection)
+        return connection
+
+
 class _FakePgConnection:
     def __init__(self) -> None:
         self.close_count = 0
@@ -1760,6 +1870,18 @@ class _FakePgConnection:
         self.close_count += 1
 
 
+class _ReadyPgConnection(_FakePgConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cursor_obj = _ReadyPgCursor()
+
+
+class _FailingPgConnection(_FakePgConnection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cursor_obj = _FailingPgCursor()
+
+
 class _FakePgCursor:
     description: list[tuple[str]] = []
 
@@ -1771,6 +1893,27 @@ class _FakePgCursor:
 
     def fetchall(self) -> list[tuple[object, ...]]:
         return []
+
+
+class _ReadyPgCursor(_FakePgCursor):
+    description = [("table_name",)]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.execute_count = 0
+
+    def execute(self, sql: str, values: tuple[object, ...]) -> None:
+        self.execute_count += 1
+        super().execute(sql, values)
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return [("ready",)]
+
+
+class _FailingPgCursor(_FakePgCursor):
+    def execute(self, sql: str, values: tuple[object, ...]) -> None:
+        super().execute(sql, values)
+        raise RuntimeError("max clients reached in session mode / max clients limited to pool_size: 15")
 
 
 class _FakeSchemaConnection:

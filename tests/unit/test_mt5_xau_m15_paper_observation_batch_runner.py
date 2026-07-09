@@ -42,6 +42,49 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "db_degraded")
         self.assertEqual(client.open_calls, 0)
 
+    def test_pool_exhaustion_blocks_readiness(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "db_readiness_blocking_reason": "persistent_db_connection_pool_exhausted",
+            "last_db_error_category": "pool_exhausted",
+            "db_pool_exhaustion_detected": True,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("persistent_db_connection_pool_exhausted", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(len(store.rows), 0)
+
+    def test_db_degraded_still_blocks_paper_open(self) -> None:
+        client = _FakeClient(db={**_db(), "db_degraded": True})
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertEqual(result["runner_state"], "stopped_by_db")
+        self.assertEqual(result["stop_reason"], "db_degraded")
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+
+    def test_no_paper_shadow_created_when_db_degraded(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state={**_db(), "db_degraded": True})
+
+        opened = client.open_shadow_once()
+
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertIn("db_degraded", opened["reason"])
+        self.assertEqual(len(store.rows), 0)
+
     def test_no_open_if_queue_depth_positive(self) -> None:
         client = _FakeClient(db={**_db(), "queue_depth": 1})
 
@@ -242,7 +285,9 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
             "failed_writes_active": 0,
             "failed_writes_unresolved": 0,
             "failed_writes_critical": 0,
-            "dropped_noncritical_writes_total": 2,
+            "dropped_noncritical_writes_total": 0,
+            "last_db_error_category": "max_connections",
+            "last_db_error_at": "2026-07-09T08:19:56+00:00",
             "queue_drain_succeeded": True,
         }
         client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)

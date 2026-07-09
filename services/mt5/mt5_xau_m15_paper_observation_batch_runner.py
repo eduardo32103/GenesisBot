@@ -567,7 +567,7 @@ def run_xau_m15_paper_observation_batch_step(
 
     db = _safe_call(client.persistent_status)
     open_payload = _safe_call(client.open_shadow_trades)
-    readiness = _normalize_readiness_diagnostics(_safe_call(client.readiness))
+    readiness = _normalize_readiness_diagnostics(_safe_call(_readiness_with_db_snapshot, client=client, db_state=db))
     monitor = _safe_call(
         client.monitor,
         apply_paper_close=False,
@@ -1352,6 +1352,31 @@ def _safe_call(fn: Callable[..., dict[str, Any]], **kwargs: Any) -> dict[str, An
     return dict(result or {"ok": False, "reason": "empty_payload", **_safety()})
 
 
+def _readiness_uses_db_snapshot(client: Any) -> bool:
+    return bool(callable(getattr(client, "readiness_with_db_state", None)) or hasattr(client, "db_state"))
+
+
+def _readiness_with_db_snapshot(*, client: Any, db_state: dict[str, Any]) -> dict[str, Any]:
+    custom = getattr(client, "readiness_with_db_state", None)
+    if callable(custom):
+        return custom(dict(db_state or {}))
+    if not hasattr(client, "db_state"):
+        return client.readiness()
+    sentinel = object()
+    previous = getattr(client, "db_state", sentinel)
+    try:
+        setattr(client, "db_state", dict(db_state or {}))
+        return client.readiness()
+    finally:
+        if previous is sentinel:
+            try:
+                delattr(client, "db_state")
+            except AttributeError:
+                pass
+        else:
+            setattr(client, "db_state", previous)
+
+
 def _open_response_contract_error(opened: dict[str, Any]) -> str:
     if not bool(opened.get("paper_shadow_created")):
         return ""
@@ -1413,17 +1438,6 @@ def _db_block_reason(db: dict[str, Any]) -> str:
         return "failed_writes_unresolved"
     if failed_writes_active > 0:
         return "failed_writes_active"
-    if failed_writes_total > 0:
-        dropped_total = _db_counter(db, "dropped_noncritical_writes_total")
-        if dropped_total is None:
-            dropped_total = _db_counter(db, "dropped_noncritical_writes")
-        if (
-            dropped_total != failed_writes_total
-            or str(db.get("last_db_error_category") or "")
-            or str(db.get("last_db_error_at") or "")
-            or db.get("queue_drain_succeeded") is not True
-        ):
-            return "failed_write_semantics_unknown"
     return ""
 
 

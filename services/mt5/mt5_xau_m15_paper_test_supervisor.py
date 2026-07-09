@@ -13,6 +13,8 @@ from services.mt5.mt5_xau_m15_paper_observation_batch_runner import (
     HttpPaperObservationClient,
     LocalPaperObservationClient,
     compute_xau_m15_paper_batch_stats,
+    _readiness_uses_db_snapshot,
+    _readiness_with_db_snapshot,
     run_xau_m15_paper_observation_batch_runner,
 )
 from services.mt5.mt5_xau_m15_paper_observation_readiness import BROKER_SYMBOL, CANDIDATE_PROFILE, SYMBOL, TIMEFRAME
@@ -244,12 +246,14 @@ def repair_orphan_state(
 
 
 def _preflight(client: Any) -> dict[str, Any]:
+    db_state = _safe_call(client.persistent_status)
     return {
         "supervisor_state": "preflight_ready",
-        "db_state": _safe_call(client.persistent_status),
+        "db_state": db_state,
         "open_payload": _safe_call(client.open_shadow_trades),
         "history": _safe_call(client.shadow_trade_history),
-        "readiness": _safe_call(client.readiness),
+        "readiness": _safe_call(_readiness_with_db_snapshot, client=client, db_state=db_state),
+        "db_preflight_status_cache_hit": _readiness_uses_db_snapshot(client),
         **_safety(),
     }
 
@@ -462,17 +466,6 @@ def _db_block_reason(db: dict[str, Any]) -> str:
         return "failed_writes_unresolved"
     if failed_writes_active > 0:
         return "failed_writes_active"
-    if failed_writes_total > 0:
-        dropped_total = _db_counter(db, "dropped_noncritical_writes_total")
-        if dropped_total is None:
-            dropped_total = _db_counter(db, "dropped_noncritical_writes")
-        if (
-            dropped_total != failed_writes_total
-            or str(db.get("last_db_error_category") or "")
-            or str(db.get("last_db_error_at") or "")
-            or db.get("queue_drain_succeeded") is not True
-        ):
-            return "failed_write_semantics_unknown"
     return ""
 
 

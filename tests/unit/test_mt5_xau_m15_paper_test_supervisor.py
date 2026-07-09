@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.run_crypto_m15_paper_test_supervisor import _parse_args as _parse_crypto_args
 from scripts.run_xau_m15_paper_test_supervisor import _parse_args
 from services.mt5.mt5_xau_m15_paper_test_supervisor import repair_orphan_state, run_xau_m15_paper_test_supervisor
 
@@ -14,6 +15,16 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
 
         self.assertTrue(args.preflight_only)
         self.assertTrue(args.json)
+
+    def test_crypto_cli_accepts_explicit_m15_timeframe_only(self) -> None:
+        args = _parse_crypto_args(["--symbol", "ETHUSD", "--timeframe", "M15", "--preflight-only", "--dry-run", "--json"])
+
+        self.assertEqual(args.timeframe, "M15")
+        self.assertEqual(args.symbol, "ETHUSD")
+        self.assertTrue(args.preflight_only)
+        self.assertTrue(args.dry_run)
+        with self.assertRaises(SystemExit):
+            _parse_crypto_args(["--symbol", "ETHUSD", "--timeframe", "M30", "--preflight-only"])
 
     def test_supervisor_dry_run_does_not_open_shadow(self) -> None:
         client = _SupervisorClient()
@@ -112,6 +123,87 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         self.assertEqual(client.drain_calls, 0)
         self.assertEqual(client.monitor_calls, 0)
         self.assertEqual(client.open_calls, 0)
+
+    def test_repeated_crypto_preflight_reuses_db_status_snapshot(self) -> None:
+        client = _SnapshotAwareSupervisorClient()
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            symbol="BTCUSD",
+            broker_symbol="BTCUSD",
+            timeframe="M15",
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["decision"], "preflight_ready")
+        self.assertEqual(client.status_calls, 1)
+        self.assertTrue(client.readiness_saw_db_snapshot)
+        self.assertTrue(result["preflight"]["db_preflight_status_cache_hit"])
+        self.assertEqual(client.monitor_calls, 0)
+        self.assertEqual(client.open_calls, 0)
+
+    def test_eth_symbol_preflight_uses_explicit_symbol(self) -> None:
+        client = _SupervisorClient()
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            symbol="ETHUSD",
+            broker_symbol="ETHUSD",
+            timeframe="M15",
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["symbol"], "ETHUSD")
+        self.assertEqual(result["broker_symbol"], "ETHUSD")
+        self.assertEqual(result["timeframe"], "M15")
+        self.assertIn("multi_asset_paper_test|symbol=ETHUSD|timeframe=M15", result["candidate_profile"])
+        self.assertIn("GET /api/genesis/mt5/shadow-trades/open?symbol=ETHUSD", result["allowed_endpoints"])
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertEqual(client.open_calls, 0)
+
+    def test_db_degraded_still_blocks_paper_open(self) -> None:
+        client = _SupervisorClient(db_degraded=True)
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            dry_run=False,
+            paper_only_confirmed=True,
+            once=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["supervisor_state"], "stopped_by_db")
+        self.assertEqual(result["stop_reason"], "db_degraded")
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_no_paper_shadow_created_when_db_degraded(self) -> None:
+        client = _SupervisorClient(db_degraded=True)
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["decision"], "blocked_by_db")
+        self.assertIn("db_degraded", result["blockers"])
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["paper_shadow_created"])
 
     def test_supervisor_drains_queue_before_opening(self) -> None:
         client = _SupervisorClient(db_queue=2, queue_after_drain=0)
@@ -219,6 +311,34 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         self.assertIn("failed_write_semantics_unknown", result["blockers"])
         self.assertEqual(client.monitor_calls, 0)
         self.assertEqual(client.open_calls, 0)
+
+    def test_preflight_allows_historical_failed_write_when_semantics_clean(self) -> None:
+        client = _SupervisorClient(
+            failed_writes=1,
+            failed_writes_active=0,
+            failed_writes_unresolved=0,
+            failed_writes_critical=0,
+            failed_write_semantics_known=True,
+            dropped_noncritical_writes_total=0,
+        )
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["supervisor_state"], "preflight_only")
+        self.assertEqual(result["decision"], "preflight_ready")
+        self.assertEqual(result["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertEqual(result["blockers"], [])
+        self.assertEqual(client.monitor_calls, 0)
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
 
@@ -359,6 +479,7 @@ class _SupervisorClient:
         self,
         *,
         db_queue: int = 0,
+        db_degraded: bool = False,
         queue_after_drain: int = 0,
         failed_writes: int = 0,
         failed_writes_active: int | None = None,
@@ -373,6 +494,7 @@ class _SupervisorClient:
         readiness: dict[str, object] | None = None,
     ) -> None:
         self.db_queue = db_queue
+        self.db_degraded = db_degraded
         self.queue_after_drain = queue_after_drain
         self.failed_writes = failed_writes
         self.failed_writes_active = failed_writes if failed_writes_active is None and failed_writes else int(failed_writes_active or 0)
@@ -393,8 +515,8 @@ class _SupervisorClient:
         return {
             "ok": True,
             "db_available": True,
-            "db_degraded": False,
-            "tables_ready": True,
+            "db_degraded": self.db_degraded,
+            "tables_ready": not self.db_degraded,
             "queue_depth": self.db_queue,
             "queued_writes": 0,
             "failed_writes": self.failed_writes,
@@ -482,6 +604,22 @@ class _SupervisorClient:
             "order_executed": False,
             "order_policy": "journal_only_no_broker",
         }
+
+
+class _SnapshotAwareSupervisorClient(_SupervisorClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.db_state: dict[str, object] | None = None
+        self.status_calls = 0
+        self.readiness_saw_db_snapshot = False
+
+    def persistent_status(self) -> dict[str, object]:
+        self.status_calls += 1
+        return super().persistent_status()
+
+    def readiness(self) -> dict[str, object]:
+        self.readiness_saw_db_snapshot = isinstance(self.db_state, dict) and bool(self.db_state.get("db_available"))
+        return super().readiness()
 
 
 def _recent_edge_readiness() -> dict[str, object]:

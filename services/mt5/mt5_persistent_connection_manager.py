@@ -361,6 +361,9 @@ class PersistentWriteBackpressure:
             "pool_max_size": int(pool.get("pool_max_size") or self.pool_max_size),
             "pool_in_use": int(pool.get("pool_in_use") if "pool_in_use" in pool else in_use),
             "pool_idle": int(pool.get("pool_idle") or 0),
+            "db_connection_opened": int(pool.get("db_connection_opened") or 0),
+            "db_connection_closed": int(pool.get("db_connection_closed") or 0),
+            "db_pool_exhaustion_detected": bool(pool.get("db_pool_exhaustion_detected") or category in {"max_connections", "pool_exhausted"}),
             "queue_depth": queue_depth,
             "queue_max_size": self.queue_max_size,
             "failed_writes": failed,
@@ -597,11 +600,16 @@ class PooledPostgresConnectionManager:
         self._lock = threading.Lock()
         self._idle: list[Any] = []
         self._in_use = 0
+        self._connection_opened_total = 0
+        self._connection_closed_total = 0
+        self._pool_exhaustion_detected = False
 
     def with_connection(self, operation: Callable[[Any], Any]) -> Any:
         if persistent_write_backpressure().backoff_active():
             raise PersistentDbBackpressureError("persistent_db_backoff_active", error_category="backoff")
         if not self._slots.acquire(timeout=self.connect_timeout_seconds):
+            with self._lock:
+                self._pool_exhaustion_detected = True
             raise PersistentDbBackpressureError("persistent_db_connection_pool_exhausted", error_category="pool_exhausted")
         connection = None
         reusable = False
@@ -612,21 +620,25 @@ class PooledPostgresConnectionManager:
         try:
             if connection is None:
                 connection = self.connection_factory()
+                with self._lock:
+                    self._connection_opened_total += 1
             result = operation(connection)
             reusable = True
             return result
         except Exception:
-            self._close(connection)
+            self._close_connection(connection)
+            connection = None
             raise
         finally:
+            close_later = None
             with self._lock:
                 self._in_use = max(0, self._in_use - 1)
                 if reusable and connection is not None and len(self._idle) < self.pool_max_size:
                     self._idle.append(connection)
-                elif connection is not None and not reusable:
-                    pass
                 elif connection is not None:
-                    self._close(connection)
+                    close_later = connection
+            if close_later is not None:
+                self._close_connection(close_later)
             try:
                 self._slots.release()
             except ValueError:
@@ -637,7 +649,7 @@ class PooledPostgresConnectionManager:
             idle = list(self._idle)
             self._idle.clear()
         for connection in idle:
-            self._close(connection)
+            self._close_connection(connection)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -646,15 +658,22 @@ class PooledPostgresConnectionManager:
                 "pool_max_size": self.pool_max_size,
                 "pool_in_use": self._in_use,
                 "pool_idle": len(self._idle),
+                "db_connection_opened": self._connection_opened_total,
+                "db_connection_closed": self._connection_closed_total,
+                "db_pool_exhaustion_detected": self._pool_exhaustion_detected,
                 **_safety(),
             }
 
-    @staticmethod
-    def _close(connection: Any) -> None:
+    def _close_connection(self, connection: Any) -> None:
+        if connection is None:
+            return
         try:
             connection.close()
         except Exception:
             pass
+        finally:
+            with self._lock:
+                self._connection_closed_total += 1
 
 
 _BACKPRESSURE: PersistentWriteBackpressure | None = None
