@@ -441,11 +441,38 @@ def _db_block_reason(db: dict[str, Any]) -> str:
         return "queued_writes_missing"
     if queued_writes > 0:
         return "queued_writes_pending"
-    failed_writes = _db_counter(db, "failed_writes")
-    if failed_writes is None:
+    db_readiness_reason = str(db.get("db_readiness_blocking_reason") or "").strip()
+    if db_readiness_reason:
+        return db_readiness_reason
+    failed_writes_total = _db_counter(db, "failed_writes_total")
+    if failed_writes_total is None:
+        failed_writes_total = _db_counter(db, "failed_writes")
+    if failed_writes_total is None:
         return "failed_writes_missing"
-    if failed_writes > 0:
-        return "failed_writes_present"
+    if db.get("failed_write_semantics_known") is not True:
+        return "failed_write_semantics_unknown"
+    failed_writes_active = _db_counter(db, "failed_writes_active")
+    failed_writes_unresolved = _db_counter(db, "failed_writes_unresolved")
+    failed_writes_critical = _db_counter(db, "failed_writes_critical")
+    if failed_writes_active is None or failed_writes_unresolved is None or failed_writes_critical is None:
+        return "failed_write_semantics_unknown"
+    if failed_writes_critical > 0:
+        return "failed_writes_critical"
+    if failed_writes_unresolved > 0:
+        return "failed_writes_unresolved"
+    if failed_writes_active > 0:
+        return "failed_writes_active"
+    if failed_writes_total > 0:
+        dropped_total = _db_counter(db, "dropped_noncritical_writes_total")
+        if dropped_total is None:
+            dropped_total = _db_counter(db, "dropped_noncritical_writes")
+        if (
+            dropped_total != failed_writes_total
+            or str(db.get("last_db_error_category") or "")
+            or str(db.get("last_db_error_at") or "")
+            or db.get("queue_drain_succeeded") is not True
+        ):
+            return "failed_write_semantics_unknown"
     return ""
 
 
@@ -497,7 +524,10 @@ def _preflight_decision(blockers: list[str]) -> str:
             "queued_writes_missing",
             "queued_writes_pending",
             "failed_writes_missing",
-            "failed_writes_present",
+            "failed_write_semantics_unknown",
+            "failed_writes_active",
+            "failed_writes_unresolved",
+            "failed_writes_critical",
         )
     ):
         return "blocked_by_db"

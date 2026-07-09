@@ -5,7 +5,10 @@ import json
 from unittest.mock import patch
 
 from api.main import create_app
-from api.routes.genesis import get_genesis_mt5_persistent_intelligence_status
+from api.routes.genesis import (
+    get_genesis_mt5_persistent_intelligence_failed_write_summary,
+    get_genesis_mt5_persistent_intelligence_status,
+)
 from scripts.run_persistent_db_connection_diagnostics import run_connection_diagnostics
 from scripts.run_persistent_intelligence_apply_schema import _set_statement_timeout, _sql_statements, run_apply_schema
 from services.mt5.mt5_bridge import mt5_capital_protection_status, mt5_learning_status, mt5_strategy_tournament_status
@@ -718,6 +721,29 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertTrue(result["critical_persistence_failed"])
         self.assertEqual(result["decision"], "NO_TRADE")
         self.assertEqual(result["reason"], "persistent_intelligence_db_degraded")
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_status_exposes_failed_write_active_total_fields(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_FailingWriteClient())
+
+        persist_decision_event(_decision_payload("BTCUSD", "M30", "summary_fields"), store=store)
+        result = store.healthcheck(write_test_event=False)
+        summary = get_genesis_mt5_persistent_intelligence_failed_write_summary()
+
+        self.assertEqual(result["failed_writes"], 1)
+        self.assertEqual(result["failed_writes_total"], 1)
+        self.assertEqual(result["failed_writes_active"], 1)
+        self.assertEqual(result["failed_writes_unresolved"], 1)
+        self.assertEqual(result["failed_writes_critical"], 0)
+        self.assertTrue(result["failed_write_semantics_known"])
+        self.assertEqual(result["db_readiness_blocking_reason"], "queue_depth_high")
+        self.assertEqual(summary["failed_writes_total"], 1)
+        self.assertEqual(summary["failed_writes_active"], 1)
+        self.assertEqual(summary["counts_by_criticality"]["noncritical"], 1)
+        self.assertTrue(summary["payloads_redacted"])
+        self.assertNotIn("summary_fields", json.dumps(summary, sort_keys=True))
         self.assertFalse(result["broker_touched"])
         self.assertFalse(result["order_executed"])
         self.assertEqual(result["order_policy"], "journal_only_no_broker")
@@ -1542,6 +1568,10 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertEqual(
             app["genesis_mt5_persistent_intelligence_recent_events_endpoint"],
             "/api/genesis/mt5/persistent-intelligence/recent-events?limit=10",
+        )
+        self.assertEqual(
+            app["genesis_mt5_persistent_intelligence_failed_write_summary_endpoint"],
+            "/api/genesis/mt5/persistent-intelligence/failed-write-summary",
         )
         self.assertEqual(
             app["genesis_mt5_persistent_intelligence_queue_drain_endpoint"],

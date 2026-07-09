@@ -52,30 +52,214 @@ class MT5XauM15PaperObservationBatchRunnerTests(unittest.TestCase):
         self.assertEqual(client.open_calls, 0)
 
     def test_no_open_if_failed_writes_remain_after_queue_empty(self) -> None:
-        client = _FakeClient(db={**_db(), "queue_depth": 0, "queued_writes": 0, "failed_writes": 3})
+        client = _FakeClient(db={**_db(), "queue_depth": 0, "queued_writes": 0, "failed_writes": 3, "failed_writes_total": 3, "failed_writes_unresolved": 3})
 
         result = _step(client, dry_run=False, paper_only_confirmed=True)
 
         self.assertEqual(result["runner_state"], "stopped_by_db")
-        self.assertEqual(result["stop_reason"], "failed_writes_present")
+        self.assertEqual(result["stop_reason"], "failed_writes_unresolved")
         self.assertEqual(client.open_calls, 0)
         self.assertFalse(result["paper_shadow_created"])
 
-    def test_db_ok_blocks_failed_writes(self) -> None:
+    def test_db_readiness_blocks_active_failed_writes(self) -> None:
         reset_runtime_snapshots_for_tests()
         _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
         store = _MemoryShadowStore()
-        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state={**_db(), "failed_writes": 1})
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state={**_db(), "failed_writes": 1, "failed_writes_total": 1, "failed_writes_active": 1})
 
         readiness = client.readiness()
         opened = client.open_shadow_once()
 
         self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
-        self.assertIn("failed_writes_present", readiness["failed_gate_names"])
+        self.assertIn("failed_writes_active", readiness["failed_gate_names"])
         self.assertFalse(readiness["entry_allowed_for_paper_test"])
         self.assertFalse(opened["paper_shadow_created"])
         self.assertEqual(opened["open_count"], 0)
         self.assertEqual(len(store.rows), 0)
+
+    def test_db_readiness_blocks_unresolved_critical_failed_writes(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "failed_writes": 1,
+            "failed_writes_total": 1,
+            "failed_writes_active": 1,
+            "failed_writes_unresolved": 1,
+            "failed_writes_critical": 1,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("failed_writes_critical", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(len(store.rows), 0)
+
+    def test_preflight_blocks_failed_write_semantics_unknown_even_with_zero_active(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "failed_writes": 4,
+            "failed_writes_total": 4,
+            "failed_writes_active": 0,
+            "failed_writes_unresolved": 0,
+            "failed_writes_critical": 0,
+            "failed_write_semantics_known": False,
+            "dropped_noncritical_writes_total": 4,
+            "queue_drain_succeeded": True,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("failed_write_semantics_unknown", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(len(store.rows), 0)
+
+    def test_preflight_blocks_db_readiness_blocking_reason_failed_write_semantics_unknown(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "failed_writes": 4,
+            "failed_writes_total": 4,
+            "failed_writes_active": 0,
+            "failed_writes_unresolved": 0,
+            "failed_writes_critical": 0,
+            "failed_write_semantics_known": True,
+            "dropped_noncritical_writes_total": 4,
+            "queue_drain_succeeded": True,
+            "db_readiness_blocking_reason": "failed_write_semantics_unknown",
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("failed_write_semantics_unknown", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(len(store.rows), 0)
+
+    def test_preflight_does_not_allow_dropped_noncritical_when_semantics_unknown(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "failed_writes": 4,
+            "failed_writes_total": 4,
+            "failed_writes_active": 0,
+            "failed_writes_unresolved": 0,
+            "failed_writes_critical": 0,
+            "failed_write_semantics_known": False,
+            "dropped_noncritical_writes": 4,
+            "dropped_noncritical_writes_total": 4,
+            "last_db_error_category": "",
+            "last_db_error_at": "",
+            "queue_drain_succeeded": True,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("failed_write_semantics_unknown", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(len(store.rows), 0)
+
+    def test_preflight_allows_historical_dropped_noncritical_only_when_semantics_known(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "failed_writes": 4,
+            "failed_writes_total": 4,
+            "failed_writes_active": 0,
+            "failed_writes_unresolved": 0,
+            "failed_writes_critical": 0,
+            "dropped_noncritical_writes": 4,
+            "dropped_noncritical_writes_total": 4,
+            "last_db_error_category": "",
+            "last_db_error_at": "",
+            "queue_drain_succeeded": True,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "ready_for_one_cycle_paper_observation")
+        self.assertEqual(readiness["failed_gate_names"], [])
+        self.assertTrue(readiness["entry_allowed_for_paper_test"])
+        self.assertTrue(opened["paper_shadow_created"])
+        self.assertEqual(opened["open_shadow_count_after"], 1)
+        self.assertEqual(len(store.rows), 1)
+        self.assertFalse(opened["broker_touched"])
+        self.assertFalse(opened["order_executed"])
+
+    def test_preflight_fails_closed_when_failed_write_semantic_fields_missing(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {**_db(), "failed_writes": 4}
+        for key in ("failed_writes_total", "failed_writes_active", "failed_writes_unresolved", "failed_writes_critical", "failed_write_semantics_known"):
+            db.pop(key, None)
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+        opened = client.open_shadow_once()
+
+        self.assertEqual(readiness["readiness_state"], "blocked_db_not_clean")
+        self.assertIn("failed_write_semantics_unknown", readiness["failed_gate_names"])
+        self.assertFalse(readiness["entry_allowed_for_paper_test"])
+        self.assertFalse(opened["paper_shadow_created"])
+        self.assertEqual(len(store.rows), 0)
+
+    def test_preflight_uses_failed_writes_active_not_total(self) -> None:
+        reset_runtime_snapshots_for_tests()
+        _seed_runtime("BTCUSD", closes=[100.0 + i for i in range(60)])
+        store = _MemoryShadowStore()
+        db = {
+            **_db(),
+            "failed_writes": 2,
+            "failed_writes_total": 2,
+            "failed_writes_active": 0,
+            "failed_writes_unresolved": 0,
+            "failed_writes_critical": 0,
+            "dropped_noncritical_writes_total": 2,
+            "queue_drain_succeeded": True,
+        }
+        client = LocalPaperObservationClient(symbol="BTCUSD", broker_symbol="BTCUSD", timeframe="M15", asset_configs=[_asset_config("BTCUSD")], store=store, db_state=db)
+
+        readiness = client.readiness()
+
+        self.assertEqual(readiness["failed_gate_names"], [])
+        self.assertTrue(readiness["entry_allowed_for_paper_test"])
+
+    def test_no_broker_no_order_send(self) -> None:
+        client = _FakeClient()
+
+        result = _step(client, dry_run=False, paper_only_confirmed=True)
+
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
 
     def test_db_ok_blocks_queued_writes(self) -> None:
         reset_runtime_snapshots_for_tests()
@@ -1606,6 +1790,17 @@ def _db() -> dict[str, object]:
         "queue_depth": 0,
         "queued_writes": 0,
         "failed_writes": 0,
+        "failed_writes_total": 0,
+        "failed_writes_active": 0,
+        "failed_writes_unresolved": 0,
+        "failed_writes_critical": 0,
+        "failed_write_semantics_known": True,
+        "dropped_noncritical_writes": 0,
+        "dropped_noncritical_writes_total": 0,
+        "last_db_error_category": "",
+        "last_db_error_at": "",
+        "queue_drain_succeeded": True,
+        "db_readiness_blocking_reason": "",
         "recommendation": "persistent_intelligence_ready",
         **_safety(),
     }

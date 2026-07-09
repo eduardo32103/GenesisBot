@@ -165,9 +165,62 @@ class MT5XauM15PaperTestSupervisorTests(unittest.TestCase):
         )
 
         self.assertEqual(result["supervisor_state"], "stopped_by_db")
-        self.assertEqual(result["stop_reason"], "failed_writes_present")
+        self.assertEqual(result["stop_reason"], "failed_writes_unresolved")
         self.assertEqual(client.open_calls, 0)
         self.assertFalse(result["paper_shadow_created"])
+
+    def test_preflight_blocks_failed_write_semantics_unknown_even_with_zero_active(self) -> None:
+        client = _SupervisorClient(
+            failed_writes=4,
+            failed_writes_active=0,
+            failed_writes_unresolved=0,
+            failed_writes_critical=0,
+            failed_write_semantics_known=False,
+            dropped_noncritical_writes_total=4,
+        )
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["decision"], "blocked_by_db")
+        self.assertIn("failed_write_semantics_unknown", result["blockers"])
+        self.assertEqual(client.monitor_calls, 0)
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+
+    def test_preflight_blocks_db_readiness_blocking_reason_failed_write_semantics_unknown(self) -> None:
+        client = _SupervisorClient(
+            failed_writes=4,
+            failed_writes_active=0,
+            failed_writes_unresolved=0,
+            failed_writes_critical=0,
+            failed_write_semantics_known=True,
+            dropped_noncritical_writes_total=4,
+            db_readiness_blocking_reason="failed_write_semantics_unknown",
+        )
+
+        result = run_xau_m15_paper_test_supervisor(
+            client=client,
+            preflight_only=True,
+            dry_run=False,
+            paper_only_confirmed=True,
+            state_file=None,
+            results_file=None,
+        )
+
+        self.assertEqual(result["decision"], "blocked_by_db")
+        self.assertIn("failed_write_semantics_unknown", result["blockers"])
+        self.assertEqual(client.monitor_calls, 0)
+        self.assertEqual(client.open_calls, 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
 
     def test_supervisor_reports_open_persistence_failure_without_created_shadow(self) -> None:
         client = _SupervisorClient(
@@ -308,6 +361,12 @@ class _SupervisorClient:
         db_queue: int = 0,
         queue_after_drain: int = 0,
         failed_writes: int = 0,
+        failed_writes_active: int | None = None,
+        failed_writes_unresolved: int | None = None,
+        failed_writes_critical: int = 0,
+        failed_write_semantics_known: bool = True,
+        dropped_noncritical_writes_total: int = 0,
+        db_readiness_blocking_reason: str = "",
         open_payload: dict[str, object] | None = None,
         open_result: dict[str, object] | None = None,
         history_payload: dict[str, object] | None = None,
@@ -316,6 +375,12 @@ class _SupervisorClient:
         self.db_queue = db_queue
         self.queue_after_drain = queue_after_drain
         self.failed_writes = failed_writes
+        self.failed_writes_active = failed_writes if failed_writes_active is None and failed_writes else int(failed_writes_active or 0)
+        self.failed_writes_unresolved = failed_writes if failed_writes_unresolved is None and failed_writes else int(failed_writes_unresolved or 0)
+        self.failed_writes_critical = failed_writes_critical
+        self.failed_write_semantics_known = failed_write_semantics_known
+        self.dropped_noncritical_writes_total = dropped_noncritical_writes_total
+        self.db_readiness_blocking_reason = db_readiness_blocking_reason
         self.open_payload = open_payload
         self.open_result = dict(open_result) if open_result is not None else None
         self.history_payload = dict(history_payload) if history_payload is not None else None
@@ -333,6 +398,16 @@ class _SupervisorClient:
             "queue_depth": self.db_queue,
             "queued_writes": 0,
             "failed_writes": self.failed_writes,
+            "failed_writes_total": self.failed_writes,
+            "failed_writes_active": self.failed_writes_active,
+            "failed_writes_unresolved": self.failed_writes_unresolved,
+            "failed_writes_critical": self.failed_writes_critical,
+            "failed_write_semantics_known": self.failed_write_semantics_known,
+            "dropped_noncritical_writes_total": self.dropped_noncritical_writes_total,
+            "last_db_error_category": "",
+            "last_db_error_at": "",
+            "queue_drain_succeeded": True,
+            "db_readiness_blocking_reason": self.db_readiness_blocking_reason,
             "broker_touched": False,
             "order_executed": False,
             "order_policy": "journal_only_no_broker",

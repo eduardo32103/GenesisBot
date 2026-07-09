@@ -73,6 +73,7 @@ from api.routes.genesis import (
     get_genesis_mt5_performance_auto,
     get_genesis_mt5_persistent_db_doctor_status,
     get_genesis_mt5_persistent_intelligence_bootstrap_status,
+    get_genesis_mt5_persistent_intelligence_failed_write_summary,
     get_genesis_mt5_persistent_intelligence_recent_events,
     get_genesis_mt5_persistent_intelligence_status,
     get_genesis_mt5_promoted_profile,
@@ -261,6 +262,7 @@ def create_app() -> dict[str, str]:
         "genesis_mt5_risk_recovery_endpoint": "/api/genesis/mt5/risk-recovery?symbol={symbol}&timeframe={timeframe}",
         "genesis_mt5_persistent_intelligence_status_endpoint": "/api/genesis/mt5/persistent-intelligence/status",
         "genesis_mt5_persistent_intelligence_recent_events_endpoint": "/api/genesis/mt5/persistent-intelligence/recent-events?limit=10",
+        "genesis_mt5_persistent_intelligence_failed_write_summary_endpoint": "/api/genesis/mt5/persistent-intelligence/failed-write-summary",
         "genesis_mt5_persistent_intelligence_queue_drain_endpoint": "/api/genesis/mt5/persistent-intelligence/queue-drain",
         "genesis_mt5_persistent_intelligence_bootstrap_status_endpoint": "/api/genesis/mt5/persistent-intelligence/bootstrap/status",
         "genesis_mt5_persistent_db_doctor_endpoint": "/api/genesis/mt5/persistent-intelligence/db-doctor",
@@ -4871,6 +4873,11 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             limit = int((query.get("limit") or ["10"])[0] or 10)
             payload_data = get_genesis_mt5_persistent_intelligence_recent_events(limit=limit)
+            self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
+            return
+
+        if parsed.path == "/api/genesis/mt5/persistent-intelligence/failed-write-summary":
+            payload_data = get_genesis_mt5_persistent_intelligence_failed_write_summary()
             self._write_json(payload_data, HTTPStatus.OK if payload_data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 

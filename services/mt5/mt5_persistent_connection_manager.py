@@ -4,6 +4,7 @@ import hashlib
 import os
 import threading
 import time
+from collections import Counter
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -39,6 +40,9 @@ class PersistentWriteBackpressure:
         self._lock = threading.Lock()
         self._queue: deque[dict[str, Any]] = deque()
         self._dedupe_seen: dict[tuple[Any, ...], float] = {}
+        self._failed_write_records: dict[int, dict[str, Any]] = {}
+        self._failed_write_next_id = 0
+        self._failed_write_recorded_total = 0
         self._in_use = 0
         self.failed_writes = 0
         self.queued_writes = 0
@@ -67,6 +71,9 @@ class PersistentWriteBackpressure:
         with self._lock:
             self._queue.clear()
             self._dedupe_seen.clear()
+            self._failed_write_records.clear()
+            self._failed_write_next_id = 0
+            self._failed_write_recorded_total = 0
             self._in_use = 0
             self.failed_writes = 0
             self.queued_writes = 0
@@ -159,11 +166,35 @@ class PersistentWriteBackpressure:
             return result
         with self._lock:
             self.failed_writes += 1
+            failure_id = self._record_failed_write_locked(
+                table=table,
+                critical=critical,
+                reason=reason,
+                error_category=category,
+                operation=operation,
+            )
             self._record_error_locked(category, reason)
             if category in {"max_connections", "pool_exhausted"}:
                 self._backoff_seconds = min(60.0, max(2.0, self._backoff_seconds * 2.0 or 2.0))
                 self._backoff_until = time.monotonic() + self._backoff_seconds
-        result = self.queue_or_drop(table, row, critical=critical, operation=operation, reason=reason, error_category=category)
+        result = self.queue_or_drop(
+            table,
+            row,
+            critical=critical,
+            operation=operation,
+            reason=reason,
+            error_category=category,
+            failure_id=failure_id,
+        )
+        with self._lock:
+            if result.get("queued"):
+                self._update_failed_write_locked(failure_id, state="queued", active=True, unresolved=True)
+            elif result.get("dropped_noncritical_write"):
+                self._update_failed_write_locked(failure_id, state="dropped_noncritical", active=False, unresolved=False)
+            elif result.get("queue_full") and critical:
+                self._update_failed_write_locked(failure_id, state="critical_queue_full", active=True, unresolved=True)
+            else:
+                self._update_failed_write_locked(failure_id, state="not_queued", active=bool(critical), unresolved=bool(critical))
         result["duration_ms"] = duration_ms
         return result
 
@@ -190,6 +221,10 @@ class PersistentWriteBackpressure:
 
     def activate_schema_missing_freeze(self, *, reason: str = "schema_missing_write_freeze") -> dict[str, Any]:
         with self._lock:
+            for item in list(self._queue):
+                failure_id = item.get("failure_id")
+                if failure_id is not None:
+                    self._update_failed_write_locked(int(failure_id), state="cleared_by_schema_missing_freeze", active=False, unresolved=False)
             cleared = len(self._queue)
             self._queue.clear()
             self._record_error_locked("missing_schema", str(reason or "schema_missing_write_freeze"))
@@ -242,6 +277,7 @@ class PersistentWriteBackpressure:
         operation: str = "insert",
         reason: str,
         error_category: str,
+        failure_id: int | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self._record_error_locked(error_category or self.last_db_error_category, str(reason or ""))
@@ -255,6 +291,7 @@ class PersistentWriteBackpressure:
                         "queue_full": True,
                         "reason": str(reason or "persistent_db_queue_full")[:500],
                         "error_category": error_category,
+                        "failed_write_id": failure_id,
                         "queue_depth": len(self._queue),
                         "queue_max_size": self.queue_max_size,
                         **_safety(),
@@ -268,6 +305,7 @@ class PersistentWriteBackpressure:
                     "dropped_noncritical_write": True,
                     "reason": str(reason or "persistent_db_queue_full")[:500],
                     "error_category": error_category,
+                    "failed_write_id": failure_id,
                     "queue_depth": len(self._queue),
                     "queue_max_size": self.queue_max_size,
                     **_safety(),
@@ -281,6 +319,7 @@ class PersistentWriteBackpressure:
                     "queued_at": _now_monotonic(),
                     "operation": _operation(operation),
                     "row": _compact_queued_row(row),
+                    "failure_id": failure_id,
                 }
             )
             self.queued_writes += 1
@@ -291,6 +330,7 @@ class PersistentWriteBackpressure:
                 "queued": True,
                 "reason": str(reason or "")[:500],
                 "error_category": error_category,
+                "failed_write_id": failure_id,
                 "queue_depth": len(self._queue),
                 "queue_max_size": self.queue_max_size,
                 **_safety(),
@@ -311,6 +351,10 @@ class PersistentWriteBackpressure:
             last_error_at = self.last_db_error_at
             last_error_age = max(0.0, time.monotonic() - self._last_db_error_monotonic) if self._last_db_error_monotonic else None
             backoff_remaining = max(0.0, self._backoff_until - time.monotonic())
+            failed_summary = self._failed_write_summary_locked(
+                queue_depth=queue_depth,
+                backoff_active=backoff_remaining > 0,
+            )
         pool = dict(pool_status or {})
         return {
             "pool_enabled": True,
@@ -320,9 +364,17 @@ class PersistentWriteBackpressure:
             "queue_depth": queue_depth,
             "queue_max_size": self.queue_max_size,
             "failed_writes": failed,
+            "failed_writes_total": failed,
+            "failed_writes_active": failed_summary["failed_writes_active"],
+            "failed_writes_unresolved": failed_summary["failed_writes_unresolved"],
+            "failed_writes_critical": failed_summary["failed_writes_critical"],
+            "failed_write_semantics_known": failed_summary["failed_write_semantics_known"],
             "queued_writes": queue_depth,
             "queued_writes_total": queued_total,
             "dropped_noncritical_writes": dropped,
+            "dropped_noncritical_writes_total": dropped,
+            "failed_write_summary": failed_summary,
+            "db_readiness_blocking_reason": failed_summary["db_readiness_blocking_reason"],
             "suppressed_duplicate_events": suppressed,
             "last_db_error_category": category,
             "last_db_error_at": last_error_at,
@@ -334,6 +386,13 @@ class PersistentWriteBackpressure:
             "queue_drain_failed_count": int(self.queue_drain_failed_count),
             **_safety(),
         }
+
+    def failed_write_summary(self) -> dict[str, Any]:
+        with self._lock:
+            return self._failed_write_summary_locked(
+                queue_depth=len(self._queue),
+                backoff_active=self.backoff_active(),
+            )
 
     def drain_queue(
         self,
@@ -366,6 +425,7 @@ class PersistentWriteBackpressure:
                 failed += 1
                 category = classify_db_error(exc)
                 message = str(exc or "")[:200]
+                failure_id = item.get("failure_id")
                 errors.append(
                     {
                         "table": item.get("table") or "",
@@ -380,15 +440,25 @@ class PersistentWriteBackpressure:
                     if bool(item.get("critical")):
                         self._queue.appendleft(item)
                         kept_critical += 1
+                        if failure_id is not None:
+                            self._update_failed_write_locked(int(failure_id), state="critical_retained_after_drain_failure", active=True, unresolved=True)
                     elif drop_failed_noncritical:
                         self.dropped_noncritical_writes += 1
                         dropped += 1
+                        if failure_id is not None:
+                            self._update_failed_write_locked(int(failure_id), state="dropped_noncritical_after_drain_failure", active=False, unresolved=False)
                     else:
                         self._queue.append(item)
+                        if failure_id is not None:
+                            self._update_failed_write_locked(int(failure_id), state="queued_after_drain_failure", active=True, unresolved=True)
                 if bool(item.get("critical")):
                     break
             else:
                 succeeded += 1
+                failure_id = item.get("failure_id")
+                if failure_id is not None:
+                    with self._lock:
+                        self._update_failed_write_locked(int(failure_id), state="drained_success", active=False, unresolved=False)
 
         with self._lock:
             after_depth = len(self._queue)
@@ -418,6 +488,85 @@ class PersistentWriteBackpressure:
         self.last_db_error = str(reason or "")[:500]
         self.last_db_error_at = datetime.now(timezone.utc).isoformat()
         self._last_db_error_monotonic = time.monotonic()
+
+    def _record_failed_write_locked(
+        self,
+        *,
+        table: str,
+        critical: bool,
+        reason: str,
+        error_category: str,
+        operation: str,
+    ) -> int:
+        self._failed_write_next_id += 1
+        failure_id = self._failed_write_next_id
+        now = datetime.now(timezone.utc).isoformat()
+        self._failed_write_recorded_total += 1
+        self._failed_write_records[failure_id] = {
+            "id": failure_id,
+            "table": str(table or "")[:80],
+            "critical": bool(critical),
+            "error_category": str(error_category or "")[:80],
+            "reason_hash": _safe_hash(reason),
+            "operation": _operation(operation),
+            "state": "recorded",
+            "active": True,
+            "unresolved": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+        return failure_id
+
+    def _update_failed_write_locked(self, failure_id: int, *, state: str, active: bool, unresolved: bool) -> None:
+        record = self._failed_write_records.get(int(failure_id))
+        if not record:
+            return
+        record["state"] = str(state or "")[:80]
+        record["active"] = bool(active)
+        record["unresolved"] = bool(unresolved)
+        record["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _failed_write_summary_locked(self, *, queue_depth: int, backoff_active: bool) -> dict[str, Any]:
+        records = list(self._failed_write_records.values())
+        total = int(self.failed_writes)
+        dropped = int(self.dropped_noncritical_writes)
+        active_records = [record for record in records if bool(record.get("active"))]
+        unresolved_records = [record for record in records if bool(record.get("unresolved"))]
+        critical_records = [record for record in unresolved_records if bool(record.get("critical"))]
+        semantics_known = bool(total == 0 or self._failed_write_recorded_total >= total)
+        category_counts = Counter(str(record.get("error_category") or "unknown") for record in records)
+        criticality_counts = Counter("critical" if bool(record.get("critical")) else "noncritical" for record in records)
+        active_criticality_counts = Counter("critical" if bool(record.get("critical")) else "noncritical" for record in active_records)
+        latest = max(records, key=lambda record: str(record.get("updated_at") or record.get("created_at") or ""), default={})
+        blocking_reason = _failed_write_blocking_reason(
+            queue_depth=queue_depth,
+            active=len(active_records),
+            unresolved=len(unresolved_records),
+            critical=len(critical_records),
+            semantics_known=semantics_known,
+            backoff_active=backoff_active,
+        )
+        return {
+            "failed_writes_total": total,
+            "failed_writes_active": len(active_records),
+            "failed_writes_unresolved": len(unresolved_records),
+            "failed_writes_critical": len(critical_records),
+            "failed_write_semantics_known": semantics_known,
+            "dropped_noncritical_writes_total": dropped,
+            "counts_by_category": dict(sorted(category_counts.items())),
+            "counts_by_criticality": {
+                "critical": int(criticality_counts.get("critical", 0)),
+                "noncritical": int(criticality_counts.get("noncritical", 0)),
+            },
+            "active_counts_by_criticality": {
+                "critical": int(active_criticality_counts.get("critical", 0)),
+                "noncritical": int(active_criticality_counts.get("noncritical", 0)),
+            },
+            "latest": _compact_failed_write_record(latest),
+            "db_readiness_blocking_reason": blocking_reason,
+            "payloads_redacted": True,
+            **_safety(),
+        }
 
     def _is_duplicate(self, table: str, row: dict[str, Any], now: float) -> bool:
         key = _dedupe_key(table, row)
@@ -657,6 +806,54 @@ def _compact_queued_row(row: dict[str, Any]) -> dict[str, Any]:
 def _operation(value: object) -> str:
     clean = str(value or "insert").casefold().strip()
     return "upsert" if clean == "upsert" else "insert"
+
+
+def _safe_hash(value: object) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _compact_failed_write_record(record: dict[str, Any]) -> dict[str, Any]:
+    if not record:
+        return {}
+    return {
+        "table": str(record.get("table") or ""),
+        "critical": bool(record.get("critical")),
+        "error_category": str(record.get("error_category") or ""),
+        "operation": _operation(record.get("operation")),
+        "state": str(record.get("state") or ""),
+        "active": bool(record.get("active")),
+        "unresolved": bool(record.get("unresolved")),
+        "created_at": str(record.get("created_at") or ""),
+        "updated_at": str(record.get("updated_at") or ""),
+        "reason_hash": str(record.get("reason_hash") or ""),
+    }
+
+
+def _failed_write_blocking_reason(
+    *,
+    queue_depth: int,
+    active: int,
+    unresolved: int,
+    critical: int,
+    semantics_known: bool,
+    backoff_active: bool,
+) -> str:
+    if int(queue_depth or 0) > 0:
+        return "queue_depth_high"
+    if bool(backoff_active):
+        return "persistent_db_backoff_active"
+    if not bool(semantics_known):
+        return "failed_write_semantics_unknown"
+    if int(critical or 0) > 0:
+        return "failed_writes_critical"
+    if int(unresolved or 0) > 0:
+        return "failed_writes_unresolved"
+    if int(active or 0) > 0:
+        return "failed_writes_active"
+    return ""
 
 
 def _env_int(name: str, default: int) -> int:

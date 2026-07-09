@@ -8,6 +8,7 @@ from services.mt5.mt5_capital_protection_governor import run_capital_protection_
 from services.mt5.mt5_persistent_db_doctor import run_persistent_db_doctor
 from services.mt5.mt5_persistent_intelligence_store import (
     normalize_shadow_trade_sample_validity,
+    persistent_intelligence_failed_write_summary,
     persistent_intelligence_open_shadow_trades,
     persistent_intelligence_queue_drain,
     persistent_intelligence_recent_events,
@@ -60,6 +61,10 @@ def mt5_persistent_intelligence_status(*, memory: MemoryStore | None = None) -> 
 
 def mt5_persistent_intelligence_recent_events(*, memory: MemoryStore | None = None, limit: int = 10) -> dict[str, Any]:
     return _status_write_free(persistent_intelligence_recent_events(limit=limit))
+
+
+def mt5_persistent_intelligence_failed_write_summary(*, memory: MemoryStore | None = None) -> dict[str, Any]:
+    return _status_write_free(persistent_intelligence_failed_write_summary())
 
 
 def mt5_persistent_intelligence_queue_drain(

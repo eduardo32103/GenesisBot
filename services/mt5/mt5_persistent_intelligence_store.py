@@ -759,6 +759,12 @@ class MT5PersistentIntelligenceStore:
             backpressure=backpressure,
             db_degraded=db_degraded,
         )
+        db_readiness_blocking_reason = _healthcheck_db_readiness_blocking_reason(
+            db_available=db_available,
+            db_degraded=db_degraded,
+            tables_ready=tables_ready,
+            backpressure=backpressure,
+        )
         return {
             "ok": True,
             "status": "persistent_intelligence_status_ready",
@@ -781,6 +787,7 @@ class MT5PersistentIntelligenceStore:
             **schema_freeze,
             **schema_cooldown,
             **backpressure,
+            "db_readiness_blocking_reason": db_readiness_blocking_reason,
             "estimated_storage_mode": _client_provider(self.client) if db_available and tables_ready else "local_runtime_only",
             "test_write": test_write,
             "recommendation": recommendation,
@@ -1167,6 +1174,29 @@ class MT5PersistentIntelligenceStore:
             **_safety(),
         }
 
+    def failed_write_summary(self) -> dict[str, Any]:
+        stats = _backpressure_status(self.client)
+        summary = stats.get("failed_write_summary") if isinstance(stats.get("failed_write_summary"), dict) else {}
+        return {
+            "ok": True,
+            "status": "persistent_intelligence_failed_write_summary_ready",
+            "provider": _client_provider(self.client),
+            "failed_writes_total": int(stats.get("failed_writes_total") or stats.get("failed_writes") or 0),
+            "failed_writes_active": int(stats.get("failed_writes_active") or 0),
+            "failed_writes_unresolved": int(stats.get("failed_writes_unresolved") or 0),
+            "failed_writes_critical": int(stats.get("failed_writes_critical") or 0),
+            "failed_write_semantics_known": bool(stats.get("failed_write_semantics_known")),
+            "dropped_noncritical_writes_total": int(stats.get("dropped_noncritical_writes_total") or stats.get("dropped_noncritical_writes") or 0),
+            "db_readiness_blocking_reason": str(stats.get("db_readiness_blocking_reason") or ""),
+            "counts_by_category": dict(summary.get("counts_by_category") or {}),
+            "counts_by_criticality": dict(summary.get("counts_by_criticality") or {}),
+            "active_counts_by_criticality": dict(summary.get("active_counts_by_criticality") or {}),
+            "latest": dict(summary.get("latest") or {}),
+            "payloads_redacted": True,
+            "status_endpoints_write_free": True,
+            **_safety(),
+        }
+
     def _safe_insert(self, table: str, row: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         critical_write = _critical_write(table, row) if critical is None else bool(critical)
         if _schema_missing_write_freeze_status().get("writes_frozen"):
@@ -1299,6 +1329,10 @@ def persistent_intelligence_queue_drain(*, max_items: int = 50, drop_failed_nonc
         max_items=max_items,
         drop_failed_noncritical=drop_failed_noncritical,
     )
+
+
+def persistent_intelligence_failed_write_summary() -> dict[str, Any]:
+    return MT5PersistentIntelligenceStore().failed_write_summary()
 
 
 def persistent_intelligence_schema_freeze_status() -> dict[str, Any]:
@@ -1490,6 +1524,22 @@ def _db_health_source(
     return "current_probe_failed"
 
 
+def _healthcheck_db_readiness_blocking_reason(
+    *,
+    db_available: bool,
+    db_degraded: bool,
+    tables_ready: bool,
+    backpressure: dict[str, Any],
+) -> str:
+    if not db_available:
+        return "db_unavailable"
+    if db_degraded:
+        return "db_degraded"
+    if not tables_ready:
+        return "tables_not_ready"
+    return str(backpressure.get("db_readiness_blocking_reason") or "")
+
+
 def _stale_db_error_ignored(
     *,
     pre_probe_error_category: str,
@@ -1665,10 +1715,15 @@ def _runtime_persistence_result(event_type: str, write_result: dict[str, Any], *
         "db_degraded": bool(write_result.get("db_degraded")),
         "queued": bool(write_result.get("queued")),
         "failed_writes": stats.get("failed_writes", 0),
+        "failed_writes_total": stats.get("failed_writes_total", stats.get("failed_writes", 0)),
+        "failed_writes_active": stats.get("failed_writes_active", 0),
+        "failed_writes_unresolved": stats.get("failed_writes_unresolved", 0),
+        "failed_writes_critical": stats.get("failed_writes_critical", 0),
         "queued_writes": stats.get("queued_writes", 0),
         "queue_depth": stats.get("queue_depth", 0),
         "queue_max_size": stats.get("queue_max_size", 0),
         "dropped_noncritical_writes": stats.get("dropped_noncritical_writes", 0),
+        "dropped_noncritical_writes_total": stats.get("dropped_noncritical_writes_total", stats.get("dropped_noncritical_writes", 0)),
         "suppressed_duplicate_events": stats.get("suppressed_duplicate_events", 0),
         "last_db_error_category": stats.get("last_db_error_category", ""),
         "critical": bool(critical),
