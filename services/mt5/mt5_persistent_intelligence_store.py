@@ -971,8 +971,11 @@ class MT5PersistentIntelligenceStore:
 
     def record_risk_event(self, payload: dict[str, Any], *, critical: bool | None = None) -> dict[str, Any]:
         row = _risk_event_row(payload)
-        critical_write = _critical_write("mt5_risk_events", row) if critical is None else bool(critical)
-        suppression_reason = _risk_event_write_suppression_reason()
+        suppression_reason = _risk_event_write_suppression_reason() or _risk_event_payload_suppression_reason(payload)
+        if critical is None:
+            critical_write = False if suppression_reason else _critical_write("mt5_risk_events", row)
+        else:
+            critical_write = bool(critical)
         if suppression_reason and not critical_write:
             return _suppressed_noncritical_risk_event_write(row, reason=suppression_reason, critical=False)
         return self._safe_insert("mt5_risk_events", row, critical=critical)
@@ -1408,6 +1411,23 @@ def _risk_event_write_suppression_reason() -> str:
     return str(_RISK_EVENT_WRITE_SUPPRESSION_REASON.get() or "").strip()
 
 
+def _risk_event_payload_suppression_reason(payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    if payload.get("persist_events") is False:
+        return "persist_events_false"
+    for key in (
+        "dry_run_no_persist",
+        "preflight_only",
+        "dry_run",
+        "suppress_noncritical_risk_events",
+        "risk_event_persistence_suppressed",
+    ):
+        if _truthy_flag(payload.get(key)):
+            return "preflight_dry_run" if key in {"dry_run_no_persist", "preflight_only", "dry_run"} else key
+    return ""
+
+
 def persist_decision_event(
     payload: dict[str, Any],
     *,
@@ -1424,7 +1444,7 @@ def persist_risk_event(
     critical: bool = False,
     store: MT5PersistentIntelligenceStore | None = None,
 ) -> dict[str, Any]:
-    suppression_reason = _risk_event_write_suppression_reason()
+    suppression_reason = _risk_event_write_suppression_reason() or _risk_event_payload_suppression_reason(payload)
     if suppression_reason and not bool(critical):
         result = _suppressed_noncritical_risk_event_write(
             _risk_event_row(payload),
@@ -1798,6 +1818,7 @@ def _suppressed_noncritical_risk_event_write(row: dict[str, Any], *, reason: str
         "db_degraded": False,
         "critical": bool(critical),
         "suppressed_noncritical_risk_event": True,
+        "risk_event_persistence_suppressed": True,
         "dry_run_no_persist": True,
         "suppression_reason": str(reason or "preflight_dry_run"),
         "payload_redacted": True,
@@ -2185,6 +2206,15 @@ def _optional_bool(value: object) -> bool | None:
     if text in {"0", "false", "no", "off"}:
         return False
     return None
+
+
+def _truthy_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").casefold().strip()
+    return text in {"1", "true", "yes", "y", "on"}
 
 
 def _now() -> str:

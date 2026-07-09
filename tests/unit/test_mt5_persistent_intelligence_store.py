@@ -999,6 +999,179 @@ class MT5PersistentIntelligenceStoreTests(unittest.TestCase):
         self.assertFalse(results[-1]["order_executed"])
         self.assertEqual(results[-1]["order_policy"], "journal_only_no_broker")
 
+    def test_preflight_dry_run_missing_schema_does_not_enqueue_mt5_risk_events(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        store.healthcheck()
+
+        result = persist_risk_event(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M15",
+                "risk_state": "preflight_diagnostic",
+                "allowed": True,
+                "reason": "readiness_preflight_diagnostic",
+                "recommended_action": "review_preflight",
+                "preflight_only": True,
+                "dry_run_no_persist": True,
+            },
+            store=store,
+        )
+        stats = persistent_write_backpressure().status()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["suppressed_noncritical_risk_event"])
+        self.assertTrue(result["write"]["risk_event_persistence_suppressed"])
+        self.assertFalse(result["queued"])
+        self.assertFalse(result["db_degraded"])
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertEqual(stats["queue_depth"], 0)
+        self.assertEqual(stats["failed_writes_active"], 0)
+        self.assertEqual(stats["failed_writes_unresolved"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_preflight_dry_run_db_degraded_suppresses_noncritical_risk_event_persistence(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_FailingWriteClient())
+
+        result = store.record_risk_event(
+            {
+                "symbol": "BTCUSD",
+                "timeframe": "M15",
+                "risk_state": "blocked",
+                "allowed": False,
+                "reason": "db_degraded_preflight",
+                "circuit_breaker": "persistent_db_degraded",
+                "recommended_action": "NO_TRADE",
+                "preflight_only": True,
+                "dry_run_no_persist": True,
+            }
+        )
+        stats = persistent_write_backpressure().status()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["suppressed_noncritical_risk_event"])
+        self.assertTrue(result["risk_event_persistence_suppressed"])
+        self.assertFalse(result["queued"])
+        self.assertFalse(result["db_degraded"])
+        self.assertEqual(stats["queue_depth"], 0)
+        self.assertEqual(stats["failed_writes_active"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_preflight_dry_run_returns_suppressed_noncritical_risk_events(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = persist_risk_event(
+            {
+                "symbol": "ETHUSD",
+                "timeframe": "M15",
+                "risk_state": "preflight_diagnostic",
+                "allowed": True,
+                "reason": "dry_run_preflight",
+                "recommended_action": "review_preflight",
+                "dry_run": True,
+            },
+            store=store,
+        )
+
+        self.assertEqual(result["event_type"], "risk_event")
+        self.assertTrue(result["suppressed_noncritical_risk_event"])
+        self.assertTrue(result["write"]["risk_event_persistence_suppressed"])
+        self.assertEqual(result["write"]["table"], "mt5_risk_events")
+        self.assertEqual(result["write"]["suppression_reason"], "preflight_dry_run")
+        self.assertEqual(client.inserted, [])
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
+    def test_repeated_preflight_under_missing_schema_does_not_create_failed_writes_active(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        store.healthcheck()
+
+        results = [
+            persist_risk_event(
+                {
+                    "symbol": "BTCUSD",
+                    "timeframe": "M15",
+                    "risk_state": "preflight_diagnostic",
+                    "allowed": True,
+                    "reason": f"readiness_preflight_diagnostic_{idx}",
+                    "recommended_action": "review_preflight",
+                    "preflight_only": True,
+                    "dry_run_no_persist": True,
+                },
+                store=store,
+            )
+            for idx in range(7)
+        ]
+        stats = persistent_write_backpressure().status()
+
+        self.assertTrue(all(result["suppressed_noncritical_risk_event"] for result in results))
+        self.assertTrue(all(not result["queued"] for result in results))
+        self.assertEqual(stats["queue_depth"], 0)
+        self.assertEqual(stats["queued_writes"], 0)
+        self.assertEqual(stats["failed_writes_active"], 0)
+        self.assertEqual(stats["failed_writes_unresolved"], 0)
+        self.assertFalse(results[-1]["broker_touched"])
+        self.assertFalse(results[-1]["order_executed"])
+        self.assertEqual(results[-1]["order_policy"], "journal_only_no_broker")
+
+    def test_repeated_preflight_under_missing_schema_does_not_increase_queue_depth(self) -> None:
+        store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
+        store.healthcheck()
+        before = persistent_write_backpressure().status()
+
+        for idx in range(5):
+            persist_risk_event(
+                {
+                    "symbol": "ETHUSD",
+                    "timeframe": "M15",
+                    "risk_state": "preflight_diagnostic",
+                    "allowed": True,
+                    "reason": f"dry_run_preflight_{idx}",
+                    "recommended_action": "review_preflight",
+                    "preflight_only": True,
+                },
+                store=store,
+            )
+        after = persistent_write_backpressure().status()
+
+        self.assertEqual(before["queue_depth"], 0)
+        self.assertEqual(after["queue_depth"], 0)
+        self.assertEqual(after["queued_writes"], 0)
+        self.assertEqual(after["failed_writes_active"], 0)
+        self.assertEqual(after["failed_writes_unresolved"], 0)
+
+    def test_noncritical_risk_event_writer_respects_persist_events_false(self) -> None:
+        client = _FakeClient()
+        store = MT5PersistentIntelligenceStore(client=client)
+
+        result = persist_risk_event(
+            {
+                "symbol": "ETHUSD",
+                "timeframe": "M15",
+                "risk_state": "preflight_diagnostic",
+                "allowed": True,
+                "reason": "persist_events_false_preflight",
+                "recommended_action": "review_preflight",
+                "persist_events": False,
+            },
+            store=store,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["suppressed_noncritical_risk_event"])
+        self.assertTrue(result["write"]["risk_event_persistence_suppressed"])
+        self.assertEqual(result["write"]["suppression_reason"], "persist_events_false")
+        self.assertEqual(client.inserted, [])
+        self.assertEqual(result["queue_depth"], 0)
+        self.assertFalse(result["broker_touched"])
+        self.assertFalse(result["order_executed"])
+        self.assertEqual(result["order_policy"], "journal_only_no_broker")
+
     def test_schema_missing_write_freeze_returns_no_trade_for_critical_write(self) -> None:
         store = MT5PersistentIntelligenceStore(client=_MissingTablesClient())
         store.healthcheck()
