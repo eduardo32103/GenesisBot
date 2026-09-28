@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050505">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Genesis Flow">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./assets/genesis-logo-white.png">
+  <link rel="stylesheet" href="./flow.css">
+  <title>Genesis Flow</title>
+</head>
+<body>
+  <main class="flow-shell">
+    <header class="flow-header">
+      <a class="back" href="./index.html" aria-label="Volver">‹</a>
+      <div><div class="kicker">GENESIS · MARKET FLOW</div><h1>Flujo real</h1></div>
+      <button class="refresh" id="refresh-button" type="button">↻</button>
+    </header>
+    <nav class="asset-tabs" aria-label="Activo">
+      <button class="asset-tab active" data-asset="BTC">BTC</button>
+      <button class="asset-tab" data-asset="ETH">ETH</button>
+      <button class="asset-tab" data-asset="SOL">SOL</button>
+    </nav>
+    <section class="hero-card"><div><span class="label">Precio</span><strong id="mark-price">—</strong></div><div class="status" id="freshness">Cargando…</div></section>
+    <section class="grid">
+      <article class="metric-card"><span class="label">Funding</span><strong id="funding">—</strong><small>Apalancamiento</small></article>
+      <article class="metric-card"><span class="label">Open interest</span><strong id="open-interest">—</strong><small>Posiciones abiertas</small></article>
+      <article class="metric-card wide" id="premium-card"><div><span class="label">Prima Coinbase vs Binance</span><strong id="coinbase-premium">—</strong></div><small>BTC · presión relativa EEUU</small></article>
+    </section>
+    <section class="chart-card"><div class="section-head"><div><span class="label">Funding · histórico</span><h2>Últimas lecturas</h2></div></div><svg id="funding-chart" viewBox="0 0 360 120"></svg></section>
+    <section class="chart-card"><div class="section-head"><div><span class="label">Open interest · histórico</span><h2>Participación</h2></div></div><svg id="oi-chart" viewBox="0 0 360 120"></svg></section>
+    <section class="read-card"><span class="label">Lectura</span><p id="flow-reading">Cargando flujo…</p></section>
+    <section class="source-card">
+      <h2>Fuentes</h2>
+      <div><span>Funding / OI</span><b>Hyperliquid</b></div>
+      <div><span>Prima spot</span><b>Coinbase + Binance</b></div>
+      <div><span>Opciones</span><b>Deribit · siguiente bloque</b></div>
+      <div><span>ETF spot</span><b>Diario · siguiente bloque</b></div>
+      <div><span>COT</span><b>CFTC · semanal</b></div>
+    </section>
+    <p class="foot">Datos de mercado, no señal de compra/venta. Genesis guarda histórico para validar si estas variables añaden ventaja estadística.</p>
+  </main>
+  <script src="./flow.js"></script>
+  <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(function(){});</script>
+</body>
+</html>
