@@ -18,7 +18,7 @@ async function request(method){const r=await fetch(ENDPOINT+"?asset="+asset+"&li
 async function load(force){el("freshness").textContent="Actualizando…";try{if(force)await request("POST");const data=await request("GET");const rows=data.snapshots||[],latest=rows[0];if(!latest)throw new Error("Sin snapshots");el("mark-price").textContent=money(latest.mark_price);el("funding").textContent=pct(latest.funding_rate);el("open-interest").textContent=compact(latest.open_interest)+(asset==="BTC"?" BTC":"");el("coinbase-premium").textContent=asset==="BTC"?bps(latest.coinbase_premium_bps):"Solo BTC";el("premium-card").style.opacity=asset==="BTC"?"1":".48";el("freshness").textContent=age(latest.observed_at);const chronological=rows.slice().reverse();lineChart(el("funding-chart"),chronological.map(function(x){return x.funding_rate}),true);lineChart(el("oi-chart"),chronological.map(function(x){return x.open_interest}),false);el("flow-reading").textContent=reading(latest,chronological)}catch(e){el("freshness").textContent="Error";el("flow-reading").textContent="No pude cargar flujo: "+e.message}}
 document.querySelectorAll(".asset-tab").forEach(function(btn){btn.addEventListener("click",function(){asset=btn.dataset.asset;document.querySelectorAll(".asset-tab").forEach(function(x){x.classList.toggle("active",x===btn)});load(false)})});
 function evidenceStatus(status){
-  const map={rejected:["Rechazado","bad"],inconclusive:["Inconcluso","warn"],supported:["Validado","good"],collecting:["Recopilando","info"],insufficient:["Muestra corta","info"],blocked:["Bloqueado","muted"]};
+  const map={rejected:["Rechazado","bad"],inconclusive:["Inconcluso","warn"],provisional:["Provisional","warn"],supported:["Validado","good"],collecting:["Recopilando","info"],insufficient:["Muestra corta","info"],blocked:["Bloqueado","muted"]};
   return map[status]||[status||"Pendiente","muted"];
 }
 async function loadEvidence(){
@@ -27,9 +27,9 @@ async function loadEvidence(){
     if(!r.ok)throw new Error("HTTP "+r.status);
     const data=await r.json(),rows=data.results||[];
     el("evidence-list").innerHTML=rows.map(function(x){
-      const s=evidenceStatus(x.status),metric=num(x.metric_value),t=num(x.t_stat);
+      const s=evidenceStatus(x.status),metric=num(x.metric_value),t=num(x.t_stat),unit=(x.payload&&x.payload.unit)||"%";
       let stats="";
-      if(metric!==null)stats+="<b>"+(metric>=0?"+":"")+metric.toFixed(3)+"%</b>";
+      if(metric!==null)stats+="<b>"+(metric>=0?"+":"")+metric.toFixed(3)+(unit==="R"?"R":"%")+"</b>";
       if(t!==null)stats+="<span>t "+t.toFixed(2)+"</span>";
       if(x.sample_size)stats+="<span>n "+x.sample_size+"</span>";
       return '<article class="evidence-row"><div><span class="evidence-pill '+s[1]+'">'+s[0]+'</span><strong>'+x.title+'</strong></div><div class="evidence-stats">'+stats+'</div></article>';
