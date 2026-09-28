@@ -1,6 +1,7 @@
 const SUPABASE_URL="https://nwduaycuofeggjtfdwsy.supabase.co";
 const ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im53ZHVheWN1b2ZlZ2dqdGZkd3N5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxODQzMDYsImV4cCI6MjA5MTc2MDMwNn0.hNcMPS6P41Hhe4xtIAeaHA4x8PVtCq3YYgmz65yPp6o";
 const ENDPOINT=SUPABASE_URL+"/functions/v1/market-flow";
+const CONTEXT_ENDPOINT=SUPABASE_URL+"/functions/v1/market-flow-context";
 let asset="BTC";
 const el=function(id){return document.getElementById(id)};
 const headers={Authorization:"Bearer "+ANON_KEY,apikey:ANON_KEY,"Content-Type":"application/json"};
@@ -15,5 +16,41 @@ function reading(latest,history){const f=num(latest.funding_rate)||0,oi=num(late
 async function request(method){const r=await fetch(ENDPOINT+"?asset="+asset+"&limit=144",{method:method||"GET",headers:headers});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
 async function load(force){el("freshness").textContent="Actualizando…";try{if(force)await request("POST");const data=await request("GET");const rows=data.snapshots||[],latest=rows[0];if(!latest)throw new Error("Sin snapshots");el("mark-price").textContent=money(latest.mark_price);el("funding").textContent=pct(latest.funding_rate);el("open-interest").textContent=compact(latest.open_interest)+(asset==="BTC"?" BTC":"");el("coinbase-premium").textContent=asset==="BTC"?bps(latest.coinbase_premium_bps):"Solo BTC";el("premium-card").style.opacity=asset==="BTC"?"1":".48";el("freshness").textContent=age(latest.observed_at);const chronological=rows.slice().reverse();lineChart(el("funding-chart"),chronological.map(function(x){return x.funding_rate}),true);lineChart(el("oi-chart"),chronological.map(function(x){return x.open_interest}),false);el("flow-reading").textContent=reading(latest,chronological)}catch(e){el("freshness").textContent="Error";el("flow-reading").textContent="No pude cargar flujo: "+e.message}}
 document.querySelectorAll(".asset-tab").forEach(function(btn){btn.addEventListener("click",function(){asset=btn.dataset.asset;document.querySelectorAll(".asset-tab").forEach(function(x){x.classList.toggle("active",x===btn)});load(false)})});
-el("refresh-button").addEventListener("click",function(){load(true)});
-load(true);setInterval(function(){load(false)},60000);
+async function loadContext(force){
+  try{
+    const method=force?"POST":"GET";
+    const r=await fetch(CONTEXT_ENDPOINT+"?asset="+asset,{method:method,headers:headers});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const data=await r.json(),bundle=data.bundle||{};
+    const options=bundle.options||null;
+    if(options){
+      el("put-call-ratio").textContent=num(options.put_call_oi_ratio)===null?"—":Number(options.put_call_oi_ratio).toFixed(2);
+      const top=(options.top_strikes||[]).slice(0,4);
+      el("top-strikes").innerHTML=top.map(function(x){
+        return '<div><span>'+money(x.strike)+' '+String(x.type||"").toUpperCase()+'</span><b>'+compact(x.open_interest)+' OI</b></div>'
+      }).join("");
+    }else{
+      el("put-call-ratio").textContent="—";el("top-strikes").innerHTML="";
+    }
+    if(asset==="BTC"){
+      const etf=(bundle.etf||[])[0],cot=(bundle.cot||[])[0];
+      el("etf-card").style.display="";
+      el("cot-card").style.display="";
+      el("etf-flow").textContent=etf?(Number(etf.total_flow_usd_m)>=0?"+":"")+Number(etf.total_flow_usd_m).toFixed(1)+"M":"—";
+      el("etf-date").textContent=etf?etf.flow_date+" · USD millones":"Flujo diario";
+      el("cot-net").textContent=cot?(Number(cot.noncommercial_net)>=0?"+":"")+new Intl.NumberFormat("en-US").format(Number(cot.noncommercial_net)):"—";
+      el("cot-date").textContent=cot?cot.report_date+" · neto no comercial":"COT semanal";
+    }else{
+      el("etf-card").style.display="none";
+      el("cot-card").style.display="none";
+    }
+  }catch(e){
+    el("put-call-ratio").textContent="Error";
+  }
+}
+document.querySelectorAll(".asset-tab").forEach(function(btn){
+  btn.addEventListener("click",function(){setTimeout(function(){loadContext(false)},0)})
+});
+el("refresh-button").addEventListener("click",function(){load(true);loadContext(true)});
+load(false);loadContext(false);
+setInterval(function(){load(false);loadContext(false)},60000);
