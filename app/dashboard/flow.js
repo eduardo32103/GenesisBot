@@ -17,6 +17,13 @@ async function request(method){const r=await fetch(ENDPOINT+"?asset="+asset+"&li
 async function load(force){el("freshness").textContent="Actualizando…";try{if(force)await request("POST");const data=await request("GET");const rows=data.snapshots||[],latest=rows[0];if(!latest)throw new Error("Sin snapshots");el("mark-price").textContent=money(latest.mark_price);el("funding").textContent=pct(latest.funding_rate);el("open-interest").textContent=compact(latest.open_interest)+(asset==="BTC"?" BTC":"");el("coinbase-premium").textContent=asset==="BTC"?bps(latest.coinbase_premium_bps):"Solo BTC";el("premium-card").style.opacity=asset==="BTC"?"1":".48";el("freshness").textContent=age(latest.observed_at);const chronological=rows.slice().reverse();lineChart(el("funding-chart"),chronological.map(function(x){return x.funding_rate}),true);lineChart(el("oi-chart"),chronological.map(function(x){return x.open_interest}),false);el("flow-reading").textContent=reading(latest,chronological)}catch(e){el("freshness").textContent="Error";el("flow-reading").textContent="No pude cargar flujo: "+e.message}}
 document.querySelectorAll(".asset-tab").forEach(function(btn){btn.addEventListener("click",function(){asset=btn.dataset.asset;document.querySelectorAll(".asset-tab").forEach(function(x){x.classList.toggle("active",x===btn)});load(false)})});
 async function loadContext(force){
+  if(asset==="SOL"){
+    el("put-call-ratio").textContent="—";
+    el("top-strikes").innerHTML='<div><span>Deribit</span><b>Sin feed SOL configurado</b></div>';
+    el("etf-card").style.display="none";
+    el("cot-card").style.display="none";
+    return;
+  }
   try{
     const method=force?"POST":"GET";
     const r=await fetch(CONTEXT_ENDPOINT+"?asset="+asset,{method:method,headers:headers});
