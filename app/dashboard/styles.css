@@ -5036,3 +5036,32 @@ input:focus-visible {
     font-size: 0.58rem;
   }
 }
+
+
+.flow-fab {
+  position: absolute;
+  right: 16px;
+  bottom: 82px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 999px;
+  background: rgba(10,10,10,.94);
+  color: #f7f7f7;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: 0 12px 30px rgba(0,0,0,.42);
+  backdrop-filter: blur(16px);
+}
+.flow-fab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #72e3a6;
+  box-shadow: 0 0 12px rgba(114,227,166,.55);
+}
