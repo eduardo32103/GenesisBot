@@ -33,13 +33,31 @@
     <section class="chart-card"><div class="section-head"><div><span class="label">Funding · histórico</span><h2>Últimas lecturas</h2></div></div><svg id="funding-chart" viewBox="0 0 360 120"></svg></section>
     <section class="chart-card"><div class="section-head"><div><span class="label">Open interest · histórico</span><h2>Participación</h2></div></div><svg id="oi-chart" viewBox="0 0 360 120"></svg></section>
     <section class="read-card"><span class="label">Lectura</span><p id="flow-reading">Cargando flujo…</p></section>
+    <section class="context-grid">
+      <article class="context-card">
+        <span class="label">Opciones Deribit</span>
+        <strong id="put-call-ratio">—</strong>
+        <small>Put/Call OI</small>
+        <div class="strike-list" id="top-strikes"></div>
+      </article>
+      <article class="context-card" id="etf-card">
+        <span class="label">ETF spot BTC</span>
+        <strong id="etf-flow">—</strong>
+        <small id="etf-date">Flujo diario</small>
+      </article>
+      <article class="context-card" id="cot-card">
+        <span class="label">COT · CME Bitcoin</span>
+        <strong id="cot-net">—</strong>
+        <small id="cot-date">Neto no comercial</small>
+      </article>
+    </section>
     <section class="source-card">
       <h2>Fuentes</h2>
-      <div><span>Funding / OI</span><b>Hyperliquid</b></div>
-      <div><span>Prima spot</span><b>Coinbase + Binance</b></div>
-      <div><span>Opciones</span><b>Deribit · siguiente bloque</b></div>
-      <div><span>ETF spot</span><b>Diario · siguiente bloque</b></div>
-      <div><span>COT</span><b>CFTC · semanal</b></div>
+      <div><span>Funding / OI</span><b>Hyperliquid · 10 min</b></div>
+      <div><span>Prima spot</span><b>Coinbase + Binance · 10 min</b></div>
+      <div><span>Opciones</span><b>Deribit · 10 min</b></div>
+      <div><span>ETF spot</span><b>Farside · diario</b></div>
+      <div><span>COT</span><b>CFTC PRE · semanal</b></div>
     </section>
     <p class="foot">Datos de mercado, no señal de compra/venta. Genesis guarda histórico para validar si estas variables añaden ventaja estadística.</p>
   </main>
