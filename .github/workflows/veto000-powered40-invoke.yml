@@ -13,6 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Invoke fallback batch 20
+      - name: Evaluate powered40 unseen stocks
         run: |
-          curl --fail-with-body --max-time 180 --retry 1             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-fallback-freeze-v1?offset=20&size=10"
+          curl --fail-with-body --max-time 240 --retry 0             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-eval-v1"
