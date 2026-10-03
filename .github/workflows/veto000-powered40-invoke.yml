@@ -13,10 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Invoke batch 0
+      - name: Invoke fallback batch 0
         run: |
-          curl --fail-with-body --max-time 180 --retry 1             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-freeze-v1?offset=0&size=20"
-
-      - name: Invoke batch 20
-        run: |
-          curl --fail-with-body --max-time 180 --retry 1             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-freeze-v1?offset=20&size=20"
+          curl --fail-with-body --max-time 180 --retry 1             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-fallback-freeze-v1?offset=0&size=20"
