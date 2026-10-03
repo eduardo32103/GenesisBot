@@ -11,7 +11,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL 'https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/pa-cross-sectional-reversal-dev-v1?read=veto000' -o /tmp/veto.json
+          curl -fsSL 'https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/pa-cross-sectional-reversal-dev-v1?read=veto000_compact' -o /tmp/veto.json
           echo 'VETO_JSON_BEGIN'
           cat /tmp/veto.json
           echo
