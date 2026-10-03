@@ -13,6 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Evaluate powered40 unseen stocks
+      - name: Final VETO000 verification
         run: |
-          curl --fail-with-body --max-time 240 --retry 0             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-eval-v1"
+          curl --fail-with-body --max-time 240 --retry 0             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-feed-harmonized-final-v1"
