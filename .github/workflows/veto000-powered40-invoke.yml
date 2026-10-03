@@ -1,0 +1,22 @@
+name: VETO000 Powered40 Invoke
+
+on:
+  push:
+    branches:
+      - agent/research/veto000-recovery
+    paths:
+      - ".github/workflows/veto000-powered40-invoke.yml"
+  workflow_dispatch:
+
+jobs:
+  invoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Invoke batch 0
+        run: |
+          curl --fail-with-body --max-time 180 --retry 1             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-freeze-v1?offset=0&size=20"
+
+      - name: Invoke batch 20
+        run: |
+          curl --fail-with-body --max-time 180 --retry 1             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-powered40-freeze-v1?offset=20&size=20"
