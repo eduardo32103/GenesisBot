@@ -1,0 +1,18 @@
+name: tmp-veto-read
+on:
+  push:
+    branches:
+      - tmp-read-veto000-20261002
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read saved VETO000 rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL 'https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/pa-cross-sectional-reversal-dev-v1?read=veto000' -o /tmp/veto.json
+          echo 'VETO_JSON_BEGIN'
+          cat /tmp/veto.json
+          echo
+          echo 'VETO_JSON_END'
