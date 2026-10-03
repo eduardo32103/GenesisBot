@@ -1,0 +1,65 @@
+name: VETO000 Recovery
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/recover_veto000_result.py"
+      - ".github/workflows/veto000-recovery.yml"
+      - "docs/research/VETO000_RECOVERY_AND_REBUILD.md"
+  workflow_dispatch:
+
+jobs:
+  recover-veto000:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Recover persisted VETO000 payload
+        run: python scripts/recover_veto000_result.py
+
+      - name: Show recovery summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("data/research_outputs/veto000_recovery.json")
+          if not p.exists():
+              print("recovery artifact missing")
+              raise SystemExit(0)
+          x = json.loads(p.read_text(encoding="utf-8"))
+          print(json.dumps({
+              "recovered": x.get("recovered"),
+              "recovered_route": x.get("recovered_route"),
+              "row_count": len(x.get("rows") or []),
+              "attempt_count": len(x.get("attempts") or []),
+          }, indent=2))
+          if x.get("recovered"):
+              for row in x.get("rows") or []:
+                  print(json.dumps({
+                      "research_key": row.get("research_key"),
+                      "status": row.get("status"),
+                      "tested_at": row.get("tested_at"),
+                      "sample_size": row.get("sample_size"),
+                      "metric_value": row.get("metric_value"),
+                  }, ensure_ascii=False))
+          PY
+
+      - name: Upload recovery artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veto000-recovery
+          path: data/research_outputs/veto000_recovery.json
+          if-no-files-found: warn

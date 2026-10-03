@@ -1,0 +1,18 @@
+name: VETO000 Powered40 Invoke
+
+on:
+  push:
+    branches:
+      - agent/research/veto000-recovery
+    paths:
+      - ".github/workflows/veto000-powered40-invoke.yml"
+  workflow_dispatch:
+
+jobs:
+  invoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Final VETO000 verification
+        run: |
+          curl --fail-with-body --max-time 240 --retry 0             "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/veto000-feed-harmonized-final-v1"

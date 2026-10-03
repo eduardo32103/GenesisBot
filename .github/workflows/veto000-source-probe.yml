@@ -1,0 +1,26 @@
+name: VETO000 Source Probe
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/veto000-source-probe.yml"
+  workflow_dispatch:
+
+jobs:
+  probe-source-access:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DATABENTO_API_KEY: ${{ secrets.DATABENTO_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Check source credential presence
+        shell: bash
+        run: |
+          if [ -n "$DATABENTO_API_KEY" ]; then echo "DATABENTO_API_KEY_PRESENT=true"; else echo "DATABENTO_API_KEY_PRESENT=false"; fi
+          if [ -n "$SUPABASE_URL" ]; then echo "SUPABASE_URL_PRESENT=true"; else echo "SUPABASE_URL_PRESENT=false"; fi
+          if [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then echo "SUPABASE_SERVICE_ROLE_KEY_PRESENT=true"; else echo "SUPABASE_SERVICE_ROLE_KEY_PRESENT=false"; fi
