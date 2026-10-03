@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 BASE = "https://nwduaycuofeggjtfdwsy.supabase.co/functions/v1/pa-cross-sectional-reversal-dev-v1"
-ROUTES = ("veto_public", "veto_pool", "veto_pgb", "veto_direct")
+ROUTES = ("veto000_compact", "veto_public", "veto_pool", "veto_pgb", "veto_direct")
 OUT = Path("data/research_outputs/veto000_recovery.json")
 
 
@@ -19,7 +19,7 @@ def fetch(route: str, timeout: int = 35) -> dict[str, Any]:
         url,
         headers={
             "Accept": "application/json",
-            "User-Agent": "GenesisBot-VETO000-Recovery/1.0",
+            "User-Agent": "GenesisBot-VETO000-Recovery/1.1",
         },
         method="GET",
     )
@@ -42,7 +42,7 @@ def fetch(route: str, timeout: int = 35) -> dict[str, Any]:
     try:
         body: Any = json.loads(raw)
     except Exception:
-        body = {"raw": raw[:2000]}
+        body = {"raw": raw[:5000]}
 
     return {
         "route": route,
@@ -54,12 +54,18 @@ def fetch(route: str, timeout: int = 35) -> dict[str, Any]:
 
 def extract_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
     body = result.get("body")
+    if isinstance(body, list):
+        return [row for row in body if isinstance(row, dict)]
     if not isinstance(body, dict):
         return []
-    rows = body.get("rows")
-    if not isinstance(rows, list):
-        return []
-    return [row for row in rows if isinstance(row, dict)]
+    for key in ("rows", "data", "results"):
+        rows = body.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    row = body.get("row")
+    if isinstance(row, dict):
+        return [row]
+    return []
 
 
 def main() -> int:
@@ -82,6 +88,7 @@ def main() -> int:
             result["round"] = round_no
             report["attempts"].append(result)
             rows = extract_rows(result)
+            body = result.get("body")
             print(
                 json.dumps(
                     {
@@ -90,14 +97,11 @@ def main() -> int:
                         "http": result.get("http"),
                         "elapsed_s": result.get("elapsed_s"),
                         "rows": len(rows),
-                        "body_ok": (
-                            result.get("body", {}).get("ok")
-                            if isinstance(result.get("body"), dict)
-                            else None
-                        ),
+                        "body_ok": body.get("ok") if isinstance(body, dict) else None,
+                        "status": body.get("status") if isinstance(body, dict) else None,
                         "error": (
-                            result.get("body", {}).get("error")
-                            if isinstance(result.get("body"), dict)
+                            body.get("error")
+                            if isinstance(body, dict)
                             else result.get("transport_error")
                         ),
                     },
@@ -114,6 +118,29 @@ def main() -> int:
                 )
                 print(f"RECOVERED VETO000: {len(rows)} persisted row(s) via {route}")
                 return 0
+
+            # Compact route may return the final evaluation directly instead of a rows list.
+            if route == "veto000_compact" and isinstance(body, dict):
+                compact_keys = {
+                    "research_key",
+                    "gate_pass",
+                    "verified",
+                    "pf",
+                    "pf_long",
+                    "pf_short",
+                    "sample_size",
+                    "payload",
+                }
+                if compact_keys.intersection(body.keys()):
+                    report["recovered"] = True
+                    report["recovered_route"] = route
+                    report["rows"] = [body]
+                    OUT.write_text(
+                        json.dumps(report, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    print("RECOVERED VETO000 compact payload")
+                    return 0
         if round_no == 1:
             time.sleep(15)
 
