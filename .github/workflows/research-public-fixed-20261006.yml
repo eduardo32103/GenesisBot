@@ -1,0 +1,39 @@
+name: GENESIS fixed public research 20261006
+
+on:
+  push:
+    branches: ["agent/research/public-cusum-dualthrust-20261006"]
+    paths: [".github/workflows/research-public-fixed-20261006.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Retrieve exact frozen research code and verify checksum
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib, urllib.request
+          url = 'https://raw.githubusercontent.com/eduardo32103/GenesisBot/065be55b5a524b18e2c81e12cfc8c33040ba2fe9/scripts/research_public_fixed_20261006.py'
+          with urllib.request.urlopen(url, timeout=30) as response:
+              data = response.read()
+          expected = 'dea3fdae19c507fa1d2eccdb3c4dea0ba663c0738742833eeea61ea90d103d6e'
+          assert hashlib.sha256(data).hexdigest() == expected, 'Research code mismatch'
+          pathlib.Path('research_probe.py').write_bytes(data)
+          print('Frozen code SHA256:', expected)
+          PY
+      - name: Synthetic checks and bounded Oct2024-Feb2025 market replay
+        run: python3 research_probe.py --out research_result.json
+      - name: Keep research evidence only; no raw market archive or secret
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: genesis-public-fixed-20261006
+          path: |
+            research_probe.py
+            research_result.json
+          retention-days: 30
+          if-no-files-found: error
